@@ -1,0 +1,36 @@
+# Generated locked dependencies for XAUT Signal Intelligence (Python 3.13)
+Django==5.2.17
+djangorestframework==3.18.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+redis==8.1.0
+celery==5.6.3
+django-celery-beat==2.9.0
+django-celery-results==2.6.0
+django-environ==0.14.0
+django-timezone-field==7.2.2
+
+# Numerical & Data Processing / Machine Learning
+pandas==3.0.5
+numpy==2.5.2
+scipy==1.18.1
+statsmodels==0.15.0
+scikit-learn==1.9.0
+xgboost==3.4.1
+lightgbm==4.7.0
+optuna==4.9.0
+PyWavelets==1.9.0
+plotly==7.0.0
+structlog==26.1.0
+requests==2.34.2
+websockets==17.1
+
+# Dev, Linting & Testing
+pytest==9.1.1
+pytest-django==4.14.0
+pytest-cov==7.1.0
+pytest-mock==3.15.1
+ruff==0.16.5
+mypy==2.3.1
+django-stubs==6.1.0
+django-stubs-ext==6.1.0
