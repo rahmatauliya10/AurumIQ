@@ -64,6 +64,23 @@ class EventImpact(str, Enum):
     LOW = "LOW"
 
 
+class PromotionStatus(str, Enum):
+    """Promotion eligibility status for Phase 3B experimental spectral features."""
+    NOT_EVALUATED = "NOT_EVALUATED"
+    BASELINE_NOT_EMPIRICAL = "BASELINE_NOT_EMPIRICAL"
+    INSUFFICIENT_TRADES = "INSUFFICIENT_TRADES"
+    FAILED = "FAILED"
+    PROMOTABLE = "PROMOTABLE"
+
+
+class ReliabilityStatus(str, Enum):
+    """Cycle spectral consensus and stability classification."""
+    HIGH = "HIGH"
+    MODERATE = "MODERATE"
+    LOW = "LOW"
+    UNRELIABLE = "UNRELIABLE"
+
+
 @dataclass(frozen=True)
 class CandleData:
     """Immutable OHLCV candlestick object strictly decoupled from Django."""
@@ -296,6 +313,114 @@ class BaselineBenchmark:
     is_empirical: bool = False
 
 
+# --- Phase 3B: Experimental Spectral & Cycle Research Data Contracts ---
+
+@dataclass(frozen=True)
+class AcfResult:
+    """Causal Autocorrelation Function analysis output."""
+    dominant_lag: Optional[int]
+    autocorrelation: float
+    is_significant: bool
+    confidence_bound: float
+    acf_series: Tuple[float, ...]
+    effective_n: float
+    sample_quality: SampleQuality
+
+
+@dataclass(frozen=True)
+class FftResult:
+    """Causal Discrete Fourier Transform spectral analysis output."""
+    dominant_period: Optional[float]
+    dominant_frequency: Optional[float]
+    power_ratio: float
+    spectral_entropy: float
+    psd_top_frequencies: Tuple[Tuple[float, float], ...]  # (frequency, power)
+    is_cycle_detected: bool
+
+
+@dataclass(frozen=True)
+class WaveletResult:
+    """Causal Continuous Wavelet Transform multi-scale energy output."""
+    dominant_scale_period: Optional[float]
+    energy_ratio: float
+    coi_contamination_pct: float
+    is_clean_endpoint: bool
+    scales_analyzed: Tuple[float, ...]
+    trusted_lag_bars: int = 0
+
+
+@dataclass(frozen=True)
+class HilbertResult:
+    """Causal Hilbert Transform instantaneous phase and amplitude output."""
+    instantaneous_phase: float  # radians in [-pi, pi]
+    instantaneous_amplitude: float
+    phase_velocity: float
+    phase_stability: float
+    is_endpoint_reliable: bool
+
+
+@dataclass(frozen=True)
+class CycleReliabilityResult:
+    """Multi-method spectral cycle consensus and reliability evaluation."""
+    dominant_period_bars: Optional[float]
+    acf_strength: float
+    fft_power_ratio: float
+    wavelet_scale_strength: float
+    hilbert_phase: float
+    phase_stability: float
+    method_agreement_pct: float
+    effective_n: float
+    sample_quality: SampleQuality
+    reliability_score: float  # [0.0, 100.0]
+    reliability_status: ReliabilityStatus
+    reasons: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WalkForwardFoldResult:
+    """Performance metrics for an individual Walk-Forward out-of-sample fold."""
+    fold_id: int
+    profit_factor: float
+    expectancy_r: float
+    max_drawdown: float
+    trade_count: int
+    net_profit: float = 0.0
+
+
+@dataclass(frozen=True)
+class PromotionEvaluation:
+    """Evaluation result from the Empirical Promotion Gate."""
+    status: PromotionStatus
+    is_promotable: bool
+    baseline_pf: float
+    experimental_pf: float
+    pf_improvement_pct: float
+    trade_count: int
+    max_drawdown_pct: float
+    dd_deterioration_pct: float
+    walk_forward_folds_passed: int
+    walk_forward_folds_total: int
+    is_single_period_dependent: bool
+    max_fold_profit_share_pct: float
+    effective_n: float = 0.0
+    reasons: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Cycle3BExperimentalSnapshot:
+    """Immutable snapshot of Phase 3B Experimental Spectral and Cycle analysis."""
+    timestamp: datetime
+    timeframe: str
+    acf: AcfResult
+    fft: FftResult
+    wavelet: WaveletResult
+    hilbert: HilbertResult
+    reliability: CycleReliabilityResult
+    experimental_version: str = "3.1.0-3B"
+    production_weight: float = field(default=0.0, init=False)  # HARD LOCKED TO 0.0
+    promotion_status: PromotionStatus = PromotionStatus.BASELINE_NOT_EMPIRICAL
+
+
 # --- Future Phase Forward Contracts (Pure Data Contracts) ---
 
 @dataclass(frozen=True)
@@ -326,5 +451,6 @@ class AnalysisResult:
     structure: StructureResult
     sample_guard: SampleEvaluation
     cycle_3a: Optional[Cycle3ASnapshot] = None
+    cycle_3b: Optional[Cycle3BExperimentalSnapshot] = None
     score: Optional[ScoreResult] = None
     risk_plan: Optional[RiskPlan] = None

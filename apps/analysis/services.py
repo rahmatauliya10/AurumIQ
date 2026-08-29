@@ -9,8 +9,15 @@ from apps.analysis.models import (
     RegimeSnapshotRecord,
     StructureSnapshotRecord,
     CycleSnapshotRecord,
+    ExperimentalCycleSnapshotRecord,
 )
-from engine.core.types import FeatureSnapshot, RegimeResult, StructureResult, Cycle3ASnapshot
+from engine.core.types import (
+    FeatureSnapshot,
+    RegimeResult,
+    StructureResult,
+    Cycle3ASnapshot,
+    Cycle3BExperimentalSnapshot,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +37,7 @@ class AnalysisPersistenceService:
         regime: Optional[RegimeResult] = None,
         structure: Optional[StructureResult] = None,
         cycle_3a: Optional[Cycle3ASnapshot] = None,
+        cycle_3b: Optional[Cycle3BExperimentalSnapshot] = None,
         feature_version: str = "feat-2026-v1",
     ) -> None:
         """Persist feature, regime, structure, and cycle snapshots atomically."""
@@ -136,5 +144,42 @@ class AnalysisPersistenceService:
                     "is_blocked_by_event": cycle_3a.is_blocked_by_event,
                     "cycle_score_3a": cycle_3a.cycle_score_3a,
                     "details": details,
+                },
+            )
+
+        if cycle_3b:
+            details_3b = {
+                "acf_is_significant": cycle_3b.acf.is_significant,
+                "acf_confidence_bound": cycle_3b.acf.confidence_bound,
+                "fft_spectral_entropy": cycle_3b.fft.spectral_entropy,
+                "fft_top_frequencies": cycle_3b.fft.psd_top_frequencies,
+                "wavelet_coi_contamination": cycle_3b.wavelet.coi_contamination_pct,
+                "wavelet_is_clean_endpoint": cycle_3b.wavelet.is_clean_endpoint,
+                "hilbert_amplitude": cycle_3b.hilbert.instantaneous_amplitude,
+                "hilbert_phase_velocity": cycle_3b.hilbert.phase_velocity,
+                "hilbert_is_endpoint_reliable": cycle_3b.hilbert.is_endpoint_reliable,
+                "reliability_reasons": cycle_3b.reliability.reasons,
+            }
+            ExperimentalCycleSnapshotRecord.objects.update_or_create(
+                instrument=instrument,
+                timeframe=timeframe,
+                timestamp=cycle_3b.timestamp,
+                experimental_version=cycle_3b.experimental_version,
+                defaults={
+                    "dominant_period_bars": cycle_3b.reliability.dominant_period_bars,
+                    "acf_dominant_lag": cycle_3b.acf.dominant_lag,
+                    "acf_correlation": cycle_3b.acf.autocorrelation,
+                    "fft_dominant_period": cycle_3b.fft.dominant_period,
+                    "fft_power_ratio": cycle_3b.fft.power_ratio,
+                    "wavelet_dominant_period": cycle_3b.wavelet.dominant_scale_period,
+                    "wavelet_energy_ratio": cycle_3b.wavelet.energy_ratio,
+                    "hilbert_phase": cycle_3b.hilbert.instantaneous_phase,
+                    "hilbert_stability": cycle_3b.hilbert.phase_stability,
+                    "method_agreement_pct": cycle_3b.reliability.method_agreement_pct,
+                    "reliability_score": cycle_3b.reliability.reliability_score,
+                    "reliability_status": cycle_3b.reliability.reliability_status.value,
+                    "production_weight": cycle_3b.production_weight,
+                    "promotion_status": cycle_3b.promotion_status.value,
+                    "details": details_3b,
                 },
             )

@@ -134,3 +134,45 @@ class CycleSnapshotRecord(models.Model):
 
     def __str__(self) -> str:
         return f"Cycle3A {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} ({self.cycle_version}) -> {self.session} Score:{self.cycle_score_3a}"
+
+
+class ExperimentalCycleSnapshotRecord(models.Model):
+    """Persisted Phase 3B Experimental Spectral Cycle snapshot."""
+    instrument = models.ForeignKey(
+        Instrument, on_delete=models.CASCADE, related_name="experimental_cycle_snapshots"
+    )
+    timeframe = models.CharField(max_length=16, db_index=True)
+    timestamp = models.DateTimeField(db_index=True)
+    experimental_version = models.CharField(max_length=32, default="3.1.0-3B", db_index=True)
+    dominant_period_bars = models.FloatField(null=True, blank=True)
+    acf_dominant_lag = models.IntegerField(null=True, blank=True)
+    acf_correlation = models.FloatField(default=0.0)
+    fft_dominant_period = models.FloatField(null=True, blank=True)
+    fft_power_ratio = models.FloatField(default=0.0)
+    wavelet_dominant_period = models.FloatField(null=True, blank=True)
+    wavelet_energy_ratio = models.FloatField(default=0.0)
+    hilbert_phase = models.FloatField(default=0.0)
+    hilbert_stability = models.FloatField(default=0.0)
+    method_agreement_pct = models.FloatField(default=0.0)
+    reliability_score = models.FloatField(default=0.0)
+    reliability_status = models.CharField(max_length=32, default="UNRELIABLE")
+    production_weight = models.FloatField(default=0.0)
+    promotion_status = models.CharField(max_length=32, default="BASELINE_NOT_EMPIRICAL")
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["instrument", "timeframe", "-timestamp", "experimental_version"]),
+        ]
+        unique_together = ("instrument", "timeframe", "timestamp", "experimental_version")
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(production_weight=0.0),
+                name="phase3b_production_weight_locked_to_zero",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Cycle3B {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} ({self.experimental_version}) -> {self.reliability_status} (Score:{self.reliability_score}, Weight:{self.production_weight})"
