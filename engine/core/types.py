@@ -81,6 +81,25 @@ class ReliabilityStatus(str, Enum):
     UNRELIABLE = "UNRELIABLE"
 
 
+# --- Phase 4 Decision & State Machine Enums ---
+
+class UserDecision(str, Enum):
+    """User-facing deterministic trading recommendation."""
+    BUY = "BUY"
+    WAIT = "WAIT"
+    AVOID = "AVOID"
+
+
+class SignalState(str, Enum):
+    """Internal finite state machine resolution states."""
+    NO_TRADE = "NO_TRADE"
+    AVOID = "AVOID"
+    WATCH = "WATCH"
+    READY = "READY"
+    BUY_WINDOW = "BUY_WINDOW"
+    FORCE_WAIT = "FORCE_WAIT"
+
+
 @dataclass(frozen=True)
 class CandleData:
     """Immutable OHLCV candlestick object strictly decoupled from Django."""
@@ -421,36 +440,72 @@ class Cycle3BExperimentalSnapshot:
     promotion_status: PromotionStatus = PromotionStatus.BASELINE_NOT_EMPIRICAL
 
 
-# --- Future Phase Forward Contracts (Pure Data Contracts) ---
+# --- Phase 4: Direction Score, Timing Score & State Machine Contracts ---
 
 @dataclass(frozen=True)
-class ScoreResult:
-    """Directional and timing score evaluation contract."""
-    direction_score: float
-    timing_score: float
-    confidence: float
-    is_valid: bool
+class ComponentScore:
+    """Individual breakdown component for Direction or Timing Score."""
+    name: str
+    score: float
+    max_score: float
+    reason: str
+    is_available: bool = True
     details: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class RiskPlan:
-    """Risk management plan contract."""
-    stop_loss: Optional[Decimal]
-    take_profit: Optional[Decimal]
-    risk_reward_ratio: Optional[float]
-    position_size: Optional[Decimal]
+class DirectionScoreResult:
+    """Consolidated Direction Score result (0.0 - 100.0)."""
+    total_score: float
+    max_score: float
+    components: Tuple[ComponentScore, ...]
+    is_bullish: bool
+    config_version: str = "cfg-2026-v1"
 
 
 @dataclass(frozen=True)
-class AnalysisResult:
-    """Consolidated master analysis result contract."""
-    context: MarketContext
-    features: FeatureSnapshot
-    regime: RegimeResult
-    structure: StructureResult
-    sample_guard: SampleEvaluation
-    cycle_3a: Optional[Cycle3ASnapshot] = None
-    cycle_3b: Optional[Cycle3BExperimentalSnapshot] = None
-    score: Optional[ScoreResult] = None
-    risk_plan: Optional[RiskPlan] = None
+class TimingScoreResult:
+    """Consolidated Timing Score result (0.0 - 100.0)."""
+    total_score: float
+    max_score: float
+    components: Tuple[ComponentScore, ...]
+    is_timing_ready: bool
+    config_version: str = "cfg-2026-v1"
+
+
+@dataclass(frozen=True)
+class HardGateEvaluation:
+    """Independent hard blockers evaluation overriding numerical scores."""
+    is_blocked: bool
+    override_state: Optional[SignalState]
+    block_reasons: Tuple[str, ...]
+    is_stale_data: bool = False
+    is_provider_transition: bool = False
+    is_macro_blackout: bool = False
+    is_missing_xau: bool = False
+    is_missing_normalization: bool = False
+    is_unclosed_candle: bool = False
+
+
+@dataclass(frozen=True)
+class SignalSnapshot:
+    """Immutable master signal decision snapshot with canonical fingerprint."""
+    timestamp: datetime
+    instrument: str
+    timeframe: str
+    state: SignalState
+    user_decision: UserDecision
+    direction: DirectionScoreResult
+    timing: TimingScoreResult
+    hard_gate: HardGateEvaluation
+    reasons_positive: Tuple[str, ...]
+    reasons_negative: Tuple[str, ...]
+    hard_gate_reasons: Tuple[str, ...]
+    analysis_fingerprint: str
+    research_fingerprint: Optional[str] = None
+    engine_version: str = "4.0.0"
+    config_version: str = "cfg-2026-v1"
+    feature_version: str = "feat-2026-v1"
+    cycle_version: str = "3.0.0-3A"
+    code_revision: str = "2795de04"
+    cycle_3b_informational: Optional[Cycle3BExperimentalSnapshot] = None

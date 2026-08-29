@@ -52,6 +52,7 @@ LOCAL_APPS = [
     "apps.instruments.apps.InstrumentsConfig",
     "apps.market_data.apps.MarketDataConfig",
     "apps.analysis.apps.AnalysisConfig",
+    "apps.signals.apps.SignalsConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

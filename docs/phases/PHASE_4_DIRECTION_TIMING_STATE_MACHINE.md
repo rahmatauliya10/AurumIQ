@@ -1,135 +1,143 @@
 # Phase 4: Direction Score, Timing Score & State Machine
 
-> **Status:** 📋 **PLANNED**  
-> **Primary Goal:** Implement independent Direction Score (0–100) and Timing Score (0–100), the 7-state Selective Gate state machine, human-readable explainers, and idempotent Celery analysis tasks with reproducible fingerprints.
+> **Status:** 🧪 **IMPLEMENTING**  
+> **Primary Goal:** Implement deterministic Direction Score (0–100), Timing Score (0–100), Selective Gate state machine with BUY / WAIT / AVOID decision mapping, human-readable explainers, canonical production input fingerprinting, and idempotent persistence.
 
 ---
 
 ## 1. Two-Score Architecture
 
-A market can have strong bullish directional alignment while the immediate entry timing is terrible (e.g. overextended momentum, high event risk). The engine must be able to state **BULLISH $\rightarrow$ WAIT**.
+A market can have strong bullish directional alignment while the immediate entry timing is terrible (e.g. overextended momentum, active macro blackout). The engine explicitly separates trend conviction from entry timing:
 
 ```text
-       DIRECTION ENGINE (0–100)           TIMING ENGINE (0–100)
+       DIRECTION ENGINE (0–100)            TIMING ENGINE (0–100)
        (Is the trend favorable?)         (Is right now the right entry window?)
                     \                               /
                      \                             /
                       ▼                           ▼
                  SELECTIVE GATE & FINITE STATE MACHINE
-                      (NO_TRADE / AVOID / WATCH / READY / BUY_WINDOW)
+                 (NO_TRADE / AVOID / WATCH / READY / BUY_WINDOW)
+                                  │
+                                  ▼
+                        USER DECISION MAPPING
+                         (BUY / WAIT / AVOID)
 ```
 
 ---
 
 ## 2. Direction Score (0–100) (`engine/signals/direction.py`)
 
-Weighted aggregation of multi-timeframe directional evidence:
+Weighted aggregation of multi-timeframe directional evidence (Config Version 1.0):
 
-| Component | Weight | Criteria & Calculations |
+| Component | Max Weight | Criteria & Calculations |
 |---|---|---|
-| **Market Regime Quality** | 15 | Score from deterministic 1D/4H regime detector. |
-| **Daily Trend Strength** | 10 | 1D EMA alignment, slope normalized by ATR. |
-| **4H Trend Strength** | 10 | 4H EMA alignment, ADX directional component. |
-| **Market Structure** | 20 | Confirmed HH/HL, Bullish BOS presence, structure support. |
-| **Pullback Quality** | 10 | Healthy correction depth ($38.2\% - 61.8\%$ of prior impulse). |
-| **Momentum State** | 10 | RSI14 not overbought, MACD bullish turn/divergence. |
-| **Volume Confirmation** | 5 | Expansion on impulsive advances, contraction on pullbacks. |
-| **XAU Gold Confirmation** | 10 | XAU/USD reference trend and structure alignment (R15). |
-| **Macro USD Filter** | 5 | DXY trend tailwind / neutral / headwind. |
-| **XAUT Basis Quality** | 5 | Normalized basis z-score penalty if XAUT is excessively overvalued (R19). |
+| **Market Regime Quality** | 15 | Score from deterministic 1D/4H regime detector (`BULL_TREND` = 15, `RANGE` = 5, `BEAR_TREND`/`HIGH_VOLATILITY` = 0). |
+| **1D + 4H Trend Alignment** | 20 | 1D & 4H EMA alignment (20/50/200), positive scale-invariant slope, ADX trend component. |
+| **Confirmed Structure / BOS** | 20 | Confirmed HH/HL sequence, bullish BOS confirmation, distance above active support. |
+| **Pullback Quality** | 10 | Healthy correction depth (38.2%–61.8% retracement of prior swing impulse). |
+| **Momentum State** | 10 | RSI14 in healthy non-overbought zone (45–65), MACD bullish histogram expansion. |
+| **Volume Confirmation** | 5 | Volume expansion on impulse advances, contraction on consolidation pullbacks. |
+| **XAU Alignment & XAUT Basis Quality** | 20 | Canonical XAU/USD trend concordance (10 pts) + USDT/USD normalized XAUT basis z-score stability (10 pts). |
+| **Total** | **100** | |
+
+*Strict Invariant:* No evidence or missing historical data receives 0 points for that component.
 
 ---
 
 ## 3. Timing Score (0–100) (`engine/signals/timing.py`)
 
-Evaluates the precision of the entry trigger:
+Evaluates the precision of the entry trigger (Config Version 1.0):
 
-| Component | Weight | Criteria & Calculations |
+| Component | Max Weight | Criteria & Calculations |
 |---|---|---|
-| **Entry Zone Proximity** | 25 | Distance to confirmed support zone normalized by ATR. |
-| **15m Reversal Confirmation** | 20 | Closed 15m candle showing rejection / bullish reversal candle. |
-| **15m / 1H Momentum Turn** | 15 | Short-term RSI cross or MACD histogram tick upward. |
-| **Time Cycle Score (3A/3B)** | 25 | Composite score from Session, Swing Age, and promoted cycles. |
-| **Volume Reversal Response** | 10 | Volume spike on reversal off support. |
-| **Macro Event Safety** | 5 | Absence of upcoming event blackout. |
+| **Entry Zone Proximity / ATR** | 25 | Price within 1.0 ATR of confirmed active support zone bounding box. |
+| **Closed 15m Reversal Confirmation** | 20 | Closed 15m candle showing bullish rejection (pin bar / engulfing / bullish close). |
+| **15m / 1H Momentum Turn** | 15 | Short-term RSI upward cross or MACD histogram positive momentum tick. |
+| **Phase 3A Robust Timing** | 25 | Composite score from Session statistical expectancy, Swing maturity, and Calendar flows. |
+| **Volume Response** | 10 | Volume spike on reversal off support zone. |
+| **Macro Event Safety** | 5 | Proximity to macro releases outside blackout buffer. |
+| **Total** | **100** | |
+
+*Phase 3B Invariant:* Experimental spectral features contribute **0.0 points** to production Timing Score.
 
 ---
 
-## 4. Live Signal State Machine (`engine/signals/gate.py`)
+## 4. Selective Gate & Finite State Machine (`engine/signals/gate.py`)
 
-7 explicit states with formal transition guards:
+### Production Internal States & User Decision Mapping
 
 ```text
-NO_TRADE ──> AVOID ──> WATCH ──> READY ──> BUY_WINDOW ──> ACTIVE/PAPER ──> COMPLETED
-   ▲          │          │         │            │
-   │          │          │         │            │
-   └──────────┴──────────┴─────────┴─────<──────┴── INVALIDATED
+INTERNAL STATE        USER DECISION
+──────────────        ─────────────
+NO_TRADE        →     WAIT
+AVOID           →     AVOID
+WATCH           →     WAIT
+READY           →     WAIT
+BUY_WINDOW      →     BUY
+
+FORCE_WAIT      →     WAIT  (Hard Override)
 ```
 
-### Transition Guard Rules
+### Precedence Gate Rules
 
-| From State | To State | Mandatory Guard Conditions |
-|---|---|---|
-| `NO_TRADE` | `AVOID` | Data quality is healthy; market regime is Bearish or High Volatility. |
-| `AVOID` | `WATCH` | Direction Score $\ge 70.0$; Market Structure intact. |
-| `WATCH` | `READY` | Direction Score $\ge 75.0$; Timing Score $\ge 70.0$; Price near Entry Zone. |
-| `READY` | `BUY_WINDOW` | Direction Score $\ge 80.0$; Timing Score $\ge 80.0$; 15m candle confirmed closed; Risk plan valid ($RR \ge 1.8$); Data quality healthy. |
-| Any | `INVALIDATED` | Confirmed close below structure invalidation level / stop loss. |
-| Any | `FORCE_WAIT` | Stale market data or Provider in `TRANSITION` state. |
+1. **Uninitialized / Insufficient Critical Data** $\rightarrow$ `NO_TRADE` (`WAIT`).
+2. **Bear Regime / Structurally Hostile Condition** $\rightarrow$ `AVOID` (`AVOID`).
+3. **Hard Gate Blockers** (Stale market data, provider in `TRANSITION`, active macro blackout, unclosed decision candle, missing canonical XAU reference) $\rightarrow$ `FORCE_WAIT` (`WAIT`).
+4. **Direction Score $< 70.0$** $\rightarrow$ `NO_TRADE` or `WATCH` (`WAIT`).
+5. **Direction Score $\ge 70.0$ & Structure Intact** $\rightarrow$ `WATCH` (`WAIT`).
+6. **Direction Score $\ge 75.0$, Timing Score $\ge 70.0$, Near Support Zone** $\rightarrow$ `READY` (`WAIT`).
+7. **Direction Score $\ge 80.0$, Timing Score $\ge 80.0$, Closed 15m Reversal Confirmed, All Feeds Healthy** $\rightarrow$ `BUY_WINDOW` (`BUY`).
 
----
-
-## 5. Signal Explainability (`engine/signals/explainer.py`)
-
-Every generated signal produces structured, human-readable components:
-
-```json
-{
-  "symbol": "XAUTUSDT",
-  "state": "READY",
-  "direction_score": 88.5,
-  "timing_score": 76.0,
-  "market_regime": "BULL_TREND",
-  "reasons_positive": [
-    "+ 1D and 4H directional EMA alignment is bullish (+18.4 pts)",
-    "+ 4H higher-low structure confirmed valid (+19.0 pts)",
-    "+ XAU/USD gold reference confirms trend (+10.0 pts)",
-    "+ London/NY overlap session has positive historical expectancy (+12.5 pts)"
-  ],
-  "reasons_negative": [
-    "- XAUT premium basis z-score is slightly elevated (-3.2 pts)",
-    "- Upcoming medium-impact macro event in 45 minutes (-2.0 pts)"
-  ],
-  "analysis_fingerprint": "a8f62c1...sha256"
-}
-```
+*Important:* No SL, TP, Risk/Reward (RR), or position sizing is evaluated in Phase 4.
 
 ---
 
-## 6. Celery Idempotency & Persistence (`apps/signals/tasks.py`)
+## 5. Canonical Analysis Fingerprint & Signal Explainer (`engine/signals/explainer.py`)
 
-- **Task Key:** `analyze_closed_candle(instrument_id, timeframe, candle_ts, engine_version)`.
-- **Reproducibility Fingerprint (R5):**
-  $$\text{Fingerprint} = \text{SHA256}(\text{instrument} + \text{timeframe} + \text{candle\_ts} + \text{engine\_ver} + \text{config\_ver} + \text{feat\_ver} + \text{git\_sha})$$
-- Unique database constraint on `analysis_fingerprint` guarantees **zero duplicate signals** upon task reruns (A03).
+### Canonical Deterministic Fingerprint
+$$\text{analysis\_fingerprint} = \text{SHA256}(\text{canonical\_json}(\text{production\_inputs}))$$
+
+Payload includes:
+* `instrument`, `timeframe`, `as_of` (UTC ISO-8601)
+* Closed candle hashes / features
+* Canonical XAU reference value & timestamp
+* USDT/USD normalization rate & timestamp
+* Provider health / data quality state
+* Phase 2 feature/regime/structure versions
+* Phase 3A cycle snapshot & version
+* `engine_version`, `config_version`, `feature_version`, `code_revision`
+
+*Strict Rules:*
+* Live quote ticks are EXCLUDED (preserves closed-candle score immutability).
+* Phase 3B experimental output is EXCLUDED from production fingerprint.
 
 ---
 
-## 7. Phase 4 Acceptance Test Suite
+## 6. Immutable Signal Persistence (`apps/signals/`)
+
+- Model: `SignalRecord` (app `apps/signals/`).
+- Idempotency: `get_or_create(analysis_fingerprint=...)` ensures duplicate task runs return the existing record without modifying history.
+- Historical Immutability: New configuration version or corrected data produces a new distinct fingerprint and record, never overwriting historical signals.
+
+---
+
+## 7. Acceptance Test Suite Phase 4
 
 | Test ID | Test Name | Assertion Criteria |
 |---|---|---|
-| **A03** | Signal Analysis Idempotency | Rerunning analysis on the same closed candle creates exactly one immutable Signal record. |
-| **A04** | Stale Data Hard Gate | Market feed delay exceeding threshold blocks `BUY_WINDOW` and forces `WAIT`. |
-| **A08** | Immutable Audit Log | Activating a new `EngineConfig` version does not modify or overwrite historical signals. |
-| **A23** | Live Quote Score Immutability | Real-time ticker ticks triggering entry alerts cannot alter closed-candle Direction/Timing scores. |
+| **A03** | Signal Analysis Idempotency | Rerunning analysis on the same closed candle creates exactly one immutable `SignalRecord`. Corrected data creates a distinct second record. |
+| **A04** | Stale Data Hard Gate | Point-in-time stale feed forces `FORCE_WAIT` and blocks `BUY_WINDOW` regardless of scores. |
+| **A08** | Immutable Audit Log | Activating `ConfigVersion B` creates a new signal while preserving `Signal A` unchanged. |
+| **A23** | Live Quote Score Immutability | Real-time price fluctuations do not alter closed-candle Direction/Timing scores or fingerprint. |
 
 ---
 
 ## 8. Definition of Done Checklist
 
-- [ ] `DirectionEngine` and `TimingEngine` independently score context.
-- [ ] `SelectiveGate` transitions match all state machine guards.
-- [ ] `SignalExplainer` formats structured positive and negative contributors.
-- [ ] Celery `analyze_closed_candle` task is fully idempotent via `analysis_fingerprint`.
+- [ ] `DirectionEngine` and `TimingEngine` evaluate pure closed-candle evidence.
+- [ ] Selective Gate implements strict state precedence and `BUY/WAIT/AVOID` mapping.
+- [ ] Canonical deterministic SHA-256 analysis fingerprint operational.
+- [ ] Phase 3B contribution strictly locked to 0.0.
+- [ ] Celery idempotent task and `SignalRecord` persistence bridge in place.
 - [ ] Acceptance tests **A03, A04, A08, A23** passing.
+- [ ] Targeted tests **P4-01 through P4-20** passing.
