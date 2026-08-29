@@ -1,13 +1,14 @@
 # Phase 1: Data Engine, Multi-Provider Abstraction & Market Integrity
 
-> **Status:** ⏳ **READY TO START (PENDING REVIEW OF PHASE 0)**  
-> **Primary Goal:** Build resilient multi-exchange data ingestion with 3-tier domain modeling, temporal provider health monitoring, two-way stablecoin peg validation, and a 5-point continuity verification lifecycle.
+> **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Baseline Commit SHA:** `6bfb233e615ee48a819e1fb2a8de78367d97f8a9`  
+> **Primary Goal:** Build resilient multi-exchange data ingestion with 3-tier domain modeling, temporal provider health monitoring, point-in-time quote normalization, 2-source disagreement safety, canonical gold reference semantics, closed-candle gates, and a 5-point continuity verification lifecycle.
 
 ---
 
 ## 1. Domain Modeling (`apps/instruments/`)
 
-### 3-Tier Architecture (Asset -> Instrument -> MarketListing)
+### 3-Tier Architecture (`Asset` -> `Instrument` -> `MarketListing`)
 Decouple the abstract economic asset/pair from exchange-specific listings:
 
 ```python
@@ -18,9 +19,10 @@ class Asset(models.Model):
 
 class InstrumentRole(models.TextChoices):
     EXECUTION = "EXECUTION", "Execution Target (XAUT/USDT)"
-    GOLD_REFERENCE = "GOLD_REFERENCE", "Primary Gold Directional Reference (XAU/USD)"
-    GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Secondary Confirmation (Gold Futures)"
-    QUOTE_NORMALIZATION = "QUOTE_NORMALIZATION", "Stablecoin Normalization Rate (USDT/USD)"
+    GOLD_REFERENCE = "GOLD_REFERENCE", "Canonical Gold Directional Reference (XAU/USD)"
+    GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Secondary Confirmation Proxy (PAXG / Gold Futures)"
+    QUOTE_NORMALIZATION = "QUOTE_NORMALIZATION", "Canonical Stablecoin Normalization Rate (USDT/USD)"
+    QUOTE_NORMALIZATION_PROXY = "QUOTE_NORMALIZATION_PROXY", "Stablecoin Proxy Normalization Rate (USDT/USDC)"
     MACRO = "MACRO", "Macro USD Filter (DXY / Yields)"
 
 class Instrument(models.Model):
@@ -29,30 +31,23 @@ class Instrument(models.Model):
     instrument_type = models.CharField(max_length=16) # SPOT, FUTURES, INDEX
     role = models.CharField(max_length=32, choices=InstrumentRole.choices)
 
-    class Meta:
-        unique_together = ("base_asset", "quote_asset", "instrument_type")
-
 class MarketListing(models.Model):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="listings")
-    provider = models.CharField(max_length=32)        # binance, okx, kraken
-    provider_symbol = models.CharField(max_length=64) # XAUTUSDT, XAUT-USDT
+    provider = models.CharField(max_length=32)        # binance, okx, gold_reference, usdt_usd
+    provider_symbol = models.CharField(max_length=64) # XAUTUSDT, XAUT-USDT, XAUUSD, USDCUSDT
     status = models.CharField(max_length=16)          # ACTIVE, HALTED, DELISTED
     tick_size = models.DecimalField(max_digits=12, decimal_places=6)
     lot_size = models.DecimalField(max_digits=12, decimal_places=6)
     fallback_priority = models.IntegerField(default=0)
-
-    class Meta:
-        unique_together = ("instrument", "provider")
 ```
 
 ### Temporal Provider Health Tracking
 ```python
 class ProviderHealthSnapshot(models.Model):
     listing = models.ForeignKey(MarketListing, on_delete=models.CASCADE, related_name="health_snapshots")
-    status = models.CharField(max_length=16) # HEALTHY, DEGRADED, UNHEALTHY, QUARANTINED, UNKNOWN
+    status = models.CharField(max_length=16) # HEALTHY, DEGRADED, UNHEALTHY, QUARANTINED, NOT_CONFIGURED
     checked_at = models.DateTimeField(db_index=True)
     latency_ms = models.IntegerField(null=True, blank=True)
-    last_success_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.IntegerField(default=0)
     reason = models.TextField(blank=True)
 ```
@@ -74,71 +69,85 @@ class MarketDataProvider(ABC):
     @abstractmethod
     def provider_id(self) -> str: ...
     
-    # Stubs for live monitoring
+    def check_symbol_status(self, symbol: str) -> tuple[bool, str, dict]: ...
     def fetch_ticker(self, symbol: str) -> TickerSnapshot | None: return None
-    async def stream_ticker(self, symbol: str) -> AsyncIterator[TickerSnapshot]: raise NotImplementedError
 ```
 
 ### Adapters Implemented
-1. `BinanceProvider` (`providers/binance.py`): Public klines endpoint for XAUT/USDT.
-2. `OKXProvider` (`providers/okx.py`): Public candles endpoint for XAUT-USDT fallback.
-3. `GoldReferenceProvider` (`providers/gold_reference.py`): Primary XAU/USD gold reference data.
-4. `UsdtUsdRateProvider` (`providers/usdt_usd.py`): Real-time USDT/USD rate stream for quote normalization.
+1. **`BinanceProvider`** (`providers/binance.py`): Public klines endpoint `/api/v3/klines` for XAUTUSDT, exchangeInfo symbol status validation (`TRADING` vs `HALT`/`BREAK`).
+2. **`OKXProvider`** (`providers/okx.py`): Public candles endpoint `/api/v5/market/candles` with strict `confirm == "1"` closed check, public instruments status check.
+3. **`GoldReferenceProvider`** (`providers/gold_reference.py`): Strictly canonical spot XAU/USD gold reference. Reports `NOT_CONFIGURED` if no true commodity feed exists; raises error if proxy substitution is attempted.
+4. **`PaxgConfirmationProvider`** (`providers/gold_reference.py`): Secondary tokenized physical gold proxy (`PAXG/USDT`) for `GOLD_CONFIRMATION` role only.
+5. **`UsdtUsdRateProvider`** (`providers/usdt_usd.py`): Inverse Binance `USDCUSDT` rate proxy (`USDT_USDC_PROXY`). Never silently defaults to 1.0; supports historical Point-in-Time rate lookup.
 
 ---
 
-## 3. Market Integrity Engine (`apps/market_data/integrity.py`)
+## 3. Normalization & Market Integrity Engines
 
-### 1. Two-Way Stablecoin Normalization (R19)
+### 1. Point-in-Time Quote Normalization (`normalization.py` - R19 / A21 / P1-03 / P1-04 / P1-09)
 $$\text{Deviation} = |USDTUSD - 1.0|$$
 - If deviation $\ge 2.0\%$: CRITICAL $\rightarrow$ Hard block `BUY_WINDOW`.
 - If deviation $\ge 0.5\%$: WARNING $\rightarrow$ Penalize data quality score.
-- Normalizes execution price to USD: $XAUT_{USD} = XAUT_{USDT} \times USDTUSD$.
+- **Point-in-Time Synchronized**: For candle at timestamp $T$, only rate observations with $T_{rate} \le T$ are permitted. Future rates are strictly forbidden.
+- **Zero-Fallback Rule**: Missing or failed rate feed returns `None` and activates hard fail; **never defaults to 1.0**.
+- Formula: $XAUT_{USD} = XAUT_{USDT} \times USDTUSD$.
 
-### 2. 5-Point Provider Transition Lifecycle (A20)
+### 2. 5-Point Provider Transition Lifecycle (`integrity.py` - A20 / P1-06)
 When primary provider fails over (e.g. Binance $\rightarrow$ OKX):
-- State moves to `TRANSITION` $\rightarrow$ `VERIFYING`.
-- Engine enforces **FORCE_WAIT** until:
-  1. Price difference $\le \text{allowed basis}$ (e.g. $\le 0.30\%$).
+- Engine enforces **FORCE_WAIT** until ALL 5 criteria pass:
+  1. Price basis difference $\le 0.30\%$.
   2. 3 consecutive closed candles are healthy.
-  3. Bid-ask spread within normal envelope.
+  3. Bid-ask spread within normal envelope ($\le 0.15\%$).
   4. Zero bad ticks ($> 3\times$ ATR).
-  5. Secondary reference consensus confirms level.
-- On verification $\rightarrow$ `VERIFIED` (normal analysis resumes).
+  5. Secondary reference consensus confirms level ($\le 0.35\%$ divergence).
 
-### 3. Outlier Quarantine Filter (A15)
-Any source deviating $> 0.5\%$ from multi-source median is quarantined and logged to `QuarantineRecord`.
+### 3. Outlier Quarantine & 2-Source Disagreement Policy (`integrity.py` - A15 / P1-05)
+- **If $\ge 3$ sources**: Multi-source median filter quarantines any source deviating $> 0.50\%$.
+- **If $== 2$ sources**: Divergence $> 0.50\%$ triggers `TWO_SOURCE_DISAGREEMENT` and `FORCE_WAIT`. No arbitrary single-source quarantine without consensus.
 
----
-
-## 4. Timeframe Storage & Resolution Data Separation
-
-| Timeframe | Storage Table | Schedule | Consumers |
-|---|---|---|---|
-| **1D, 4H, 1H, 15m** | `MarketCandle` (Primary) | Real-time at close | Analysis Engine, State Machine |
-| **5m, 1m** | `MarketCandle` (Resolution) | Low-priority batch | Backtest Simulator, MFE/MAE, Intrabar Resolver |
-
-> **R4 & Anti-Creep Rule:** 1m/5m data is NEVER fed into feature calculation or Direction/Timing scoring.
+### 4. XAUT/XAU Basis Gate (`integrity.py` - A17 / P1-08B)
+- Divergence $> 3.0\%$ between normalized $XAUT_{USD}$ and spot $XAU_{USD}$ triggers hard fail.
+- Missing canonical spot XAU/USD price triggers `GOLD_REFERENCE_UNAVAILABLE` and blocks `BUY_WINDOW`.
 
 ---
 
-## 5. Phase 1 Acceptance Test Suite
+## 4. Timeframe Storage & Decoupled Repository
 
-| Test ID | Test Name | Assertion Criteria |
-|---|---|---|
-| **A15** | Provider Outlier Quarantine | Outlier provider ($> 0.5\%$ basis from median) is quarantined; excluded from analysis. |
-| **A17** | XAUT/XAU Integrity Gate | Severe unnormalized basis spike blocks `BUY_WINDOW` and forces `WAIT`. |
-| **A20** | Provider Transition Continuity | Provider failover flags `source_switch=True`; blocks synthetic breakouts during transition. |
-| **A21** | Quote Currency Normalization | Basis calculation rigorously uses $XAUT_{USD} = XAUT_{USDT} \times USDTUSD$. |
+- **`MarketCandle`**: Strict UTC point-in-time OHLCV table with `close_usd`, `quote_rate`, and `is_closed`.
+- **`DjangoCandleRepository`**: Implements pure `engine.core.interfaces.CandleRepository` Protocol. Strictly filters `is_closed=True` in `load_window()` (P1-02), preventing forming/open bars from leaking into indicators.
+
+---
+
+## 5. Acceptance & Targeted Verification Tests
+
+| Test ID | Test Name | Assertion Criteria | Status |
+|---|---|---|:---:|
+| **A15** | Provider Outlier Quarantine | Outlier provider ($> 0.5\%$ from median) quarantined; excluded from analysis. | ✅ PASS |
+| **A17** | XAUT/XAU Integrity Gate | Extreme basis spike or missing XAU price triggers hard gate. | ✅ PASS |
+| **A20** | Provider Transition Continuity | 5-point transition lifecycle enforces `FORCE_WAIT` until secondary consensus confirms. | ✅ PASS |
+| **A21** | Quote Currency Normalization | Formula $XAUT_{USD} = XAUT_{USDT} \times USDTUSD$ verified at math and ORM layers. | ✅ PASS |
+| **P1-01** | OKX Closed-Candle Gate | OKX `confirm="0"` strictly marked `is_closed=False`. | ✅ PASS |
+| **P1-02** | Open Candle Exclusion | Open/incomplete candles strictly excluded from `load_window()`. | ✅ PASS |
+| **P1-03** | PIT Rate Alignment | XAUT at $T$ uses rate with $T_{rate} \le T$, never future rate. | ✅ PASS |
+| **P1-04** | Stale USDT Rate Gate | Stale rate warns; critically stale rate (>24h) hard fails. | ✅ PASS |
+| **P1-05** | 2-Source Disagreement | 2 diverging sources force wait; zero arbitrary quarantine. | ✅ PASS |
+| **P1-06** | 5th Continuity Criterion | Secondary reference divergence rejects transition. | ✅ PASS |
+| **P1-07** | Symbol Status Discovery | Provider symbol `HALT`/`BREAK` flags health `DEGRADED`. | ✅ PASS |
+| **P1-08A** | PAXG Not Canonical XAU | PAXG registered strictly as `GOLD_CONFIRMATION` proxy. | ✅ PASS |
+| **P1-08B** | Missing XAU Blocks BUY | Missing spot XAU/USD triggers `GOLD_REFERENCE_UNAVAILABLE`. | ✅ PASS |
+| **P1-09A** | No Fallback to 1.0 | Missing USDT rate returns `None` and activates hard fail. | ✅ PASS |
+| **P1-09B** | Historical Rate Requirement | Historical normalization requires historical rate series. | ✅ PASS |
+| **INTEG** | End-to-End Ingestion | Provider fetch $\rightarrow$ normalize $\rightarrow$ validate $\rightarrow$ persist $\rightarrow$ repository load. | ✅ PASS |
 
 ---
 
 ## 6. Definition of Done Checklist
 
-- [ ] `Asset`, `Instrument`, `MarketListing` models created and seeded.
-- [ ] `ProviderHealthSnapshot` temporal tracking active.
-- [ ] Binance, OKX, XAU Reference, and USDT/USD providers implemented.
-- [ ] `MarketIntegrityEngine` with 2-way USDT peg check and 5-point transition verifier active.
-- [ ] `DjangoCandleRepository` implemented fulfilling `CandleRepository` Protocol.
-- [ ] Acceptance tests **A15, A17, A20, A21** passing.
-- [ ] Historical backfill script (`scripts/backfill_candles.py`) functional for 15m/1H/4H/1D and 1m/5m.
+- [x] `Asset`, `Instrument`, `MarketListing` models created and seeded.
+- [x] `ProviderHealthSnapshot` temporal tracking active.
+- [x] Binance, OKX, XAU Reference, PAXG Proxy, and USDT/USD providers implemented.
+- [x] `MarketIntegrityEngine` with 2-way USDT peg check and 5-point transition verifier active.
+- [x] `DjangoCandleRepository` implemented fulfilling pure `CandleRepository` Protocol with closed-candle filtering.
+- [x] Acceptance tests **A15, A17, A20, A21**, targeted tests **P1-01 to P1-09**, and end-to-end integration test passing (40/40 tests).
+- [x] Historical backfill command (`backfill_candles`) functional for 15m/1H/4H/1D and 1m/5m.
+- [x] Sealed with commit `6bfb233e615ee48a819e1fb2a8de78367d97f8a9`.

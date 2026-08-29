@@ -1,6 +1,7 @@
 # Phase 0: Foundation & Infrastructure Scaffolding
 
-> **Status:** ✅ **COMPLETED & VERIFIED**  
+> **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Baseline Commit SHA:** `f3f8bbb2ab41a208e4ce8016bb5be3a3fe9d4314`  
 > **Primary Goal:** Establish rock-solid Django 5.2 LTS, Celery (5 queues), Redis, PostgreSQL, and Docker Compose foundation with strict protocol boundaries.
 
 ---
@@ -96,8 +97,9 @@ requirements-lock.txt
 
 - [x] Docker Compose config validated (`docker compose -f docker/docker-compose.yml config` exits 0).
 - [x] Settings split correctly isolates test, dev, and production.
-- [x] All 5 Celery queues explicitly mapped.
+- [x] All 5 Celery queues explicitly mapped and active on worker.
 - [x] `UserProfile` migration created with `VIEWER` least-privilege default.
-- [x] Unit test suite (`test_smoke.py`, `test_accounts.py`, `test_celery.py`) created.
+- [x] Unit test suite (`test_smoke.py`, `test_accounts.py`, `test_celery.py`) passing.
 - [x] `requirements-lock.txt` generated and committed.
 - [x] Zero trading logic, indicators, or signal calculations present.
+- [x] Sealed with commit `f3f8bbb2ab41a208e4ce8016bb5be3a3fe9d4314`.

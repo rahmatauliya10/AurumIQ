@@ -12,9 +12,9 @@ Every phase is documented in its own dedicated, unabridged specification file. A
 
 | Phase | Specification Document | Focus Area | Acceptance Tests | DoD Status |
 |---|---|---|---|---|
-| **Phase 0** | [`PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, RBAC, Protocol Boundary | Smoke Tests | ✅ **VERIFIED** |
-| **Phase 1** | [`PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Provider Abstraction, Market Integrity, USDT Normalization, 1m/5m Replay Data | A15, A17, A20, A21 | ⏳ Ready to Start |
-| **Phase 2** | [`PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Python Indicators, Causal Regimes, ZigZag Swings, Sample Guard (Normalized HHI) | A01, A16 | 📋 Planned |
+| **Phase 0** | [`PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, RBAC, Protocol Boundary | Smoke Tests | ✅ **VERIFIED & FROZEN** (`f3f8bbb2ab`) |
+| **Phase 1** | [`PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Provider Abstraction, Market Integrity, USDT Normalization, 1m/5m Replay Data | A15, A17, A20, A21, P1-01..P1-09 | ✅ **VERIFIED & FROZEN** (`6bfb233e61`) |
+| **Phase 2** | [`PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Python Indicators, Causal Regimes, ZigZag Swings, Sample Guard (Normalized HHI) | A01, A16, P2-01..P2-08 | ✅ **IMPLEMENTED & VERIFIED** (68/68 Tests) |
 | **Phase 3A** | [`PHASE_3A_ROBUST_TIME_CYCLE.md`](./PHASE_3A_ROBUST_TIME_CYCLE.md) | Session Cycle (DST-aware), Swing Duration, Event PiT Gate (Revision-safe), Calendar Seasonality | A02, A06, A26 | 📋 Planned |
 | **Phase 3B** | [`PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md`](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Causal ACF, FFT, Wavelet CWT, Hilbert Phase, Multi-Criteria Promotion Gate | A05, A13, A24 | 📋 Planned |
 | **Phase 4** | [`PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md`](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction Score, Timing Score, State Machine, Explainer, Idempotent Analysis Tasks | A03, A04, A08, A23 | 📋 Planned |
