@@ -89,16 +89,20 @@ def calculate_realized_volatility(
     Mathematical Formula:
       r_t = ln(Close_t / Close_{t-1})
       mean_r = (1 / N) * sum(r_t) for t = 1..N
-      variance = (1 / (N - ddof)) * sum((r_t - mean_r)^2) for t = 1..N
+      variance = (1 / N) * sum((r_t - mean_r)^2) for t = 1..N
       std_dev = sqrt(variance)
       realized_vol_20 (%) = std_dev * 100.0
 
     Semantics:
-      - Default convention: Population standard deviation (ddof=0, denominator = N = 20).
+      - Strictly locked to population standard deviation (ddof=0, denominator = N = 20).
+      - If ddof != 0 is passed, raises ValueError to enforce mathematical invariant.
       - Unit: Percentage (%) per bar timeframe (e.g. 15m, 1H, 1D).
       - No annualization scaling is applied (raw rolling volatility).
       - Regime HIGH_VOLATILITY threshold of 5.0 corresponds strictly to 5.0% bar volatility.
     """
+    if ddof != 0:
+        raise ValueError(f"AurumIQ realized volatility is strictly fixed to population standard deviation (ddof=0), got ddof={ddof}")
+
     if len(closes) <= period or period <= 0:
         return None
 
@@ -112,11 +116,11 @@ def calculate_realized_volatility(
             log_returns.append(math.log(c_curr / c_prev))
 
     n = len(log_returns)
-    if n < period or (n - ddof) <= 0:
+    if n < period:
         return None
 
     mean_ret = sum(log_returns) / float(n)
-    variance = sum((r - mean_ret) ** 2 for r in log_returns) / float(n - ddof)
+    variance = sum((r - mean_ret) ** 2 for r in log_returns) / float(n)
     std_dev = math.sqrt(variance)
 
     return float(round(std_dev * 100.0, 4))

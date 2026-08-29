@@ -565,12 +565,13 @@ def test_p2_13_realized_volatility_ddof_semantics():
     # Assert default calculate_realized_volatility uses ddof=0 (population)
     default_rv = calculate_realized_volatility(prices, period=20)
     explicit_pop_rv = calculate_realized_volatility(prices, period=20, ddof=0)
-    explicit_sample_rv = calculate_realized_volatility(prices, period=20, ddof=1)
 
     assert default_rv is not None
     assert explicit_pop_rv is not None
-    assert explicit_sample_rv is not None
     assert default_rv == expected_pop_vol
     assert explicit_pop_rv == expected_pop_vol
-    assert explicit_sample_rv == expected_sample_vol
     assert default_rv == explicit_pop_rv
+
+    # Assert that non-zero ddof raises ValueError to preserve mathematical contract
+    with pytest.raises(ValueError, match='fixed to population standard deviation'):
+        calculate_realized_volatility(prices, period=20, ddof=1)
