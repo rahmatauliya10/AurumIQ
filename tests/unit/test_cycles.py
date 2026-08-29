@@ -1,6 +1,6 @@
 """
 Unit and targeted tests for Phase 3A: Robust Time Cycle Intelligence subsystem.
-Covers P3A-01 through P3A-17.
+Covers P3A-01 through P3A-18.
 """
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -24,7 +24,7 @@ from engine.core.types import (
     SwingType,
 )
 from engine.cycles.session import classify_session
-from engine.cycles.swing_duration import calculate_swing_duration, timeframe_to_seconds
+from engine.cycles.swing_duration import calculate_swing_duration, timeframe_to_seconds, ALLOWED_TIMEFRAMES
 from engine.cycles.events import evaluate_macro_event_risk
 from engine.cycles.calendar import calculate_calendar_seasonality
 from engine.cycles.engine import RobustTimeCycleEngine
@@ -144,6 +144,7 @@ def test_p3a_07_swing_knowable_age():
     ctx = calculate_swing_duration(
         latest_candle=candle, structure=structure, timeframe="15m",
         historical_durations=[1, 2, 3, 4, 5] * 10,
+        effective_n=40.0,
     )
 
     # Market age: from 10:00 to 12:00 -> 2.0 hours (8 bars of 15m)
@@ -158,7 +159,7 @@ def test_p3a_07_swing_knowable_age():
 @pytest.mark.unit
 def test_p3a_08_timeframe_safe_swing_duration():
     """
-    P3A-08: Timeframe-Safe Swing Duration & Strict Timeframe Validation.
+    P3A-08: Timeframe-Safe Swing Duration & Strict Whitelist Validation.
     No hardcoded 900 seconds. 1H candle is 1 bar, not 4 bars.
     """
     assert timeframe_to_seconds("1m") == 60
@@ -167,10 +168,15 @@ def test_p3a_08_timeframe_safe_swing_duration():
     assert timeframe_to_seconds("1h") == 3600
     assert timeframe_to_seconds("4h") == 14400
     assert timeframe_to_seconds("1d") == 86400
+    assert timeframe_to_seconds("1w") == 604800
 
-    # Invalid timeframe formats must raise ValueError
+    # Whitelist enforcement: typos and unauthorized intervals must raise ValueError
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         timeframe_to_seconds("15mn")
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        timeframe_to_seconds("0m")
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        timeframe_to_seconds("37h")
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         timeframe_to_seconds("invalid")
 
@@ -192,12 +198,12 @@ def test_p3a_08_timeframe_safe_swing_duration():
     )
 
     # 1H: 4 hours = 4 bars
-    ctx_1h = calculate_swing_duration(candle, structure, timeframe="1h", historical_durations=[1, 2, 3, 4] * 10)
+    ctx_1h = calculate_swing_duration(candle, structure, timeframe="1h", historical_durations=[1, 2, 3, 4] * 10, effective_n=40.0)
     assert ctx_1h.known_age_bars == 4
     assert ctx_1h.known_age_hours == 4.0
 
     # 15m: 4 hours = 16 bars
-    ctx_15m = calculate_swing_duration(candle, structure, timeframe="15m", historical_durations=[1, 2, 3, 4] * 10)
+    ctx_15m = calculate_swing_duration(candle, structure, timeframe="15m", historical_durations=[1, 2, 3, 4] * 10, effective_n=40.0)
     assert ctx_15m.known_age_bars == 16
 
 
@@ -246,6 +252,72 @@ def test_p3a_15_swing_effective_sample_guard():
     )
     assert ctx_robust.sample_quality == SampleQuality.HIGH
     assert ctx_robust.maturity_score > 0.0
+
+
+@pytest.mark.unit
+def test_p3a_18_effective_n_metadata_required():
+    """
+    P3A-18: Unknown Effective-N Must Fail Closed.
+    If raw_n = 100, but sample_eval = None and effective_n = None,
+    engine must NOT assume effective_n = 100. It must fail-closed to effective_n = 0.0 and maturity_score = 0.0.
+    """
+    swing_time = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+    swing = SwingPoint(
+        index=10, timestamp=swing_time, detected_at=swing_time,
+        price=Decimal("2500.00"), swing_type=SwingType.HIGH, is_confirmed=True,
+    )
+    structure = StructureResult(
+        timestamp=swing_time, structure_type=StructureType.HH, bos=BosType.NONE,
+        last_swing_high=swing, last_swing_low=None, swings=(swing,), zones=(),
+    )
+    candle = CandleData(
+        timestamp_open=swing_time + timedelta(hours=5), timestamp_close=swing_time + timedelta(hours=5, minutes=15),
+        open=Decimal("2480"), high=Decimal("2485"), low=Decimal("2475"), close=Decimal("2480"),
+        volume=Decimal("100"), is_closed=True,
+    )
+
+    raw_durations = [5, 10, 15, 20, 25] * 20  # Raw N = 100
+
+    # 1. Caller provides 100 observations, but effective_n=None and sample_eval=None
+    ctx_unknown_eff_n = calculate_swing_duration(
+        latest_candle=candle,
+        structure=structure,
+        timeframe="15m",
+        historical_durations=raw_durations,
+        effective_n=None,
+        sample_eval=None,
+    )
+    # Must fail closed
+    assert ctx_unknown_eff_n.effective_n == 0.0
+    assert ctx_unknown_eff_n.sample_quality == SampleQuality.INSUFFICIENT
+    assert ctx_unknown_eff_n.maturity_score == 0.0
+    # Descriptive percentile is still knowable
+    assert ctx_unknown_eff_n.pullback_age_percentile is not None
+
+    # 2. When SampleEvaluation provides certified effective_n = 80.0
+    certified_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=90,
+        temporal_clusters=10,
+        hhi_norm=0.05,
+        regime_discount=1.0,
+        clustering_discount=0.88,
+        effective_n=80.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="Sample validated",
+    )
+    ctx_certified = calculate_swing_duration(
+        latest_candle=candle,
+        structure=structure,
+        timeframe="15m",
+        historical_durations=raw_durations,
+        sample_eval=certified_eval,
+    )
+    assert ctx_certified.effective_n == 80.0
+    assert ctx_certified.sample_quality == SampleQuality.MEDIUM
+    assert ctx_certified.maturity_score > 0.0
 
 
 @pytest.mark.unit
@@ -399,7 +471,7 @@ def test_p3a_17_closed_candle_analysis_gate():
         timestamp_open=datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc),
         timestamp_close=datetime(2026, 8, 12, 14, 15, tzinfo=timezone.utc),
         open=Decimal("2500"), high=Decimal("2510"), low=Decimal("2495"), close=Decimal("2505"),
-        volume=Decimal("150"), is_closed=False,  # Unclosed candle
+        volume=Decimal("150"), is_closed=False,
     )
     structure = StructureResult(
         timestamp=open_candle.timestamp_open, structure_type=StructureType.LH, bos=BosType.NONE,
