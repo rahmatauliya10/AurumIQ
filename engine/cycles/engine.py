@@ -2,11 +2,14 @@
 from datetime import datetime
 from typing import Mapping, Optional, Sequence, Tuple
 
+from engine.core.exceptions import IncompleteCandleError
 from engine.core.types import (
+    CalendarEffectEntry,
     CandleData,
     Cycle3ASnapshot,
     MacroEvent,
     RegimeType,
+    SampleEvaluation,
     SessionExpectancyEntry,
     SessionType,
     StructureResult,
@@ -22,11 +25,12 @@ class RobustTimeCycleEngine:
     Pure Python consolidated Phase 3A Robust Time Cycle engine.
 
     Responsibilities:
-      1. Session classification with DST awareness via zoneinfo (A02) and empirical expectancy.
-      2. Swing duration & pullback age percentiles from causal swing timestamps and knowable age.
+      1. Session classification with DST awareness via zoneinfo (A02) and empirical expectancy (P3A-06, P3A-14).
+      2. Swing duration & pullback age percentiles from causal swing timestamps and knowable age (P3A-07, P3A-08, P3A-09, P3A-15).
       3. Macroeconomic event blackout gate (A06), PiT revision safety (A26, P3A-11), and missing feed safety (P3A-12).
-      4. Calendar seasonality flows with rolling stability filter and no-evidence gate (P3A-10).
-      5. Consolidates into immutable Cycle3ASnapshot.
+      4. Calendar seasonality flows with empirical effect gate and exact month length (P3A-10, P3A-16).
+      5. Enforces closed candle analysis boundary (P3A-17).
+      6. Consolidates into immutable Cycle3ASnapshot.
     """
 
     def __init__(self, cycle_version: str = "3.0.0-3A", blackout_minutes: int = 30):
@@ -42,26 +46,38 @@ class RobustTimeCycleEngine:
         session_expectancy_table: Optional[Mapping[Tuple[SessionType, RegimeType], SessionExpectancyEntry]] = None,
         macro_events: Optional[Sequence[MacroEvent]] = None,
         historical_durations: Optional[Sequence[int]] = None,
+        swing_effective_n: Optional[float] = None,
+        swing_sample_eval: Optional[SampleEvaluation] = None,
         historical_stabilities: Optional[Sequence[float]] = None,
+        calendar_effect_table: Optional[Mapping[str, CalendarEffectEntry]] = None,
     ) -> Cycle3ASnapshot:
         """
         Execute full Phase 3A time cycle analysis at the timestamp of the latest closed candle.
+        Raises IncompleteCandleError if latest_candle is unclosed (P3A-17).
         """
-        as_of = latest_candle.timestamp_close if latest_candle.is_closed else latest_candle.timestamp_open
+        if not latest_candle.is_closed:
+            raise IncompleteCandleError(
+                f"Phase 3A robust time cycle analysis requires a completed (closed) candle. "
+                f"Received candle with is_closed=False at open={latest_candle.timestamp_open}."
+            )
 
-        # 1. Trading Session Cycle (A02 & P3A-06)
+        as_of = latest_candle.timestamp_close
+
+        # 1. Trading Session Cycle (A02, P3A-06, P3A-14)
         session_ctx = classify_session(
             timestamp=as_of,
             regime=regime,
             expectancy_table=session_expectancy_table,
         )
 
-        # 2. Swing Duration Maturity (P3A-07, P3A-08, P3A-09)
+        # 2. Swing Duration Maturity (P3A-07, P3A-08, P3A-09, P3A-15)
         swing_ctx = calculate_swing_duration(
             latest_candle=latest_candle,
             structure=structure,
             timeframe=timeframe,
             historical_durations=historical_durations,
+            effective_n=swing_effective_n,
+            sample_eval=swing_sample_eval,
         )
 
         # 3. Macro Event Risk & Revision Gate (A06, A26, P3A-11, P3A-12)
@@ -71,10 +87,11 @@ class RobustTimeCycleEngine:
             blackout_minutes=self.blackout_minutes,
         )
 
-        # 4. Calendar Seasonality (P3A-10)
+        # 4. Calendar Seasonality (P3A-10, P3A-16)
         calendar_ctx = calculate_calendar_seasonality(
             as_of=as_of,
             historical_fold_stabilities=historical_stabilities,
+            calendar_effect_table=calendar_effect_table,
         )
 
         # Hard Risk Gate: If high-impact event is in blackout, cycle score is blocked

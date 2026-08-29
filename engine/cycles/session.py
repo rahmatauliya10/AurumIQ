@@ -31,10 +31,12 @@ def classify_session(
       Never hard-code UTC offsets. Explicit timezone conversions via zoneinfo
       handle daylight saving time (DST) shifts in London and New York accurately.
 
-    Statistical Expectancy Rule (P3A-06):
+    Statistical Expectancy & Significance Rule (P3A-06, P3A-14):
       - Zero hardcoding of expectancy scores.
-      - If no historical table or bucket effective_n < 30 -> expectancy_score = 0.0 (INSUFFICIENT).
-      - Positive score is only granted when empirical evidence meets minimum sample threshold.
+      - If no historical table or bucket effective_n < 30 or NOT is_statistically_significant:
+        expectancy_score = 0.0 (INSUFFICIENT).
+      - Positive score is only granted when empirical evidence meets minimum sample threshold
+        AND is verified statistically significant.
     """
     # Ensure timezone awareness (assume UTC if naive)
     if timestamp.tzinfo is None:
@@ -106,7 +108,7 @@ def classify_session(
             progress = 50.0  # Overnight inter-session baseline
         is_high_liq = False
 
-    # --- Empirical Statistical Expectancy Calculation ---
+    # --- Empirical Statistical Expectancy & Significance Calculation ---
     expectancy_score = 0.0
     sample_quality = SampleQuality.INSUFFICIENT
     effective_n = 0.0
@@ -116,8 +118,8 @@ def classify_session(
         entry = expectancy_table.get(key)
         if entry:
             effective_n = entry.effective_n
-            # Evaluate against Tiered Sample Guard thresholds (A16)
-            if effective_n < 30.0:
+            # P3A-14: Significance Gate - must be statistically significant AND effective_n >= 30
+            if effective_n < 30.0 or not entry.is_statistically_significant:
                 sample_quality = SampleQuality.INSUFFICIENT
                 weight_mult = 0.0
             elif effective_n < 60.0:
@@ -131,10 +133,11 @@ def classify_session(
                 weight_mult = 1.0
 
             # Scale positive expectancy up to max 15.0 points in Phase 3A
-            if entry.expectancy_r > 0:
-                # Expectancy score: normalized (e.g. 0.5R expectancy -> 15.0 * 1.0)
+            if entry.expectancy_r > 0 and entry.is_statistically_significant and weight_mult > 0:
                 raw_exp_score = min(15.0, entry.expectancy_r * 30.0)
                 expectancy_score = float(round(raw_exp_score * weight_mult, 2))
+            else:
+                expectancy_score = 0.0
 
     return SessionContext(
         session=session,

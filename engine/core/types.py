@@ -197,6 +197,18 @@ class SessionExpectancyEntry:
 
 
 @dataclass(frozen=True)
+class CalendarEffectEntry:
+    """Empirical historical expectancy and stability for a calendar bucket."""
+    bucket: str  # e.g. "DOW_2_HOUR_14" or "MONTH_END"
+    sample_count: int
+    effective_n: float
+    win_rate: float
+    expectancy_r: float
+    stability: float
+    is_statistically_significant: bool
+
+
+@dataclass(frozen=True)
 class SessionContext:
     """DST-aware session classification and statistical expectancy metrics."""
     session: SessionType
@@ -219,6 +231,7 @@ class SwingDurationContext:
     is_mature: bool
     maturity_score: float = 0.0
     sample_quality: SampleQuality = SampleQuality.INSUFFICIENT
+    effective_n: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -256,6 +269,7 @@ class CalendarSeasonalityContext:
     stability_score: float
     seasonality_score: float = 0.0
     sample_quality: SampleQuality = SampleQuality.INSUFFICIENT
+    effective_n: float = 0.0
 
 
 @dataclass(frozen=True)
