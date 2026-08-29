@@ -50,19 +50,6 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["apps*", "config*", "engine*"]
 
-
-[tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "config.settings.testing"
-python_files = ["test_*.py", "*_test.py"]
-testpaths = ["tests"]
-addopts = "--strict-markers --tb=short"
-markers = [
-    "acceptance: Master acceptance tests (A01-A28)",
-    "unit: Isolated unit tests",
-    "integration: Multi-component integration tests",
-    "slow: Tests that execute long historical computations",
-]
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"

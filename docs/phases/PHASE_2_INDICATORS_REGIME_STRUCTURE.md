@@ -1,7 +1,10 @@
-# Phase 2: Core Indicators, Regime, Causal Market Structure & Statistical Sample Guard
+# Phase 2: Technical Indicators, Market Regime Engine & Causal Market Structure
 
-> **Status:** ✅ **COMPLETED & VERIFIED (READY FOR HUMAN REVIEW GATE)**  
-> **Primary Goal:** Implement framework-independent, pure-Python technical indicators, deterministic market regime classifier, causal ZigZag market structure with Break of Structure (BOS), support/resistance zones, and a Statistical Sample Guard with normalized HHI.
+## Overview & Architecture
+
+Phase 2 establishes the core analytical intelligence layer of **AurumIQ**. It converts normalized, causal candle streams from Phase 1 into deterministic feature matrices, regime classifications, causal market structure events, and statistical confidence guards.
+
+All modules in `engine/` are **100% pure Python** (no Django dependencies, no database models). A dedicated Django application (`apps/analysis/`) acts as the persistence bridge.
 
 ---
 
@@ -24,7 +27,7 @@ All calculations operate strictly on causal sequences ending at timestamp $T$. Z
 - **ATR14:** True Range rolling Wilder average.
 - **ATR %:** $\frac{\text{ATR}_{14}}{\text{Close}} \times 100$.
 - **Bollinger Bands:** 20-period SMA $\pm 2\sigma$, Bandwidth percentage.
-- **Realized Volatility:** Standard deviation of 20-period log returns.
+- **Realized Volatility:** Rolling population standard deviation ($ddof=0$) of 20-period log returns in percentage points (%).
 
 ### D. Volume Subsystem (`engine/features/volume.py`)
 - **Volume Ratio:** $\frac{\text{Volume}_t}{\text{SMA}_{20}(\text{Volume})}$.
@@ -49,10 +52,10 @@ $$\text{MarketRegime} \in \{\text{BULL\_TREND}, \text{BEAR\_TREND}, \text{RANGE}
 ## 3. Causal Market Structure Engine (`engine/structure/`)
 
 ### Causal Swings (`engine/structure/causal_swings.py`)
-- **Causality Invariant:** A swing high/low at candle $i$ requiring $L=3, R=3$ bars is knowable **strictly at timestamp $i+R$**.
+- **Causality Invariant:** A swing high/low at candle $i$ requiring $L=3, R=3$ bars is knowable **strictly at timestamp $i+R$ close**.
 - Every swing stores:
   - `timestamp`: When the peak/trough actually occurred ($i$).
-  - `detected_at`: When the swing became causally confirmed ($i+R$).
+  - `detected_at`: When the swing became causally confirmed ($i+R$ candle close).
   - Future candles beyond $T$ have zero effect on confirmed swings up to $T$.
 
 ### Hierarchy & Break of Structure (BOS) (`engine/structure/engine.py`)
@@ -110,8 +113,9 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 | **P2-08** | Numerical Fixture Parity | Exact numerical parity against standard mathematical fixtures for EMA, RSI, MACD, ATR, ADX, BB. | ✅ PASS |
 | **P2-09** | Confirmation Timestamp Causality | 15m candle (10:00-10:15): swing unavailable at 10:14:59, available at 10:15:00 with `detected_at = 10:15:00`. | ✅ PASS |
 | **P2-10** | BOS Event Timestamp Causality | Intra-bar breach at 10:06/10:10 yields BOS NONE; candle close at 10:15 confirms Bullish BOS at 10:15:00. | ✅ PASS |
-| **P2-11** | Realized Volatility Definition | Raw rolling % stdev of 20-period log returns verified with manual step-by-step mathematical fixture. | ✅ PASS |
+| **P2-11** | Realized Volatility Definition | Raw rolling % population std dev (ddof=0) of 20-period log returns verified with manual step-by-step mathematical fixture. | ✅ PASS |
 | **P2-12** | Exact Indicator Parity Fixtures | Step-by-step exact numerical fixtures for RSI14 (96.30%), MACD(12,26,9), and ADX14 (100.0%, +DI 20.0%). | ✅ PASS |
+| **P2-13** | Realized Volatility DDof Semantics | Population std dev (ddof=0, denominator 20) vs sample std dev (ddof=1, denominator 19) distinguished and verified explicitly. | ✅ PASS |
 | **PURITY** | AST Engine Purity Audit | All modules in `engine/` contain 0 Django imports. | ✅ PASS |
 | **PERSIST** | Analysis Persistence Bridge | Pure engine dataclasses persist cleanly to ORM models with `feature_version`. | ✅ PASS |
 
@@ -119,11 +123,10 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 
 ## 7. Definition of Done Checklist
 
-- [x] All indicators match manually verified mathematical fixtures (P2-08, P2-11, P2-12).
+- [x] All indicators match manually verified mathematical fixtures (P2-08, P2-11, P2-12, P2-13).
 - [x] `RegimeEngine` transparently computes regime with verified boundary units (P2-03, P2-04).
 - [x] `CausalStructureEngine` constructs causal swings, BOS events, and ATR-normalized zones with strict timing gates and candle-close timestamp causality (P2-01, P2-02, P2-09, P2-10).
 - [x] `EffectiveSampleEstimator` correctly decomposes overlap, temporal clustering, and normalized HHI (P2-05, P2-06).
-- [x] Acceptance tests **A01 and A16** and targeted tests **P2-01 to P2-12** passing.
+- [x] Acceptance tests **A01 and A16** and targeted tests **P2-01 to P2-13** passing.
 - [x] Engine AST purity verified (zero Django imports in `engine/`).
-- [x] All **72/72 tests passing** in Docker test suite (`docker compose -f docker/docker-compose.yml exec web pytest -v`).
-
+- [x] All **73/73 tests passing** in Docker test suite (`docker compose -f docker/docker-compose.yml exec web pytest -v`).

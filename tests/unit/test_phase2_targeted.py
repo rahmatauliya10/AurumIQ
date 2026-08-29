@@ -527,3 +527,50 @@ def test_p2_12_exact_numerical_fixtures_parity():
     assert p_di_out == 20.0, f"Expected +DI=20.0, got {p_di_out}"
     assert m_di_out == 0.0, f"Expected -DI=0.0, got {m_di_out}"
 
+
+
+@pytest.mark.unit
+def test_p2_13_realized_volatility_ddof_semantics():
+    """
+    P2-13: Realized Volatility DDof Semantics.
+    Verifies that the engine standardizes strictly on population standard deviation (ddof=0, denominator = 20)
+    and distinguishes it from sample standard deviation (ddof=1, denominator = 19).
+    """
+    import math
+
+    prices = [
+        Decimal("2500.00"), Decimal("2510.50"), Decimal("2495.20"), Decimal("2525.00"),
+        Decimal("2530.10"), Decimal("2515.40"), Decimal("2540.00"), Decimal("2535.80"),
+        Decimal("2550.20"), Decimal("2545.00"), Decimal("2560.50"), Decimal("2555.00"),
+        Decimal("2570.00"), Decimal("2565.30"), Decimal("2580.10"), Decimal("2575.00"),
+        Decimal("2590.40"), Decimal("2585.20"), Decimal("2600.00"), Decimal("2595.50"),
+        Decimal("2610.00"),
+    ]
+    log_rets = [math.log(float(prices[i]) / float(prices[i - 1])) for i in range(1, 21)]
+    mean_r = sum(log_rets) / 20.0
+    sum_sq_diff = sum((r - mean_r) ** 2 for r in log_rets)
+
+    # 1. Population std dev (ddof=0, N=20)
+    var_pop = sum_sq_diff / 20.0
+    expected_pop_vol = float(round(math.sqrt(var_pop) * 100.0, 4))
+
+    # 2. Sample std dev (ddof=1, N-1=19)
+    var_sample = sum_sq_diff / 19.0
+    expected_sample_vol = float(round(math.sqrt(var_sample) * 100.0, 4))
+
+    # Assert that ddof=0 and ddof=1 produce measurably different values
+    assert expected_pop_vol != expected_sample_vol
+    assert expected_sample_vol > expected_pop_vol
+
+    # Assert default calculate_realized_volatility uses ddof=0 (population)
+    default_rv = calculate_realized_volatility(prices, period=20)
+    explicit_pop_rv = calculate_realized_volatility(prices, period=20, ddof=0)
+    explicit_sample_rv = calculate_realized_volatility(prices, period=20, ddof=1)
+
+    assert default_rv is not None
+    assert explicit_pop_rv is not None
+    assert explicit_sample_rv is not None
+    assert default_rv == expected_pop_vol
+    assert explicit_pop_rv == expected_pop_vol
+    assert explicit_sample_rv == expected_sample_vol
+    assert default_rv == explicit_pop_rv

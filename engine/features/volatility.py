@@ -77,19 +77,24 @@ def calculate_bollinger_bands(
     )
 
 
-def calculate_realized_volatility(closes: Sequence[Decimal], period: int = 20) -> Optional[float]:
+def calculate_realized_volatility(
+    closes: Sequence[Decimal],
+    period: int = 20,
+    ddof: int = 0,
+) -> Optional[float]:
     """
-    Calculate Realized Volatility as the raw (un-annualized) sample standard deviation
-    of log returns over `period` bars in percentage points (%).
+    Calculate Realized Volatility as the raw (un-annualized) rolling population standard
+    deviation (ddof=0) of log returns over `period` bars in percentage points (%).
 
     Mathematical Formula:
       r_t = ln(Close_t / Close_{t-1})
       mean_r = (1 / N) * sum(r_t) for t = 1..N
-      variance = (1 / N) * sum((r_t - mean_r)^2) for t = 1..N
+      variance = (1 / (N - ddof)) * sum((r_t - mean_r)^2) for t = 1..N
       std_dev = sqrt(variance)
       realized_vol_20 (%) = std_dev * 100.0
 
     Semantics:
+      - Default convention: Population standard deviation (ddof=0, denominator = N = 20).
       - Unit: Percentage (%) per bar timeframe (e.g. 15m, 1H, 1D).
       - No annualization scaling is applied (raw rolling volatility).
       - Regime HIGH_VOLATILITY threshold of 5.0 corresponds strictly to 5.0% bar volatility.
@@ -106,12 +111,12 @@ def calculate_realized_volatility(closes: Sequence[Decimal], period: int = 20) -
         if c_prev > 0 and c_curr > 0:
             log_returns.append(math.log(c_curr / c_prev))
 
-    if len(log_returns) < period:
+    n = len(log_returns)
+    if n < period or (n - ddof) <= 0:
         return None
 
-    mean_ret = sum(log_returns) / float(len(log_returns))
-    variance = sum((r - mean_ret) ** 2 for r in log_returns) / float(len(log_returns))
+    mean_ret = sum(log_returns) / float(n)
+    variance = sum((r - mean_ret) ** 2 for r in log_returns) / float(n - ddof)
     std_dev = math.sqrt(variance)
 
     return float(round(std_dev * 100.0, 4))
-
