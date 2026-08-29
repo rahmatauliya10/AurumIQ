@@ -1,9 +1,15 @@
-"""Trading session cycle detection with strict zoneinfo DST awareness (A02)."""
-from datetime import datetime, time
-from typing import Dict, Optional
+"""Trading session cycle detection with strict zoneinfo DST awareness and empirical statistical expectancy (A02)."""
+from datetime import datetime, time, timezone
+from typing import Dict, Optional, Mapping, Tuple
 from zoneinfo import ZoneInfo
 
-from engine.core.types import SessionContext, SessionType
+from engine.core.types import (
+    RegimeType,
+    SampleQuality,
+    SessionContext,
+    SessionExpectancyEntry,
+    SessionType,
+)
 
 
 # Standard financial center timezones
@@ -12,28 +18,28 @@ TZ_LONDON = ZoneInfo("Europe/London")
 TZ_NEW_YORK = ZoneInfo("America/New_York")
 
 
-def classify_session(timestamp: datetime) -> SessionContext:
+def classify_session(
+    timestamp: datetime,
+    regime: Optional[RegimeType] = None,
+    expectancy_table: Optional[Mapping[Tuple[SessionType, RegimeType], SessionExpectancyEntry]] = None,
+) -> SessionContext:
     """
-    Classify the market trading session for a point-in-time timestamp using local timezones.
+    Classify the market trading session for a point-in-time timestamp using local timezones
+    and evaluate empirical expectancy conditioned on (Session, Regime) with Sample Guard.
 
-    Acceptance Rule A02:
+    Acceptance Rule A02 (DST Session Integrity):
       Never hard-code UTC offsets. Explicit timezone conversions via zoneinfo
       handle daylight saving time (DST) shifts in London and New York accurately.
 
-    Session Windows (Local Times):
-      - LONDON_PREOPEN:    07:00 - 08:00 London local
-      - LONDON:            08:00 - 13:00 London local
-      - LONDON_NY_OVERLAP: 13:00 - 16:30 London local / 08:00 - 11:30 NY local
-      - NEW_YORK:          11:30 - 17:00 NY local
-      - US_LATE:           17:00 - 20:00 NY local
-      - ASIA:              09:00 - 17:00 Tokyo local (default/off-hours global anchor)
+    Statistical Expectancy Rule (P3A-06):
+      - Zero hardcoding of expectancy scores.
+      - If no historical table or bucket effective_n < 30 -> expectancy_score = 0.0 (INSUFFICIENT).
+      - Positive score is only granted when empirical evidence meets minimum sample threshold.
     """
     # Ensure timezone awareness (assume UTC if naive)
     if timestamp.tzinfo is None:
-        from datetime import timezone
         dt_utc = timestamp.replace(tzinfo=timezone.utc)
     else:
-        from datetime import timezone
         dt_utc = timestamp.astimezone(timezone.utc)
 
     # Convert to local timezone representations
@@ -71,31 +77,26 @@ def classify_session(timestamp: datetime) -> SessionContext:
         session = SessionType.LONDON_NY_OVERLAP
         progress = calc_progress(t_london, 13.0, 16.5)
         is_high_liq = True
-        expectancy = 15.0  # Peak global liquidity
     # 2. London Morning (08:00 - 13:00 London local)
     elif in_range(t_london, time(8, 0), time(13, 0)):
         session = SessionType.LONDON
         progress = calc_progress(t_london, 8.0, 13.0)
         is_high_liq = True
-        expectancy = 12.0
     # 3. London Pre-open (07:00 - 08:00 London local)
     elif in_range(t_london, time(7, 0), time(8, 0)):
         session = SessionType.LONDON_PREOPEN
         progress = calc_progress(t_london, 7.0, 8.0)
         is_high_liq = False
-        expectancy = 6.0
     # 4. New York Afternoon (11:30 - 17:00 NY local)
     elif in_range(t_ny, time(11, 30), time(17, 0)):
         session = SessionType.NEW_YORK
         progress = calc_progress(t_ny, 11.5, 17.0)
         is_high_liq = True
-        expectancy = 10.0
     # 5. US Late / Evening (17:00 - 20:00 NY local)
     elif in_range(t_ny, time(17, 0), time(20, 0)):
         session = SessionType.US_LATE
         progress = calc_progress(t_ny, 17.0, 20.0)
         is_high_liq = False
-        expectancy = 3.0
     # 6. Asia Session (09:00 - 17:00 Tokyo local or default overnight)
     else:
         session = SessionType.ASIA
@@ -104,12 +105,43 @@ def classify_session(timestamp: datetime) -> SessionContext:
         else:
             progress = 50.0  # Overnight inter-session baseline
         is_high_liq = False
-        expectancy = 7.0
+
+    # --- Empirical Statistical Expectancy Calculation ---
+    expectancy_score = 0.0
+    sample_quality = SampleQuality.INSUFFICIENT
+    effective_n = 0.0
+
+    if expectancy_table and regime:
+        key = (session, regime)
+        entry = expectancy_table.get(key)
+        if entry:
+            effective_n = entry.effective_n
+            # Evaluate against Tiered Sample Guard thresholds (A16)
+            if effective_n < 30.0:
+                sample_quality = SampleQuality.INSUFFICIENT
+                weight_mult = 0.0
+            elif effective_n < 60.0:
+                sample_quality = SampleQuality.LOW
+                weight_mult = 0.5
+            elif effective_n < 100.0:
+                sample_quality = SampleQuality.MEDIUM
+                weight_mult = 0.8
+            else:
+                sample_quality = SampleQuality.HIGH
+                weight_mult = 1.0
+
+            # Scale positive expectancy up to max 15.0 points in Phase 3A
+            if entry.expectancy_r > 0:
+                # Expectancy score: normalized (e.g. 0.5R expectancy -> 15.0 * 1.0)
+                raw_exp_score = min(15.0, entry.expectancy_r * 30.0)
+                expectancy_score = float(round(raw_exp_score * weight_mult, 2))
 
     return SessionContext(
         session=session,
         progress_pct=progress,
         is_high_liquidity=is_high_liq,
         local_times=local_times,
-        expectancy_score=expectancy,
+        expectancy_score=expectancy_score,
+        sample_quality=sample_quality,
+        effective_n=effective_n,
     )

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 
 class RegimeType(str, Enum):
@@ -185,24 +185,40 @@ class SampleEvaluation:
 # --- Phase 3A: Robust Time Cycle Data Contracts ---
 
 @dataclass(frozen=True)
+class SessionExpectancyEntry:
+    """Empirical historical expectancy for a specific (Session, Regime) bucket."""
+    session: SessionType
+    regime: RegimeType
+    sample_count: int
+    effective_n: float
+    win_rate: float
+    expectancy_r: float
+    is_statistically_significant: bool
+
+
+@dataclass(frozen=True)
 class SessionContext:
-    """DST-aware session classification and intraday liquidity metrics."""
+    """DST-aware session classification and statistical expectancy metrics."""
     session: SessionType
     progress_pct: float
     is_high_liquidity: bool
     local_times: Dict[str, str]
     expectancy_score: float = 0.0
+    sample_quality: SampleQuality = SampleQuality.INSUFFICIENT
+    effective_n: float = 0.0
 
 
 @dataclass(frozen=True)
 class SwingDurationContext:
     """Causal swing age and correction maturity percentiles."""
-    bars_since_last_swing: int
-    hours_since_last_swing: float
-    active_pullback_bars: int
-    pullback_age_percentile: float
+    market_age_bars: int
+    market_age_hours: float
+    known_age_bars: int
+    known_age_hours: float
+    pullback_age_percentile: Optional[float]
     is_mature: bool
     maturity_score: float = 0.0
+    sample_quality: SampleQuality = SampleQuality.INSUFFICIENT
 
 
 @dataclass(frozen=True)
@@ -220,12 +236,13 @@ class MacroEvent:
 
 @dataclass(frozen=True)
 class MacroEventContext:
-    """Point-in-time macro event proximity and blackout gating."""
+    """Point-in-Time macro event proximity and blackout gating."""
     is_in_blackout: bool
     minutes_to_next_event: Optional[int]
     minutes_since_last_event: Optional[int]
     active_event_name: Optional[str]
     point_in_time_value: Optional[str] = None
+    is_feed_healthy: bool = False
 
 
 @dataclass(frozen=True)
@@ -238,6 +255,7 @@ class CalendarSeasonalityContext:
     is_month_end_flow: bool
     stability_score: float
     seasonality_score: float = 0.0
+    sample_quality: SampleQuality = SampleQuality.INSUFFICIENT
 
 
 @dataclass(frozen=True)
@@ -261,6 +279,7 @@ class BaselineBenchmark:
     base_max_drawdown: float
     base_trade_count: int
     recorded_at: datetime
+    is_empirical: bool = False
 
 
 # --- Future Phase Forward Contracts (Pure Data Contracts) ---

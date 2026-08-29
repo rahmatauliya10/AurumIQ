@@ -107,30 +107,30 @@ class StructureSnapshotRecord(models.Model):
 
 
 class CycleSnapshotRecord(models.Model):
-    """Persisted Phase 3A Robust Time Cycle snapshot."""
+    """Persisted Phase 3A Robust Time Cycle snapshot with version immutability."""
     instrument = models.ForeignKey(
         Instrument, on_delete=models.CASCADE, related_name="cycle_snapshots"
     )
     timeframe = models.CharField(max_length=16, db_index=True)
     timestamp = models.DateTimeField(db_index=True)
+    cycle_version = models.CharField(max_length=32, default="3.0.0-3A", db_index=True)
     session = models.CharField(max_length=32, db_index=True)
     session_progress_pct = models.FloatField(default=0.0)
     is_high_liquidity = models.BooleanField(default=False)
     bars_since_last_swing = models.IntegerField(default=0)
-    pullback_age_percentile = models.FloatField(default=0.0)
+    pullback_age_percentile = models.FloatField(null=True, blank=True)
     is_mature_pullback = models.BooleanField(default=False)
     is_blocked_by_event = models.BooleanField(default=False)
     cycle_score_3a = models.FloatField(default=0.0)
     details = models.JSONField(default=dict, blank=True)
-    cycle_version = models.CharField(max_length=32, default="3.0.0-3A", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-timestamp"]
         indexes = [
-            models.Index(fields=["instrument", "timeframe", "-timestamp"]),
+            models.Index(fields=["instrument", "timeframe", "-timestamp", "cycle_version"]),
         ]
-        unique_together = ("instrument", "timeframe", "timestamp")
+        unique_together = ("instrument", "timeframe", "timestamp", "cycle_version")
 
     def __str__(self) -> str:
-        return f"Cycle3A {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} -> {self.session} Score:{self.cycle_score_3a}"
+        return f"Cycle3A {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} ({self.cycle_version}) -> {self.session} Score:{self.cycle_score_3a}"

@@ -18,7 +18,7 @@ logger = structlog.get_logger(__name__)
 class AnalysisPersistenceService:
     """
     Decoupled bridge that persists pure Python engine data structures
-    into Django analysis models.
+    into Django analysis models with snapshot version immutability.
     """
 
     @staticmethod
@@ -106,27 +106,35 @@ class AnalysisPersistenceService:
         if cycle_3a:
             details = {
                 "session_expectancy_score": cycle_3a.session.expectancy_score,
+                "session_sample_quality": cycle_3a.session.sample_quality.value,
+                "session_effective_n": cycle_3a.session.effective_n,
+                "swing_market_age_bars": cycle_3a.swing_duration.market_age_bars,
+                "swing_known_age_bars": cycle_3a.swing_duration.known_age_bars,
                 "swing_maturity_score": cycle_3a.swing_duration.maturity_score,
+                "swing_sample_quality": cycle_3a.swing_duration.sample_quality.value,
                 "calendar_seasonality_score": cycle_3a.calendar.seasonality_score,
                 "calendar_stability_score": cycle_3a.calendar.stability_score,
+                "calendar_sample_quality": cycle_3a.calendar.sample_quality.value,
                 "macro_pit_value": cycle_3a.macro_event.point_in_time_value,
                 "macro_active_event": cycle_3a.macro_event.active_event_name,
+                "macro_feed_healthy": cycle_3a.macro_event.is_feed_healthy,
                 "local_times": cycle_3a.session.local_times,
             }
+            # Snapshot Version Immutability (P3A-13): cycle_version is part of unique composite key
             CycleSnapshotRecord.objects.update_or_create(
                 instrument=instrument,
                 timeframe=timeframe,
                 timestamp=cycle_3a.timestamp,
+                cycle_version=cycle_3a.cycle_version,
                 defaults={
                     "session": cycle_3a.session.session.value,
                     "session_progress_pct": cycle_3a.session.progress_pct,
                     "is_high_liquidity": cycle_3a.session.is_high_liquidity,
-                    "bars_since_last_swing": cycle_3a.swing_duration.bars_since_last_swing,
+                    "bars_since_last_swing": cycle_3a.swing_duration.known_age_bars,
                     "pullback_age_percentile": cycle_3a.swing_duration.pullback_age_percentile,
                     "is_mature_pullback": cycle_3a.swing_duration.is_mature,
                     "is_blocked_by_event": cycle_3a.is_blocked_by_event,
                     "cycle_score_3a": cycle_3a.cycle_score_3a,
                     "details": details,
-                    "cycle_version": cycle_3a.cycle_version,
                 },
             )

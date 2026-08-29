@@ -7,26 +7,40 @@ from engine.core.types import EventImpact, MacroEvent, MacroEventContext
 
 def evaluate_macro_event_risk(
     as_of: datetime,
-    events: Sequence[MacroEvent],
+    events: Optional[Sequence[MacroEvent]] = None,
     blackout_minutes: int = 30,
 ) -> MacroEventContext:
     """
     Evaluate macroeconomic event risk at a specific point-in-time timestamp.
 
     Acceptance Rule A06 (Macro Event Blackout Gate):
-      If a HIGH impact event is within [-blackout_minutes, +blackout_minutes] of `as_of`,
+      If a HIGH impact event is within [-blackout_minutes, +blackout_minutes] of scheduled time,
       `is_in_blackout` is set to True (prohibiting BUY_WINDOW and forcing WAIT).
 
-    Acceptance Rule A26 (Point-in-Time Revision Safety):
+    Acceptance Rule A26 & P3A-11 (Point-in-Time Revision Safety):
       - Releases with released_at > as_of are strictly unobserved.
-      - If an event was revised at revised_at > as_of, the revision is strictly masked,
-        and `point_in_time_value` returns `initial_value`.
+      - A future revision at revised_at > as_of is UNKNOWN at as_of. It cannot create
+        a pre-revision blackout window before revised_at occurs.
+      - If revised_at > as_of, the revision is strictly masked, returning initial_value.
       - Only if revised_at <= as_of is the revised value returned.
+
+    Fail-Safe Rule (P3A-12):
+      - If events list is empty or None, is_feed_healthy is False. Zero clear-market bonus allowed.
     """
     if as_of.tzinfo is None:
         as_of_utc = as_of.replace(tzinfo=timezone.utc)
     else:
         as_of_utc = as_of.astimezone(timezone.utc)
+
+    if not events:
+        return MacroEventContext(
+            is_in_blackout=False,
+            minutes_to_next_event=None,
+            minutes_since_last_event=None,
+            active_event_name=None,
+            point_in_time_value=None,
+            is_feed_healthy=False,
+        )
 
     # Filter events to only high-impact ones for blackout gating
     high_impact_events = [e for e in events if e.impact == EventImpact.HIGH]
@@ -42,33 +56,35 @@ def evaluate_macro_event_risk(
         sched_utc = event.scheduled_at.astimezone(timezone.utc) if event.scheduled_at.tzinfo else event.scheduled_at.replace(tzinfo=timezone.utc)
         diff_minutes = int((sched_utc - as_of_utc).total_seconds() // 60)
 
-        # Check proximity to future events
+        # Check proximity to future scheduled events
         if diff_minutes >= 0:
             if min_to_next is None or diff_minutes < min_to_next:
                 min_to_next = diff_minutes
-        # Check proximity from past events
+        # Check proximity from past scheduled events
         else:
             elapsed_minutes = abs(diff_minutes)
             if min_since_last is None or elapsed_minutes < min_since_last:
                 min_since_last = elapsed_minutes
 
-        # Check blackout window [-blackout_minutes, +blackout_minutes] around scheduled time
+        # Check scheduled blackout window [-blackout_minutes, +blackout_minutes] around scheduled time
         if abs(diff_minutes) <= blackout_minutes:
             is_in_blackout = True
             active_event_name = event.name
 
-        # Also check blackout window around revision time if applicable
+        # Post-revision publication blackout window (only if revision has ACTUALLY been published as of as_of_utc)
         if event.revised_at is not None:
-            rev_sched_utc = event.revised_at.astimezone(timezone.utc) if event.revised_at.tzinfo else event.revised_at.replace(tzinfo=timezone.utc)
-            rev_diff_minutes = int((rev_sched_utc - as_of_utc).total_seconds() // 60)
-            if abs(rev_diff_minutes) <= blackout_minutes:
-                is_in_blackout = True
-                active_event_name = f"{event.name} (Revision)"
+            rev_utc = event.revised_at.astimezone(timezone.utc) if event.revised_at.tzinfo else event.revised_at.replace(tzinfo=timezone.utc)
+            if as_of_utc >= rev_utc:
+                # Revision is known. Apply post-revision blackout window [0, +blackout_minutes]
+                rev_elapsed_min = int((as_of_utc - rev_utc).total_seconds() // 60)
+                if 0 <= rev_elapsed_min <= blackout_minutes:
+                    is_in_blackout = True
+                    active_event_name = f"{event.name} (Revision)"
 
         # Point-in-Time value resolution (A26)
         rel_utc = event.released_at.astimezone(timezone.utc) if event.released_at.tzinfo else event.released_at.replace(tzinfo=timezone.utc)
         if as_of_utc >= rel_utc:
-            # Determine effective value as of as_of_utc
+            # Value has been released
             effective_time = rel_utc
             val = event.initial_value
             if event.revised_at is not None:
@@ -87,4 +103,5 @@ def evaluate_macro_event_risk(
         minutes_since_last_event=min_since_last,
         active_event_name=active_event_name,
         point_in_time_value=latest_pit_value,
+        is_feed_healthy=True,
     )

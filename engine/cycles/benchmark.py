@@ -1,7 +1,5 @@
 """Baseline backtest performance benchmark recorder for Phase 3A."""
 from datetime import datetime, timezone
-from typing import Dict, Any
-
 from engine.core.types import BaselineBenchmark
 
 
@@ -11,6 +9,7 @@ def record_baseline_benchmark(
     max_drawdown_pct: float,
     trade_count: int,
     timestamp: datetime = None,
+    is_empirical: bool = False,
 ) -> BaselineBenchmark:
     """
     Record the baseline performance benchmark of Phase 2 + Phase 3A.
@@ -23,4 +22,5 @@ def record_baseline_benchmark(
         base_max_drawdown=float(round(max_drawdown_pct, 4)),
         base_trade_count=int(trade_count),
         recorded_at=ts,
+        is_empirical=is_empirical,
     )
