@@ -8,8 +8,9 @@ from apps.analysis.models import (
     FeatureSnapshotRecord,
     RegimeSnapshotRecord,
     StructureSnapshotRecord,
+    CycleSnapshotRecord,
 )
-from engine.core.types import FeatureSnapshot, RegimeResult, StructureResult
+from engine.core.types import FeatureSnapshot, RegimeResult, StructureResult, Cycle3ASnapshot
 
 logger = structlog.get_logger(__name__)
 
@@ -28,9 +29,10 @@ class AnalysisPersistenceService:
         features: Optional[FeatureSnapshot] = None,
         regime: Optional[RegimeResult] = None,
         structure: Optional[StructureResult] = None,
+        cycle_3a: Optional[Cycle3ASnapshot] = None,
         feature_version: str = "feat-2026-v1",
     ) -> None:
-        """Persist feature, regime, and structure snapshots atomically."""
+        """Persist feature, regime, structure, and cycle snapshots atomically."""
         if features:
             FeatureSnapshotRecord.objects.update_or_create(
                 instrument=instrument,
@@ -98,5 +100,33 @@ class AnalysisPersistenceService:
                     "last_swing_low_price": structure.last_swing_low.price if structure.last_swing_low else None,
                     "active_zones": zones_data,
                     "feature_version": feature_version,
+                },
+            )
+
+        if cycle_3a:
+            details = {
+                "session_expectancy_score": cycle_3a.session.expectancy_score,
+                "swing_maturity_score": cycle_3a.swing_duration.maturity_score,
+                "calendar_seasonality_score": cycle_3a.calendar.seasonality_score,
+                "calendar_stability_score": cycle_3a.calendar.stability_score,
+                "macro_pit_value": cycle_3a.macro_event.point_in_time_value,
+                "macro_active_event": cycle_3a.macro_event.active_event_name,
+                "local_times": cycle_3a.session.local_times,
+            }
+            CycleSnapshotRecord.objects.update_or_create(
+                instrument=instrument,
+                timeframe=timeframe,
+                timestamp=cycle_3a.timestamp,
+                defaults={
+                    "session": cycle_3a.session.session.value,
+                    "session_progress_pct": cycle_3a.session.progress_pct,
+                    "is_high_liquidity": cycle_3a.session.is_high_liquidity,
+                    "bars_since_last_swing": cycle_3a.swing_duration.bars_since_last_swing,
+                    "pullback_age_percentile": cycle_3a.swing_duration.pullback_age_percentile,
+                    "is_mature_pullback": cycle_3a.swing_duration.is_mature,
+                    "is_blocked_by_event": cycle_3a.is_blocked_by_event,
+                    "cycle_score_3a": cycle_3a.cycle_score_3a,
+                    "details": details,
+                    "cycle_version": cycle_3a.cycle_version,
                 },
             )

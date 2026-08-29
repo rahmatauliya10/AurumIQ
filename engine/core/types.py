@@ -47,6 +47,23 @@ class SampleQuality(str, Enum):
     HIGH = "HIGH"
 
 
+class SessionType(str, Enum):
+    """Trading session classifications evaluated with exact local DST awareness."""
+    ASIA = "ASIA"
+    LONDON_PREOPEN = "LONDON_PREOPEN"
+    LONDON = "LONDON"
+    LONDON_NY_OVERLAP = "LONDON_NY_OVERLAP"
+    NEW_YORK = "NEW_YORK"
+    US_LATE = "US_LATE"
+
+
+class EventImpact(str, Enum):
+    """Macroeconomic event market impact rating."""
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
 @dataclass(frozen=True)
 class CandleData:
     """Immutable OHLCV candlestick object strictly decoupled from Django."""
@@ -165,6 +182,87 @@ class SampleEvaluation:
     message: str
 
 
+# --- Phase 3A: Robust Time Cycle Data Contracts ---
+
+@dataclass(frozen=True)
+class SessionContext:
+    """DST-aware session classification and intraday liquidity metrics."""
+    session: SessionType
+    progress_pct: float
+    is_high_liquidity: bool
+    local_times: Dict[str, str]
+    expectancy_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class SwingDurationContext:
+    """Causal swing age and correction maturity percentiles."""
+    bars_since_last_swing: int
+    hours_since_last_swing: float
+    active_pullback_bars: int
+    pullback_age_percentile: float
+    is_mature: bool
+    maturity_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class MacroEvent:
+    """Macroeconomic release event with point-in-time revision tracking."""
+    event_id: str
+    name: str
+    scheduled_at: datetime
+    released_at: datetime
+    initial_value: Optional[str]
+    revised_at: Optional[datetime] = None
+    revised_value: Optional[str] = None
+    impact: EventImpact = EventImpact.HIGH
+
+
+@dataclass(frozen=True)
+class MacroEventContext:
+    """Point-in-time macro event proximity and blackout gating."""
+    is_in_blackout: bool
+    minutes_to_next_event: Optional[int]
+    minutes_since_last_event: Optional[int]
+    active_event_name: Optional[str]
+    point_in_time_value: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CalendarSeasonalityContext:
+    """Calendar flows and rolling stability evaluated score."""
+    day_of_week: int  # 0=Monday .. 6=Sunday
+    day_name: str
+    hour_utc: int
+    month: int
+    is_month_end_flow: bool
+    stability_score: float
+    seasonality_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class Cycle3ASnapshot:
+    """Immutable consolidated Phase 3A Robust Time Cycle snapshot."""
+    timestamp: datetime
+    session: SessionContext
+    swing_duration: SwingDurationContext
+    macro_event: MacroEventContext
+    calendar: CalendarSeasonalityContext
+    is_blocked_by_event: bool
+    cycle_score_3a: float
+    cycle_version: str = "3.0.0-3A"
+
+
+@dataclass(frozen=True)
+class BaselineBenchmark:
+    """Baseline backtest performance metrics for Phase 3A + Phase 2 hurdle."""
+    base_profit_factor: float
+    base_expectancy_r: float
+    base_max_drawdown: float
+    base_trade_count: int
+    recorded_at: datetime
+
+
 # --- Future Phase Forward Contracts (Pure Data Contracts) ---
 
 @dataclass(frozen=True)
@@ -194,5 +292,6 @@ class AnalysisResult:
     regime: RegimeResult
     structure: StructureResult
     sample_guard: SampleEvaluation
+    cycle_3a: Optional[Cycle3ASnapshot] = None
     score: Optional[ScoreResult] = None
     risk_plan: Optional[RiskPlan] = None

@@ -7,6 +7,7 @@ from apps.analysis.models import (
     FeatureSnapshotRecord,
     RegimeSnapshotRecord,
     StructureSnapshotRecord,
+    CycleSnapshotRecord,
 )
 from apps.analysis.services import AnalysisPersistenceService
 from engine.core.types import (
@@ -19,6 +20,12 @@ from engine.core.types import (
     SwingPoint,
     SwingType,
     StructureZone,
+    Cycle3ASnapshot,
+    SessionContext,
+    SessionType,
+    SwingDurationContext,
+    MacroEventContext,
+    CalendarSeasonalityContext,
 )
 
 
@@ -77,6 +84,44 @@ def test_analysis_persistence_service_saves_snapshots():
         zones=(zone,),
     )
 
+    # 4. Cycle 3A Snapshot
+    cycle_3a = Cycle3ASnapshot(
+        timestamp=now,
+        session=SessionContext(
+            session=SessionType.LONDON,
+            progress_pct=80.0,
+            is_high_liquidity=True,
+            local_times={"UTC": "2026-08-29 12:00:00 UTC", "London": "2026-08-29 13:00:00 BST"},
+            expectancy_score=12.0,
+        ),
+        swing_duration=SwingDurationContext(
+            bars_since_last_swing=16,
+            hours_since_last_swing=4.0,
+            active_pullback_bars=16,
+            pullback_age_percentile=50.0,
+            is_mature=False,
+            maturity_score=15.0,
+        ),
+        macro_event=MacroEventContext(
+            is_in_blackout=False,
+            minutes_to_next_event=180,
+            minutes_since_last_event=None,
+            active_event_name=None,
+        ),
+        calendar=CalendarSeasonalityContext(
+            day_of_week=5,
+            day_name="Saturday",
+            hour_utc=12,
+            month=8,
+            is_month_end_flow=True,
+            stability_score=0.85,
+            seasonality_score=3.5,
+        ),
+        is_blocked_by_event=False,
+        cycle_score_3a=35.5,
+        cycle_version="3.0.0-3A",
+    )
+
     # Execute service persistence
     AnalysisPersistenceService.save_analysis_snapshots(
         instrument=inst,
@@ -84,6 +129,7 @@ def test_analysis_persistence_service_saves_snapshots():
         features=features,
         regime=regime,
         structure=structure,
+        cycle_3a=cycle_3a,
     )
 
     # Assert database records
@@ -102,3 +148,11 @@ def test_analysis_persistence_service_saves_snapshots():
     assert s_rec.last_swing_high_price == Decimal("2510.00000000")
     assert len(s_rec.active_zones) == 1
     assert s_rec.active_zones[0]["zone_type"] == "RESISTANCE"
+
+    c_rec = CycleSnapshotRecord.objects.get(instrument=inst, timeframe="15m", timestamp=now)
+    assert c_rec.session == "LONDON"
+    assert c_rec.session_progress_pct == 80.0
+    assert c_rec.is_high_liquidity is True
+    assert c_rec.bars_since_last_swing == 16
+    assert c_rec.cycle_score_3a == 35.5
+    assert c_rec.cycle_version == "3.0.0-3A"
