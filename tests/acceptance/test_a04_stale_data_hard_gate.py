@@ -63,7 +63,7 @@ def test_a04_stale_data_hard_gate():
         cycle_score_3a=82.0,
     )
 
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     # Case A: Healthy feed -> Can qualify for BUY_WINDOW / READY
     snap_healthy = engine.analyze(

@@ -47,17 +47,19 @@ class XautSignalEngine:
 
     def __init__(
         self,
+        code_revision: str,
         engine_version: str = "4.0.0",
         config_version: str = "cfg-2026-v1",
         feature_version: str = "feat-2026-v1",
         cycle_version: str = "3.0.0-3A",
-        code_revision: str = "2795de04",
     ):
+        if not code_revision:
+            raise ValueError("code_revision is required for canonical signal provenance.")
+        self.code_revision = code_revision
         self.engine_version = engine_version
         self.config_version = config_version
         self.feature_version = feature_version
         self.cycle_version = cycle_version
-        self.code_revision = code_revision
 
         self.feature_engine = FeatureEngine()
         self.regime_engine = RegimeEngine()
@@ -66,11 +68,11 @@ class XautSignalEngine:
     def analyze(
         self,
         candles_15m: Sequence[CandleData],
-        candles_4h: Optional[Sequence[CandleData]] = None,
-        candles_1d: Optional[Sequence[CandleData]] = None,
         as_of: Optional[datetime] = None,
         instrument: str = "XAUT/USDT",
         timeframe: str = "15m",
+        candles_4h: Optional[Sequence[CandleData]] = None,
+        candles_1d: Optional[Sequence[CandleData]] = None,
         xau_reference_price: Optional[Decimal] = None,
         xau_reference_is_bullish: Optional[bool] = None,
         xau_reference_ts: Optional[datetime] = None,

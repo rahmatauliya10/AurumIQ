@@ -269,7 +269,7 @@ def test_p4_13_phase3b_mutation_leaves_production_scores_identical():
     """
     candles = generate_candle_series(64)
     T = candles[-1].timestamp_close
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     dummy_wavelet = WaveletResult(16.0, 0.5, 0.1, True, (), 0)
     dummy_hilbert = HilbertResult(0.5, 10.0, 0.1, 0.9, True)
@@ -322,7 +322,7 @@ def test_p4_14_canonical_fingerprint_determinism():
     """P4-14: Identical production inputs yield 100% deterministic SHA-256 fingerprint."""
     candles = generate_candle_series(64)
     T = candles[-1].timestamp_close
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     snap1 = engine.analyze(candles_15m=candles, as_of=T, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
     snap2 = engine.analyze(candles_15m=candles, as_of=T, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
@@ -337,7 +337,7 @@ def test_p4_15_corrected_data_creates_new_fingerprint():
     candles1 = generate_candle_series(64, trend_step=1.0)
     candles2 = generate_candle_series(64, trend_step=1.5)  # Corrected higher trend
     T = candles1[-1].timestamp_close
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     snap1 = engine.analyze(candles_15m=candles1, as_of=T, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
     snap2 = engine.analyze(candles_15m=candles2, as_of=T, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
@@ -356,8 +356,8 @@ def test_p4_16_config_version_change_preserves_historical_record():
     candles = generate_candle_series(64)
     T = candles[-1].timestamp_close
 
-    engine_v1 = XautSignalEngine(config_version="cfg-2026-v1")
-    engine_v2 = XautSignalEngine(config_version="cfg-2026-v2")
+    engine_v1 = XautSignalEngine(code_revision="eae30005", config_version="cfg-2026-v1")
+    engine_v2 = XautSignalEngine(code_revision="eae30005", config_version="cfg-2026-v2")
 
     snap1 = engine_v1.analyze(candles_15m=candles, as_of=T, instrument=inst.symbol, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
     rec1, _ = SignalPersistenceService.save_signal_snapshot(inst, snap1)
@@ -431,7 +431,7 @@ def test_p4_19_explanation_component_totals_reconcile():
     """P4-19: Explanations reconcile with Direction and Timing component totals."""
     candles = generate_candle_series(64)
     T = candles[-1].timestamp_close
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     snap = engine.analyze(candles_15m=candles, as_of=T, xau_reference_price=Decimal("2550.0"), xau_reference_is_bullish=True, usdt_rate=Decimal("1.0"))
     pos, neg, hard_reasons = explain_signal(snap.direction, snap.timing, snap.hard_gate, snap.state, snap.user_decision)

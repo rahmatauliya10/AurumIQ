@@ -41,7 +41,7 @@ def test_a23_live_quote_score_immutability():
     closed_candles = generate_candle_series(64)
     T = closed_candles[-1].timestamp_close
 
-    engine = XautSignalEngine()
+    engine = XautSignalEngine(code_revision="eae30005")
 
     # 1. Closed-candle baseline evaluation
     snap_baseline = engine.analyze(

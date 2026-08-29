@@ -59,7 +59,7 @@ def test_a03_signal_analysis_idempotency():
     candles = generate_candle_series(64)
     T = candles[-1].timestamp_close
 
-    engine = XautSignalEngine(engine_version="4.0.0", config_version="cfg-2026-v1")
+    engine = XautSignalEngine(code_revision="eae30005", engine_version="4.0.0", config_version="cfg-2026-v1")
 
     # 1. Run Analysis Attempt 1
     snap1 = engine.analyze(

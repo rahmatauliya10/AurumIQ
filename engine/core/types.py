@@ -502,10 +502,130 @@ class SignalSnapshot:
     reasons_negative: Tuple[str, ...]
     hard_gate_reasons: Tuple[str, ...]
     analysis_fingerprint: str
+    code_revision: str
     research_fingerprint: Optional[str] = None
     engine_version: str = "4.0.0"
     config_version: str = "cfg-2026-v1"
     feature_version: str = "feat-2026-v1"
     cycle_version: str = "3.0.0-3A"
-    code_revision: str = "2795de04"
     cycle_3b_informational: Optional[Cycle3BExperimentalSnapshot] = None
+
+
+# --- Phase 5: Risk Engine & Causal Execution Contracts ---
+
+class EntryExecutionPolicy(str, Enum):
+    """Execution simulation policy for signal fill timing (Phase 5)."""
+    NEXT_BAR_OPEN = "NEXT_BAR_OPEN"
+    MARKET_AFTER_SIGNAL = "MARKET_AFTER_SIGNAL"
+    LIMIT_ZONE = "LIMIT_ZONE"
+
+
+class IntrabarPolicy(str, Enum):
+    """Policy for resolving intrabar ambiguity when High >= TP and Low <= SL (Phase 5)."""
+    LOWER_TIMEFRAME_REPLAY = "LOWER_TIMEFRAME_REPLAY"
+    CONSERVATIVE_SL_FIRST = "CONSERVATIVE_SL_FIRST"
+    WORST_CASE = "WORST_CASE"
+    SKIP_AMBIGUOUS = "SKIP_AMBIGUOUS"
+
+
+class BarrierHitType(str, Enum):
+    """Outcome of intrabar barrier evaluation."""
+    TP_FIRST = "TP_FIRST"
+    SL_FIRST = "SL_FIRST"
+    UNRESOLVED = "UNRESOLVED"
+    SKIPPED = "SKIPPED"
+
+
+@dataclass(frozen=True)
+class QuoteData:
+    """Timestamped bid/ask quote for market order execution simulation (Phase 5)."""
+    timestamp: datetime
+    bid: Decimal
+    ask: Decimal
+    source: str = "orderbook"
+
+
+@dataclass(frozen=True)
+class FillResult:
+    """Deterministic fill simulation output (Phase 5)."""
+    fill_price: Decimal
+    fill_timestamp: datetime
+    policy: EntryExecutionPolicy
+    latency_seconds: float
+    spread_amount: Decimal
+    slippage_amount: Decimal
+    is_filled: bool
+    reasons: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class IntrabarResolutionResult:
+    """Outcome of intrabar ambiguity resolution (Phase 5)."""
+    barrier_hit: BarrierHitType
+    exit_price: Decimal
+    exit_timestamp: datetime
+    policy_applied: IntrabarPolicy
+    replay_bars_count: int
+    reasons: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class RiskPlanSnapshot:
+    """
+    Immutable structure- and ATR-aware risk plan snapshot (Phase 5).
+    Evaluated conditionally for BUY_WINDOW signals without altering Phase 4 audit trails.
+    """
+    source_signal_fingerprint: str
+    signal_generated_at: datetime
+    entry_min: Decimal
+    entry_mid: Decimal
+    entry_max: Decimal
+    stop_structure: Decimal
+    stop_atr: Decimal
+    stop_final: Decimal
+    stop_distance_atr: Decimal
+    tp1: Decimal
+    tp2: Decimal
+    rr_tp1: Decimal
+    rr_tp2: Decimal
+    is_valid_risk_plan: bool
+    execution_eligible: bool
+    effective_action: UserDecision
+    reasons: Tuple[str, ...]
+    source_zone_id: Optional[str] = None
+    source_zone_timestamp: Optional[datetime] = None
+    risk_version: str = "5.0.0"
+    execution_model_version: str = "5.0.0-exec-v1"
+    config_version: str = "cfg-2026-v1"
+    code_revision: str = "eae30005"
+
+    @property
+    def source_zone(self) -> Optional[str]:
+        """Backward-compatible alias for source_zone_id."""
+        return self.source_zone_id
+
+    @property
+    def source_zone_identity(self) -> Optional[str]:
+        """Backward-compatible alias for source_zone_id."""
+        return self.source_zone_id
+
+    @property
+    def entry_price_ideal(self) -> Decimal:
+        """Backward-compatible alias for entry_mid."""
+        return self.entry_mid
+
+    @property
+    def entry_limit_max(self) -> Decimal:
+        """Backward-compatible alias for entry_max."""
+        return self.entry_max
+
+    @property
+    def stop_loss_price(self) -> Decimal:
+        """Backward-compatible alias for stop_final."""
+        return self.stop_final
+
+    @property
+    def risk_reward_ratio(self) -> Decimal:
+        """Backward-compatible alias for rr_tp1."""
+        return self.rr_tp1
+

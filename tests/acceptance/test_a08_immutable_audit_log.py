@@ -49,7 +49,7 @@ def test_a08_immutable_audit_log():
     T = candles[-1].timestamp_close
 
     # 1. Generate signal with Config A
-    engine_a = XautSignalEngine(config_version="cfg-2026-v1")
+    engine_a = XautSignalEngine(code_revision="eae30005", config_version="cfg-2026-v1")
     snap_a = engine_a.analyze(
         candles_15m=candles,
         as_of=T,
@@ -61,7 +61,7 @@ def test_a08_immutable_audit_log():
     rec_a, _ = SignalPersistenceService.save_signal_snapshot(inst, snap_a)
 
     # 2. Activate Config B
-    engine_b = XautSignalEngine(config_version="cfg-2026-v2")
+    engine_b = XautSignalEngine(code_revision="eae30005", config_version="cfg-2026-v2")
     snap_b = engine_b.analyze(
         candles_15m=candles,
         as_of=T,
