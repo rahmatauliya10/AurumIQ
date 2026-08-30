@@ -1,24 +1,34 @@
-# Phased Implementation Documentation & Phase Summary
+# AurumIQ — Summary of Phased Deliverables
 
-> **Directory:** `docs/phases/`  
-> **Scope:** XAUUSD Algorithmic Signal Intelligence with Preserved Historical XAUT Baseline  
-> **Total Documents:** 12 Detailed Markdown Plans + Master README + Summary
+> **Scope:** Multi-Timeframe Quantitative Gold Intelligence Platform  
+> **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD`)  
+> **Historical Baseline:** `XAUT` (Tether Gold) verified and frozen for baseline audit continuity.
 
 ---
 
-## Deliverables & Execution Progress Summary
+## 1. Comprehensive Phase Status Index
 
-| Document | File Path | Focus Area | Status |
-|---|---|---|:---:|
-| **Master Index** | [`docs/phases/README.md`](./README.md) | Phase Index, Roadmap, 20 Global Constraints (`R1–R20`), and Dual Taxonomies | ⚡ Updated |
-| **Phase 0** | [`docs/phases/PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, Hardened RBAC, Protocol Boundary | ✅ **APPROVED** |
-| **Phase 1** | [`docs/phases/PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Multi-Provider Abstraction, Market Integrity, Point-in-Time Quote Normalization | ✅ **APPROVED** |
-| **Phase 2** | [`docs/phases/PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Indicators, Causal Regimes, Causal Swings, Sample Guard, Realized Vol ($ddof=0$) | ✅ **APPROVED** |
-| **Phase 3A** | [`docs/phases/PHASE_3A_ROBUST_TIME_CYCLE.md`](./PHASE_3A_ROBUST_TIME_CYCLE.md) | Session Cycle (DST-aware via zoneinfo), Swing Duration, Macro Event PiT Gate, Calendar Seasonality | ✅ **APPROVED** |
-| **Phase 3B** | [`docs/phases/PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md`](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Causal ACF, FFT, Wavelet CWT, Hilbert Phase, Promotion Gate (Locked 0.0 Weight) | ✅ **APPROVED** |
-| **Phase 4** | [`docs/phases/PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md`](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction Score, Timing Score, State Machine (`BUY / WAIT / SELL`), Canonical Fingerprint | ✅ **APPROVED** |
-| **Phase 5** | [`docs/phases/PHASE_5_RISK_ENGINE_EXECUTION.md`](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Side-Aware Stops (Long/Short), Dynamic TP1/TP2, Dual-Layer Decision, Post-Signal Fill | ✅ **APPROVED** |
-| **Phase 6** | [`docs/phases/PHASE_6_BACKTEST_VALIDATION.md`](./PHASE_6_BACKTEST_VALIDATION.md) | Point-in-Time Replay, Walk-Forward Splits, Purge/Embargo, Cost Simulator, Component Ablation | ✅ **APPROVED** |
-| **Phase 7** | [`docs/phases/PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md`](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Django Dashboard, Plotly Charts, Live Two-Path Pipeline, WebSockets, Fail-Safe Recovery | ✅ **APPROVED** |
-| **Phase 8** | [`docs/phases/PHASE_8_LIVE_PAPER_OBSERVATION.md`](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Immutable Live Signals, Side-Aware Triple-Barrier Outcomes, Live vs Backtest Parity Audit | 📋 Planned |
-| **Phase 9** | [`docs/phases/PHASE_9_ML_META_FILTER.md`](./PHASE_9_ML_META_FILTER.md) | Candidate PiT Dataset, Logistic / XGBoost / LightGBM Meta-Filter, Probability Calibration | 📋 Planned |
+| Phase Document | Primary Deliverable | Historical XAUT Status | Current XAUUSD Target Status |
+|---|---|:---:|:---:|
+| [**PHASE 0**](./PHASE_0_FOUNDATION.md) | Foundation, PostgreSQL, Celery, RBAC, Protocols | ✅ `VERIFIED / FROZEN` | 🟢 `REUSABLE` |
+| [**PHASE 1**](./PHASE_1_DATA_ENGINE.md) | Ingestion Pipeline, Multi-Provider Normalization | ✅ `VERIFIED / FROZEN` | 🟡 `MIGRATION REQUIRED` |
+| [**PHASE 2**](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Indicators, Market Regimes, Causal Swings | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED` |
+| [**PHASE 3A**](./PHASE_3A_ROBUST_TIME_CYCLE.md) | DST Sessions, Swing Maturity, Macro Blackout Gate | ✅ `VERIFIED / FROZEN` | 🟡 `EMPIRICAL REBUILD REQUIRED` |
+| [**PHASE 3B**](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED (WEIGHT = 0.0)` |
+| [**PHASE 4**](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction/Timing Scores, State Machine, Fingerprinting | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `DUAL-SIDE REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| [**PHASE 5**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Risk Engine, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `LONG / SHORT REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| [**PHASE 6**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Purge/Embargo | ✅ `VERIFIED / FROZEN` | 🟡 `XAUUSD PIT BACKTEST REQUIRED` |
+| [**PHASE 6**](./PHASE_6_BACKTESTING_ABLATION.md) | Automated Component Ablation Lab | ✅ `VERIFIED / FROZEN` | 🟡 `XAUUSD PIT BACKTEST REQUIRED` |
+| [**PHASE 7**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ⏸️ `PRODUCT COMPLETION PAUSED` |
+| [**PHASE 8**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+| [**PHASE 9**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+
+---
+
+## 2. Key Architectural Invariants
+
+1. **Pure Engine Isolation:** The mathematical calculation core (`engine/`) has zero dependencies on Django ORM, Celery, Redis, or Channels.
+2. **Two-Path Invariant:** Live streaming quote presentation (Path A) is strictly decoupled from closed-candle decision scoring and persistence (Path B).
+3. **Decoupled Risk Planning:** Phase 4 emits candidate signal states; Phase 5 independently evaluates structural and volatility risk.
+4. **One Engine Rule:** Backtesting, paper trading observation, and live monitoring resolve the exact same pure-Python calculation engine.
+5. **Zero Real-Order Execution Policy:** The codebase contains zero exchange trading keys, order dispatch endpoints, or testnet trading capabilities.

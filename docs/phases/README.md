@@ -1,69 +1,70 @@
-# AurumIQ Signal Intelligence — Phased Execution Master Plan
+# AurumIQ — Master Phased Implementation Roadmap
 
-> **Governing Blueprint:** `AurumIQ_Signal_Intelligence_Blueprint_Django_Python.md`  
-> **Master Implementation Plan:** `v3.0.0 (XAUUSD Scope Migration Specification)`  
-> **Primary Signal Target:** `XAUUSD` (Spot Gold / US Dollar)  
-> **Historical Baseline:** `XAUT` (Tether Gold historical baseline preserved for audit continuity)  
-> **System Scope:** Research & Decision-Support System (`BUY / WAIT / SELL`). **Strictly NO automated order execution.**
+> **Target Instrument Scope:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD)  
+> **Historical Baseline:** `XAUT` (Tether Gold) historical baseline verified, frozen, and permanently retained for audit integrity.  
+> **User Decision Scope:** `BUY / WAIT / SELL` (Human decision support only — zero automated order execution).
 
 ---
 
-## Phase Index & Implementation Roadmap
+## 1. Dual Status Master Index
 
-Every phase is documented in its own dedicated, unabridged specification file. All development follows strict phased isolation: **ONE phase at a time**, verified against the Definition of Done, with zero lookahead bias and 100% test passing.
+To preserve audit integrity, this index records both the **Historical XAUT Baseline Status** (which verified core algorithmic infrastructure) and the **Current XAUUSD Target Status** (which governs active platform scope).
 
-| Phase | Specification Document | Focus Area | Acceptance Tests | DoD Status |
-|---|---|---|---|:---:|
-| **Phase 0** | [`PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, Hardened RBAC, Protocol Boundary | Smoke Tests | ✅ **VERIFIED & FROZEN** |
-| **Phase 1** | [`PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Multi-Provider Ingestion, Market Integrity, Point-in-Time Normalization, 1m/5m Replay Data | A15, A17, A20, A21, P1-01..P1-09 | ✅ **VERIFIED & FROZEN** |
-| **Phase 2** | [`PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Python Indicators, Causal Regimes, ZigZag Swings, Sample Guard (Normalized HHI) | A01, A16, P2-01..P2-08 | ✅ **VERIFIED & FROZEN** |
-| **Phase 3A** | [`PHASE_3A_ROBUST_TIME_CYCLE.md`](./PHASE_3A_ROBUST_TIME_CYCLE.md) | Session Cycle (DST-aware), Swing Duration, Event PiT Gate (Revision-safe), Calendar Seasonality | A02, A06, A26, P3A-01..P3A-14 | ✅ **VERIFIED & FROZEN** |
-| **Phase 3B** | [`PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md`](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Causal ACF, FFT, Wavelet CWT, Hilbert Phase, Multi-Criteria Promotion Gate (Locked 0.0 Weight) | A05, A13, A24, P3B-01..P3B-16 | ✅ **VERIFIED & FROZEN** |
-| **Phase 4** | [`PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md`](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction Score, Timing Score, State Machine (`BUY / WAIT / SELL`), Canonical Fingerprinting | A03, A04, A08, A23, P4-01..P4-22 | ✅ **VERIFIED & FROZEN** |
-| **Phase 5** | [`PHASE_5_RISK_ENGINE_EXECUTION.md`](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Side-Aware Stops (Long/Short), TP1/TP2, Intrabar Resolver (1m/5m), Causal Post-Signal Fill Model | A07, A14, A19, A22, A25, A27, P5-01..P5-32B | ✅ **VERIFIED & FROZEN** |
-| **Phase 6** | [`PHASE_6_BACKTEST_VALIDATION.md`](./PHASE_6_BACKTEST_VALIDATION.md) | Point-in-Time Replay, Walk-Forward Splits, Purge/Embargo, Cost Simulator, Automated Ablation | A09, A10, A31..A38, P6-01..P6-35 | ✅ **VERIFIED & FROZEN** |
-| **Phase 7** | [`PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md`](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Django Dashboard, Plotly Charts, Live Two-Path Pipeline, WebSockets, Fail-Safe Recovery | A11, A12, A18, A28, A39..A45, P7-01..P7-27 | ✅ **VERIFIED & FROZEN** |
-| **Phase 8** | [`PHASE_8_LIVE_PAPER_OBSERVATION.md`](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | XAUUSD BUY+SELL Live Paper Observation, Side-Aware Triple-Barrier Outcomes, Parity Auditing | Live Parity (BUY/SELL/Comb) | 📋 Planned |
-| **Phase 9** | [`PHASE_9_ML_META_FILTER.md`](./PHASE_9_ML_META_FILTER.md) | XAUUSD Candidate PiT Dataset, Logistic / XGBoost / LightGBM Meta-Filter, Probability Calibration | ML Out-of-Sample | 📋 Planned |
-
----
-
-## 20 Master Global Constraints (R1–R20)
-
-1. **R1 — No trading execution:** Zero buy/sell/order/withdraw endpoints in any codebase component. Strictly decision support.
-2. **R2 — One engine:** Live analysis and backtest call the identical pure-Python `SignalEngine`.
-3. **R3 — Point-in-time correctness:** At timestamp $t$, no data after $t$ may be knowable or accessible.
-4. **R4 — Closed-candle decisions:** Decisions evaluate closed 15m/1H/4H/1D candles. 1m/5m candles are strictly for intrabar replay/fill resolution. Live quotes are for visual monitoring only.
-5. **R5 — Reproducibility:** Every signal records engine version, config version, feature version, code revision SHA, and canonical analysis fingerprint.
-6. **R6 — Abstention is valid:** System is expected to return `WAIT` most of the time when market conditions are ambiguous.
-7. **R7 — No 90% promise:** System optimizes positive expectancy, profit factor, controlled drawdown, and statistical robustness.
-8. **R8 — Tests before completion:** No phase or task is complete until all automated unit and integration tests pass.
-9. **R9 — Pure engine boundary:** `engine/*` must not import Django ORM, Celery, or Redis. `CandleRepository` is a pure `typing.Protocol`.
-10. **R10 — Immutability:** Signal records, risk plans, and component snapshots are strictly append-only.
-11. **R11 — UTC everywhere:** All timestamps are stored and manipulated in UTC; session conversions use standard library `zoneinfo`.
-12. **R12 — Typed interfaces:** Fully typed functions and frozen dataclasses throughout the calculation engine.
-13. **R13 — Versioned config:** All parameters live in versioned `EngineConfig` dataclasses.
-14. **R14 — Multi-source abstraction:** Provider adapters with health snapshots and 5-point continuity verification.
-15. **R15 — XAUUSD Primary Scope:** XAUUSD is the primary signal instrument; historical XAUT baseline is preserved for audit continuity.
-16. **R16 — Statistical sample guard:** Setups with small samples ($n < 30$ or $n_{eff} < 30$) receive 0 weight; effective $N$ accounts for overlap and normalized HHI.
-17. **R17 — Intrabar ambiguity:** Single-candle TP/SL collisions resolve via 1m/5m chronological replay or conservative `SL_FIRST`.
-18. **R18 — TradingView isolation:** Zero scraping or engine calculation dependencies on TradingView.
-19. **R19 — Side-Aware Dual Direction:** Direction engine and risk engine evaluate both `BUY` and `SELL` setups with independent structural stops and targets.
-20. **R20 — Causal execution:** Backtest entry uses next-bar open or post-signal quote ($t \ge \text{signal\_ts} + \text{latency}$).
+| Phase Document | Focus Area | Historical XAUT Status | Current XAUUSD Target Status |
+|---|---|:---:|:---:|
+| [**PHASE 0: Foundation**](./PHASE_0_FOUNDATION.md) | Django 5.2, PostgreSQL, Celery, RBAC, Protocols | ✅ `VERIFIED / FROZEN` | 🟢 `REUSABLE` |
+| [**PHASE 1: Ingestion Engine**](./PHASE_1_DATA_ENGINE.md) | Ingestion, Multi-Provider Data, Health Lifecycle | ✅ `VERIFIED / FROZEN` | 🟡 `MIGRATION REQUIRED` |
+| [**PHASE 2: Indicators & Regimes**](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Indicators, Market Regimes, Causal Swings | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED` |
+| [**PHASE 3A: Robust Cycles**](./PHASE_3A_ROBUST_TIME_CYCLE.md) | DST Sessions, Swing Maturity, Macro Blackout Gate | ✅ `VERIFIED / FROZEN` | 🟡 `EMPIRICAL REBUILD REQUIRED` |
+| [**PHASE 3B: Experimental Cycles**](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED (WEIGHT = 0.0)` |
+| [**PHASE 4: State Machine**](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction/Timing Scores, State Machine, Fingerprint | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `DUAL-SIDE REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| [**PHASE 5: Risk Engine**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Risk Planning, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `LONG / SHORT REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| [**PHASE 6: Backtest Lab**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Purge/Embargo | ✅ `VERIFIED / FROZEN` | 🟡 `XAUUSD PIT BACKTEST REQUIRED` |
+| [**PHASE 6: Backtest Ablation**](./PHASE_6_BACKTESTING_ABLATION.md) | Automated Component Ablation Lab | ✅ `VERIFIED / FROZEN` | 🟡 `XAUUSD PIT BACKTEST REQUIRED` |
+| [**PHASE 7: LiveMonitor & Alerts**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ⏸️ `PRODUCT COMPLETION PAUSED` |
+| [**PHASE 8: Live Paper Observation**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+| [**PHASE 9: ML Meta-Filter**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
 
 ---
 
-## 🏛️ Classification Taxonomies
+## 2. Global Constraints (R1 – R20)
 
-### Taxonomy A: Repository Terminology Audit
-- **`LEGACY`**: Historical XAUT data, initial schema migrations, baseline audit ledgers.
-- **`KEEP_GENERIC`**: Instrument-agnostic protocol boundaries, base provider adapters, core mathematical utilities.
-- **`MIGRATE`**: Active signal definitions, risk planning specifications, multi-timeframe regime analysis.
-- **`REMOVE`**: Deprecated crypto token assumptions and unsupported on-chain dependencies in active specs.
+| Rule | Category | Constraint Description |
+|---|---|---|
+| **R1** | **Safety** | **Zero Exchange Trading Access:** No exchange private keys, order endpoints, or testnet trading allowed in codebase. |
+| **R2** | **Parity** | **One Engine Rule:** Backtest, paper observation, and live monitors resolve the exact same pure-Python calculation engine. |
+| **R3** | **Causality** | **Closed Candle Decisions:** Operational decisions occur strictly on closed candles (15m, 1H, 4H, 1D). 1m/5m data is isolated for simulation/replay. |
+| **R4** | **Data Integrity** | **Fail-Closed Macro Blackout:** When high-impact macro news is active or feeds are missing, system transitions to `FORCE_WAIT`. |
+| **R5** | **Auditability** | **Canonical SHA-256 Fingerprinting:** Every signal state must generate an immutable hash of its input features and parameters. |
+| **R6** | **Security** | **Effective Admin Invariant:** At least one active administrator (`is_active=True` and (`is_superuser=True` or `role=ADMIN`)) must always exist. |
+| **R7** | **Durability** | **Protected Audit Trails:** Audit log foreign keys use `on_delete=models.PROTECT`. Hard deletion is strictly forbidden. |
+| **R8** | **Causality** | **Look-Ahead Prevention:** Historical backtest replay at $T$ strictly masks all market data with $t > T$. |
+| **R9** | **Architecture** | **Engine Purity:** The `engine/` package has zero dependencies on Django ORM, Celery, Redis, or Channels. |
+| **R10** | **Governance** | **Immutable Snapshots:** Signals and risk plans are persisted append-only in PostgreSQL; historical records are never updated. |
+| **R11** | **Validation** | **Walk-Forward Splitting:** Backtest evaluation utilizes chronological folds with dependency purging and post-boundary embargo. |
+| **R12** | **Risk** | **Side-Aware Risk Planning:** Long and Short setups enforce structural invalidation stops, ATR guards, and minimum RR boundaries. |
+| **R13** | **Execution** | **Causal Execution Timestamp:** Simulated order fills occur at $t \ge t_{\text{signal}} + \text{latency}$; fill on signal close is impossible. |
+| **R14** | **Intrabar** | **Conservative Ambiguity Resolution:** Ambiguous intrabar candles resolve via chronological lower-TF replay or fall back to SL-first. |
+| **R15** | **Costs** | **Deduplicated Friction Accounting:** Bid-ask spreads are never double-counted when actual executable quotes are available. |
+| **R16** | **Statistics** | **Minimum Sample Guard:** Features or patterns with effective sample size $n_{eff} < 30$ receive zero active weight. |
+| **R17** | **Cycles** | **Phase 3B Production Lock:** Experimental spectral features have an active production scoring weight locked to `0.0`. |
+| **R18** | **Policy** | **TradingView Scraping Ban:** Scraping TradingView or using it as a calculation engine data source is strictly forbidden. |
+| **R19** | **ML Protocol** | **Secondary Meta-Filtering Only:** ML models act purely as secondary probability filters on deterministic candidate setups. |
+| **R20** | **Rollback** | **Deterministic Rollback:** ML models support instant zero-downtime rollback to rule-only baseline without server restart. |
 
-### Taxonomy B: Acceptance Test Migration Matrix
-- **`LEGACY_XAUT`**: Preserved test contracts verifying historical XAUT baseline integrity.
-- **`KEEP_GENERIC`**: Core engine purity, timezone handling, sample guard, and math tests.
-- **`MODIFY_FOR_XAUUSD`**: Target instrument updates in multi-provider ingestion and live monitoring tests.
-- **`REPLACE_FOR_XAUUSD`**: Updated configuration and calibration fixtures tailored for XAUUSD spot volatility.
-- **`NEW_XAUUSD`**: Dedicated test contracts for side-aware `SELL` setups, parity audits, and dual-direction meta-filtering.
+---
+
+## 3. Two Separate Taxonomies
+
+### A. Repository Terminology Audit (Taxonomy A)
+- `LEGACY`: Historical XAUTUSDT candle stores, USDT/USD rate providers, baseline basis calculation tables.
+- `KEEP_GENERIC`: `CandleRepository`, `MarketDataProvider`, `Timeframe`, math statistical libraries, pure engine protocols.
+- `MIGRATE`: Primary operational specifications in `./docs/phases/` and root `README.md`.
+- `REMOVE`: Deprecated on-chain Ethereum redemption assertions from active operational specs.
+
+### B. Acceptance-Test Migration Matrix (Taxonomy B)
+- `LEGACY_XAUT`: Tests validating historical USDT/USD normalization and crypto basis integrity (`A17`, `A21`).
+- `KEEP_GENERIC`: Multi-timeframe repository ordering, swing detection causality, mathematical indicator parity (`A01`, `A02`, `A03`, `A05`, `A08`, `A11`, `A12`, `A13`, `A16`, `A18`, `A19`, `A20`, `A24`, `A25`, `A26`, `A27`, `A29`, `A30`, `A31`, `A33`, `A35`, `A36`, `A37`, `A38`, `A40`, `A41`, `A42`, `A43`, `A44`, `A45`, `A46`, `A47`).
+- `MODIFY_FOR_XAUUSD`: Live monitor quotes, provider health thresholds, DXY macro correlation feeds, backtest engine parity (`A04`, `A06`, `A07`, `A09`, `A10`, `A14`, `A15`, `A22`, `A23`, `A28`, `A32`, `A34`, `A39`, `A39X`).
+- `REPLACE_FOR_XAUUSD`: Single-instrument spot gold ingestion and session cycle evaluation.
+- `NEW_XAUUSD`: Planned future test contracts for side-aware Short risk evaluation, dual-direction triple-barrier outcome tracking, and 3-tier parity audits (`XAU-P1-01` through `XAU-P9-01`).
