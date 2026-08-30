@@ -499,7 +499,7 @@ def test_p4_21_version_pinned_task_idempotency():
         candle_timestamp_iso=eval_ts_iso,
         engine_version="4.0.0",
         config_version="cfg-2026-v1",
-        code_revision="2795de04",
+        code_revision="15d388dc",
     )
 
     fp_x = res1["fingerprint"]
@@ -513,7 +513,7 @@ def test_p4_21_version_pinned_task_idempotency():
         candle_timestamp_iso=eval_ts_iso,
         engine_version="4.0.0",
         config_version="cfg-2026-v1",
-        code_revision="2795de04",
+        code_revision="15d388dc",
     )
 
     assert res_retry["fingerprint"] == fp_x
@@ -527,7 +527,7 @@ def test_p4_21_version_pinned_task_idempotency():
         candle_timestamp_iso=eval_ts_iso,
         engine_version="4.0.0",
         config_version="cfg-2026-v2",
-        code_revision="2795de04",
+        code_revision="15d388dc",
     )
 
     fp_y = res_new_config["fingerprint"]

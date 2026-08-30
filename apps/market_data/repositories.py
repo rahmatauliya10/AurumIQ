@@ -64,11 +64,11 @@ class DjangoCandleRepository(CandleRepository):
     def load_window(
         self, instrument: str, timeframe: str, end_at: datetime, bars: int
     ) -> list[CandleData]:
-        """Load a causal window of candles strictly up to and including end_at."""
+        """Load a causal window of candles strictly closed at or before end_at (P1-02, PIT Safety)."""
         parts = instrument.split("/")
         qs = MarketCandle.objects.filter(
             timeframe=timeframe,
-            timestamp_open__lte=end_at,
+            timestamp_close__lte=end_at,
             is_closed=True,
         ).exclude(data_quality_flag=CandleQualityFlag.QUARANTINED)
 
@@ -81,8 +81,8 @@ class DjangoCandleRepository(CandleRepository):
         if self.source_filter:
             qs = qs.filter(source=self.source_filter)
 
-        # Order descending to slice the most recent `bars`, then reverse for chronological ascending order
-        orm_candles = list(qs.order_by("-timestamp_open")[:bars])
+        # Order descending by close timestamp to slice the most recent `bars`, then reverse for chronological order
+        orm_candles = list(qs.order_by("-timestamp_close")[:bars])
         orm_candles.reverse()
 
         return [self._to_candle_data(c) for c in orm_candles]

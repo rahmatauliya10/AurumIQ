@@ -12,15 +12,15 @@ Every phase is documented in its own dedicated, unabridged specification file. A
 
 | Phase | Specification Document | Focus Area | Acceptance Tests | DoD Status |
 |---|---|---|---|---|
-| **Phase 0** | [`PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, RBAC, Protocol Boundary | Smoke Tests | ✅ **VERIFIED & FROZEN** (`f3f8bbb2ab`) |
-| **Phase 1** | [`PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Provider Abstraction, Market Integrity, USDT Normalization, 1m/5m Replay Data | A15, A17, A20, A21, P1-01..P1-09 | ✅ **VERIFIED & FROZEN** (`6bfb233e61`) |
-| **Phase 2** | [`PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Python Indicators, Causal Regimes, ZigZag Swings, Sample Guard (Normalized HHI) | A01, A16, P2-01..P2-08 | ✅ **IMPLEMENTED & VERIFIED** (68/68 Tests) |
-| **Phase 3A** | [`PHASE_3A_ROBUST_TIME_CYCLE.md`](./PHASE_3A_ROBUST_TIME_CYCLE.md) | Session Cycle (DST-aware), Swing Duration, Event PiT Gate (Revision-safe), Calendar Seasonality | A02, A06, A26 | 📋 Planned |
-| **Phase 3B** | [`PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md`](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Causal ACF, FFT, Wavelet CWT, Hilbert Phase, Multi-Criteria Promotion Gate | A05, A13, A24 | 📋 Planned |
-| **Phase 4** | [`PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md`](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction Score, Timing Score, State Machine, Explainer, Idempotent Analysis Tasks | A03, A04, A08, A23 | 📋 Planned |
-| **Phase 5** | [`PHASE_5_RISK_ENGINE_EXECUTION.md`](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Structure/ATR Stops, TP1/TP2, Intrabar Resolver (1m/5m), Causal Post-Signal Fill Model | A07, A14, A19, A22, A25, A27 | 📋 Planned |
-| **Phase 6** | [`PHASE_6_BACKTESTING_ABLATION.md`](./PHASE_6_BACKTESTING_ABLATION.md) | Point-in-Time Replay, Walk-Forward Splits, Purge/Embargo, Cost Simulator, Automated Ablation | A09, A10 | 📋 Planned |
-| **Phase 7** | [`PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md`](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Django Dashboard, Plotly Charts, LiveMonitor (WebSocket/Redis TTL), DRF API, Alerts | A11, A12, A18, A28 | 📋 Planned |
+| **Phase 0** | [`PHASE_0_FOUNDATION.md`](./PHASE_0_FOUNDATION.md) | Django 5.2 LTS, Celery 5 Queues, Docker Stack, RBAC, Protocol Boundary | Smoke Tests | ✅ **VERIFIED & FROZEN** |
+| **Phase 1** | [`PHASE_1_DATA_ENGINE.md`](./PHASE_1_DATA_ENGINE.md) | 3-Tier Domain, Provider Abstraction, Market Integrity, USDT Normalization, 1m/5m Replay Data | A15, A17, A20, A21, P1-01..P1-09 | ✅ **VERIFIED & FROZEN** |
+| **Phase 2** | [`PHASE_2_INDICATORS_REGIME_STRUCTURE.md`](./PHASE_2_INDICATORS_REGIME_STRUCTURE.md) | Pure Python Indicators, Causal Regimes, ZigZag Swings, Sample Guard (Normalized HHI) | A01, A16, P2-01..P2-08 | ✅ **VERIFIED & FROZEN** |
+| **Phase 3A** | [`PHASE_3A_ROBUST_TIME_CYCLE.md`](./PHASE_3A_ROBUST_TIME_CYCLE.md) | Session Cycle (DST-aware), Swing Duration, Event PiT Gate (Revision-safe), Calendar Seasonality | A02, A06, A26, P3A-01..P3A-14 | ✅ **VERIFIED & FROZEN** |
+| **Phase 3B** | [`PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md`](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Causal ACF, FFT, Wavelet CWT, Hilbert Phase, Multi-Criteria Promotion Gate | A05, A13, A24, P3B-01..P3B-16 | ✅ **VERIFIED & FROZEN** |
+| **Phase 4** | [`PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md`](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction Score, Timing Score, State Machine, Explainer, Idempotent Analysis Tasks | A03, A04, A08, A23, P4-01..P4-22 | ✅ **VERIFIED & FROZEN** |
+| **Phase 5** | [`PHASE_5_RISK_ENGINE_EXECUTION.md`](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Structure/ATR Stops, TP1/TP2, Intrabar Resolver (1m/5m), Causal Post-Signal Fill Model | A07, A14, A19, A22, A25, A27, P5-01..P5-32B | ✅ **VERIFIED & FROZEN** |
+| **Phase 6** | [`PHASE_6_BACKTESTING_ABLATION.md`](./PHASE_6_BACKTESTING_ABLATION.md) | Point-in-Time Replay, Walk-Forward Splits, Purge/Embargo, Cost Simulator, Automated Ablation | A09, A10, A31..A38, P6-01..P6-33 | ✅ **VERIFIED & FROZEN** |
+| **Phase 7** | [`PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md`](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Django Dashboard, Plotly Charts, Live Two-Path Pipeline, WebSockets, Fail-Safe Recovery | A11, A12, A18, A28, A39..A45, P7-01..P7-27 | ✅ **VERIFIED & FROZEN** |
 | **Phase 8** | [`PHASE_8_LIVE_PAPER_OBSERVATION.md`](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Immutable Live Signals, Triple-Barrier Outcome Tracking, Live vs Backtest Parity Audit | Live Parity | 📋 Planned |
 | **Phase 9** | [`PHASE_9_ML_META_FILTER.md`](./PHASE_9_ML_META_FILTER.md) | Candidate PiT Dataset, Logistic / XGBoost / LightGBM Meta-Filter, Probability Calibration | ML Out-of-Sample | 📋 Planned |
 

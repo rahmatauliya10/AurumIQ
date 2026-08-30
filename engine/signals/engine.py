@@ -1,4 +1,5 @@
 """Master XautSignalEngine combining Phase 1-4 intelligence deterministically (Phase 4)."""
+import math
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, Sequence
@@ -154,12 +155,29 @@ class XautSignalEngine:
             if len(valid_1d) >= 32:
                 features_1d = self.feature_engine.extract_features(valid_1d)
 
-        # 3. Normalized Basis Evaluation
+        # 3. Normalized Basis Evaluation (Statistical Rolling Z-Score)
         xaut_basis_z: Optional[float] = None
-        if xau_reference_price is not None and usdt_rate is not None and latest_candle:
+        if xau_reference_price is not None and usdt_rate is not None and latest_candle and float(xau_reference_price) > 0:
             xaut_usd = float(latest_candle.close) * float(usdt_rate)
-            basis_usd = xaut_usd - float(xau_reference_price)
-            xaut_basis_z = round(basis_usd / 2.0, 2)
+            xau_usd = float(xau_reference_price)
+            current_basis_pct = (xaut_usd - xau_usd) / xau_usd
+            
+            basis_pct_series = []
+            for c in valid_15m[-32:]:
+                c_rate = float(c.quote_rate) if c.quote_rate else float(usdt_rate)
+                c_xaut_usd = float(c.close) * c_rate
+                basis_pct_series.append((c_xaut_usd - xau_usd) / xau_usd)
+
+            if len(basis_pct_series) >= 8:
+                mean_basis = sum(basis_pct_series) / len(basis_pct_series)
+                var_basis = sum((b - mean_basis) ** 2 for b in basis_pct_series) / len(basis_pct_series)
+                std_basis = math.sqrt(var_basis)
+                if std_basis > 1e-6:
+                    xaut_basis_z = round((current_basis_pct - mean_basis) / std_basis, 2)
+                else:
+                    xaut_basis_z = 0.0
+            else:
+                xaut_basis_z = 0.0
 
         # 4. Hard Gate Evaluation
         is_blackout = macro_context.is_in_blackout if macro_context else False
@@ -236,16 +254,19 @@ class XautSignalEngine:
             timing=timing,
             state=state,
             user_decision=user_decision,
+            code_revision=self.code_revision,
+            closed_candles_4h=valid_4h if candles_4h else None,
+            closed_candles_1d=valid_1d if candles_1d else None,
             xau_reference_val=str(xau_reference_price) if xau_reference_price else None,
             xau_reference_ts=xau_reference_ts.isoformat() if xau_reference_ts else None,
             usdt_rate_val=str(usdt_rate) if usdt_rate else None,
             usdt_rate_ts=usdt_rate_ts.isoformat() if usdt_rate_ts else None,
+            macro_state="BLACKOUT" if (macro_context and macro_context.is_in_blackout) else "NORMAL",
             provider_status=provider_status,
             feature_version=self.feature_version,
             cycle_version=self.cycle_version,
             engine_version=self.engine_version,
             config_version=self.config_version,
-            code_revision=self.code_revision,
         )
 
         research_fp = compute_research_fingerprint(

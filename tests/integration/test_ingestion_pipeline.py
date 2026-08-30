@@ -52,11 +52,15 @@ def test_end_to_end_ingestion_and_repository_pipeline():
         def side_effect(url, **kwargs):
             resp = MagicMock()
             resp.status_code = 200
-            if "klines" in url:
-                resp.json.return_value = mock_klines
-            elif "ticker/price" in url:
+            if "ticker/price" in url:
                 # 1 USDC = 1.00020004 USDT -> rate = 0.999800
                 resp.json.return_value = {"price": "1.00020004"}
+            elif "USDCUSDT" in str(kwargs.get("params", {})):
+                resp.json.return_value = [
+                    [int(t0.timestamp() * 1000), "1.0002", "1.0005", "1.0001", "1.00020004", "1000.0", int(t4.timestamp() * 1000), "0", 1, "0", "0", "0"]
+                ]
+            elif "klines" in url:
+                resp.json.return_value = mock_klines
             return resp
 
         mock_get.side_effect = side_effect

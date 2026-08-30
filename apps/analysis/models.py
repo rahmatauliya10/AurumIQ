@@ -48,9 +48,9 @@ class FeatureSnapshotRecord(models.Model):
     class Meta:
         ordering = ["-timestamp"]
         indexes = [
-            models.Index(fields=["instrument", "timeframe", "-timestamp"]),
+            models.Index(fields=["instrument", "timeframe", "-timestamp", "feature_version"]),
         ]
-        unique_together = ("instrument", "timeframe", "timestamp")
+        unique_together = ("instrument", "timeframe", "timestamp", "feature_version")
 
     def __str__(self) -> str:
         return f"Features {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()}"
@@ -72,9 +72,9 @@ class RegimeSnapshotRecord(models.Model):
     class Meta:
         ordering = ["-timestamp"]
         indexes = [
-            models.Index(fields=["instrument", "timeframe", "-timestamp"]),
+            models.Index(fields=["instrument", "timeframe", "-timestamp", "feature_version"]),
         ]
-        unique_together = ("instrument", "timeframe", "timestamp")
+        unique_together = ("instrument", "timeframe", "timestamp", "feature_version")
 
     def __str__(self) -> str:
         return f"Regime {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} -> {self.regime} ({self.confidence})"
@@ -98,9 +98,9 @@ class StructureSnapshotRecord(models.Model):
     class Meta:
         ordering = ["-timestamp"]
         indexes = [
-            models.Index(fields=["instrument", "timeframe", "-timestamp"]),
+            models.Index(fields=["instrument", "timeframe", "-timestamp", "feature_version"]),
         ]
-        unique_together = ("instrument", "timeframe", "timestamp")
+        unique_together = ("instrument", "timeframe", "timestamp", "feature_version")
 
     def __str__(self) -> str:
         return f"Structure {self.instrument} [{self.timeframe}] @ {self.timestamp.isoformat()} -> {self.structure_type} BOS:{self.bos}"

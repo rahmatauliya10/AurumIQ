@@ -40,7 +40,7 @@ class SignalRecord(models.Model):
     config_version = models.CharField(max_length=30, default="cfg-2026-v1")
     feature_version = models.CharField(max_length=30, default="feat-2026-v1")
     cycle_version = models.CharField(max_length=30, default="3.0.0-3A")
-    code_revision = models.CharField(max_length=40, default="2795de04")
+    code_revision = models.CharField(max_length=40)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

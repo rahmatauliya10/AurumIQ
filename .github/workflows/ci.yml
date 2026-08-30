@@ -1,0 +1,100 @@
+name: AurumIQ Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Regression & Compliance Suite
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: xaut_db
+          POSTGRES_USER: xaut_user
+          POSTGRES_PASSWORD: xaut_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ml]"
+
+      - name: Django System Check
+        env:
+          DJANGO_SECRET_KEY: ci-secret-key-do-not-use-in-production-random-value-12345
+          DJANGO_DEBUG: "False"
+          DATABASE_URL: postgres://xaut_user:xaut_password@localhost:5432/xaut_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          ENGINE_VERSION: "4.0.0"
+          FEATURE_VERSION: "feat-2026-v1"
+          ACTIVE_CONFIG_VERSION: "cfg-2026-v1"
+          LOG_LEVEL: "INFO"
+          LOG_FORMAT: "console"
+        run: |
+          python manage.py check
+
+      - name: Migration Drift Check
+        env:
+          DJANGO_SECRET_KEY: ci-secret-key-do-not-use-in-production-random-value-12345
+          DJANGO_DEBUG: "False"
+          DATABASE_URL: postgres://xaut_user:xaut_password@localhost:5432/xaut_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          ENGINE_VERSION: "4.0.0"
+          FEATURE_VERSION: "feat-2026-v1"
+          ACTIVE_CONFIG_VERSION: "cfg-2026-v1"
+          LOG_LEVEL: "INFO"
+          LOG_FORMAT: "console"
+        run: |
+          python manage.py makemigrations --check
+
+      - name: Run Full Test Suite (Pytest)
+        env:
+          DJANGO_SECRET_KEY: ci-secret-key-do-not-use-in-production-random-value-12345
+          DJANGO_DEBUG: "False"
+          DATABASE_URL: postgres://xaut_user:xaut_password@localhost:5432/xaut_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          ENGINE_VERSION: "4.0.0"
+          FEATURE_VERSION: "feat-2026-v1"
+          ACTIVE_CONFIG_VERSION: "cfg-2026-v1"
+          LOG_LEVEL: "INFO"
+          LOG_FORMAT: "console"
+        run: |
+          pytest -v

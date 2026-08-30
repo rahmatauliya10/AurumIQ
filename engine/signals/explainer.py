@@ -30,16 +30,19 @@ def compute_canonical_fingerprint(
     timing: TimingScoreResult,
     state: SignalState,
     user_decision: UserDecision,
+    code_revision: str,
+    closed_candles_4h: Optional[List[CandleData]] = None,
+    closed_candles_1d: Optional[List[CandleData]] = None,
     xau_reference_val: Optional[str] = None,
     xau_reference_ts: Optional[str] = None,
     usdt_rate_val: Optional[str] = None,
     usdt_rate_ts: Optional[str] = None,
+    macro_state: Optional[str] = None,
     provider_status: str = "HEALTHY",
     feature_version: str = "feat-2026-v1",
     cycle_version: str = "3.0.0-3A",
     engine_version: str = "4.0.0",
     config_version: str = "cfg-2026-v1",
-    code_revision: str = "2795de04",
 ) -> str:
     """
     Generate deterministic SHA-256 analysis fingerprint from canonical production inputs.
@@ -48,6 +51,7 @@ def compute_canonical_fingerprint(
       1. Deterministic JSON: Sorted keys, compact separators, ISO-8601 UTC timestamps, strings for Decimals.
       2. Excludes live quote/ticker ticks (preserves closed-candle immutability A23).
       3. Excludes Phase 3B experimental output (preserves production weight 0.0 independence).
+      4. Includes multi-timeframe inputs and individual component breakdowns for complete material provenance.
     """
     as_of_iso = (
         as_of.astimezone(timezone.utc).isoformat()
@@ -55,21 +59,43 @@ def compute_canonical_fingerprint(
         else as_of.replace(tzinfo=timezone.utc).isoformat()
     )
 
-    # Hash trailing closed candles sequence (open, high, low, close, vol)
-    candle_hashes = []
-    for c in closed_candles[-64:]:  # last 64 evaluation candles
-        c_str = f"{c.timestamp_close.isoformat()}|{c.open}|{c.high}|{c.low}|{c.close}|{c.volume}"
-        candle_hashes.append(hashlib.sha256(c_str.encode("utf-8")).hexdigest()[:16])
+    def _hash_candles(candles: Optional[List[CandleData]], limit: int = 64) -> List[str]:
+        if not candles:
+            return []
+        hashes = []
+        for c in candles[-limit:]:
+            c_str = f"{c.timestamp_close.isoformat()}|{c.open}|{c.high}|{c.low}|{c.close}|{c.volume}"
+            hashes.append(hashlib.sha256(c_str.encode("utf-8")).hexdigest()[:16])
+        return hashes
+
+    candle_hashes = _hash_candles(closed_candles, 64)
+    candle_4h_hashes = _hash_candles(closed_candles_4h, 32)
+    candle_1d_hashes = _hash_candles(closed_candles_1d, 16)
+
+    dir_components = [
+        {"name": c.name, "score": str(round(c.score, 2)), "max": str(round(c.max_score, 2))}
+        for c in direction.components
+    ] if direction.components else []
+
+    tim_components = [
+        {"name": c.name, "score": str(round(c.score, 2)), "max": str(round(c.max_score, 2))}
+        for c in timing.components
+    ] if timing.components else []
 
     production_payload: Dict[str, Any] = {
         "instrument": instrument,
         "timeframe": timeframe,
         "as_of": as_of_iso,
         "closed_candle_hashes": candle_hashes,
+        "closed_candle_4h_hashes": candle_4h_hashes,
+        "closed_candle_1d_hashes": candle_1d_hashes,
         "direction_score": str(direction.total_score),
+        "direction_components": dir_components,
         "timing_score": str(timing.total_score),
+        "timing_components": tim_components,
         "state": state.value,
         "user_decision": user_decision.value,
+        "macro_state": macro_state or "NORMAL",
         "xau_reference": {
             "value": str(xau_reference_val) if xau_reference_val else "NONE",
             "timestamp": str(xau_reference_ts) if xau_reference_ts else "NONE",

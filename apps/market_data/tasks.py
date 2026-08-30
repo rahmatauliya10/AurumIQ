@@ -45,7 +45,7 @@ def ingest_primary_candles(
     provider = registry.get(listing.provider)
     usdt_rate_provider = registry.get("usdt_usd")
     
-    # Never fallback to 1.0 (P1-09)
+    # Base fallback rate if historical query empty
     current_usdt_rate = getattr(usdt_rate_provider, "get_current_rate", lambda: None)()
 
     normalizer = QuoteNormalizer()
@@ -64,6 +64,14 @@ def ingest_primary_candles(
         }.get(tf, 15)
         start_time = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
 
+        # Retrieve historical USDT rates for PIT normalization (P1-09 PIT Safety)
+        hist_usdt_rates = []
+        if hasattr(usdt_rate_provider, "fetch_historical_rates"):
+            try:
+                hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=start_time, end=now_utc)
+            except Exception as e:
+                logger.warning("usdt_historical_rate_fetch_failed", error=str(e))
+
         try:
             raw_candles = provider.fetch_candles(
                 symbol=listing.provider_symbol,
@@ -74,6 +82,18 @@ def ingest_primary_candles(
         except Exception as e:
             logger.error("primary_ingestion_fetch_error", provider=listing.provider, tf=tf, error=str(e))
             continue
+
+        # Sort chronologically for deterministic gap & normalization analysis
+        raw_candles = sorted(raw_candles, key=lambda c: c.timestamp_open)
+
+        # Detect actual intervals and gap count
+        gap_count = 0
+        expected_delta = timedelta(minutes=minutes_per_bar)
+        for i in range(1, len(raw_candles)):
+            delta = raw_candles[i].timestamp_open - raw_candles[i-1].timestamp_open
+            if delta > expected_delta:
+                missing_bars = int(delta.total_seconds() // expected_delta.total_seconds()) - 1
+                gap_count += max(0, missing_bars)
 
         violations = 0
         norm_res = normalizer.normalize_price(Decimal("1.0"), current_usdt_rate)
@@ -90,7 +110,17 @@ def ingest_primary_candles(
                 else:
                     quality_flag = CandleQualityFlag.OK
 
-                candle_norm = normalizer.normalize_price(raw.close, current_usdt_rate)
+                # Point-in-time rate matching: find latest rate <= candle close timestamp
+                candle_rate = current_usdt_rate
+                if hist_usdt_rates:
+                    matching_rates = [
+                        r[1] for r in hist_usdt_rates
+                        if r[0] <= raw.timestamp_close
+                    ]
+                    if matching_rates:
+                        candle_rate = matching_rates[-1]
+
+                candle_norm = normalizer.normalize_price(raw.close, candle_rate)
 
                 MarketCandle.objects.update_or_create(
                     instrument=instrument,
@@ -117,13 +147,13 @@ def ingest_primary_candles(
                 instrument=instrument,
                 timeframe=tf,
                 timestamp=now_utc,
-                quality_score=Decimal("100.00") if violations == 0 and not norm_res.hard_fail else Decimal("50.00"),
-                gap_count=0,
+                quality_score=Decimal("100.00") if violations == 0 and not norm_res.hard_fail and gap_count == 0 else Decimal("50.00"),
+                gap_count=gap_count,
                 duplicate_count=0,
                 violation_count=violations,
                 is_stale=norm_res.is_stale,
                 hard_fail=violations > 5 or norm_res.hard_fail,
-                anomalies={"peg_warning": norm_res.is_warning, "rate_missing": current_usdt_rate is None},
+                anomalies={"peg_warning": norm_res.is_warning, "rate_missing": current_usdt_rate is None, "gap_detected": gap_count > 0},
             )
 
     return {

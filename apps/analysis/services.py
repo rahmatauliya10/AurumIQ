@@ -46,6 +46,7 @@ class AnalysisPersistenceService:
                 instrument=instrument,
                 timeframe=timeframe,
                 timestamp=features.timestamp,
+                feature_version=feature_version,
                 defaults={
                     "ema20": features.ema20,
                     "ema50": features.ema50,
@@ -69,7 +70,6 @@ class AnalysisPersistenceService:
                     "realized_vol_20": features.realized_vol_20,
                     "volume_ratio_20": features.volume_ratio_20,
                     "volume_zscore_20": features.volume_zscore_20,
-                    "feature_version": feature_version,
                 },
             )
 
@@ -78,11 +78,11 @@ class AnalysisPersistenceService:
                 instrument=instrument,
                 timeframe=timeframe,
                 timestamp=regime.timestamp,
+                feature_version=feature_version,
                 defaults={
                     "regime": regime.regime.value,
                     "confidence": Decimal(str(regime.confidence)),
                     "details": regime.details,
-                    "feature_version": feature_version,
                 },
             )
 
@@ -101,13 +101,13 @@ class AnalysisPersistenceService:
                 instrument=instrument,
                 timeframe=timeframe,
                 timestamp=structure.timestamp,
+                feature_version=feature_version,
                 defaults={
                     "structure_type": structure.structure_type.value,
                     "bos": structure.bos.value,
                     "last_swing_high_price": structure.last_swing_high.price if structure.last_swing_high else None,
                     "last_swing_low_price": structure.last_swing_low.price if structure.last_swing_low else None,
                     "active_zones": zones_data,
-                    "feature_version": feature_version,
                 },
             )
 

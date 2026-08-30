@@ -54,12 +54,12 @@ def test_django_candle_repository_implements_protocol(sample_candles):
 @pytest.mark.unit
 @pytest.mark.django_db
 def test_load_window_causal_slicing(sample_candles):
-    """Verify load_window returns exactly requested bars in chronological order."""
+    """Verify load_window returns exactly requested bars in chronological order based on timestamp_close."""
     inst, candles = sample_candles
     repo = DjangoCandleRepository()
 
-    # Load 5 bars up to 8th candle
-    end_at = candles[7].timestamp_open
+    # Load 5 bars up to 8th candle close
+    end_at = candles[7].timestamp_close
     window = repo.load_window("XAUT/USDT", "15m", end_at=end_at, bars=5)
 
     assert len(window) == 5
@@ -71,7 +71,7 @@ def test_load_window_causal_slicing(sample_candles):
 
     # Chronological ascending order
     assert window[0].timestamp_open < window[-1].timestamp_open
-    assert window[-1].timestamp_open == end_at
+    assert window[-1].timestamp_close == end_at
     assert window[-1].close == candles[7].close
 
 
@@ -84,10 +84,29 @@ def test_quarantined_candles_excluded(sample_candles):
     candles[5].save()
 
     repo = DjangoCandleRepository()
-    end_at = candles[7].timestamp_open
+    end_at = candles[7].timestamp_close
     window = repo.load_window("XAUT/USDT", "15m", end_at=end_at, bars=10)
 
     # 8 candles total before end_at, 1 is quarantined -> 7 returned
     assert len(window) == 7
     loaded_timestamps = [c.timestamp_open for c in window]
     assert candles[5].timestamp_open not in loaded_timestamps
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_no_future_candle_leakage_orm(sample_candles):
+    """Verify candle open at 10:00 and closing at 10:15 cannot leak into query at 10:05."""
+    inst, candles = sample_candles
+    repo = DjangoCandleRepository()
+
+    # Candle 0 is 10:00 - 10:15
+    # At T = 10:05, candle 0 has NOT closed yet
+    t_intrabar = candles[0].timestamp_open + timedelta(minutes=5)
+    window_early = repo.load_window("XAUT/USDT", "15m", end_at=t_intrabar, bars=10)
+    assert len(window_early) == 0, "Candle closed at 10:15 must not leak into 10:05 query"
+
+    # At T = 10:15, candle 0 is closed and must be included
+    window_closed = repo.load_window("XAUT/USDT", "15m", end_at=candles[0].timestamp_close, bars=10)
+    assert len(window_closed) == 1
+    assert window_closed[0].timestamp_close == candles[0].timestamp_close

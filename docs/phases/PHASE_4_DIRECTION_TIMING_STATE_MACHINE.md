@@ -1,6 +1,6 @@
 # Phase 4: Direction Score, Timing Score & State Machine
 
-> **Status:** 🧪 **IMPLEMENTING**  
+> **Status:** ✅ **APPROVED**  
 > **Primary Goal:** Implement deterministic Direction Score (0–100), Timing Score (0–100), Selective Gate state machine with BUY / WAIT / AVOID decision mapping, human-readable explainers, canonical production input fingerprinting, and idempotent persistence.
 
 ---
@@ -99,7 +99,8 @@ $$\text{analysis\_fingerprint} = \text{SHA256}(\text{canonical\_json}(\text{prod
 
 Payload includes:
 * `instrument`, `timeframe`, `as_of` (UTC ISO-8601)
-* Closed candle hashes / features
+* Closed candle hashes / features (15m, 4h, 1d)
+* Individual Direction & Timing component breakdowns
 * Canonical XAU reference value & timestamp
 * USDT/USD normalization rate & timestamp
 * Provider health / data quality state
@@ -134,10 +135,11 @@ Payload includes:
 
 ## 8. Definition of Done Checklist
 
-- [ ] `DirectionEngine` and `TimingEngine` evaluate pure closed-candle evidence.
-- [ ] Selective Gate implements strict state precedence and `BUY/WAIT/AVOID` mapping.
-- [ ] Canonical deterministic SHA-256 analysis fingerprint operational.
-- [ ] Phase 3B contribution strictly locked to 0.0.
-- [ ] Celery idempotent task and `SignalRecord` persistence bridge in place.
-- [ ] Acceptance tests **A03, A04, A08, A23** passing.
-- [ ] Targeted tests **P4-01 through P4-20** passing.
+- [x] `DirectionEngine` and `TimingEngine` evaluate pure closed-candle evidence.
+- [x] Selective Gate implements strict state precedence and `BUY/WAIT/AVOID` mapping.
+- [x] Canonical deterministic SHA-256 analysis fingerprint operational.
+- [x] Phase 3B contribution strictly locked to 0.0.
+- [x] Celery idempotent task and `SignalRecord` persistence bridge in place.
+- [x] Acceptance tests **A03, A04, A08, A23** passing.
+- [x] Targeted tests **P4-01 through P4-22** passing.
+

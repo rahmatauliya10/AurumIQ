@@ -6,7 +6,7 @@ import structlog
 from apps.instruments.models import Instrument
 from apps.market_data.models import MarketCandle
 from apps.signals.services import SignalPersistenceService
-from engine.core.types import CandleData
+from engine.core.types import CandleData, MacroEventContext
 from engine.signals.engine import XautSignalEngine
 
 logger = structlog.get_logger(__name__)
@@ -18,55 +18,84 @@ def analyze_closed_candle(
     instrument_id: int,
     timeframe: str,
     candle_timestamp_iso: str,
+    code_revision: str,
     engine_version: str = "4.0.0",
     config_version: str = "cfg-2026-v1",
     feature_version: str = "feat-2026-v1",
     cycle_version: str = "3.0.0-3A",
-    code_revision: str = "2795de04",
+    provider_status: str = "HEALTHY",
+    is_stale_feed: bool = False,
+    is_provider_transition: bool = False,
+    macro_context: str = "NORMAL",
 ) -> dict:
     """
-    Idempotently analyze closed candle up to candle_timestamp (A03, P4-21).
+    Idempotently analyze closed candle up to candle_timestamp with complete market context (A03, P4-21).
 
     Strict Version-Pinned Invariant (P4-21):
-      Uses pinned engine/config/feature/cycle versions and code_revision from
-      task invocation payload rather than global active runtime configuration.
-      Guarantees exact retry reproducibility even across subsequent code deployments.
+      Uses pinned engine/config/feature/cycle versions and explicit code_revision.
     """
+    if not code_revision:
+        raise ValueError("Explicit code_revision is strictly required for signal provenance.")
+
     try:
         instrument = Instrument.objects.get(id=instrument_id)
         candle_ts = datetime.fromisoformat(candle_timestamp_iso)
         if candle_ts.tzinfo is None:
             candle_ts = candle_ts.replace(tzinfo=timezone.utc)
 
-        # Query closed candles <= candle_ts
-        candle_qs = (
+        def _get_candles(tf: str, limit: int = 128) -> list[CandleData]:
+            qs = (
+                MarketCandle.objects.filter(
+                    instrument=instrument,
+                    timeframe=tf,
+                    timestamp_close__lte=candle_ts,
+                    is_closed=True,
+                )
+                .order_by("-timestamp_close")[:limit]
+            )
+            return [
+                CandleData(
+                    timestamp_open=c.timestamp_open,
+                    timestamp_close=c.timestamp_close,
+                    open=c.open,
+                    high=c.high,
+                    low=c.low,
+                    close=c.close,
+                    volume=c.volume,
+                    is_closed=c.is_closed,
+                    quote_rate=c.quote_rate,
+                    close_usd=c.close_usd,
+                    source_id=c.source,
+                )
+                for c in reversed(list(qs))
+            ]
+
+        candles_15m = _get_candles("15m", 128)
+        if not candles_15m:
+            return {"status": "SKIPPED", "reason": "No closed 15m candles found"}
+
+        candles_4h = _get_candles("4h", 64)
+        candles_1d = _get_candles("1d", 32)
+
+        # Retrieve latest XAU/USD benchmark candle <= candle_ts if available
+        xau_candle = (
             MarketCandle.objects.filter(
-                instrument=instrument,
-                timeframe=timeframe,
+                instrument__base_asset__code="XAU",
+                instrument__quote_asset__code="USD",
                 timestamp_close__lte=candle_ts,
                 is_closed=True,
             )
-            .order_by("-timestamp_close")[:128]
+            .order_by("-timestamp_close")
+            .first()
         )
-        candles_db = list(reversed(list(candle_qs)))
+        xau_ref_price = float(xau_candle.close) if xau_candle else None
+        xau_ref_bullish = bool(xau_candle.close >= xau_candle.open) if xau_candle else None
+        xau_ref_ts = xau_candle.timestamp_close if xau_candle else None
 
-        if not candles_db:
-            return {"status": "SKIPPED", "reason": "No closed candles found"}
-
-        # Convert to pure engine CandleData
-        engine_candles = [
-            CandleData(
-                timestamp_open=c.timestamp_open,
-                timestamp_close=c.timestamp_close,
-                open=c.open,
-                high=c.high,
-                low=c.low,
-                close=c.close,
-                volume=c.volume,
-                is_closed=c.is_closed,
-            )
-            for c in candles_db
-        ]
+        # Retrieve latest USDT rate from 15m candle or state
+        latest_15m = candles_15m[-1]
+        usdt_rate = float(latest_15m.quote_rate) if latest_15m.quote_rate else None
+        usdt_rate_ts = latest_15m.timestamp_close if usdt_rate else None
 
         engine = XautSignalEngine(
             engine_version=engine_version,
@@ -76,11 +105,36 @@ def analyze_closed_candle(
             code_revision=code_revision,
         )
 
+        # Build MacroEventContext if string passed
+        macro_ctx_obj = None
+        if isinstance(macro_context, MacroEventContext):
+            macro_ctx_obj = macro_context
+        elif isinstance(macro_context, str):
+            is_blackout = macro_context.upper() in ("BLACKOUT", "EVENT_BLACKOUT")
+            macro_ctx_obj = MacroEventContext(
+                is_in_blackout=is_blackout,
+                minutes_to_next_event=None,
+                minutes_since_last_event=None,
+                active_event_name=macro_context if is_blackout else None,
+                is_feed_healthy=True,
+            )
+
         snapshot = engine.analyze(
-            candles_15m=engine_candles,
+            candles_15m=candles_15m,
+            candles_4h=candles_4h if candles_4h else None,
+            candles_1d=candles_1d if candles_1d else None,
             as_of=candle_ts,
             instrument=instrument.symbol,
             timeframe=timeframe,
+            xau_reference_price=xau_ref_price,
+            xau_reference_is_bullish=xau_ref_bullish,
+            xau_reference_ts=xau_ref_ts,
+            usdt_rate=usdt_rate,
+            usdt_rate_ts=usdt_rate_ts,
+            provider_status=provider_status,
+            is_feed_stale=is_stale_feed,
+            is_provider_transition=is_provider_transition,
+            macro_context=macro_ctx_obj,
         )
 
         record, created = SignalPersistenceService.save_signal_snapshot(

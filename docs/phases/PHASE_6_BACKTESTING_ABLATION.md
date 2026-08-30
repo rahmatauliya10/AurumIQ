@@ -1,6 +1,6 @@
 # Phase 6: Backtesting Lab & Walk-Forward Ablation
 
-> **Status:** 📋 **PLANNED**  
+> **Status:** ✅ **APPROVED**  
 > **Primary Goal:** Implement point-in-time historical backtesting, walk-forward time-series splitting with label purging and embargo, realistic trade friction simulation, and automated component ablation testing.
 
 ---
@@ -98,9 +98,10 @@ BASELINE: Direction & Structure Only                → PF = 1.62, Expectancy = 
 
 ## 8. Definition of Done Checklist
 
-- [ ] Backtest harness imports pure `XautSignalEngine` without code divergence.
-- [ ] Walk-forward split generator applies strict purging and embargo.
-- [ ] Trade simulator enforces spreads, fees, slippage, and 1m/5m intrabar replay.
-- [ ] Full metric suite calculated with regime/session/phase breakdowns.
-- [ ] Automated ablation report runs via Celery task.
-- [ ] Acceptance tests **A09, A10** passing.
+- [x] Backtest harness imports pure `XautSignalEngine` without code divergence.
+- [x] Walk-forward split generator applies strict purging and embargo.
+- [x] Trade simulator enforces spreads, fees, slippage, and 1m/5m intrabar replay.
+- [x] Full metric suite calculated with regime/session/phase breakdowns.
+- [x] Automated ablation report runs via Celery task.
+- [x] Acceptance tests **A09, A10** passing.
+- [x] Targeted tests **P6-01 through P6-33** passing.
