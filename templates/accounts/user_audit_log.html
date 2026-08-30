@@ -1,0 +1,71 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}User Management Audit Log — AurumIQ{% endblock %}
+
+{% block content %}
+<div class="content-container">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">User Management Audit Log</h1>
+            <p class="page-subtitle">Immutable audit trail of user account creation, status toggles, and RBAC role changes</p>
+        </div>
+        <div class="header-actions">
+            <a href="{% url 'accounts:user_management' %}" class="btn btn-secondary">
+                ← Back to User Management
+            </a>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title-group">
+                <span class="card-icon">📋</span>
+                <h2 class="card-title">Audit Trail History</h2>
+            </div>
+            <span class="badge badge-subtle">IMMUTABLE LOG</span>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <div class="table-responsive">
+                <table class="data-table font-mono text-sm">
+                    <thead>
+                        <tr>
+                            <th>Timestamp (UTC)</th>
+                            <th>Actor</th>
+                            <th>Action</th>
+                            <th>Target User</th>
+                            <th>Before State</th>
+                            <th>After State</th>
+                            <th>IP Address</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in audit_logs %}
+                        <tr>
+                            <td>{{ log.created_at|date:"Y-m-d H:i:s" }}</td>
+                            <td>
+                                <strong>{{ log.actor.username|default:"System" }}</strong>
+                            </td>
+                            <td>
+                                <span class="badge badge-{% if log.action == 'USER_CREATED' %}success{% elif log.action == 'USER_DISABLED' %}danger{% elif log.action == 'USER_ENABLED' %}success{% elif log.action == 'ROLE_CHANGED' %}gold{% else %}cyan{% endif %}">
+                                    {{ log.action }}
+                                </span>
+                            </td>
+                            <td>{{ log.target_user.username }}</td>
+                            <td class="text-dim">{{ log.before_state|default:"—" }}</td>
+                            <td>{{ log.after_state|default:"—" }}</td>
+                            <td class="text-dim">{{ log.ip_address|default:"127.0.0.1" }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="7" class="text-center text-muted" style="padding: 2rem;">
+                                No audit log records found.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

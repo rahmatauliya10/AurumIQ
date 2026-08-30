@@ -13,6 +13,7 @@ from apps.live_monitor.views import LivenessHealthView, ReadinessHealthView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("accounts/", include("apps.accounts.urls", namespace="accounts")),
     path("accounts/", include("django.contrib.auth.urls")),
     path("health/", health_check, name="health_check"),
     path("health/live/", LivenessHealthView.as_view(), name="health_live"),

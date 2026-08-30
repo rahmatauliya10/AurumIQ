@@ -1,0 +1,270 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}User Management — AurumIQ{% endblock %}
+
+{% block content %}
+<div class="content-container">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">User Management</h1>
+            <p class="page-subtitle">Administer user accounts, RBAC permissions, and department memberships</p>
+        </div>
+        <div class="header-actions">
+            <a href="{% url 'accounts:user_audit_log' %}" class="btn btn-secondary">
+                <span class="btn-icon">📋</span> Audit Trail
+            </a>
+            <button type="button" class="btn btn-primary" onclick="openCreateUserModal()">
+                <span class="btn-icon">+</span> Create New User
+            </button>
+        </div>
+    </div>
+
+    {% if messages %}
+    <div class="messages-container">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Stat Bar -->
+    <div class="grid grid-3" style="margin-bottom: 1.5rem;">
+        <div class="card stat-card">
+            <span class="stat-label">TOTAL USERS</span>
+            <span class="stat-value font-mono">{{ total_users }}</span>
+        </div>
+        <div class="card stat-card">
+            <span class="stat-label">ACTIVE USERS</span>
+            <span class="stat-value font-mono text-success">{{ active_users }}</span>
+        </div>
+        <div class="card stat-card">
+            <span class="stat-label">DISABLED USERS</span>
+            <span class="stat-value font-mono text-muted">{{ disabled_users }}</span>
+        </div>
+    </div>
+
+    <!-- Filters & Table -->
+    <div class="card">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div class="card-title-group">
+                <span class="card-icon">👥</span>
+                <h2 class="card-title">User Accounts Directory</h2>
+            </div>
+            <form method="get" class="filter-form" style="display: flex; gap: 0.75rem; align-items: center;">
+                <input type="text" name="q" value="{{ current_q }}" placeholder="Search username or email..." class="form-control" style="width: 220px;">
+                <select name="role" class="form-control" style="width: 140px;">
+                    <option value="">All Roles</option>
+                    {% for r_val, r_label in roles %}
+                    <option value="{{ r_val }}" {% if current_role == r_val %}selected{% endif %}>{{ r_label }}</option>
+                    {% endfor %}
+                </select>
+                <select name="status" class="form-control" style="width: 120px;">
+                    <option value="">All Status</option>
+                    <option value="active" {% if current_status == "active" %}selected{% endif %}>Active</option>
+                    <option value="disabled" {% if current_status == "disabled" %}selected{% endif %}>Disabled</option>
+                </select>
+                <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+                {% if current_q or current_role or current_status %}
+                <a href="{% url 'accounts:user_management' %}" class="btn btn-outline btn-sm">Reset</a>
+                {% endif %}
+            </form>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            <th>Role</th>
+                            <th>Department</th>
+                            <th>Status</th>
+                            <th>Joined</th>
+                            <th>Last Login</th>
+                            <th style="text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in users %}
+                        <tr>
+                            <td>
+                                <div class="user-cell">
+                                    <span class="avatar-circle">👤</span>
+                                    <div>
+                                        <strong class="font-mono">{{ u.username }}</strong>
+                                        <div class="text-dim text-sm">{{ u.email|default:"No email" }}</div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="badge badge-{% if u.profile.role == 'ADMIN' or u.is_superuser %}gold{% elif u.profile.role == 'ANALYST' %}cyan{% else %}gray{% endif %}">
+                                    {{ u.profile.get_role_display|default:"Viewer" }}
+                                </span>
+                            </td>
+                            <td>{{ u.profile.department|default:"—" }}</td>
+                            <td>
+                                <span class="status-indicator {% if u.is_active %}online{% else %}offline{% endif %}">
+                                    <span class="status-dot"></span> {% if u.is_active %}Active{% else %}Disabled{% endif %}
+                                </span>
+                            </td>
+                            <td class="font-mono text-sm">{{ u.date_joined|date:"Y-m-d" }}</td>
+                            <td class="font-mono text-sm">{{ u.last_login|date:"Y-m-d H:i"|default:"Never" }}</td>
+                            <td style="text-align: right;">
+                                <div class="btn-group">
+                                    <button type="button" class="btn btn-sm btn-secondary" 
+                                            onclick="openEditUserModal('{{ u.id }}', '{{ u.username }}', '{{ u.profile.role }}', '{{ u.profile.department|default:'' }}', '{{ u.first_name }}', '{{ u.last_name }}')">
+                                        Edit
+                                    </button>
+                                    {% if u != request.user %}
+                                    <form method="post" action="{% url 'accounts:user_toggle_status' u.id %}" style="display: inline;" onsubmit="return confirm('Are you sure you want to {% if u.is_active %}disable{% else %}enable{% endif %} user {{ u.username }}?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm {% if u.is_active %}btn-danger{% else %}btn-outline{% endif %}">
+                                            {% if u.is_active %}Disable{% else %}Enable{% endif %}
+                                        </button>
+                                    </form>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="7" class="text-center text-muted" style="padding: 2rem;">
+                                No users found matching criteria.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create User Modal -->
+<div id="createUserModal" class="modal" style="display: none;">
+    <div class="modal-backdrop" onclick="closeCreateUserModal()"></div>
+    <div class="modal-dialog">
+        <div class="modal-content card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <span class="card-icon">➕</span>
+                    <h2 class="card-title">Create New User</h2>
+                </div>
+                <button type="button" class="close-btn" onclick="closeCreateUserModal()">✕</button>
+            </div>
+            <form method="post" action="{% url 'accounts:user_create' %}" class="card-body standard-form">
+                {% csrf_token %}
+                <div class="form-group">
+                    <label class="form-label">Username *</label>
+                    <input type="text" name="username" class="form-control font-mono" required placeholder="e.g. jdoe">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Email Address</label>
+                    <input type="email" name="email" class="form-control" placeholder="e.g. jdoe@aurumiq.com">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Initial Password *</label>
+                    <input type="password" name="password" class="form-control" required placeholder="Min 8 characters">
+                </div>
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">RBAC Role *</label>
+                        <select name="role" class="form-control" required>
+                            <option value="VIEWER">Read-Only Viewer</option>
+                            <option value="ANALYST">Quantitative Analyst</option>
+                            <option value="ADMIN">Administrator</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Department</label>
+                        <input type="text" name="department" class="form-control" placeholder="e.g. Trading Desk">
+                    </div>
+                </div>
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">First Name</label>
+                        <input type="text" name="first_name" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Last Name</label>
+                        <input type="text" name="last_name" class="form-control">
+                    </div>
+                </div>
+                <div class="form-actions" style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 1rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeCreateUserModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create User Account</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit User Modal -->
+<div id="editUserModal" class="modal" style="display: none;">
+    <div class="modal-backdrop" onclick="closeEditUserModal()"></div>
+    <div class="modal-dialog">
+        <div class="modal-content card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <span class="card-icon">✏️</span>
+                    <h2 class="card-title">Edit User: <span id="editModalUsername" class="font-mono text-gold"></span></h2>
+                </div>
+                <button type="button" class="close-btn" onclick="closeEditUserModal()">✕</button>
+            </div>
+            <form id="editUserForm" method="post" action="" class="card-body standard-form">
+                {% csrf_token %}
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">RBAC Role *</label>
+                        <select name="role" id="editModalRole" class="form-control" required>
+                            <option value="VIEWER">Read-Only Viewer</option>
+                            <option value="ANALYST">Quantitative Analyst</option>
+                            <option value="ADMIN">Administrator</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Department</label>
+                        <input type="text" name="department" id="editModalDepartment" class="form-control">
+                    </div>
+                </div>
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">First Name</label>
+                        <input type="text" name="first_name" id="editModalFirstName" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Last Name</label>
+                        <input type="text" name="last_name" id="editModalLastName" class="form-control">
+                    </div>
+                </div>
+                <div class="form-actions" style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 1rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditUserModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openCreateUserModal() {
+    document.getElementById('createUserModal').style.display = 'flex';
+}
+function closeCreateUserModal() {
+    document.getElementById('createUserModal').style.display = 'none';
+}
+function openEditUserModal(userId, username, role, department, firstName, lastName) {
+    document.getElementById('editModalUsername').textContent = username;
+    document.getElementById('editModalRole').value = role || 'VIEWER';
+    document.getElementById('editModalDepartment').value = department || '';
+    document.getElementById('editModalFirstName').value = firstName || '';
+    document.getElementById('editModalLastName').value = lastName || '';
+    document.getElementById('editUserForm').action = '/accounts/users/' + userId + '/edit/';
+    document.getElementById('editUserModal').style.display = 'flex';
+}
+function closeEditUserModal() {
+    document.getElementById('editUserModal').style.display = 'none';
+}
+</script>
+{% endblock %}
