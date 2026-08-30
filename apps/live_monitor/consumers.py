@@ -5,16 +5,31 @@ from typing import Any, Dict, Optional, Set
 import json
 import structlog
 
+import redis
+from django.conf import settings
+
 logger = structlog.get_logger(__name__)
 
 
 class LiveEventBroadcaster:
     """
-    In-memory / Redis pub-sub event broadcaster for typed incremental live events.
+    Cross-process Redis pub-sub & in-memory event broadcaster for typed incremental live events.
     Supports: quote_update, signal_update, risk_plan_update, feed_health_update, candle_closed.
     """
 
     _subscribers: Set[Any] = set()
+    _redis_client: Optional[Any] = None
+
+    @classmethod
+    def get_redis_client(cls):
+        if cls._redis_client is None:
+            try:
+                redis_url = getattr(settings, "REDIS_URL", "redis://localhost:6379/0")
+                cls._redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            except Exception as e:
+                logger.warning("redis_broadcaster_connection_failed", error=str(e))
+                cls._redis_client = None
+        return cls._redis_client
 
     @classmethod
     def subscribe(cls, subscriber: Any) -> None:
@@ -26,7 +41,8 @@ class LiveEventBroadcaster:
 
     @classmethod
     def broadcast(cls, event_payload: Dict[str, Any]) -> None:
-        """Broadcast typed incremental update to all authenticated subscribers."""
+        """Broadcast typed incremental update to all local subscribers and Redis pub/sub channel."""
+        # 1. Local in-memory broadcast
         dead_subscribers = set()
         for sub in list(cls._subscribers):
             try:
@@ -35,6 +51,16 @@ class LiveEventBroadcaster:
                 logger.warning("broadcast_failed_for_subscriber", error=str(e))
                 dead_subscribers.add(sub)
         cls._subscribers.difference_update(dead_subscribers)
+
+        # 2. Cross-process Redis pub/sub broadcast
+        r = cls.get_redis_client()
+        if r:
+            try:
+                inst = event_payload.get("instrument", "default")
+                channel = f"aurumiq:live_events:{inst}"
+                r.publish(channel, json.dumps(event_payload))
+            except Exception as e:
+                logger.warning("redis_publish_failed", error=str(e))
 
     @classmethod
     def format_quote_event(
@@ -216,7 +242,7 @@ class LiveMonitorWebSocketHandler:
 class LiveMonitorAsyncWebsocketConsumer:
     """
     Native ASGI 3.0 WebSocket Application for real-time live monitoring.
-    Handles connect, authentication verification, disconnect, and streaming.
+    Handles connect, authentication verification, disconnect, and streaming with Redis pub/sub.
     """
 
     def __init__(self, scope, receive, send):
@@ -226,6 +252,7 @@ class LiveMonitorAsyncWebsocketConsumer:
         self.handler: Optional[LiveMonitorWebSocketHandler] = None
 
     async def __call__(self):
+        import asyncio
         # Authenticate user from ASGI scope
         user = self.scope.get("user")
         if not user or not getattr(user, "is_authenticated", False):
@@ -243,6 +270,35 @@ class LiveMonitorAsyncWebsocketConsumer:
 
         self.handler.async_sender = _async_send
 
+        # Background Redis pub/sub listener loop for cross-process worker delivery
+        async def _redis_listener_loop():
+            r = LiveEventBroadcaster.get_redis_client()
+            if not r:
+                return
+            try:
+                pubsub = r.pubsub()
+                channel = "aurumiq:live_events:XAUT/USDT"
+                pubsub.subscribe(channel)
+                while True:
+                    msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=1.0)
+                    if msg and msg.get("type") == "message":
+                        data_str = msg.get("data")
+                        if data_str:
+                            await self.send({"type": "websocket.send", "text": data_str})
+                    await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug("redis_listener_loop_ended", error=str(e))
+            finally:
+                try:
+                    pubsub.unsubscribe()
+                    pubsub.close()
+                except Exception:
+                    pass
+
+        redis_task = asyncio.create_task(_redis_listener_loop())
+
         try:
             while True:
                 message = await self.receive()
@@ -254,5 +310,7 @@ class LiveMonitorAsyncWebsocketConsumer:
                     if text == "ping":
                         await self.send({"type": "websocket.send", "text": "pong"})
         finally:
+            redis_task.cancel()
             if self.handler:
                 self.handler.disconnect()
+

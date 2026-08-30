@@ -64,10 +64,10 @@ def process_closed_candle_task(
     high_str: str,
     low_str: str,
     close_str: str,
+    code_revision: str,
     volume_str: str = "0",
-    quote_rate_str: str = "1.0",
+    quote_rate_str: Optional[str] = None,
     source: str = "binance",
-    code_revision: str = "15d388d1",
     engine_version: str = "4.0.0",
     config_version: str = "cfg-2026-v1",
     feature_version: str = "feat-2026-v1",
@@ -80,6 +80,9 @@ def process_closed_candle_task(
     is_feed_stale: bool = False,
 ) -> dict:
     """Execute closed candle signal and risk evaluation with version-pinned provenance (P7-C6)."""
+    if not code_revision:
+        raise ValueError("Explicit code_revision is strictly required for live signal provenance.")
+
     try:
         ts_open = datetime.fromisoformat(timestamp_open_iso)
         ts_close = datetime.fromisoformat(timestamp_close_iso)
@@ -98,7 +101,7 @@ def process_closed_candle_task(
             low_price=Decimal(low_str),
             close_price=Decimal(close_str),
             volume=Decimal(volume_str),
-            quote_rate=Decimal(quote_rate_str),
+            quote_rate=Decimal(quote_rate_str) if quote_rate_str else None,
             source=source,
             is_closed=True,
         )

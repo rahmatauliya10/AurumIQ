@@ -172,7 +172,9 @@ class XautSignalEngine:
                 for c in valid_15m[-32:]:
                     c_ts = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)
                     if c_ts in xau_by_time and xau_by_time[c_ts] > 0:
-                        c_rate = float(c.quote_rate) if c.quote_rate else float(usdt_rate)
+                        if c.quote_rate is None:
+                            continue  # Strictly skip historical candle with missing PIT rate
+                        c_rate = float(c.quote_rate)
                         c_xaut_usd = float(c.close) * c_rate
                         c_xau_usd = xau_by_time[c_ts]
                         basis_pct_series.append((c_xaut_usd - c_xau_usd) / c_xau_usd)

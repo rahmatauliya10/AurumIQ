@@ -190,26 +190,55 @@ class LiveDecisionPipelineService:
         )
         now_utc = datetime.now(timezone.utc)
 
-        # Step 2: Query historical closed candles <= candle_ts
+        # Step 2: Query multi-timeframe historical closed candles <= candle_ts
         instrument_obj = Instrument.objects.filter(
             base_asset__code="XAUT", quote_asset__code="USDT"
         ).first()
 
-        candles_15m_db = []
-        if instrument_obj:
-            candle_qs = (
+        def _get_engine_candles(tf: str, limit: int = 128) -> list[CandleData]:
+            if not instrument_obj:
+                return []
+            qs = (
                 MarketCandle.objects.filter(
                     instrument=instrument_obj,
-                    timeframe=event.timeframe,
+                    timeframe=tf,
                     timestamp_close__lte=candle_ts,
                     is_closed=True,
                 )
-                .order_by("-timestamp_close")[:128]
+                .order_by("-timestamp_close")[:limit]
             )
-            candles_15m_db = list(reversed(list(candle_qs)))
+            return [
+                CandleData(
+                    timestamp_open=c.timestamp_open,
+                    timestamp_close=c.timestamp_close,
+                    open=c.open,
+                    high=c.high,
+                    low=c.low,
+                    close=c.close,
+                    volume=c.volume,
+                    is_closed=c.is_closed,
+                    quote_rate=c.quote_rate,
+                    close_usd=c.close_usd,
+                    source_id=c.source,
+                )
+                for c in reversed(list(qs))
+            ]
 
-        # Convert to pure engine CandleData
-        engine_candles = [
+        engine_candles = _get_engine_candles(event.timeframe, 128)
+        engine_candles_4h = _get_engine_candles("4h", 64)
+        engine_candles_1d = _get_engine_candles("1d", 32)
+
+        # Historical XAU/USD reference candles
+        xau_qs = (
+            MarketCandle.objects.filter(
+                instrument__base_asset__code="XAU",
+                instrument__quote_asset__code="USD",
+                timestamp_close__lte=candle_ts,
+                is_closed=True,
+            )
+            .order_by("-timestamp_close")[:64]
+        )
+        engine_candles_xau = [
             CandleData(
                 timestamp_open=c.timestamp_open,
                 timestamp_close=c.timestamp_close,
@@ -219,8 +248,9 @@ class LiveDecisionPipelineService:
                 close=c.close,
                 volume=c.volume,
                 is_closed=c.is_closed,
+                source_id=c.source,
             )
-            for c in candles_15m_db
+            for c in reversed(list(xau_qs))
         ]
 
         # Include current event candle if not already in DB
@@ -250,6 +280,9 @@ class LiveDecisionPipelineService:
         # Step 4: Execute deterministic closed-candle signal analysis (P7-C2)
         signal_snapshot = engine.analyze(
             candles_15m=engine_candles,
+            candles_4h=engine_candles_4h if engine_candles_4h else None,
+            candles_1d=engine_candles_1d if engine_candles_1d else None,
+            candles_xau=engine_candles_xau if engine_candles_xau else None,
             as_of=candle_ts,
             instrument=event.instrument,
             timeframe=event.timeframe,
@@ -279,8 +312,8 @@ class LiveDecisionPipelineService:
 
         # Extract structure and volatility from engine for risk planning
         features_15m = engine.feature_engine.extract_features(engine_candles) if len(engine_candles) >= 32 else None
-        atr14 = features_15m.atr14 if features_15m else float(engine_candles[-1].close * Decimal("0.005"))
-        structure_15m = engine.structure_engine.analyze(engine_candles, atr=atr14) if len(engine_candles) >= 32 else None
+        atr14 = features_15m.atr14 if features_15m else None
+        structure_15m = engine.structure_engine.analyze(engine_candles, atr=atr14) if (len(engine_candles) >= 32 and atr14 is not None) else None
 
         risk_plan_snapshot = risk_planner.plan(
             signal_snapshot=signal_snapshot,

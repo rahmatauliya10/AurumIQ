@@ -1,5 +1,6 @@
 """Celery tasks for asynchronous closed-candle signal generation (Phase 4)."""
 from datetime import datetime, timezone
+from typing import Optional
 from celery import shared_task
 import structlog
 
@@ -23,10 +24,10 @@ def analyze_closed_candle(
     config_version: str = "cfg-2026-v1",
     feature_version: str = "feat-2026-v1",
     cycle_version: str = "3.0.0-3A",
-    provider_status: str = "HEALTHY",
-    is_stale_feed: bool = False,
-    is_provider_transition: bool = False,
-    macro_context: str = "NORMAL",
+    provider_status: Optional[str] = None,
+    is_stale_feed: Optional[bool] = None,
+    is_provider_transition: Optional[bool] = None,
+    macro_context: Optional[str] = None,
 ) -> dict:
     """
     Idempotently analyze closed candle up to candle_timestamp with complete market context (A03, P4-21).
@@ -111,36 +112,44 @@ def analyze_closed_candle(
         usdt_rate = float(latest_15m.quote_rate) if latest_15m.quote_rate else None
         usdt_rate_ts = latest_15m.timestamp_close if usdt_rate else None
 
-        # Authoritative Provider Health & Data Quality Lookup
-        effective_provider_status = provider_status
-        effective_is_stale = is_stale_feed
-        effective_is_transition = is_provider_transition
-
-        from apps.instruments.models import ProviderHealthSnapshot
-        latest_health = (
-            ProviderHealthSnapshot.objects.filter(
-                listing__instrument=instrument,
-                checked_at__lte=candle_ts,
+        # Authoritative Provider Health Lookup (Fail closed if missing)
+        if provider_status is not None:
+            effective_provider_status = provider_status
+            effective_is_transition = bool(is_provider_transition)
+        else:
+            from apps.instruments.models import ProviderHealthSnapshot
+            latest_health = (
+                ProviderHealthSnapshot.objects.filter(
+                    listing__instrument=instrument,
+                    checked_at__lte=candle_ts,
+                )
+                .order_by("-checked_at")
+                .first()
             )
-            .order_by("-checked_at")
-            .first()
-        )
-        if latest_health:
-            effective_provider_status = latest_health.status
-            effective_is_transition = (latest_health.status == "TRANSITION")
+            if latest_health:
+                effective_provider_status = latest_health.status
+                effective_is_transition = (latest_health.status == "TRANSITION")
+            else:
+                # If health snapshot table has entries for this instrument, missing means UNKNOWN
+                has_any_listing = instrument.listings.exists()
+                effective_provider_status = "UNKNOWN" if has_any_listing else "HEALTHY"
+                effective_is_transition = False
 
-        from apps.market_data.models import DataQualitySnapshot
-        latest_dq = (
-            DataQualitySnapshot.objects.filter(
-                instrument=instrument,
-                timeframe=timeframe,
-                timestamp__lte=candle_ts,
+        # Authoritative Data Quality Lookup (Fail closed if hard fail or stale)
+        if is_stale_feed is not None:
+            effective_is_stale = is_stale_feed
+        else:
+            from apps.market_data.models import DataQualitySnapshot
+            latest_dq = (
+                DataQualitySnapshot.objects.filter(
+                    instrument=instrument,
+                    timeframe=timeframe,
+                    timestamp__lte=candle_ts,
+                )
+                .order_by("-timestamp")
+                .first()
             )
-            .order_by("-timestamp")
-            .first()
-        )
-        if latest_dq and (latest_dq.is_stale or latest_dq.hard_fail):
-            effective_is_stale = True
+            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else False
 
         engine = XautSignalEngine(
             engine_version=engine_version,
@@ -161,6 +170,14 @@ def analyze_closed_candle(
                 minutes_to_next_event=None,
                 minutes_since_last_event=None,
                 active_event_name=macro_context if is_blackout else None,
+                is_feed_healthy=True,
+            )
+        else:
+            macro_ctx_obj = MacroEventContext(
+                is_in_blackout=False,
+                minutes_to_next_event=None,
+                minutes_since_last_event=None,
+                active_event_name=None,
                 is_feed_healthy=True,
             )
 

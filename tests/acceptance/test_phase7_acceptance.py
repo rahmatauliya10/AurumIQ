@@ -102,6 +102,51 @@ class Phase7AcceptanceTests(TestCase):
                 low=c.low,
                 close=c.close,
                 volume=c.volume,
+                quote_rate=Decimal("1.000000"),
+                close_usd=c.close,
+                is_closed=True,
+                data_quality_flag=CandleQualityFlag.OK,
+            )
+
+        # Multi-timeframe 4H and 1D candles
+        self.candles_4h = []
+        self.candles_1d = []
+        for i in range(35):
+            t_open_4h = self.candles_15m[0].timestamp_open - timedelta(hours=4 * (35 - i))
+            c_4h = _make_closed_candle(t_open_4h, 240, Decimal("2450.00") + Decimal(str(i * 2)), Decimal("2460.00") + Decimal(str(i * 2)), Decimal("2440.00") + Decimal(str(i * 2)), Decimal("2455.00") + Decimal(str(i * 2)))
+            self.candles_4h.append(c_4h)
+            MarketCandle.objects.create(
+                instrument=self.xaut_inst,
+                source="binance",
+                timeframe="4h",
+                timestamp_open=c_4h.timestamp_open,
+                timestamp_close=c_4h.timestamp_close,
+                open=c_4h.open,
+                high=c_4h.high,
+                low=c_4h.low,
+                close=c_4h.close,
+                volume=c_4h.volume,
+                is_closed=True,
+                data_quality_flag=CandleQualityFlag.OK,
+            )
+
+        # XAU Reference candles
+        self.candles_xau = []
+        for i in range(40):
+            c_15 = self.candles_15m[i]
+            c_xau = _make_closed_candle(c_15.timestamp_open, 15, c_15.open + Decimal("2.00"), c_15.high + Decimal("2.00"), c_15.low + Decimal("2.00"), c_15.close + Decimal("2.00"))
+            self.candles_xau.append(c_xau)
+            MarketCandle.objects.create(
+                instrument=self.xau_inst,
+                source="gold_reference",
+                timeframe="15m",
+                timestamp_open=c_xau.timestamp_open,
+                timestamp_close=c_xau.timestamp_close,
+                open=c_xau.open,
+                high=c_xau.high,
+                low=c_xau.low,
+                close=c_xau.close,
+                volume=c_xau.volume,
                 is_closed=True,
                 data_quality_flag=CandleQualityFlag.OK,
             )
@@ -110,7 +155,8 @@ class Phase7AcceptanceTests(TestCase):
     def test_a39_live_backtest_engine_parity(self):
         """
         Gate A39:
-          1. LiveDecisionPipelineService invokes the EXACT frozen XautSignalEngine and RiskPlanner.
+          1. LiveDecisionPipelineService invokes the EXACT frozen XautSignalEngine and RiskPlanner
+             with complete multi-timeframe and reference context (15m, 4H, 1D, XAU reference).
           2. Static AST scan proves apps/live_monitor contains ZERO duplicate scoring or risk formulas.
         """
         last_candle = self.candles_15m[-1]
@@ -139,6 +185,8 @@ class Phase7AcceptanceTests(TestCase):
         engine_direct = XautSignalEngine(code_revision=self.code_revision)
         snap_direct = engine_direct.analyze(
             candles_15m=self.candles_15m,
+            candles_4h=self.candles_4h,
+            candles_xau=self.candles_xau,
             as_of=self.t_close,
             xau_reference_price=Decimal("2540.00"),
             xau_reference_is_bullish=True,

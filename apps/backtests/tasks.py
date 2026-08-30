@@ -141,6 +141,25 @@ def run_backtest_task(
     ).exclude(quote_rate__isnull=True).order_by("timestamp_close"):
         dataset.add_usdt_rate(c.timestamp_close, c.quote_rate)
 
+    # 4. Assemble execution quotes from 1m resolution if available
+    from engine.core.types import QuoteData
+    for c in MarketCandle.objects.filter(
+        timeframe="1m",
+        timestamp_close__gte=start_dt,
+        timestamp_close__lte=end_dt,
+        is_closed=True,
+        **base_filter,
+    ).order_by("timestamp_close"):
+        dataset.add_quote(
+            QuoteData(
+                timestamp=c.timestamp_close,
+                bid=c.close - Decimal("0.25"),
+                ask=c.close + Decimal("0.25"),
+                instrument=instrument,
+                source_id=c.source,
+            )
+        )
+
     try:
         runner = BacktestRunner()
         result = runner.run(dataset=dataset, spec=spec)
