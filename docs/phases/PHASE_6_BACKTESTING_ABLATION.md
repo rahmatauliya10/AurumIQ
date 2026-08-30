@@ -1,44 +1,111 @@
 # Phase 6: Backtesting Lab & Walk-Forward Ablation
 
-> **Historical XAUT Baseline Status:** ✅ `VERIFIED / FROZEN`  
-> **Current XAUUSD Target Status:** 🟡 `XAUUSD PIT BACKTEST REQUIRED`  
-> **Primary Goal:** Provide point-in-time historical backtesting, walk-forward time-series splitting with label purging and embargo, realistic trade friction simulation, and automated component ablation testing for XAUUSD.
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
+> **Current XAUUSD Target Status:** 🟡 **XAUUSD PIT BACKTEST REQUIRED**
 
 ---
 
-## 1. Non-Negotiable Core Principle: One Engine Rule (R2 & A09)
+## XAUUSD Migration Addendum
 
-The backtesting engine must NEVER maintain a simplified secondary set of trading rules. Live analysis and backtesting must resolve the **exact same pure-Python `SignalEngine` class, version, configuration, and feature set**.
+### 1. Target Scope & Automated Ablation for XAUUSD
+For the target XAUUSD instrument, the ablation lab will assess the marginal contribution of each feature layer (Market Regime, Structure/BOS, Multi-Timeframe Trend, Session Expectancy, Swing Duration, Macro Blackout, and optional ML meta-filters) across historical spot XAUUSD datasets.
+
+### 2. Approved Planned Test Contracts
+- **`XAU-P6-01`**: BUY point-in-time replay (`PLANNED / FUTURE CONTRACT`)
+- **`XAU-P6-02`**: SELL point-in-time replay (`PLANNED / FUTURE CONTRACT`)
+- **`XAU-P6-03`**: Combined BUY/SELL parity (`PLANNED / FUTURE CONTRACT`)
+
+---
+
+## Historical XAUT Frozen Specification (Verbatim Baseline)
+
+> **Status:** ✅ **APPROVED**  
+> **Primary Goal:** Implement point-in-time historical backtesting, walk-forward time-series splitting with label purging and embargo, realistic trade friction simulation, and automated component ablation testing.
+
+### 1. Non-Negotiable Core Principle (R2 & A09)
+
+> **ONE ENGINE RULE:** The backtesting engine must NEVER maintain a simplified secondary set of trading rules. Live analysis and backtesting must resolve the **exact same pure-Python `XautSignalEngine` class, version, configuration, and feature set**.
 
 ```text
-HISTORICAL STORE (XAUUSD) ──► Build Point-in-Time MarketContext(t) ──► SignalEngine.analyze(context)
-                                                                               │
-                                                                               ▼
-METRICS & ABLATION ◄── Record Trade ◄── Simulate Execution ◄── BUY_WINDOW / SELL_WINDOW
+HISTORICAL STORE ──> Build Point-in-Time MarketContext(t) ──> XautSignalEngine.analyze(context)
+                                                                       │
+                                                                       ▼
+METRICS & ABLATION <── Record Trade <── Simulate Execution <── BUY_WINDOW (if emitted)
 ```
 
----
+### 2. Walk-Forward Splitting, Purge & Embargo (`engine/backtesting/splits.py`)
 
-## 2. Automated Component Ablation (`engine/backtest/ablation.py` & A10)
+#### Time-Series Folds (No Random Shuffle)
+```text
+Window 1: [ Train A ] -> [ Val B ] -> [ Test C ]
+Window 2:             -> [ Train B ] -> [ Val C ] -> [ Test D ]
+Window 3:                          -> [ Train C ] -> [ Val D ] -> [ Test E ]
+```
 
-Quantifies the exact marginal contribution of each engine layer on out-of-sample data without mutating production configuration:
-1. **Layer 0 (Baseline):** Core Trend & Structural Direction only.
-2. **Layer 1:** + Phase 3A Session Expectancy.
-3. **Layer 2:** + Phase 3A Swing Duration Maturity.
-4. **Layer 3:** + Phase 3A Macro Event Blackout Gate.
-5. **Layer 4 (Candidate):** + Macro Cross-Market Indicators (DXY, Yields, Gold Futures).
-6. **Layer 5 (Experimental):** + Phase 3B Spectral Cycles (Evaluated against promotion gate).
+#### Purge & Embargo Windows
+- **Purging:** If signal outcome labeling horizon is 24 hours (96 bars), remove 96 bars immediately preceding train/validation/test boundaries to eliminate overlapping target leakage.
+- **Embargo:** Add a safety buffer after the test set to account for autocorrelation before the next fold starts.
 
----
+### 3. Trade Simulator & Realistic Friction (`engine/backtesting/simulator.py`)
 
-## 3. Definition of Done Checklist
+#### Simulated Trade Lifecycle
+1. **Trigger:** `engine.analyze(t)` emits `BUY_WINDOW`.
+2. **Fill:** `EntryExecutionModel` calculates fill price on the next bar or post-signal quote.
+3. **Frictions Applied:**
+   - Bid-Ask Spread: Configured percentage (e.g. $0.05\%$).
+   - Exchange Maker/Taker Fees: Configured percentage (e.g. $0.04\%$).
+   - Execution Slippage: Configured percentage (e.g. $0.02\%$).
+4. **Monitoring:** Triple-barrier evaluation (TP1, TP2, Stop Loss, or Max Holding Time Horizon).
+5. **Intrabar Resolution:** Applies `IntrabarResolver` (1m/5m replay or `SL_FIRST`) on ambiguous candles.
 
-### Historical Baseline
-- [x] Walk-forward split generator with purging and embargo verified.
-- [x] Trade simulator with realistic spreads, fees, and slippage implemented.
-- [x] Automated component ablation framework verified (`A10`).
-- [x] Asynchronous Celery backtest job execution verified (`apps/backtests/`).
+### 4. Performance Metrics Suite (`engine/backtesting/metrics.py`)
 
-### Target XAUUSD Scope
-- [ ] Run automated ablation tests across all candidate features on historical XAUUSD data.
-- [ ] Finalize production feature set and scoring weights based on ablation evidence.
+Every backtest report calculates comprehensive, risk-adjusted statistics:
+
+| Metric Category | Specific Metrics Computed |
+|---|---|
+| **Sample Size** | Total Setups, Valid Trades ($N$), Trades / Month |
+| **Payoff Profile** | Win Rate ($\%$), Avg Win ($R$), Avg Loss ($R$), Payoff Ratio |
+| **Expectancy** | Expected $R$ per Trade: $\mathbb{E}[R] = (W\% \times \text{AvgWin}) - (L\% \times \text{AvgLoss})$ |
+| **Profitability** | Profit Factor ($\frac{\text{Gross Profit}}{\text{Gross Loss}}$), Net Return ($\%$) |
+| **Downside Risk** | Max Drawdown ($\%$), Max Drawdown Duration (days), Consecutive Losses |
+| **Risk-Adjusted** | Sharpe Ratio, Sortino Ratio, Calmar Ratio |
+| **Execution Quality** | Maximum Favorable Excursion (MFE), Maximum Adverse Excursion (MAE) |
+| **Subsystem Breakdown** | Performance partitioned by **Regime**, **Session**, and **Cycle Phase** |
+
+### 5. Automated Component Ablation (`engine/backtesting/ablation.py` & A10)
+
+Quantifies the exact marginal contribution of each engine layer:
+
+```text
+BASELINE: Direction & Structure Only                → PF = 1.62, Expectancy = +0.22R
++ Session Expectancy (Phase 3A)                     → PF = 1.74, Expectancy = +0.28R (+27%)
++ Swing Duration Maturity (Phase 3A)                → PF = 1.82, Expectancy = +0.33R (+18%)
++ Macro Event Gate (Phase 3A)                       → PF = 1.88, Expectancy = +0.36R (+9%)
++ Experimental Cycles (Phase 3B — Promoted only)    → Evaluated against Promotion Gate
++ Normalized XAU Confirmation                       → PF = 1.95, Expectancy = +0.41R (+14%)
+```
+
+### 6. Django Backtest Job Management (`apps/backtests/`)
+
+- Model: `BacktestRun` (stores parameters, start/end dates, engine/config versions, aggregate results).
+- Model: `BacktestTrade` (stores individual simulated trade entries, exits, MFE, MAE, realized $R$).
+- Celery Task: `run_backtest` executed on the dedicated `backtest` Celery queue.
+
+### 7. Phase 6 Acceptance Test Suite
+
+| Test ID | Test Name | Assertion Criteria |
+|---|---|---|
+| **A09** | One Engine Parity | Live engine and backtester resolve identical `XautSignalEngine` class, version, and config. |
+| **A10** | Cycle Ablation Reporting | Backtest harness generates side-by-side metrics with cycle features on vs off. |
+
+### 8. Definition of Done Checklist
+
+- [x] Backtest harness imports pure `XautSignalEngine` without code divergence.
+- [x] Walk-forward split generator applies strict purging and embargo.
+- [x] Trade simulator enforces spreads, fees, slippage, and 1m/5m intrabar replay.
+- [x] Full metric suite calculated with regime/session/phase breakdowns.
+- [x] Automated ablation report runs via Celery task.
+- [x] Acceptance tests **A09, A10** passing.
+- [x] Targeted tests **P6-01 through P6-33** passing.
