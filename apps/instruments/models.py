@@ -31,15 +31,13 @@ class Asset(models.Model):
 
 
 class InstrumentRole(models.TextChoices):
-    PRIMARY_SIGNAL = "PRIMARY_SIGNAL", "Primary Signal Target (XAU/USD)"
-    PRIMARY_XAUUSD = "PRIMARY_XAUUSD", "Primary Signal Target (XAU/USD)"
-    SECONDARY_XAUUSD = "SECONDARY_XAUUSD", "Secondary Consensus Reference (XAU/USD)"
     EXECUTION = "EXECUTION", "Execution Target (XAUT/USDT)"
     GOLD_REFERENCE = "GOLD_REFERENCE", "Canonical Gold Directional Reference (XAU/USD)"
     GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Secondary Confirmation Proxy (PAXG / Gold Futures)"
     QUOTE_NORMALIZATION = "QUOTE_NORMALIZATION", "Canonical Stablecoin Normalization Rate (USDT/USD)"
     QUOTE_NORMALIZATION_PROXY = "QUOTE_NORMALIZATION_PROXY", "Stablecoin Proxy Normalization Rate (USDT/USDC)"
     MACRO = "MACRO", "Macro USD Filter (DXY / Yields)"
+    PRIMARY_SIGNAL = "PRIMARY_SIGNAL", "Primary Signal Target (XAU/USD)"
 
 
 class InstrumentType(models.TextChoices):
@@ -87,7 +85,10 @@ class Instrument(models.Model):
 
     @classmethod
     def get_canonical_xauusd(cls) -> Optional["Instrument"]:
-        """Resolve the canonical XAU/USD primary signal instrument."""
+        """
+        Resolve the canonical XAU/USD primary signal instrument.
+        Preserves historical GOLD_REFERENCE role while acting as active operational target.
+        """
         return cls.objects.filter(
             base_asset__code="XAU",
             quote_asset__code="USD",
@@ -113,6 +114,15 @@ class ListingStatus(models.TextChoices):
     DELISTED = "DELISTED", "Delisted"
 
 
+class ListingRole(models.TextChoices):
+    PRIMARY_XAUUSD_SPOT = "PRIMARY_XAUUSD_SPOT", "Primary Spot XAU/USD Feed"
+    SECONDARY_XAUUSD_SPOT = "SECONDARY_XAUUSD_SPOT", "Secondary Spot XAU/USD Consensus"
+    LEGACY_EXECUTION = "LEGACY_EXECUTION", "Legacy Execution Feed (XAUT/USDT)"
+    LEGACY_GOLD_REFERENCE = "LEGACY_GOLD_REFERENCE", "Legacy Gold Reference (XAU/USD)"
+    LEGACY_QUOTE_NORMALIZATION = "LEGACY_QUOTE_NORMALIZATION", "Legacy USDT Normalization Rate"
+    GENERIC = "GENERIC", "Generic Venue Listing"
+
+
 class MarketListing(models.Model):
     """Venue-specific listing mapping an Instrument to an exchange provider."""
     instrument = models.ForeignKey(
@@ -120,8 +130,15 @@ class MarketListing(models.Model):
         on_delete=models.CASCADE,
         related_name="listings",
     )
-    provider = models.CharField(max_length=32, db_index=True)  # e.g., binance, okx, gold_reference
+    provider = models.CharField(max_length=32, db_index=True)  # e.g., binance, okx, gold_reference, xauusd_primary
     provider_symbol = models.CharField(max_length=64)          # e.g., XAUTUSDT, XAUT-USDT, XAUUSD
+    listing_role = models.CharField(
+        max_length=32,
+        choices=ListingRole.choices,
+        default=ListingRole.GENERIC,
+        db_index=True,
+        help_text="Explicit source role for deterministic provider resolution",
+    )
     status = models.CharField(
         max_length=16,
         choices=ListingStatus.choices,
@@ -144,7 +161,7 @@ class MarketListing(models.Model):
         verbose_name_plural = "Market Listings"
 
     def __str__(self) -> str:
-        return f"{self.provider.upper()}:{self.provider_symbol} -> {self.instrument.symbol}"
+        return f"{self.provider.upper()}:{self.provider_symbol} ({self.listing_role}) -> {self.instrument.symbol}"
 
 
 class ProviderHealthStatus(models.TextChoices):
@@ -152,6 +169,7 @@ class ProviderHealthStatus(models.TextChoices):
     DEGRADED = "DEGRADED", "Degraded"
     UNHEALTHY = "UNHEALTHY", "Unhealthy"
     QUARANTINED = "QUARANTINED", "Quarantined"
+    NOT_CONFIGURED = "NOT_CONFIGURED", "Not Configured"
     UNKNOWN = "UNKNOWN", "Unknown"
 
 

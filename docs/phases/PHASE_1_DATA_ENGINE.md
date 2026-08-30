@@ -9,15 +9,20 @@
 ## XAUUSD Migration Addendum
 
 ### 1. Target Scope & Architecture
-- **Primary Signal Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD).
+- **Primary Signal Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD). Operational target resolves `Instrument.get_canonical_xauusd()` while preserving historical `GOLD_REFERENCE` role.
+- **Deterministic Listing Resolution:** `ListingRole` (`PRIMARY_XAUUSD_SPOT`, `SECONDARY_XAUUSD_SPOT`, `LEGACY_GOLD_REFERENCE`, `LEGACY_EXECUTION`) guarantees unambiguous provider resolution even with overlapping priority-0 listings.
 - **Primary Spot Provider:** `XauUsdSpotProvider` implemented with config-driven endpoint abstraction (`provider_id="xauusd_primary"`).
 - **Secondary Independent Spot Provider:** `SecondaryXauUsdSpotProvider` implemented for consensus & integrity verification (`provider_id="xauusd_secondary"`).
+- **Integrated Ingestion Integrity (XAU-P1-02):** Ingestion task aligns closed primary and secondary candles by timestamp, evaluates multi-source integrity, and flags data quality without price averaging or directional alpha.
+- **Zero Threshold Inheritance:** Absent threshold (`None`) fails closed as `INTEGRITY_THRESHOLD_NOT_CONFIGURED` (historical A15 0.50% threshold is never inherited).
 - **Direct USD Normalization:** Native USD pricing applies direct identity semantics (`DIRECT_USD`, $quote\_rate=1.0, close\_usd=close$).
-- **Volume Semantics Transport:** `VolumeEvidenceType` (`REAL_VOLUME`, `TICK_VOLUME`, `PROXY_VOLUME`, `UNAVAILABLE`) transported across provider, model, and engine layers.
+- **Conservative Volume Semantics:** Default `UNAVAILABLE`; missing volume is never fabricated or labeled tick volume.
+- **Health State Persistence:** `ProviderHealthStatus.NOT_CONFIGURED` added and persisted without enum errors.
+- **Fail-Closed Ingestion:** Primary unconfigured or fetch error produces explicit hard fail and persistent `DataQualitySnapshot(hard_fail=True)`.
 - **USDT/USD Normalization Role:** Preserved strictly for historical XAUT baseline audit (`A21`); not a dependency for spot XAUUSD processing.
 - **Provider Threshold Status:** Divergence thresholds, outlier boundaries, and failover parameters for XAUUSD spot feeds are **NOT FROZEN / REVALIDATION REQUIRED** based on empirical broker feed characteristics.
 - **Live Provider Binding:** **NOT_CONFIGURED** by default (fails closed safely until authorized production credentials/endpoints are supplied).
-- **Verified Contracts:** `XAU-P1-01` (canonical primary target), `XAU-P1-02` (secondary provider integrity/disagreement), `A15`, `A17`, `A20`, `A21` passing.
+- **Verified Contracts:** `XAU-P1-01` (canonical primary target), `XAU-P1-02` (integrated multi-source ingestion), `A15`, `A17`, `A20`, `A21` passing.
 
 ---
 

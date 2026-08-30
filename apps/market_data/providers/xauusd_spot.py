@@ -19,6 +19,9 @@ def _get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str
         return os.environ.get(key, default)
 
 
+VALID_VOLUME_EVIDENCE = {"REAL_VOLUME", "TICK_VOLUME", "PROXY_VOLUME", "UNAVAILABLE"}
+
+
 class XauUsdSpotProvider(MarketDataProvider):
     """
     Primary Spot Gold (XAU/USD) Data Provider.
@@ -31,12 +34,14 @@ class XauUsdSpotProvider(MarketDataProvider):
         self,
         feed_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        default_volume_evidence: str = "TICK_VOLUME",
+        default_volume_evidence: str = "UNAVAILABLE",
         timeout: float = 10.0,
     ):
         self._feed_url = feed_url or _get_setting_or_env("XAUUSD_PRIMARY_FEED_URL")
         self._api_key = api_key or _get_setting_or_env("XAUUSD_PRIMARY_API_KEY")
-        self._default_volume_evidence = default_volume_evidence
+        self._default_volume_evidence = (
+            default_volume_evidence if default_volume_evidence in VALID_VOLUME_EVIDENCE else "UNAVAILABLE"
+        )
         self._timeout = timeout
 
     @property
@@ -81,7 +86,23 @@ class XauUsdSpotProvider(MarketDataProvider):
             raw_items = response.json()
             candles: list[RawCandle] = []
             for item in raw_items:
-                vol_evidence = item.get("volume_evidence", self._default_volume_evidence)
+                raw_vol_evidence = item.get("volume_evidence")
+                if raw_vol_evidence and raw_vol_evidence in VALID_VOLUME_EVIDENCE:
+                    vol_evidence = raw_vol_evidence
+                else:
+                    vol_evidence = self._default_volume_evidence
+
+                raw_vol = item.get("volume")
+                if raw_vol is None or str(raw_vol).strip() == "":
+                    vol = Decimal("0")
+                    vol_evidence = "UNAVAILABLE"
+                else:
+                    try:
+                        vol = Decimal(str(raw_vol))
+                    except Exception:
+                        vol = Decimal("0")
+                        vol_evidence = "UNAVAILABLE"
+
                 candles.append(
                     RawCandle(
                         symbol=symbol,
@@ -92,7 +113,7 @@ class XauUsdSpotProvider(MarketDataProvider):
                         high=Decimal(str(item["high"])),
                         low=Decimal(str(item["low"])),
                         close=Decimal(str(item["close"])),
-                        volume=Decimal(str(item.get("volume", 0))),
+                        volume=vol,
                         is_closed=bool(item.get("is_closed", True)),
                         source=self.provider_id,
                         volume_evidence=vol_evidence,

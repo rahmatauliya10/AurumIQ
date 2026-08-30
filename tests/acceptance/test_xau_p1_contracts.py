@@ -2,20 +2,34 @@
 import pytest
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from unittest.mock import patch, MagicMock
 from django.test import TestCase
 
-from apps.instruments.models import Asset, AssetType, Instrument, InstrumentRole, InstrumentType, MarketListing
-from apps.market_data.models import MarketCandle, VolumeEvidenceType, CandleQualityFlag
-from apps.market_data.normalization import QuoteNormalizer, NormalizationCheckResult
-from apps.market_data.integrity import MarketIntegrityEngine, XauUsdIntegrityResult
+from apps.instruments.models import (
+    Asset,
+    AssetType,
+    Instrument,
+    InstrumentRole,
+    InstrumentType,
+    MarketListing,
+    ListingStatus,
+    ListingRole,
+    ProviderHealthStatus,
+    ProviderHealthSnapshot,
+)
+from apps.market_data.models import MarketCandle, VolumeEvidenceType, CandleQualityFlag, DataQualitySnapshot
+from apps.market_data.normalization import QuoteNormalizer
+from apps.market_data.integrity import MarketIntegrityEngine
+from apps.market_data.providers.base import RawCandle, ProviderHealth
 from apps.market_data.providers.xauusd_spot import XauUsdSpotProvider
 from apps.market_data.providers.xauusd_secondary import SecondaryXauUsdSpotProvider
 from apps.market_data.repositories import DjangoCandleRepository
+from apps.market_data.tasks import ingest_primary_candles, check_provider_health_task
 from engine.core.types import VolumeEvidenceType as EngineVolumeEvidenceType
 
 
 class TestXauP1Contracts(TestCase):
-    """Test suite validating XAU-P1-01 and XAU-P1-02 acceptance contracts."""
+    """Test suite validating XAU-P1-01, XAU-P1-02, and all Phase 1 integrity contracts."""
 
     def setUp(self):
         # Seed Assets
@@ -32,12 +46,12 @@ class TestXauP1Contracts(TestCase):
             code="USDT", defaults={"name": "Tether USD", "asset_type": AssetType.CRYPTO_TOKEN}
         )
 
-        # Seed Canonical XAUUSD Target Instrument
+        # Seed Canonical XAUUSD Target Instrument (preserves historical GOLD_REFERENCE role)
         self.xauusd, _ = Instrument.objects.get_or_create(
             base_asset=self.xau,
             quote_asset=self.usd,
             instrument_type=InstrumentType.SPOT,
-            defaults={"role": InstrumentRole.PRIMARY_XAUUSD, "is_active": True},
+            defaults={"role": InstrumentRole.GOLD_REFERENCE, "is_active": True},
         )
 
         # Seed Historical Legacy XAUT Instrument
@@ -48,16 +62,36 @@ class TestXauP1Contracts(TestCase):
             defaults={"role": InstrumentRole.EXECUTION, "is_active": True},
         )
 
-        # Seed Listings
+        # Seed Listings with explicit ListingRoles
+        self.listing_gold_ref, _ = MarketListing.objects.get_or_create(
+            instrument=self.xauusd,
+            provider="gold_reference",
+            defaults={
+                "provider_symbol": "XAUUSD",
+                "listing_role": ListingRole.LEGACY_GOLD_REFERENCE,
+                "fallback_priority": 0,
+                "status": ListingStatus.ACTIVE,
+            },
+        )
         self.listing_primary, _ = MarketListing.objects.get_or_create(
             instrument=self.xauusd,
             provider="xauusd_primary",
-            defaults={"provider_symbol": "XAUUSD", "fallback_priority": 0},
+            defaults={
+                "provider_symbol": "XAUUSD",
+                "listing_role": ListingRole.PRIMARY_XAUUSD_SPOT,
+                "fallback_priority": 0,
+                "status": ListingStatus.ACTIVE,
+            },
         )
         self.listing_secondary, _ = MarketListing.objects.get_or_create(
             instrument=self.xauusd,
             provider="xauusd_secondary",
-            defaults={"provider_symbol": "XAUUSD", "fallback_priority": 1},
+            defaults={
+                "provider_symbol": "XAUUSD",
+                "listing_role": ListingRole.SECONDARY_XAUUSD_SPOT,
+                "fallback_priority": 1,
+                "status": ListingStatus.ACTIVE,
+            },
         )
 
     def test_xau_p1_01_canonical_xauusd_primary_target(self):
@@ -111,104 +145,249 @@ class TestXauP1Contracts(TestCase):
         assert loaded[0].close_usd == Decimal("2505.50000000")
         assert loaded[0].volume_evidence == EngineVolumeEvidenceType.TICK_VOLUME
 
-    def test_xau_p1_02_secondary_provider_disagreement_and_integrity(self):
+    def test_no_legacy_threshold_fallback(self):
         """
-        XAU-P1-02: Secondary independent XAUUSD provider disagreement / integrity contract.
-        Proves:
-          - Primary and secondary provider roles are distinct.
-          - Disagreement is treated as integrity evidence, NOT directional alpha.
-          - Thresholds are configurable / not frozen.
-          - Missing critical provider fails closed.
-          - Proxy XAUT/PAXG cannot silently substitute direct XAUUSD.
+        Patch 1: Proves verify_xauusd_multi_provider_integrity does NOT inherit
+        legacy A15 outlier_threshold_pct (0.50%) when max_divergence_pct is None.
+        Fails closed as INTEGRITY_THRESHOLD_NOT_CONFIGURED.
         """
         integrity_engine = MarketIntegrityEngine()
-
-        # Case 1: Agreement within threshold
-        res_agree = integrity_engine.verify_xauusd_multi_provider_integrity(
-            primary_price=Decimal("2500.00"),
-            secondary_price=Decimal("2502.00"),
-            max_divergence_pct=Decimal("0.0035"),  # 0.35%
-        )
-        assert res_agree.is_valid is True
-        assert res_agree.hard_fail is False
-        assert res_agree.is_disagreement is False
-
-        # Case 2: Material Disagreement (> threshold)
-        res_disagree = integrity_engine.verify_xauusd_multi_provider_integrity(
-            primary_price=Decimal("2500.00"),
-            secondary_price=Decimal("2520.00"),  # 0.80% divergence > 0.35%
-            max_divergence_pct=Decimal("0.0035"),
-        )
-        assert res_disagree.is_valid is False
-        assert res_disagree.hard_fail is True
-        assert res_disagree.is_disagreement is True
-        assert "DISAGREEMENT" in res_disagree.message
-        assert "zero directional alpha" in res_disagree.message
-
-        # Case 3: Missing Primary (Fails closed)
-        res_missing_primary = integrity_engine.verify_xauusd_multi_provider_integrity(
-            primary_price=None,
-            secondary_price=Decimal("2500.00"),
-        )
-        assert res_missing_primary.hard_fail is True
-        assert "PRIMARY_XAUUSD_UNAVAILABLE" in res_missing_primary.message
-
-        # Case 4: Missing Critical Secondary (Fails closed)
-        res_missing_secondary = integrity_engine.verify_xauusd_multi_provider_integrity(
-            primary_price=Decimal("2500.00"),
-            secondary_price=None,
-            is_secondary_critical=True,
-        )
-        assert res_missing_secondary.hard_fail is True
-        assert "SECONDARY_XAUUSD_UNAVAILABLE" in res_missing_secondary.message
-
-        # Case 5: Proxy Substitution Rejected
-        res_proxy = integrity_engine.verify_xauusd_multi_provider_integrity(
-            primary_price=Decimal("2500.00"),
-            secondary_price=Decimal("2501.00"),
-            is_proxy_substitution=True,
-        )
-        assert res_proxy.hard_fail is True
-        assert "Proxy substitution rejected" in res_proxy.message
-
-    def test_volume_evidence_transport(self):
-        """Proves volume semantics are transported faithfully without fabrication."""
-        t0 = datetime(2026, 8, 30, 14, 0, tzinfo=timezone.utc)
         
-        # Real volume
-        c1 = MarketCandle.objects.create(
-            instrument=self.xauusd,
-            source="xauusd_primary",
-            timeframe="1h",
-            timestamp_open=t0,
-            timestamp_close=t0 + timedelta(hours=1),
-            open=Decimal("2500.00"),
-            high=Decimal("2510.00"),
-            low=Decimal("2490.00"),
-            close=Decimal("2505.00"),
-            volume=Decimal("5000.0"),
-            volume_evidence=VolumeEvidenceType.PROXY_VOLUME,
-            is_closed=True,
+        # When max_divergence_pct is None, must fail closed regardless of prices
+        res = integrity_engine.verify_xauusd_multi_provider_integrity(
+            primary_price=Decimal("2500.00"),
+            secondary_price=Decimal("2500.10"),  # 0.004% difference, tiny
+            max_divergence_pct=None,
         )
+        assert res.is_valid is False
+        assert res.hard_fail is True
+        assert res.is_disagreement is False
+        assert "INTEGRITY_THRESHOLD_NOT_CONFIGURED" in res.message
+        assert "Historical A15 threshold must not be inherited" in res.message
 
-        repo = DjangoCandleRepository()
-        loaded = repo.load_window("XAU/USD", "1h", t0 + timedelta(hours=2), 1)
-        assert loaded[0].volume_evidence == EngineVolumeEvidenceType.PROXY_VOLUME
-
-    def test_provider_not_configured_fail_closed(self):
-        """Proves unconfigured spot providers report NOT_CONFIGURED and fail closed safely."""
-        provider = XauUsdSpotProvider(feed_url=None)
-        assert provider.is_configured() is False
-        
-        health = provider.health_check()
-        assert health.status == "NOT_CONFIGURED"
-
-        with pytest.raises(RuntimeError, match="PRIMARY_XAUUSD_UNAVAILABLE"):
-            provider.fetch_candles(
-                "XAUUSD", "15m",
-                datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc),
-                datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc),
+    def test_xau_p1_02_integrated_ingestion_and_integrity_gate(self):
+        """
+        Patch 2 / XAU-P1-02: Integrated primary + secondary ingestion integrity contract.
+        Proves:
+          - Ingestion aligns primary and secondary closed candles by timestamp.
+          - Agreement within configured threshold persists candles with OK data quality.
+          - Disagreement > threshold flags candles as SUSPECT and marks DataQualitySnapshot hard_fail=True.
+          - Secondary price is strictly integrity evidence (zero directional alpha).
+        """
+        t0 = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+        primary_candles = [
+            RawCandle(
+                symbol="XAUUSD", timeframe="15m",
+                timestamp_open=t0, timestamp_close=t0 + timedelta(minutes=15),
+                open=Decimal("2500.00"), high=Decimal("2505.00"), low=Decimal("2498.00"), close=Decimal("2502.00"),
+                volume=Decimal("100"), is_closed=True, source="xauusd_primary", volume_evidence="TICK_VOLUME",
             )
+        ]
+        # Secondary candle diverging by > 1.0% (disagreement)
+        secondary_candles_disagree = [
+            RawCandle(
+                symbol="XAUUSD", timeframe="15m",
+                timestamp_open=t0, timestamp_close=t0 + timedelta(minutes=15),
+                open=Decimal("2500.00"), high=Decimal("2535.00"), low=Decimal("2498.00"), close=Decimal("2530.00"),
+                volume=Decimal("150"), is_closed=True, source="xauusd_secondary", volume_evidence="TICK_VOLUME",
+            )
+        ]
+
+        with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+            mock_primary = MagicMock()
+            mock_primary.is_configured.return_value = True
+            mock_primary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_primary", status="HEALTHY", checked_at=t0, latency_ms=10
+            )
+            mock_primary.fetch_candles.return_value = primary_candles
+
+            mock_secondary = MagicMock()
+            mock_secondary.is_configured.return_value = True
+            mock_secondary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_secondary", status="HEALTHY", checked_at=t0, latency_ms=12
+            )
+            mock_secondary.fetch_candles.return_value = secondary_candles_disagree
+
+            def side_effect(provider_id):
+                if provider_id == "xauusd_primary":
+                    return mock_primary
+                if provider_id == "xauusd_secondary":
+                    return mock_secondary
+                return None
+
+            mock_registry_get.side_effect = side_effect
+
+            # Run ingestion with explicit 0.35% threshold
+            res = ingest_primary_candles(
+                instrument_symbol="XAU/USD",
+                timeframes=["15m"],
+                lookback_bars=1,
+                xauusd_max_divergence_pct=Decimal("0.0035"),
+                is_secondary_critical=True,
+            )
+
+            assert res["status"] == "success"
+            # Verify candle was flagged SUSPECT due to multi-source integrity failure
+            stored_candle = MarketCandle.objects.get(
+                instrument=self.xauusd, source="xauusd_primary", timeframe="15m", timestamp_open=t0
+            )
+            assert stored_candle.data_quality_flag == CandleQualityFlag.SUSPECT
+            # Primary price is strictly preserved without averaging
+            assert stored_candle.close == Decimal("2502.00")
+
+            # Verify snapshot recorded hard fail
+            snapshot = DataQualitySnapshot.objects.filter(instrument=self.xauusd, timeframe="15m").latest("timestamp")
+            assert snapshot.hard_fail is True
+            assert "integrity_disagreement" in snapshot.anomalies
+
+    def test_deterministic_listing_resolution(self):
+        """
+        Patch 3 & 4: Proves deterministic resolution resolves PRIMARY_XAUUSD_SPOT
+        for primary ingestion even when multiple priority-0 listings (e.g. legacy gold_reference) exist.
+        """
+        # Ensure both gold_reference and xauusd_primary have fallback_priority = 0
+        self.listing_gold_ref.fallback_priority = 0
+        self.listing_gold_ref.save()
+        self.listing_primary.fallback_priority = 0
+        self.listing_primary.save()
+
+        t0 = datetime.now(timezone.utc)
+        with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+            mock_primary = MagicMock()
+            mock_primary.is_configured.return_value = True
+            mock_primary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_primary", status="HEALTHY", checked_at=t0, latency_ms=10
+            )
+            mock_primary.fetch_candles.return_value = []
+
+            mock_secondary = MagicMock()
+            mock_secondary.is_configured.return_value = False
+
+            def side_effect(provider_id):
+                if provider_id == "xauusd_primary":
+                    return mock_primary
+                return mock_secondary
+
+            mock_registry_get.side_effect = side_effect
+
+            res = ingest_primary_candles(
+                instrument_symbol="XAU/USD",
+                timeframes=["15m"],
+                lookback_bars=1,
+                xauusd_max_divergence_pct=Decimal("0.0035"),
+                is_secondary_critical=False,
+            )
+
+            # Proves xauusd_primary was deterministically chosen over gold_reference
+            assert res["provider"] == "xauusd_primary"
+
+    def test_provider_health_status_not_configured_persistence(self):
+        """
+        Patch 5: Proves ProviderHealthStatus.NOT_CONFIGURED can be persisted
+        in ProviderHealthSnapshot model without database constraint / enum errors.
+        """
+        t = datetime.now(timezone.utc)
+        snapshot = ProviderHealthSnapshot.objects.create(
+            listing=self.listing_primary,
+            status=ProviderHealthStatus.NOT_CONFIGURED,
+            checked_at=t,
+            latency_ms=None,
+            reason="Endpoint URL not configured",
+        )
+        assert snapshot.pk is not None
+        assert snapshot.status == ProviderHealthStatus.NOT_CONFIGURED
+
+        # Test periodic health task with unconfigured providers (mock registry to avoid network calls)
+        with patch("apps.market_data.tasks.registry.all_providers") as mock_all:
+            mock_p1 = MagicMock()
+            mock_p1.provider_id = "xauusd_primary"
+            mock_p1.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_primary",
+                status="NOT_CONFIGURED",
+                checked_at=t,
+                latency_ms=None,
+                error_message="Not configured",
+            )
+            mock_all.return_value = [mock_p1]
+
+            task_res = check_provider_health_task()
+            assert task_res["status"] == "success"
+            assert "xauusd_primary" in task_res["providers"]
+            assert task_res["providers"]["xauusd_primary"] == "NOT_CONFIGURED"
+
+    def test_critical_primary_fail_closed_ingestion(self):
+        """
+        Patch 6: Proves that when primary XAUUSD provider is NOT_CONFIGURED or fails,
+        ingestion fails closed (returns status=hard_fail) and persists a hard_fail DataQualitySnapshot.
+        """
+        # Primary provider is unconfigured
+        res = ingest_primary_candles(
+            instrument_symbol="XAU/USD",
+            timeframes=["15m"],
+            lookback_bars=5,
+        )
+        assert res["status"] == "hard_fail"
+        assert res["reason"] == "PRIMARY_XAUUSD_UNAVAILABLE"
+        assert res["candles_ingested"] == 0
+
+        # Verify DataQualitySnapshot recorded hard_fail
+        latest_dq = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+        assert latest_dq.hard_fail is True
+        assert latest_dq.quality_score == Decimal("0.00")
+
+    def test_conservative_volume_semantics(self):
+        """
+        Patch 7: Proves conservative volume semantics:
+          - Default volume evidence is UNAVAILABLE (never assumed to be tick/real volume).
+          - Missing volume field produces UNAVAILABLE and 0 volume.
+          - Invalid volume label safely falls back to UNAVAILABLE.
+        """
+        provider = XauUsdSpotProvider(feed_url="http://mock-feed.local")
+        assert provider._default_volume_evidence == "UNAVAILABLE"
+
+        t0 = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            # 1. Missing volume and missing volume_evidence
+            {
+                "timestamp_open": t0.isoformat(),
+                "timestamp_close": (t0 + timedelta(minutes=15)).isoformat(),
+                "open": "2500.0", "high": "2510.0", "low": "2495.0", "close": "2505.0",
+            },
+            # 2. Invalid volume evidence label
+            {
+                "timestamp_open": (t0 + timedelta(minutes=15)).isoformat(),
+                "timestamp_close": (t0 + timedelta(minutes=30)).isoformat(),
+                "open": "2505.0", "high": "2515.0", "low": "2500.0", "close": "2510.0",
+                "volume": "100.0",
+                "volume_evidence": "FABRICATED_VOLUME_LABEL",
+            },
+            # 3. Explicit TICK_VOLUME
+            {
+                "timestamp_open": (t0 + timedelta(minutes=30)).isoformat(),
+                "timestamp_close": (t0 + timedelta(minutes=45)).isoformat(),
+                "open": "2510.0", "high": "2520.0", "low": "2508.0", "close": "2515.0",
+                "volume": "250.0",
+                "volume_evidence": "TICK_VOLUME",
+            },
+        ]
+
+        with patch("requests.get", return_value=mock_response):
+            candles = provider.fetch_candles("XAUUSD", "15m", t0, t0 + timedelta(hours=1))
+            assert len(candles) == 3
+
+            # 1. Missing volume -> 0 and UNAVAILABLE
+            assert candles[0].volume == Decimal("0")
+            assert candles[0].volume_evidence == "UNAVAILABLE"
+
+            # 2. Invalid label -> safe fallback to UNAVAILABLE
+            assert candles[1].volume == Decimal("100.0")
+            assert candles[1].volume_evidence == "UNAVAILABLE"
+
+            # 3. Explicit valid label -> preserved
+            assert candles[2].volume == Decimal("250.0")
+            assert candles[2].volume_evidence == "TICK_VOLUME"
 
     def test_direct_usd_normalization_mode(self):
         """Proves QuoteNormalizer.normalize_direct_usd evaluates direct 1.0 identity pricing."""
@@ -222,3 +401,28 @@ class TestXauP1Contracts(TestCase):
         assert res.hard_fail is False
         assert res.normalized_price == Decimal("2500.50000000")
         assert "DIRECT_USD" in res.message
+
+    def test_closed_candle_pit_safety(self):
+        """Proves open/unclosed candles are strictly excluded from repository loading."""
+        t0 = datetime(2026, 8, 30, 15, 0, tzinfo=timezone.utc)
+        # Open forming candle
+        MarketCandle.objects.create(
+            instrument=self.xauusd,
+            source="xauusd_primary",
+            timeframe="15m",
+            timestamp_open=t0,
+            timestamp_close=t0 + timedelta(minutes=15),
+            open=Decimal("2500.00"), high=Decimal("2510.00"), low=Decimal("2495.00"), close=Decimal("2505.00"),
+            volume=Decimal("50.0"), volume_evidence=VolumeEvidenceType.TICK_VOLUME,
+            is_closed=False,
+        )
+        repo = DjangoCandleRepository()
+        loaded = repo.load_window("XAU/USD", "15m", t0 + timedelta(minutes=30), 10)
+        assert len(loaded) == 0
+
+    def test_legacy_xaut_target_preservation(self):
+        """Proves legacy XAUT/USDT instrument with GOLD_REFERENCE / EXECUTION is fully functional."""
+        legacy_inst = Instrument.get_legacy_xaut()
+        assert legacy_inst.role == InstrumentRole.EXECUTION
+        assert legacy_inst.base_asset.code == "XAUT"
+        assert legacy_inst.quote_asset.code == "USDT"

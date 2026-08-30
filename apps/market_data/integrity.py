@@ -391,7 +391,21 @@ class MarketIntegrityEngine:
                     message=msg,
                 )
 
-        threshold = max_divergence_pct or self.outlier_threshold_pct
+        if max_divergence_pct is None:
+            msg = (
+                "INTEGRITY_THRESHOLD_NOT_CONFIGURED: XAUUSD integrity divergence threshold is not configured "
+                "/ not calibrated. Historical A15 threshold must not be inherited. Revalidation required (fail-closed)."
+            )
+            logger.critical("xauusd_integrity_threshold_not_configured")
+            return XauUsdIntegrityResult(
+                divergence_pct=Decimal("0.0"),
+                is_valid=False,
+                hard_fail=True,
+                is_disagreement=False,
+                message=msg,
+            )
+
+        threshold = max_divergence_pct
         min_p = min(primary_price, secondary_price)
         divergence_pct = abs(primary_price - secondary_price) / min_p if min_p > 0 else Decimal("0")
         is_disagreement = divergence_pct > threshold

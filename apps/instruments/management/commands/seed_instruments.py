@@ -10,6 +10,7 @@ from apps.instruments.models import (
     InstrumentType,
     MarketListing,
     ListingStatus,
+    ListingRole,
 )
 
 
@@ -71,6 +72,7 @@ class Command(BaseCommand):
                 provider="binance",
                 defaults={
                     "provider_symbol": "XAUTUSDT",
+                    "listing_role": ListingRole.LEGACY_EXECUTION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -83,6 +85,7 @@ class Command(BaseCommand):
                 provider="okx",
                 defaults={
                     "provider_symbol": "XAUT-USDT",
+                    "listing_role": ListingRole.LEGACY_EXECUTION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -95,6 +98,7 @@ class Command(BaseCommand):
                 provider="gold_reference",
                 defaults={
                     "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.LEGACY_GOLD_REFERENCE,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.01"),
@@ -107,6 +111,7 @@ class Command(BaseCommand):
                 provider="xauusd_primary",
                 defaults={
                     "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.PRIMARY_XAUUSD_SPOT,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -119,6 +124,7 @@ class Command(BaseCommand):
                 provider="xauusd_secondary",
                 defaults={
                     "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.SECONDARY_XAUUSD_SPOT,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -131,6 +137,7 @@ class Command(BaseCommand):
                 provider="usdt_usd",
                 defaults={
                     "provider_symbol": "USDTUSD",
+                    "listing_role": ListingRole.LEGACY_QUOTE_NORMALIZATION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.0001"),
                     "lot_size": Decimal("1.0"),
