@@ -226,7 +226,9 @@ class TestXauP1Contracts(TestCase):
                 is_secondary_critical=True,
             )
 
-            assert res["status"] == "success"
+            # PATCH E: Propagate integrity failure to top-level task result
+            assert res["status"] == "hard_fail"
+            assert "DISAGREEMENT" in res["reason"] or "diverge" in res["reason"].lower()
             # Verify candle was flagged SUSPECT due to multi-source integrity failure
             stored_candle = MarketCandle.objects.get(
                 instrument=self.xauusd, source="xauusd_primary", timeframe="15m", timestamp_open=t0
@@ -240,17 +242,136 @@ class TestXauP1Contracts(TestCase):
             assert snapshot.hard_fail is True
             assert "integrity_disagreement" in snapshot.anomalies
 
-    def test_deterministic_listing_resolution(self):
+    def test_strict_source_selection_no_unsafe_fallback(self):
         """
-        Patch 3 & 4: Proves deterministic resolution resolves PRIMARY_XAUUSD_SPOT
-        for primary ingestion even when multiple priority-0 listings (e.g. legacy gold_reference) exist.
+        PATCH A: Proves that canonical XAUUSD ingestion resolves strictly through
+        ListingRole.PRIMARY_XAUUSD_SPOT and does NOT fall back to gold_reference
+        or any arbitrary active listing if PRIMARY_XAUUSD_SPOT is missing.
         """
-        # Ensure both gold_reference and xauusd_primary have fallback_priority = 0
-        self.listing_gold_ref.fallback_priority = 0
-        self.listing_gold_ref.save()
-        self.listing_primary.fallback_priority = 0
+        # Deactivate or remove PRIMARY_XAUUSD_SPOT listing
+        self.listing_primary.status = ListingStatus.DELISTED
         self.listing_primary.save()
 
+        # gold_reference exists and is ACTIVE with priority 0
+        self.listing_gold_ref.status = ListingStatus.ACTIVE
+        self.listing_gold_ref.fallback_priority = 0
+        self.listing_gold_ref.save()
+
+        res = ingest_primary_candles(
+            instrument_symbol="XAU/USD",
+            timeframes=["15m"],
+            lookback_bars=1,
+            xauusd_max_divergence_pct=Decimal("0.0035"),
+            is_secondary_critical=False,
+        )
+
+        assert res["status"] == "hard_fail"
+        assert res["reason"] == "PRIMARY_XAUUSD_LISTING_NOT_CONFIGURED"
+        assert res["candles_ingested"] == 0
+
+        latest_dq = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+        assert latest_dq.hard_fail is True
+        assert latest_dq.quality_score == Decimal("0.00")
+        assert "PRIMARY_XAUUSD_LISTING_NOT_CONFIGURED" in latest_dq.anomalies["error"]
+
+    def test_generic_usd_instrument_isolation(self):
+        """
+        PATCH B: Proves that generic USD-quoted instruments (e.g. TEST/USD)
+        do NOT enter the PRIMARY_XAUUSD_SPOT or XAUUSD integrity verification path.
+        """
+        test_asset, _ = Asset.objects.get_or_create(
+            code="TEST", defaults={"name": "Test Asset", "asset_type": AssetType.CRYPTO_TOKEN}
+        )
+        test_usd, _ = Instrument.objects.get_or_create(
+            base_asset=test_asset,
+            quote_asset=self.usd,
+            instrument_type=InstrumentType.SPOT,
+            defaults={"role": InstrumentRole.EXECUTION, "is_active": True},
+        )
+        test_listing, _ = MarketListing.objects.get_or_create(
+            instrument=test_usd,
+            provider="test_venue",
+            defaults={
+                "provider_symbol": "TESTUSD",
+                "listing_role": ListingRole.GENERIC,
+                "status": ListingStatus.ACTIVE,
+                "fallback_priority": 0,
+            },
+        )
+
+        t0 = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+        test_candles = [
+            RawCandle(
+                symbol="TESTUSD", timeframe="15m",
+                timestamp_open=t0, timestamp_close=t0 + timedelta(minutes=15),
+                open=Decimal("100.00"), high=Decimal("105.00"), low=Decimal("98.00"), close=Decimal("102.00"),
+                volume=Decimal("50"), is_closed=True, source="test_venue", volume_evidence="TICK_VOLUME",
+            )
+        ]
+
+        with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+            mock_test_provider = MagicMock()
+            mock_test_provider.is_configured.return_value = True
+            mock_test_provider.fetch_candles.return_value = test_candles
+
+            mock_registry_get.side_effect = lambda pid: mock_test_provider if pid == "test_venue" else None
+
+            res = ingest_primary_candles(
+                instrument_symbol="TEST/USD",
+                timeframes=["15m"],
+                lookback_bars=1,
+            )
+
+            # Generic USD succeeds without requiring PRIMARY_XAUUSD_SPOT or secondary integrity
+            assert res["status"] == "success"
+            assert res["candles_ingested"] == 1
+            assert res["provider"] == "test_venue"
+
+    def test_primary_provider_health_fail_closed(self):
+        """
+        PATCH C: Proves that when primary XAUUSD provider health is NOT_CONFIGURED,
+        UNHEALTHY, QUARANTINED, UNKNOWN, or DEGRADED, ingestion fails closed.
+        """
+        t0 = datetime.now(timezone.utc)
+        for health_status in [
+            ProviderHealthStatus.NOT_CONFIGURED,
+            ProviderHealthStatus.UNHEALTHY,
+            ProviderHealthStatus.QUARANTINED,
+            ProviderHealthStatus.UNKNOWN,
+            ProviderHealthStatus.DEGRADED,
+        ]:
+            with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+                mock_primary = MagicMock()
+                mock_primary.is_configured.return_value = (health_status != ProviderHealthStatus.NOT_CONFIGURED)
+                mock_primary.health_check.return_value = ProviderHealth(
+                    provider_id="xauusd_primary",
+                    status=health_status,
+                    checked_at=t0,
+                    latency_ms=999 if health_status != "HEALTHY" else 10,
+                    error_message=f"Simulated {health_status} failure",
+                )
+                mock_registry_get.side_effect = lambda pid: mock_primary if pid == "xauusd_primary" else None
+
+                res = ingest_primary_candles(
+                    instrument_symbol="XAU/USD",
+                    timeframes=["15m"],
+                    lookback_bars=1,
+                    xauusd_max_divergence_pct=Decimal("0.0035"),
+                )
+
+                assert res["status"] == "hard_fail"
+                assert health_status in res["reason"] or "NOT_CONFIGURED" in res["reason"]
+                assert res["candles_ingested"] == 0
+
+                snapshot = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+                assert snapshot.hard_fail is True
+                assert snapshot.quality_score == Decimal("0.00")
+
+    def test_empty_primary_data_fail_closed(self):
+        """
+        PATCH D: Proves that when primary XAUUSD provider returns zero usable closed candles,
+        ingestion fails closed with status='hard_fail' and PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA.
+        """
         t0 = datetime.now(timezone.utc)
         with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
             mock_primary = MagicMock()
@@ -258,17 +379,13 @@ class TestXauP1Contracts(TestCase):
             mock_primary.health_check.return_value = ProviderHealth(
                 provider_id="xauusd_primary", status="HEALTHY", checked_at=t0, latency_ms=10
             )
+            # Returns empty list or only open forming candles (0 closed candles)
             mock_primary.fetch_candles.return_value = []
 
             mock_secondary = MagicMock()
-            mock_secondary.is_configured.return_value = False
+            mock_secondary.is_configured.return_value = True
 
-            def side_effect(provider_id):
-                if provider_id == "xauusd_primary":
-                    return mock_primary
-                return mock_secondary
-
-            mock_registry_get.side_effect = side_effect
+            mock_registry_get.side_effect = lambda pid: mock_primary if pid == "xauusd_primary" else mock_secondary
 
             res = ingest_primary_candles(
                 instrument_symbol="XAU/USD",
@@ -278,8 +395,44 @@ class TestXauP1Contracts(TestCase):
                 is_secondary_critical=False,
             )
 
-            # Proves xauusd_primary was deterministically chosen over gold_reference
-            assert res["provider"] == "xauusd_primary"
+            assert res["status"] == "hard_fail"
+            assert "PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA" in res["reason"]
+            assert res["candles_ingested"] == 0
+
+            snapshot = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+            assert snapshot.hard_fail is True
+            assert snapshot.quality_score == Decimal("0.00")
+            assert "PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA" in snapshot.anomalies["error"]
+
+    def test_threshold_not_configured_ingestion_fail_closed(self):
+        """
+        PATCH E: Proves that when xauusd_max_divergence_pct is None (and setting is None),
+        actual ingestion fails closed as INTEGRITY_THRESHOLD_NOT_CONFIGURED.
+        """
+        t0 = datetime.now(timezone.utc)
+        with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+            mock_primary = MagicMock()
+            mock_primary.is_configured.return_value = True
+            mock_primary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_primary", status="HEALTHY", checked_at=t0, latency_ms=10
+            )
+            mock_registry_get.side_effect = lambda pid: mock_primary if pid == "xauusd_primary" else None
+
+            res = ingest_primary_candles(
+                instrument_symbol="XAU/USD",
+                timeframes=["15m"],
+                lookback_bars=1,
+                xauusd_max_divergence_pct=None,  # Not configured
+            )
+
+            assert res["status"] == "hard_fail"
+            assert res["reason"] == "INTEGRITY_THRESHOLD_NOT_CONFIGURED"
+            assert res["candles_ingested"] == 0
+
+            snapshot = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+            assert snapshot.hard_fail is True
+            assert snapshot.quality_score == Decimal("0.00")
+            assert "INTEGRITY_THRESHOLD_NOT_CONFIGURED" in snapshot.anomalies["error"]
 
     def test_provider_health_status_not_configured_persistence(self):
         """
@@ -327,7 +480,7 @@ class TestXauP1Contracts(TestCase):
             lookback_bars=5,
         )
         assert res["status"] == "hard_fail"
-        assert res["reason"] == "PRIMARY_XAUUSD_UNAVAILABLE"
+        assert "PRIMARY_XAUUSD" in res["reason"]
         assert res["candles_ingested"] == 0
 
         # Verify DataQualitySnapshot recorded hard_fail
@@ -426,3 +579,4 @@ class TestXauP1Contracts(TestCase):
         assert legacy_inst.role == InstrumentRole.EXECUTION
         assert legacy_inst.base_asset.code == "XAUT"
         assert legacy_inst.quote_asset.code == "USDT"
+

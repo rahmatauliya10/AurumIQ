@@ -7,8 +7,10 @@ from django.db import transaction
 import structlog
 from apps.instruments.models import (
     Instrument,
+    InstrumentType,
     MarketListing,
     ProviderHealthSnapshot,
+    ProviderHealthStatus,
     ListingStatus,
     ListingRole,
 )
@@ -53,40 +55,69 @@ def ingest_primary_candles(
     if not instrument:
         return {"status": "error", "message": f"Instrument {instrument_symbol} not found."}
 
+    # PATCH B: Separate is_direct_usd (pricing normalization) from is_xauusd (feed integrity / source role)
     is_direct_usd = (instrument.quote_asset.code == "USD")
+    is_xauusd = (
+        instrument.base_asset.code == "XAU"
+        and instrument.quote_asset.code == "USD"
+        and instrument.instrument_type == InstrumentType.SPOT
+    )
     now_utc = datetime.now(timezone.utc)
 
-    # 1. Deterministic Listing Resolution
-    if is_direct_usd:
-        listing = (
-            MarketListing.objects.filter(
+    # 1. Deterministic Listing Resolution (PATCH A)
+    if is_xauusd:
+        listing = MarketListing.objects.filter(
+            instrument=instrument,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        sec_listing = MarketListing.objects.filter(
+            instrument=instrument,
+            listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+
+        if not listing:
+            DataQualitySnapshot.objects.create(
                 instrument=instrument,
-                listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
-                status=ListingStatus.ACTIVE,
-            ).first()
-            or MarketListing.objects.filter(
+                timeframe=timeframes[0] if timeframes else "15m",
+                timestamp=now_utc,
+                quality_score=Decimal("0.00"),
+                gap_count=0,
+                duplicate_count=0,
+                violation_count=1,
+                is_stale=True,
+                hard_fail=True,
+                anomalies={"error": f"PRIMARY_XAUUSD_LISTING_NOT_CONFIGURED: No active listing with role PRIMARY_XAUUSD_SPOT for {instrument_symbol}."},
+            )
+            return {
+                "status": "hard_fail",
+                "reason": "PRIMARY_XAUUSD_LISTING_NOT_CONFIGURED",
+                "instrument": instrument_symbol,
+                "candles_ingested": 0,
+            }
+
+        if is_secondary_critical and not sec_listing:
+            DataQualitySnapshot.objects.create(
                 instrument=instrument,
-                provider="xauusd_primary",
-                status=ListingStatus.ACTIVE,
-            ).first()
-            or MarketListing.objects.filter(
-                instrument=instrument,
-                status=ListingStatus.ACTIVE,
-            ).order_by("fallback_priority").first()
-        )
-        sec_listing = (
-            MarketListing.objects.filter(
-                instrument=instrument,
-                listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
-                status=ListingStatus.ACTIVE,
-            ).first()
-            or MarketListing.objects.filter(
-                instrument=instrument,
-                provider="xauusd_secondary",
-                status=ListingStatus.ACTIVE,
-            ).first()
-        )
+                timeframe=timeframes[0] if timeframes else "15m",
+                timestamp=now_utc,
+                quality_score=Decimal("0.00"),
+                gap_count=0,
+                duplicate_count=0,
+                violation_count=1,
+                is_stale=True,
+                hard_fail=True,
+                anomalies={"error": f"SECONDARY_XAUUSD_LISTING_NOT_CONFIGURED: Critical secondary listing SECONDARY_XAUUSD_SPOT is missing for {instrument_symbol}."},
+            )
+            return {
+                "status": "hard_fail",
+                "reason": "SECONDARY_XAUUSD_LISTING_NOT_CONFIGURED",
+                "instrument": instrument_symbol,
+                "candles_ingested": 0,
+            }
     else:
+        # Non-XAUUSD instruments (e.g. legacy XAUT/USDT or generic USD instruments)
         listing = (
             MarketListing.objects.filter(
                 instrument=instrument,
@@ -99,9 +130,13 @@ def ingest_primary_candles(
             ).order_by("fallback_priority").first()
         )
         sec_listing = None
+        if not listing:
+            return {"status": "error", "message": f"No active listing for {instrument_symbol}."}
 
-    if not listing:
-        if is_direct_usd:
+    # Provider Resolution & Health Check (PATCH C)
+    provider = registry.get(listing.provider)
+    if is_xauusd:
+        if not provider or not provider.is_configured():
             DataQualitySnapshot.objects.create(
                 instrument=instrument,
                 timeframe=timeframes[0] if timeframes else "15m",
@@ -112,13 +147,48 @@ def ingest_primary_candles(
                 violation_count=1,
                 is_stale=True,
                 hard_fail=True,
-                anomalies={"error": f"PRIMARY_XAUUSD_UNAVAILABLE: No active primary listing for {instrument_symbol}."},
+                anomalies={"error": "PRIMARY_XAUUSD_NOT_CONFIGURED: Primary spot provider is not configured (fail-closed)."},
             )
-            return {"status": "hard_fail", "reason": "PRIMARY_XAUUSD_UNAVAILABLE", "instrument": instrument_symbol, "candles_ingested": 0}
-        return {"status": "error", "message": f"No active listing for {instrument_symbol}."}
+            return {
+                "status": "hard_fail",
+                "reason": "PRIMARY_XAUUSD_NOT_CONFIGURED",
+                "instrument": instrument_symbol,
+                "candles_ingested": 0,
+            }
 
-    provider = registry.get(listing.provider)
-    if is_direct_usd and (not provider.is_configured() or provider.health_check().status == "NOT_CONFIGURED"):
+        health = provider.health_check()
+        if health.status in [
+            ProviderHealthStatus.NOT_CONFIGURED,
+            ProviderHealthStatus.UNHEALTHY,
+            ProviderHealthStatus.QUARANTINED,
+            ProviderHealthStatus.UNKNOWN,
+            ProviderHealthStatus.DEGRADED,
+        ]:
+            DataQualitySnapshot.objects.create(
+                instrument=instrument,
+                timeframe=timeframes[0] if timeframes else "15m",
+                timestamp=now_utc,
+                quality_score=Decimal("0.00"),
+                gap_count=0,
+                duplicate_count=0,
+                violation_count=1,
+                is_stale=True,
+                hard_fail=True,
+                anomalies={"error": f"PRIMARY_XAUUSD_HEALTH_{health.status}: Primary spot provider health status is {health.status} ({health.error_message or 'No details'})."},
+            )
+            return {
+                "status": "hard_fail",
+                "reason": f"PRIMARY_XAUUSD_HEALTH_{health.status}",
+                "instrument": instrument_symbol,
+                "candles_ingested": 0,
+            }
+    else:
+        if not provider:
+            return {"status": "error", "message": f"Provider {listing.provider} not found in registry."}
+
+    # PATCH E: XAUUSD Divergence Threshold Check (Fail-closed if threshold is None)
+    configured_threshold = xauusd_max_divergence_pct or _get_setting("XAUUSD_MAX_DIVERGENCE_PCT", None)
+    if is_xauusd and configured_threshold is None:
         DataQualitySnapshot.objects.create(
             instrument=instrument,
             timeframe=timeframes[0] if timeframes else "15m",
@@ -129,11 +199,11 @@ def ingest_primary_candles(
             violation_count=1,
             is_stale=True,
             hard_fail=True,
-            anomalies={"error": "PRIMARY_XAUUSD_UNAVAILABLE: Primary spot provider is NOT_CONFIGURED (fail-closed)."},
+            anomalies={"error": "INTEGRITY_THRESHOLD_NOT_CONFIGURED: XAUUSD integrity divergence threshold is not configured."},
         )
         return {
             "status": "hard_fail",
-            "reason": "PRIMARY_XAUUSD_UNAVAILABLE",
+            "reason": "INTEGRITY_THRESHOLD_NOT_CONFIGURED",
             "instrument": instrument_symbol,
             "candles_ingested": 0,
         }
@@ -144,9 +214,8 @@ def ingest_primary_candles(
     normalizer = QuoteNormalizer()
     integrity_engine = MarketIntegrityEngine()
     total_ingested = 0
-
-    # Resolve divergence threshold from setting if not passed
-    configured_threshold = xauusd_max_divergence_pct or _get_setting("XAUUSD_MAX_DIVERGENCE_PCT", None)
+    task_hard_fail = False
+    task_hard_fail_reasons = []
 
     for tf in timeframes:
         minutes_per_bar = {
@@ -175,7 +244,7 @@ def ingest_primary_candles(
             )
         except Exception as e:
             logger.error("primary_ingestion_fetch_error", provider=listing.provider, tf=tf, error=str(e))
-            if is_direct_usd:
+            if is_xauusd:
                 DataQualitySnapshot.objects.create(
                     instrument=instrument,
                     timeframe=tf,
@@ -188,20 +257,40 @@ def ingest_primary_candles(
                     hard_fail=True,
                     anomalies={"error": f"PRIMARY_XAUUSD_FETCH_ERROR: {e}"},
                 )
-                return {
-                    "status": "hard_fail",
-                    "reason": f"PRIMARY_XAUUSD_FETCH_ERROR: {e}",
-                    "instrument": instrument_symbol,
-                    "candles_ingested": total_ingested,
-                }
+                task_hard_fail = True
+                task_hard_fail_reasons.append(f"PRIMARY_XAUUSD_FETCH_ERROR_{tf}: {e}")
+            continue
+
+        # PATCH D: Empty Primary Data Fail Closed for XAUUSD
+        usable_closed_candles = [c for c in raw_candles if c.is_closed]
+        if is_xauusd and len(usable_closed_candles) == 0:
+            DataQualitySnapshot.objects.create(
+                instrument=instrument,
+                timeframe=tf,
+                timestamp=now_utc,
+                quality_score=Decimal("0.00"),
+                gap_count=0,
+                duplicate_count=0,
+                violation_count=1,
+                is_stale=True,
+                hard_fail=True,
+                anomalies={"error": f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA: Zero usable closed candles returned for {tf}."},
+            )
+            task_hard_fail = True
+            task_hard_fail_reasons.append(f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA_{tf}")
             continue
 
         # 3. Secondary Provider Fetch (for XAUUSD integrity verification XAU-P1-02)
         sec_lookup = {}
         sec_fetch_error = None
-        if is_direct_usd and sec_listing:
+        if is_xauusd and sec_listing:
             sec_provider = registry.get(sec_listing.provider)
-            if sec_provider and sec_provider.is_configured():
+            if not sec_provider or not sec_provider.is_configured():
+                sec_fetch_error = "SECONDARY_XAUUSD_NOT_CONFIGURED"
+                if is_secondary_critical:
+                    task_hard_fail = True
+                    task_hard_fail_reasons.append(f"SECONDARY_XAUUSD_UNAVAILABLE_{tf}")
+            else:
                 try:
                     sec_candles = sec_provider.fetch_candles(
                         symbol=sec_listing.provider_symbol,
@@ -210,9 +299,16 @@ def ingest_primary_candles(
                         end=now_utc,
                     )
                     sec_lookup = {c.timestamp_open: c.close for c in sec_candles if c.is_closed}
+                    if is_secondary_critical and len(sec_lookup) == 0 and len(usable_closed_candles) > 0:
+                        sec_fetch_error = "SECONDARY_XAUUSD_NO_DATA"
+                        task_hard_fail = True
+                        task_hard_fail_reasons.append(f"SECONDARY_XAUUSD_NO_DATA_{tf}")
                 except Exception as e:
                     sec_fetch_error = str(e)
                     logger.warning("secondary_xauusd_fetch_error", provider=sec_listing.provider, error=str(e))
+                    if is_secondary_critical:
+                        task_hard_fail = True
+                        task_hard_fail_reasons.append(f"SECONDARY_XAUUSD_FETCH_ERROR_{tf}: {e}")
 
         # Sort chronologically for deterministic gap & normalization analysis
         raw_candles = sorted(raw_candles, key=lambda c: c.timestamp_open)
@@ -252,19 +348,23 @@ def ingest_primary_candles(
                     norm_quote_rate = candle_norm.rate
                     norm_close_usd = candle_norm.normalized_price
 
-                    # Integrated Multi-Source Provider Integrity Check (XAU-P1-02)
-                    sec_price = sec_lookup.get(raw.timestamp_open)
-                    integrity_res = integrity_engine.verify_xauusd_multi_provider_integrity(
-                        primary_price=raw.close,
-                        secondary_price=sec_price,
-                        max_divergence_pct=configured_threshold,
-                        is_secondary_critical=is_secondary_critical,
-                    )
-                    if integrity_res.hard_fail:
-                        integrity_failed = True
-                        violations += 1
-                        quality_flag = CandleQualityFlag.SUSPECT
-                        anomalies_dict["integrity_disagreement"] = integrity_res.message
+                    if is_xauusd:
+                        # Integrated Multi-Source Provider Integrity Check (XAU-P1-02)
+                        sec_price = sec_lookup.get(raw.timestamp_open)
+                        integrity_res = integrity_engine.verify_xauusd_multi_provider_integrity(
+                            primary_price=raw.close,
+                            secondary_price=sec_price,
+                            max_divergence_pct=configured_threshold,
+                            is_secondary_critical=is_secondary_critical,
+                        )
+                        if integrity_res.hard_fail:
+                            integrity_failed = True
+                            violations += 1
+                            quality_flag = CandleQualityFlag.SUSPECT
+                            anomalies_dict["integrity_disagreement"] = integrity_res.message
+                            task_hard_fail = True
+                            if integrity_res.message not in task_hard_fail_reasons:
+                                task_hard_fail_reasons.append(integrity_res.message)
                 else:
                     # Point-in-time rate matching: find latest historical rate <= candle close timestamp
                     candle_rate = None
@@ -312,13 +412,19 @@ def ingest_primary_candles(
                 total_ingested += 1
 
             # Point-in-time DataQualitySnapshot
-            if is_direct_usd:
+            if is_xauusd:
                 anomalies_dict.update({
                     "gap_detected": gap_count > 0,
                     "secondary_fetch_error": sec_fetch_error,
                 })
-                dq_hard_fail = violations > 0 or integrity_failed
+                dq_hard_fail = violations > 0 or integrity_failed or (is_secondary_critical and sec_fetch_error is not None)
                 score = Decimal("100.00") if not dq_hard_fail and gap_count == 0 else Decimal("0.00") if dq_hard_fail else Decimal("50.00")
+            elif is_direct_usd:
+                anomalies_dict.update({
+                    "gap_detected": gap_count > 0,
+                })
+                dq_hard_fail = violations > 5
+                score = Decimal("100.00") if violations == 0 and gap_count == 0 else Decimal("50.00")
             else:
                 anomalies_dict.update({
                     "peg_warning": norm_res.is_warning,
@@ -336,10 +442,22 @@ def ingest_primary_candles(
                 gap_count=gap_count,
                 duplicate_count=0,
                 violation_count=violations,
-                is_stale=norm_res.is_stale,
+                is_stale=norm_res.is_stale if hasattr(norm_res, 'is_stale') else False,
                 hard_fail=dq_hard_fail,
                 anomalies=anomalies_dict,
             )
+            if dq_hard_fail and is_xauusd:
+                task_hard_fail = True
+
+    # PATCH E: Propagate Integrity Failure to Task Result
+    if is_xauusd and task_hard_fail:
+        return {
+            "status": "hard_fail",
+            "reason": "; ".join(task_hard_fail_reasons) if task_hard_fail_reasons else "XAUUSD_INTEGRITY_OR_QUALITY_FAILURE",
+            "instrument": instrument_symbol,
+            "provider": listing.provider,
+            "candles_ingested": total_ingested,
+        }
 
     return {
         "status": "success",

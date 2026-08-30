@@ -3,6 +3,26 @@
 from django.db import migrations, models
 
 
+def classify_historical_listings(apps, schema_editor):
+    MarketListing = apps.get_model('instruments', 'MarketListing')
+    # Deterministically classify known historical listings without creating or deleting rows
+    MarketListing.objects.filter(provider='binance').update(listing_role='LEGACY_EXECUTION')
+    MarketListing.objects.filter(provider='okx').update(listing_role='LEGACY_EXECUTION')
+    MarketListing.objects.filter(provider='gold_reference').update(listing_role='LEGACY_GOLD_REFERENCE')
+    MarketListing.objects.filter(provider='usdt_usd').update(listing_role='LEGACY_QUOTE_NORMALIZATION')
+
+
+def reverse_classify(apps, schema_editor):
+    MarketListing = apps.get_model('instruments', 'MarketListing')
+    MarketListing.objects.filter(
+        listing_role__in=[
+            'LEGACY_EXECUTION',
+            'LEGACY_GOLD_REFERENCE',
+            'LEGACY_QUOTE_NORMALIZATION',
+        ]
+    ).update(listing_role='GENERIC')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -25,4 +45,6 @@ class Migration(migrations.Migration):
             name='status',
             field=models.CharField(choices=[('HEALTHY', 'Healthy'), ('DEGRADED', 'Degraded'), ('UNHEALTHY', 'Unhealthy'), ('QUARANTINED', 'Quarantined'), ('NOT_CONFIGURED', 'Not Configured'), ('UNKNOWN', 'Unknown')], db_index=True, default='UNKNOWN', max_length=16),
         ),
+        migrations.RunPython(classify_historical_listings, reverse_classify),
     ]
+

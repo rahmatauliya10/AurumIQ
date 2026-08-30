@@ -13,11 +13,27 @@ from config.asgi import application
 from apps.live_monitor.consumers import LiveEventBroadcaster
 from apps.live_monitor.tasks import process_live_quote_task, process_closed_candle_task
 from apps.instruments.models import Asset, AssetType, Instrument, InstrumentRole, InstrumentType
+
 from apps.market_data.models import MarketCandle, CandleQualityFlag
+from django.db import connections
+
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_websocket_test_connections():
+    yield
+    async def _close():
+        await sync_to_async(connections.close_all)()
+    try:
+        asyncio.run(_close())
+    except Exception:
+        pass
+    connections.close_all()
 
 
 @pytest.mark.django_db(transaction=True)
 def test_real_asgi_websocket_session_auth_and_cross_process_delivery():
+
     """
     End-to-end verification of real ASGI WebSocket session cookie resolution,
     unauthorized rejection, and live event frame delivery.
