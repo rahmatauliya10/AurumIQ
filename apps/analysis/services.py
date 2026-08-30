@@ -183,3 +183,87 @@ class AnalysisPersistenceService:
                     "details": details_3b,
                 },
             )
+
+    @staticmethod
+    def rehydrate_cycle_3a_snapshot(record: CycleSnapshotRecord) -> Cycle3ASnapshot:
+        """Rehydrate pure domain Cycle3ASnapshot from persisted CycleSnapshotRecord."""
+        from engine.core.types import (
+            SessionType,
+            SampleQuality,
+            SessionContext,
+            SwingDurationContext,
+            MacroEventContext,
+            CalendarSeasonalityContext,
+            Cycle3ASnapshot,
+        )
+        details = record.details or {}
+
+        session_val = record.session
+        session_enum = SessionType(session_val) if session_val in SessionType._value2member_map_ else SessionType.ASIA
+
+        session_ctx = SessionContext(
+            session=session_enum,
+            progress_pct=record.session_progress_pct,
+            is_high_liquidity=record.is_high_liquidity,
+            local_times=details.get("local_times", {}),
+            expectancy_score=details.get("session_expectancy_score", 0.0),
+            sample_quality=(
+                SampleQuality(details.get("session_sample_quality", "INSUFFICIENT"))
+                if details.get("session_sample_quality") in SampleQuality._value2member_map_
+                else SampleQuality.INSUFFICIENT
+            ),
+            effective_n=details.get("session_effective_n", 0.0),
+        )
+
+        swing_ctx = SwingDurationContext(
+            market_age_bars=details.get("swing_market_age_bars", record.bars_since_last_swing),
+            market_age_hours=details.get("swing_market_age_hours", 0.0),
+            known_age_bars=record.bars_since_last_swing,
+            known_age_hours=details.get("swing_known_age_hours", 0.0),
+            pullback_age_percentile=record.pullback_age_percentile,
+            is_mature=record.is_mature_pullback,
+            maturity_score=details.get("swing_maturity_score", 0.0),
+            sample_quality=(
+                SampleQuality(details.get("swing_sample_quality", "INSUFFICIENT"))
+                if details.get("swing_sample_quality") in SampleQuality._value2member_map_
+                else SampleQuality.INSUFFICIENT
+            ),
+            effective_n=details.get("swing_effective_n", 0.0),
+        )
+
+        macro_ctx = MacroEventContext(
+            is_in_blackout=record.is_blocked_by_event,
+            minutes_to_next_event=details.get("macro_minutes_to_next"),
+            minutes_since_last_event=details.get("macro_minutes_since_last"),
+            active_event_name=details.get("macro_active_event"),
+            point_in_time_value=details.get("macro_pit_value"),
+            is_feed_healthy=details.get("macro_feed_healthy", False),
+        )
+
+        ts = record.timestamp
+        calendar_ctx = CalendarSeasonalityContext(
+            day_of_week=details.get("calendar_day_of_week", ts.weekday()),
+            day_name=details.get("calendar_day_name", ts.strftime("%A")),
+            hour_utc=details.get("calendar_hour_utc", ts.hour),
+            month=details.get("calendar_month", ts.month),
+            is_month_end_flow=details.get("calendar_is_month_end", False),
+            stability_score=details.get("calendar_stability_score", 0.0),
+            seasonality_score=details.get("calendar_seasonality_score", 0.0),
+            sample_quality=(
+                SampleQuality(details.get("calendar_sample_quality", "INSUFFICIENT"))
+                if details.get("calendar_sample_quality") in SampleQuality._value2member_map_
+                else SampleQuality.INSUFFICIENT
+            ),
+            effective_n=details.get("calendar_effective_n", 0.0),
+        )
+
+        return Cycle3ASnapshot(
+            timestamp=record.timestamp,
+            session=session_ctx,
+            swing_duration=swing_ctx,
+            macro_event=macro_ctx,
+            calendar=calendar_ctx,
+            is_blocked_by_event=record.is_blocked_by_event,
+            cycle_score_3a=record.cycle_score_3a,
+            cycle_version=record.cycle_version,
+        )

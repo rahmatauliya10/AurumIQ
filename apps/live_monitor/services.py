@@ -143,7 +143,7 @@ class LiveQuoteService:
 
             state.refresh_from_db()
 
-            # Broadcast typed quote update to cross-process Redis bus & subscribers
+            # Broadcast typed quote update after atomic DB commit
             quote_payload = LiveEventBroadcaster.format_quote_event(
                 instrument=state.instrument,
                 bid=state.current_bid,
@@ -155,7 +155,7 @@ class LiveQuoteService:
                 entry_zone_status=state.entry_zone_status,
                 distance_to_entry_zone_pct=state.distance_to_entry_zone_pct,
             )
-            LiveEventBroadcaster.broadcast(quote_payload)
+            transaction.on_commit(lambda p=quote_payload: LiveEventBroadcaster.broadcast(p))
             return state
 
 
@@ -277,6 +277,25 @@ class LiveDecisionPipelineService:
             for c in reversed(list(xau_qs))
         ]
 
+        # Historical Phase 3A Cycle Snapshot (PIT)
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        cycle_rec = (
+            CycleSnapshotRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=event.timeframe,
+                timestamp__lte=candle_ts,
+                cycle_version=cycle_version,
+            )
+            .order_by("-timestamp")
+            .first()
+        )
+        cycle_3a_snapshot = (
+            AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(cycle_rec)
+            if cycle_rec
+            else None
+        )
+
         # Include current event candle if not already in DB
         if not any(c.timestamp_close == candle_ts for c in engine_candles):
             engine_candles.append(
@@ -319,6 +338,7 @@ class LiveDecisionPipelineService:
             is_provider_transition=is_provider_transition,
             is_feed_stale=is_feed_stale,
             macro_context=macro_context,
+            cycle_3a=cycle_3a_snapshot,
         )
 
         # Step 5: Persist immutable SignalRecord (P7-07, A03, A08)
@@ -470,7 +490,7 @@ class LiveDecisionPipelineService:
                 reasons_negative=list(signal_snapshot.reasons_negative),
                 hard_gate_reasons=list(signal_snapshot.hard_gate_reasons),
             )
-            LiveEventBroadcaster.broadcast(sig_payload)
+            transaction.on_commit(lambda p=sig_payload: LiveEventBroadcaster.broadcast(p))
 
             risk_payload = LiveEventBroadcaster.format_risk_plan_update(
                 instrument=event.instrument,
@@ -488,13 +508,13 @@ class LiveDecisionPipelineService:
                 rr_tp2=risk_plan_snapshot.rr_tp2 if risk_plan_snapshot.is_valid_risk_plan else None,
                 decision_sequence=state.decision_sequence,
             )
-            LiveEventBroadcaster.broadcast(risk_payload)
+            transaction.on_commit(lambda p=risk_payload: LiveEventBroadcaster.broadcast(p))
 
             health_payload = LiveEventBroadcaster.format_feed_health_update(
                 instrument=event.instrument,
                 feed_health=feed_health,
             )
-            LiveEventBroadcaster.broadcast(health_payload)
+            transaction.on_commit(lambda p=health_payload: LiveEventBroadcaster.broadcast(p))
 
             return signal_record, risk_record, state
 

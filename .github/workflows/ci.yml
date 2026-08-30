@@ -98,3 +98,16 @@ jobs:
           LOG_FORMAT: "console"
         run: |
           pytest -v
+
+      - name: Production Docker Build
+        run: |
+          docker build -f docker/Dockerfile.prod -t aurumiq:ci .
+
+      - name: Production Compose Config Validation
+        env:
+          POSTGRES_PASSWORD: ci_postgres_password_123
+          REDIS_PASSWORD: ci_redis_password_123
+          DJANGO_SECRET_KEY: ci-secret-key-do-not-use-in-production-random-value-12345
+        run: |
+          cp .env.example .env.prod
+          docker compose -f docker/docker-compose.prod.yml config

@@ -110,7 +110,7 @@ class CandleData:
     low: Decimal
     close: Decimal
     volume: Decimal
-    is_closed: bool = True
+    is_closed: bool
     source_id: str = "default"
     quote_rate: Optional[Decimal] = None
     close_usd: Optional[Decimal] = None

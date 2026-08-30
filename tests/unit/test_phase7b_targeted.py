@@ -32,6 +32,7 @@ class Phase7BTargetedTests(TestCase):
         )
 
         # Baseline LiveMonitorState
+        LiveMonitorState.objects.filter(instrument="XAUT/USDT").delete()
         self.state = LiveMonitorState.objects.create(
             instrument="XAUT/USDT",
             current_bid=Decimal("2500.00"),
