@@ -41,8 +41,12 @@ class FeatureSnapshotRecord(models.Model):
     # Volume
     volume_ratio_20 = models.FloatField(null=True, blank=True)
     volume_zscore_20 = models.FloatField(null=True, blank=True)
+    volume_evidence = models.CharField(max_length=32, default="UNAVAILABLE", blank=True)
+    volume_usable = models.BooleanField(default=False)
+    volume_reason = models.CharField(max_length=64, default="", blank=True)
 
     feature_version = models.CharField(max_length=32, default="feat-2026-v1", db_index=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

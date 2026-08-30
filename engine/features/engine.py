@@ -2,12 +2,12 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Sequence, Optional
-from engine.core.types import CandleData, FeatureSnapshot
+from engine.core.types import CandleData, FeatureSnapshot, VolumeEvidenceType
 from engine.core.config import EngineConfigData
 from .trend import calculate_ema, calculate_ema_slope, calculate_ema_alignment, calculate_adx
 from .momentum import calculate_rsi, calculate_macd, calculate_roc
 from .volatility import calculate_atr, calculate_bollinger_bands, calculate_realized_volatility
-from .volume import calculate_volume_ratio, calculate_volume_zscore
+from .volume import calculate_volume_features
 
 
 class FeatureEngine:
@@ -21,9 +21,13 @@ class FeatureEngine:
 
     def extract_features(self, candles: Sequence[CandleData]) -> FeatureSnapshot:
         """
-        Extract complete technical feature snapshot from causal sequence of candles up to T.
+        Extract complete technical feature snapshot from causal sequence of closed candles up to T.
+        Enforces closed-candle safety: forming/open candles are strictly excluded from
+        indicator calculation, target timestamp assignment, and volume feature extraction.
         """
-        if not candles:
+        closed_candles = [c for c in candles if c.is_closed] if candles else []
+
+        if not closed_candles:
             return FeatureSnapshot(
                 timestamp=datetime.now(timezone.utc),
                 ema20=None, ema50=None, ema200=None, ema_slope_20=None, ema_alignment=0,
@@ -33,16 +37,19 @@ class FeatureEngine:
                 bb_upper=None, bb_middle=None, bb_lower=None, bb_bandwidth=None,
                 realized_vol_20=None,
                 volume_ratio_20=None, volume_zscore_20=None,
+                volume_evidence=VolumeEvidenceType.UNAVAILABLE,
+                volume_usable=False,
+                volume_reason="EMPTY_CANDLES",
             )
 
-        latest_candle = candles[-1]
+        latest_candle = closed_candles[-1]
         target_timestamp = latest_candle.timestamp_open
 
         # Extract series (using normalized USD close if present, else raw close)
-        closes = [c.close_usd if c.close_usd is not None else c.close for c in candles]
-        highs = [c.high for c in candles]
-        lows = [c.low for c in candles]
-        volumes = [c.volume for c in candles]
+        closes = [c.close_usd if c.close_usd is not None else c.close for c in closed_candles]
+        highs = [c.high for c in closed_candles]
+        lows = [c.low for c in closed_candles]
+
 
         # 1. Trend Features
         ema20_series = calculate_ema(closes, self.config.ema_fast_period)
@@ -75,9 +82,13 @@ class FeatureEngine:
         )
         realized_vol_20 = calculate_realized_volatility(closes, self.config.realized_vol_period)
 
-        # 4. Volume Features
-        volume_ratio_20 = calculate_volume_ratio(volumes, self.config.volume_lookback)
-        volume_zscore_20 = calculate_volume_zscore(volumes, self.config.volume_lookback)
+        # 4. Volume Features (with XAU-P2-01 semantic validation)
+        vol_res = calculate_volume_features(closed_candles, self.config.volume_lookback)
+        volume_ratio_20 = vol_res.ratio
+        volume_zscore_20 = vol_res.zscore
+        volume_evidence = vol_res.evidence_type
+        volume_usable = vol_res.is_usable
+        volume_reason = vol_res.reason
 
         return FeatureSnapshot(
             timestamp=target_timestamp,
@@ -103,4 +114,8 @@ class FeatureEngine:
             realized_vol_20=realized_vol_20,
             volume_ratio_20=volume_ratio_20,
             volume_zscore_20=volume_zscore_20,
+            volume_evidence=volume_evidence,
+            volume_usable=volume_usable,
+            volume_reason=volume_reason,
         )
+
