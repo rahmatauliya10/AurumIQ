@@ -4,7 +4,7 @@ import pytest
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, connections, models, transaction
 from django.test import Client, RequestFactory, TransactionTestCase
 from django.urls import reverse
 
@@ -327,6 +327,10 @@ def test_wrong_role_direct_url_access_matrix(client: Client):
 class ConcurrencyAdminLockoutTests(TransactionTestCase):
     """Transactional concurrency tests ensuring two simultaneous admin updates cannot leave zero admins."""
 
+    def tearDown(self):
+        super().tearDown()
+        connections.close_all()
+
     def test_concurrent_admin_mutations_cannot_leave_zero_effective_admins(self):
         """Simulate two concurrent threads attempting to disable the only two active admins."""
         User.objects.all().delete()
@@ -341,8 +345,11 @@ class ConcurrencyAdminLockoutTests(TransactionTestCase):
         results = []
 
         def worker_disable(target_id, actor_user):
-            success, msg = disable_user_safely(target_user_id=target_id, actor=actor_user)
-            results.append((target_id, success, msg))
+            try:
+                success, msg = disable_user_safely(target_user_id=target_id, actor=actor_user)
+                results.append((target_id, success, msg))
+            finally:
+                connections.close_all()
 
         t1 = threading.Thread(target=worker_disable, args=(admin_a.id, admin_b))
         t2 = threading.Thread(target=worker_disable, args=(admin_b.id, admin_a))
@@ -351,6 +358,7 @@ class ConcurrencyAdminLockoutTests(TransactionTestCase):
         t2.start()
         t1.join()
         t2.join()
+        connections.close_all()
 
         # Reload state from database
         admin_a.refresh_from_db()
@@ -359,3 +367,4 @@ class ConcurrencyAdminLockoutTests(TransactionTestCase):
         # At least one admin MUST remain active
         active_admins = User.objects.filter(is_active=True, profile__role=UserRole.ADMIN).count()
         assert active_admins >= 1, f"Zero active admins remained! Results: {results}"
+
