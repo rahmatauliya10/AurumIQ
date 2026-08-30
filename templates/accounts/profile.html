@@ -1,0 +1,133 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}User Profile — AurumIQ{% endblock %}
+
+{% block content %}
+<div class="content-container">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">User Profile</h1>
+            <p class="page-subtitle">Account credentials, assigned RBAC role privileges, and security details</p>
+        </div>
+        <div class="header-actions">
+            <a href="{% url 'accounts:password_change' %}" class="btn btn-secondary">
+                <span class="btn-icon">🔒</span> Change Password
+            </a>
+            {% if is_admin %}
+            <a href="{% url 'accounts:user_management' %}" class="btn btn-primary">
+                <span class="btn-icon">👥</span> User Management
+            </a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if messages %}
+    <div class="messages-container">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="grid grid-2">
+        <!-- Profile Details Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <span class="card-icon">👤</span>
+                    <h2 class="card-title">Identity & Access</h2>
+                </div>
+                <span class="badge badge-{% if user_role == 'ADMIN' %}gold{% elif user_role == 'ANALYST' %}cyan{% else %}gray{% endif %}">
+                    {{ user_role }}
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="profile-info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Username</span>
+                        <span class="info-val font-mono">{{ user_obj.username }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Email Address</span>
+                        <span class="info-val">{{ user_obj.email|default:"Not specified" }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Full Name</span>
+                        <span class="info-val">{{ user_obj.get_full_name|default:user_obj.username }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Department</span>
+                        <span class="info-val">{{ user_department|default:"Engineering / Trading Operations" }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Account Status</span>
+                        <span class="status-indicator {% if user_obj.is_active %}online{% else %}offline{% endif %}">
+                            <span class="status-dot"></span> {% if user_obj.is_active %}Active{% else %}Disabled{% endif %}
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Date Joined</span>
+                        <span class="info-val font-mono">{{ user_obj.date_joined|date:"Y-m-d H:i:s" }} UTC</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Last Login</span>
+                        <span class="info-val font-mono">{{ user_obj.last_login|date:"Y-m-d H:i:s"|default:"First Session" }} UTC</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Role Permissions Matrix Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <span class="card-icon">🛡️</span>
+                    <h2 class="card-title">Authorized Capabilities</h2>
+                </div>
+                <span class="badge badge-subtle">ENFORCED</span>
+            </div>
+            <div class="card-body">
+                <ul class="permission-list">
+                    <li class="permission-item active">
+                        <span class="perm-check">✓</span>
+                        <div>
+                            <strong>Decision Center & Live Analysis</strong>
+                            <p class="perm-desc">View executive BUY/WAIT/AVOID decisions, multi-timeframe charts, and risk plans</p>
+                        </div>
+                    </li>
+                    <li class="permission-item active">
+                        <span class="perm-check">✓</span>
+                        <div>
+                            <strong>Signals History Log</strong>
+                            <p class="perm-desc">Browse historical signals and inspect immutable closed-candle snapshots</p>
+                        </div>
+                    </li>
+                    <li class="permission-item {% if is_analyst %}active{% else %}disabled{% endif %}">
+                        <span class="perm-check">{% if is_analyst %}✓{% else %}✕{% endif %}</span>
+                        <div>
+                            <strong>Research Suite (Time Cycle & Backtest Lab)</strong>
+                            <p class="perm-desc">Run Point-in-Time R-multiple backtests and inspect spectral cycle models</p>
+                        </div>
+                    </li>
+                    <li class="permission-item {% if is_analyst %}active{% else %}disabled{% endif %}">
+                        <span class="perm-check">{% if is_analyst %}✓{% else %}✕{% endif %}</span>
+                        <div>
+                            <strong>Data Integrity & Alerts Config</strong>
+                            <p class="perm-desc">Monitor data feed freshness, gap detection, and configure Webhook/Telegram alert channels</p>
+                        </div>
+                    </li>
+                    <li class="permission-item {% if is_admin %}active{% else %}disabled{% endif %}">
+                        <span class="perm-check">{% if is_admin %}✓{% else %}✕{% endif %}</span>
+                        <div>
+                            <strong>System Health & User Management</strong>
+                            <p class="perm-desc">Manage system services, inspect Celery/Redis health, create accounts, and assign roles</p>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

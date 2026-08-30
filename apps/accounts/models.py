@@ -50,3 +50,47 @@ def create_or_update_user_profile(sender, instance, created, **kwargs):
             instance.profile.save()
         else:
             UserProfile.objects.create(user=instance)
+
+
+class AuditAction(models.TextChoices):
+    USER_CREATED = "USER_CREATED", "User Created"
+    USER_DISABLED = "USER_DISABLED", "User Disabled"
+    USER_ENABLED = "USER_ENABLED", "User Enabled"
+    ROLE_CHANGED = "ROLE_CHANGED", "Role Changed"
+    DEPARTMENT_CHANGED = "DEPARTMENT_CHANGED", "Department Changed"
+    PASSWORD_CHANGED = "PASSWORD_CHANGED", "Password Changed"
+
+
+class UserManagementAuditLog(models.Model):
+    """Immutable audit trail for all user lifecycle and RBAC modifications."""
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_actions_performed",
+    )
+    target_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="audit_logs_received",
+    )
+    action = models.CharField(
+        max_length=32,
+        choices=AuditAction.choices,
+        db_index=True,
+    )
+    before_state = models.JSONField(default=dict, blank=True)
+    after_state = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "User Management Audit Log"
+        verbose_name_plural = "User Management Audit Logs"
+
+    def __str__(self):
+        actor_name = self.actor.username if self.actor else "System"
+        return f"[{self.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {actor_name} -> {self.action} on {self.target_user.username}"
+

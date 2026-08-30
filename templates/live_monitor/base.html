@@ -31,10 +31,46 @@
                 <span class="status-dot online"></span>
                 <span class="status-label">CONNECTED</span>
             </div>
-            <div class="user-badge">
-                <span class="user-avatar">👤</span>
-                <span class="user-name">{{ user.username|default:"Operator" }}</span>
+            
+            {% if user.is_authenticated %}
+            <div class="user-dropdown-container">
+                <button type="button" class="user-dropdown-trigger" id="userDropdownTrigger" onclick="toggleUserDropdown(event)">
+                    <span class="user-avatar">👤</span>
+                    <span class="user-name">{{ user.username }}</span>
+                    <span class="badge badge-xs badge-{% if user.is_superuser or user.profile.role == 'ADMIN' %}gold{% elif user.profile.role == 'ANALYST' %}cyan{% else %}gray{% endif %}">
+                        {% if user.is_superuser %}ADMIN{% elif user.profile %}{{ user.profile.role }}{% else %}VIEWER{% endif %}
+                    </span>
+                    <span class="dropdown-chevron">▾</span>
+                </button>
+                <div class="user-dropdown-menu" id="userDropdownMenu" style="display: none;">
+                    <div class="dropdown-header">
+                        <strong class="dropdown-user-fullname">{{ user.get_full_name|default:user.username }}</strong>
+                        <div class="dropdown-user-dept text-dim text-sm">{{ user.profile.department|default:"Trading Operations" }}</div>
+                    </div>
+                    <div class="dropdown-divider"></div>
+                    <a href="{% url 'accounts:profile' %}" class="dropdown-item">
+                        <span class="item-icon">👤</span> My Profile
+                    </a>
+                    <a href="{% url 'accounts:password_change' %}" class="dropdown-item">
+                        <span class="item-icon">🔒</span> Change Password
+                    </a>
+                    {% if user.is_superuser or user.profile.role == 'ADMIN' %}
+                    <a href="{% url 'accounts:user_management' %}" class="dropdown-item">
+                        <span class="item-icon">👥</span> User Management
+                    </a>
+                    {% endif %}
+                    <div class="dropdown-divider"></div>
+                    <form method="post" action="{% url 'accounts:logout' %}" class="logout-form">
+                        {% csrf_token %}
+                        <button type="submit" class="dropdown-item logout-btn">
+                            <span class="item-icon">🚪</span> Sign Out
+                        </button>
+                    </form>
+                </div>
             </div>
+            {% else %}
+            <a href="{% url 'login' %}" class="btn btn-sm btn-primary">Sign In</a>
+            {% endif %}
         </div>
     </header>
 
@@ -52,6 +88,22 @@
     </footer>
 
     <script src="/static/js/dashboard.js"></script>
+    <script>
+    function toggleUserDropdown(e) {
+        e.stopPropagation();
+        const menu = document.getElementById('userDropdownMenu');
+        if (menu) {
+            menu.style.display = menu.style.display === 'none' || menu.style.display === '' ? 'block' : 'none';
+        }
+    }
+    document.addEventListener('click', function(e) {
+        const menu = document.getElementById('userDropdownMenu');
+        const trigger = document.getElementById('userDropdownTrigger');
+        if (menu && !menu.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
+            menu.style.display = 'none';
+        }
+    });
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>
