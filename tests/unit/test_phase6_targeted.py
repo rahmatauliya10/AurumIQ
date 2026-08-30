@@ -1261,3 +1261,125 @@ def test_p6_35_zero_exchange_order_api_in_backtesting():
     assert "okx" not in source.lower()
 
 
+# --- P6-DB-01: 1m DB Data Cannot Crash Backtest Task ---
+@pytest.mark.django_db
+def test_p6_db_01_1m_db_data_cannot_crash_backtest_task():
+    """Presence of 1m MarketCandle rows in DB does not crash run_backtest_task."""
+    from apps.backtests.tasks import run_backtest_task
+    from apps.instruments.models import Asset, AssetType, Instrument, InstrumentType, InstrumentRole
+    from apps.market_data.models import MarketCandle, CandleQualityFlag
+
+    xaut, _ = Asset.objects.get_or_create(code="XAUT", name="Tether Gold", asset_type=AssetType.CRYPTO_TOKEN)
+    usdt, _ = Asset.objects.get_or_create(code="USDT", name="Tether USD", asset_type=AssetType.CRYPTO_TOKEN)
+    inst, _ = Instrument.objects.get_or_create(
+        base_asset=xaut, quote_asset=usdt, instrument_type=InstrumentType.SPOT,
+        defaults={"role": InstrumentRole.EXECUTION}
+    )
+
+    t0 = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
+    # Create 35 15m candles
+    for i in range(35):
+        t_o = t0 + timedelta(minutes=15 * i)
+        t_c = t_o + timedelta(minutes=15)
+        MarketCandle.objects.create(
+            instrument=inst, timeframe="15m", source="binance",
+            timestamp_open=t_o, timestamp_close=t_c,
+            open=Decimal("2500.00"), high=Decimal("2510.00"), low=Decimal("2495.00"), close=Decimal("2505.00"),
+            volume=Decimal("100"), quote_rate=Decimal("1.0000"), close_usd=Decimal("2505.00"),
+            is_closed=True, data_quality_flag=CandleQualityFlag.OK,
+        )
+
+    # Create 1m candles
+    for i in range(60):
+        t_o = t0 + timedelta(minutes=i)
+        t_c = t_o + timedelta(minutes=1)
+        MarketCandle.objects.create(
+            instrument=inst, timeframe="1m", source="binance",
+            timestamp_open=t_o, timestamp_close=t_c,
+            open=Decimal("2500.00"), high=Decimal("2502.00"), low=Decimal("2499.00"), close=Decimal("2501.00"),
+            volume=Decimal("10"), quote_rate=Decimal("1.0000"), close_usd=Decimal("2501.00"),
+            is_closed=True, data_quality_flag=CandleQualityFlag.OK,
+        )
+
+    res = run_backtest_task(
+        instrument="XAUT/USDT",
+        start_time_iso=t0.isoformat(),
+        end_time_iso=(t0 + timedelta(hours=10)).isoformat(),
+        dataset_hash="hash-p6-db-01",
+        code_revision="32bec19b4219ea8adc38a11c7ddcd8ee7863095a",
+    )
+    assert res["status"] == "COMPLETED"
+
+
+# --- P6-XAU-01: Replay Receives Historical XAU Candles ---
+def test_p6_xau_01_replay_receives_historical_xau_candles():
+    """PointInTimeDataset preserves and returns historical XAU candles on or before as_of."""
+    dataset = PointInTimeDataset()
+    t0 = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
+
+    for i in range(10):
+        t_o = t0 + timedelta(minutes=15 * i)
+        t_c = t_o + timedelta(minutes=15)
+        c = _make_candle(t_o, 15, Decimal("2500.00"), Decimal("2505.00"), Decimal("2495.00"), Decimal("2502.00"))
+        dataset.add_xau_candle(c)
+
+    # Query as of bar 5 close
+    t_asof = t0 + timedelta(minutes=15 * 5)
+    xau_candles = dataset.get_xau_candles(t_asof)
+    assert len(xau_candles) == 5
+    assert all(c.timestamp_close <= t_asof for c in xau_candles)
+
+
+# --- P6-XAU-02: Future XAU Mutation Invariant ---
+def test_p6_xau_02_future_xau_mutation_invariant():
+    """Adding future XAU candles > T does not alter the historical XAU series returned at T."""
+    dataset = PointInTimeDataset()
+    t0 = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
+
+    for i in range(5):
+        t_o = t0 + timedelta(minutes=15 * i)
+        dataset.add_xau_candle(_make_candle(t_o, 15, Decimal("2500"), Decimal("2505"), Decimal("2495"), Decimal("2502")))
+
+    t_asof = t0 + timedelta(minutes=15 * 5)
+    xau_before = dataset.get_xau_candles(t_asof)
+
+    # Add future candles > t_asof
+    for i in range(5, 10):
+        t_o = t0 + timedelta(minutes=15 * i)
+        dataset.add_xau_candle(_make_candle(t_o, 15, Decimal("2600"), Decimal("2650"), Decimal("2590"), Decimal("2620")))
+
+    xau_after = dataset.get_xau_candles(t_asof)
+    assert len(xau_before) == len(xau_after) == 5
+    for c1, c2 in zip(xau_before, xau_after):
+        assert c1.timestamp_close == c2.timestamp_close
+        assert c1.close == c2.close
+
+
+# --- P6-ATR-01: Missing ATR Cannot Become Synthetic 1.0 ---
+def test_p6_atr_01_missing_atr_cannot_become_synthetic_one():
+    """When ATR cannot be computed due to insufficient bars, RiskPlanner receives None and fails closed."""
+    from engine.risk.planner import RiskPlanner
+    planner = RiskPlanner(code_revision="32bec19b")
+    sig_ts = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    sig = SignalSnapshot(
+        timestamp=sig_ts,
+        instrument="XAUT/USDT",
+        timeframe="15m",
+        state=SignalState.BUY_WINDOW,
+        user_decision=UserDecision.BUY,
+        direction=None,  # type: ignore
+        timing=None,  # type: ignore
+        hard_gate=None,  # type: ignore
+        reasons_positive=(),
+        reasons_negative=(),
+        hard_gate_reasons=(),
+        analysis_fingerprint="sig-no-atr",
+        code_revision="32bec19b",
+    )
+    plan = planner.plan(signal_snapshot=sig, structure_15m=None, atr14=None, latest_close=Decimal("2500.00"))
+    assert not plan.is_valid_risk_plan
+    assert not plan.execution_eligible
+    assert plan.effective_action == UserDecision.WAIT
+
+
+

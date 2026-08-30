@@ -49,6 +49,7 @@ class PointInTimeDataset:
             "1m": sorted(list(candles_1m or []), key=lambda c: _to_utc(c.timestamp_open)),
         }
         self._quotes: List[QuoteData] = sorted(list(quotes or []), key=lambda q: _to_utc(q.timestamp))
+        self._xau_candles: List[CandleData] = []
         self._xau_references: List[Tuple[datetime, Decimal, bool]] = sorted(
             [(_to_utc(t), p, b) for t, p, b in (xau_references or [])],
             key=lambda x: x[0]
@@ -76,9 +77,19 @@ class PointInTimeDataset:
         self._xau_references.sort(key=lambda x: x[0])
 
     def add_xau_candle(self, candle: CandleData) -> None:
-        """Add an XAU candle as reference and direction indicator."""
+        """Add an XAU candle preserving full OHLCV and updating reference."""
+        self._xau_candles.append(candle)
+        self._xau_candles.sort(key=lambda c: _to_utc(c.timestamp_open))
         is_bullish = candle.close >= candle.open
         self.add_xau_reference(candle.timestamp_close, candle.close, is_bullish)
+
+    def get_xau_candles(self, as_of: datetime) -> List[CandleData]:
+        """Retrieve closed XAU candles strictly on or before as_of."""
+        as_of_utc = _to_utc(as_of)
+        return [
+            c for c in self._xau_candles
+            if c.is_closed and _to_utc(c.timestamp_close) <= as_of_utc
+        ]
 
     def add_usdt_rate(self, timestamp: datetime, rate: Decimal) -> None:
         """Add a point-in-time USDT normalization rate."""

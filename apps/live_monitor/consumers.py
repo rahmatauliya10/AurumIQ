@@ -204,6 +204,7 @@ class LiveMonitorWebSocketHandler:
         self.last_decision_sequence: Optional[int] = None
         self.message_queue: list[str] = []
         self.async_sender = None
+        self.loop = None
 
     def connect(self) -> bool:
         """Enforce authentication check on connection (P7-25)."""
@@ -234,7 +235,17 @@ class LiveMonitorWebSocketHandler:
         if self.async_sender:
             try:
                 import asyncio
-                asyncio.create_task(self.async_sender(msg_str))
+                if self.loop and self.loop.is_running():
+                    try:
+                        current_loop = asyncio.get_running_loop()
+                        if current_loop is self.loop:
+                            self.loop.create_task(self.async_sender(msg_str))
+                        else:
+                            asyncio.run_coroutine_threadsafe(self.async_sender(msg_str), self.loop)
+                    except RuntimeError:
+                        asyncio.run_coroutine_threadsafe(self.async_sender(msg_str), self.loop)
+                else:
+                    asyncio.create_task(self.async_sender(msg_str))
             except Exception as e:
                 logger.debug("async_send_failed", error=str(e))
 
@@ -253,20 +264,34 @@ class LiveMonitorAsyncWebsocketConsumer:
 
     async def __call__(self):
         import asyncio
+        import inspect
+
+        async def _safe_send(msg_dict):
+            if inspect.iscoroutinefunction(self.send):
+                await self.send(msg_dict)
+            else:
+                res = self.send(msg_dict)
+                if inspect.isawaitable(res):
+                    await res
+
         # Authenticate user from ASGI scope
         user = self.scope.get("user")
         if not user or not getattr(user, "is_authenticated", False):
-            await self.send({"type": "websocket.close", "code": 4401})
+            await _safe_send({"type": "websocket.close", "code": 4401})
             return
 
         # Accept websocket connection
-        await self.send({"type": "websocket.accept"})
+        await _safe_send({"type": "websocket.accept"})
         
         self.handler = LiveMonitorWebSocketHandler(user=user, instrument="XAUT/USDT")
+        try:
+            self.handler.loop = asyncio.get_running_loop()
+        except Exception:
+            pass
         self.handler.connect()
 
         async def _async_send(msg_text: str):
-            await self.send({"type": "websocket.send", "text": msg_text})
+            await _safe_send({"type": "websocket.send", "text": msg_text})
 
         self.handler.async_sender = _async_send
 
@@ -282,9 +307,13 @@ class LiveMonitorAsyncWebsocketConsumer:
                 while True:
                     msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=1.0)
                     if msg and msg.get("type") == "message":
-                        data_str = msg.get("data")
-                        if data_str:
-                            await self.send({"type": "websocket.send", "text": data_str})
+                        data_val = msg.get("data")
+                        if data_val:
+                            if isinstance(data_val, (bytes, bytearray)):
+                                data_str = data_val.decode("utf-8")
+                            else:
+                                data_str = str(data_val)
+                            await _safe_send({"type": "websocket.send", "text": data_str})
                     await asyncio.sleep(0.01)
             except asyncio.CancelledError:
                 pass
@@ -308,7 +337,7 @@ class LiveMonitorAsyncWebsocketConsumer:
                 elif msg_type == "websocket.receive":
                     text = message.get("text", "")
                     if text == "ping":
-                        await self.send({"type": "websocket.send", "text": "pong"})
+                        await _safe_send({"type": "websocket.send", "text": "pong"})
         finally:
             redis_task.cancel()
             if self.handler:

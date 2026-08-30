@@ -417,3 +417,79 @@ class Phase7AcceptanceTests(TestCase):
         )
         assert sig.user_decision == "WAIT"
         assert st.effective_action == "WAIT"
+
+    # --- P7-MACRO-01: MISSING MACRO HEALTH FAILS CLOSED ---
+    def test_p7_macro_01_missing_macro_health_fails_closed(self):
+        """Unhealthy macro feed context forces frozen engine hard gate to fail closed."""
+        last_candle = self.candles_15m[-1]
+        event = CandleClosedEvent(
+            event_id="EVT_MACRO_FAIL",
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open=last_candle.timestamp_open,
+            timestamp_close=last_candle.timestamp_close,
+            open=last_candle.open,
+            high=last_candle.high,
+            low=last_candle.low,
+            close=last_candle.close,
+            is_closed=True,
+        )
+        macro_ctx_unhealthy = MacroEventContext(
+            is_in_blackout=False,
+            minutes_to_next_event=None,
+            minutes_since_last_event=None,
+            active_event_name=None,
+            is_feed_healthy=False,
+        )
+        sig, _, st = LiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision=self.code_revision,
+            xau_reference_price=Decimal("2540.00"),
+            xau_reference_is_bullish=True,
+            usdt_rate=Decimal("1.0000"),
+            macro_context=macro_ctx_unhealthy,
+        )
+        assert sig.user_decision == "WAIT"
+        assert st.effective_action == "WAIT"
+
+    # --- P7-DQ-01: MISSING REQUIRED DQ EVIDENCE FAILS CLOSED ---
+    def test_p7_dq_01_missing_required_dq_evidence_fails_closed(self):
+        """When is_feed_stale is True, signal pipeline hard gate enforces FORCE_WAIT."""
+        last_candle = self.candles_15m[-1]
+        event = CandleClosedEvent(
+            event_id="EVT_DQ_FAIL",
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open=last_candle.timestamp_open,
+            timestamp_close=last_candle.timestamp_close,
+            open=last_candle.open,
+            high=last_candle.high,
+            low=last_candle.low,
+            close=last_candle.close,
+            is_closed=True,
+        )
+        sig, _, st = LiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision=self.code_revision,
+            xau_reference_price=Decimal("2540.00"),
+            xau_reference_is_bullish=True,
+            usdt_rate=Decimal("1.0000"),
+            is_feed_stale=True,
+        )
+        assert sig.user_decision == "WAIT"
+        assert any("Stale Feed" in r for r in sig.hard_gate_reasons)
+
+    # --- P1-NORM-10: MISSING CANDLEDATA QUOTE RATE REMAINS NONE ---
+    def test_p1_norm_10_missing_candledata_quote_rate_remains_none(self):
+        """CandleData default quote_rate is strictly None without implicit USDT peg."""
+        c = CandleData(
+            timestamp_open=datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc),
+            timestamp_close=datetime(2026, 3, 1, 0, 15, tzinfo=timezone.utc),
+            open=Decimal("2500.00"),
+            high=Decimal("2510.00"),
+            low=Decimal("2495.00"),
+            close=Decimal("2505.00"),
+            volume=Decimal("100"),
+        )
+        assert c.quote_rate is None
+

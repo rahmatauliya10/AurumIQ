@@ -135,7 +135,7 @@ def analyze_closed_candle(
                 effective_provider_status = "UNKNOWN" if has_any_listing else "HEALTHY"
                 effective_is_transition = False
 
-        # Authoritative Data Quality Lookup (Fail closed if hard fail or stale)
+        # Authoritative Data Quality Lookup (Fail closed if hard fail, stale, or missing)
         if is_stale_feed is not None:
             effective_is_stale = is_stale_feed
         else:
@@ -149,7 +149,8 @@ def analyze_closed_candle(
                 .order_by("-timestamp")
                 .first()
             )
-            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else False
+            # If no data quality snapshot exists, missing evidence strictly fails closed as stale
+            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
 
         engine = XautSignalEngine(
             engine_version=engine_version,

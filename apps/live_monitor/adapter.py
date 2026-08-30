@@ -79,7 +79,7 @@ class PublicMarketDataAdapter:
         low_price: Decimal | float | str,
         close_price: Decimal | float | str,
         volume: Decimal | float | str = Decimal("0"),
-        quote_rate: Decimal | float | str = Decimal("1.0"),
+        quote_rate: Optional[Decimal | float | str] = None,
         source: str = "binance",
         sequence_number: Optional[int] = None,
         is_closed: bool = True,
@@ -90,7 +90,7 @@ class PublicMarketDataAdapter:
         l = Decimal(str(low_price))
         c = Decimal(str(close_price))
         v = Decimal(str(volume))
-        q = Decimal(str(quote_rate))
+        q = Decimal(str(quote_rate)) if quote_rate is not None else None
 
         ts_o = (
             timestamp_open.astimezone(timezone.utc)

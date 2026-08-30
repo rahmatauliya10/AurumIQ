@@ -5,8 +5,9 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.contrib.auth import SESSION_KEY, BACKEND_SESSION_KEY, HASH_SESSION_KEY
 from django.contrib.sessions.backends.db import SessionStore
-from django.contrib.auth import SESSION_KEY
+from django.utils.crypto import constant_time_compare
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -14,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 @sync_to_async
 def get_user_from_session_key(session_key: str):
-    """Resolve Django User from database session key."""
+    """Resolve Django User from database session key with session auth hash verification."""
     if not session_key:
         return AnonymousUser()
     try:
@@ -24,7 +25,17 @@ def get_user_from_session_key(session_key: str):
             return AnonymousUser()
         User = get_user_model()
         user = User.objects.filter(pk=user_id, is_active=True).first()
-        return user or AnonymousUser()
+        if not user:
+            return AnonymousUser()
+
+        # Enforce session auth hash validation (invalidates session on password change)
+        session_auth_hash = session.get(HASH_SESSION_KEY)
+        if session_auth_hash:
+            user_auth_hash = user.get_session_auth_hash()
+            if not constant_time_compare(session_auth_hash, user_auth_hash):
+                return AnonymousUser()
+
+        return user
     except Exception as e:
         logger.warning("session_auth_resolution_error", error=str(e))
         return AnonymousUser()

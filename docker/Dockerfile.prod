@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml /install/
+COPY pyproject.toml requirements-lock.txt /install/
 
-RUN pip install --upgrade pip && \
-    pip install --prefix=/install/pkg ".[ml]" uvicorn[standard] gunicorn
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --prefix=/install/pkg -r /install/requirements-lock.txt
 
 # --- Stage 2: Production Runtime ---
 FROM python:3.13-slim as runtime

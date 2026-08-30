@@ -69,29 +69,56 @@ def run_backtest_task(
         ablation_type=AblationType(ablation_type),
     )
 
-    dataset = PointInTimeDataset()
-    from apps.market_data.models import MarketCandle
-    from engine.core.types import CandleData
+    try:
+        dataset = PointInTimeDataset()
+        from apps.market_data.models import MarketCandle
+        from engine.core.types import CandleData
 
-    parts = instrument.split("/")
-    base_filter = {}
-    if len(parts) == 2:
-        base_filter["instrument__base_asset__code"] = parts[0]
-        base_filter["instrument__quote_asset__code"] = parts[1]
+        parts = instrument.split("/")
+        base_filter = {}
+        if len(parts) == 2:
+            base_filter["instrument__base_asset__code"] = parts[0]
+            base_filter["instrument__quote_asset__code"] = parts[1]
 
-    # 1. Load multi-timeframe execution candles for target instrument
-    for tf in ("15m", "4h", "1d", "1m", "5m"):
-        candles_qs = MarketCandle.objects.filter(
-            timeframe=tf,
+        # 1. Load multi-timeframe execution candles for target instrument
+        for tf in ("15m", "4h", "1d", "1m", "5m"):
+            candles_qs = MarketCandle.objects.filter(
+                timeframe=tf,
+                timestamp_close__gte=start_dt,
+                timestamp_close__lte=end_dt,
+                is_closed=True,
+                **base_filter,
+            ).order_by("timestamp_close")
+
+            for c in candles_qs:
+                dataset.add_candle(
+                    tf,
+                    CandleData(
+                        timestamp_open=c.timestamp_open,
+                        timestamp_close=c.timestamp_close,
+                        open=c.open,
+                        high=c.high,
+                        low=c.low,
+                        close=c.close,
+                        volume=c.volume,
+                        is_closed=c.is_closed,
+                        quote_rate=c.quote_rate,
+                        close_usd=c.close_usd,
+                        source_id=c.source,
+                    ),
+                )
+
+        # 2. Load XAU reference candles if available
+        xau_qs = MarketCandle.objects.filter(
+            instrument__base_asset__code="XAU",
+            instrument__quote_asset__code="USD",
             timestamp_close__gte=start_dt,
             timestamp_close__lte=end_dt,
             is_closed=True,
-            **base_filter,
         ).order_by("timestamp_close")
 
-        for c in candles_qs:
-            dataset.add_candle(
-                tf,
+        for c in xau_qs:
+            dataset.add_xau_candle(
                 CandleData(
                     timestamp_open=c.timestamp_open,
                     timestamp_close=c.timestamp_close,
@@ -101,66 +128,20 @@ def run_backtest_task(
                     close=c.close,
                     volume=c.volume,
                     is_closed=c.is_closed,
-                    quote_rate=c.quote_rate,
-                    close_usd=c.close_usd,
                     source_id=c.source,
-                ),
+                )
             )
 
-    # 2. Load XAU reference candles if available
-    xau_qs = MarketCandle.objects.filter(
-        instrument__base_asset__code="XAU",
-        instrument__quote_asset__code="USD",
-        timestamp_close__gte=start_dt,
-        timestamp_close__lte=end_dt,
-        is_closed=True,
-    ).order_by("timestamp_close")
+        # 3. Load USDT normalization series
+        for c in MarketCandle.objects.filter(
+            timeframe="15m",
+            timestamp_close__gte=start_dt,
+            timestamp_close__lte=end_dt,
+            is_closed=True,
+            **base_filter,
+        ).exclude(quote_rate__isnull=True).order_by("timestamp_close"):
+            dataset.add_usdt_rate(c.timestamp_close, c.quote_rate)
 
-    for c in xau_qs:
-        dataset.add_xau_candle(
-            CandleData(
-                timestamp_open=c.timestamp_open,
-                timestamp_close=c.timestamp_close,
-                open=c.open,
-                high=c.high,
-                low=c.low,
-                close=c.close,
-                volume=c.volume,
-                is_closed=c.is_closed,
-                source_id=c.source,
-            )
-        )
-
-    # 3. Load USDT normalization series
-    for c in MarketCandle.objects.filter(
-        timeframe="15m",
-        timestamp_close__gte=start_dt,
-        timestamp_close__lte=end_dt,
-        is_closed=True,
-        **base_filter,
-    ).exclude(quote_rate__isnull=True).order_by("timestamp_close"):
-        dataset.add_usdt_rate(c.timestamp_close, c.quote_rate)
-
-    # 4. Assemble execution quotes from 1m resolution if available
-    from engine.core.types import QuoteData
-    for c in MarketCandle.objects.filter(
-        timeframe="1m",
-        timestamp_close__gte=start_dt,
-        timestamp_close__lte=end_dt,
-        is_closed=True,
-        **base_filter,
-    ).order_by("timestamp_close"):
-        dataset.add_quote(
-            QuoteData(
-                timestamp=c.timestamp_close,
-                bid=c.close - Decimal("0.25"),
-                ask=c.close + Decimal("0.25"),
-                instrument=instrument,
-                source_id=c.source,
-            )
-        )
-
-    try:
         runner = BacktestRunner()
         result = runner.run(dataset=dataset, spec=spec)
         run_obj, created = persist_backtest_run(run_result=result, dataset_identity=dataset_hash)
@@ -185,3 +166,4 @@ def run_backtest_task(
             },
         )
         raise exc
+

@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import F
 
 from apps.instruments.models import Instrument
+from apps.live_monitor.consumers import LiveEventBroadcaster
 from apps.live_monitor.models import LiveMonitorState, LiveRiskPlanRecord
 from apps.live_monitor.types import (
     CandleClosedEvent,
@@ -141,6 +142,20 @@ class LiveQuoteService:
             )
 
             state.refresh_from_db()
+
+            # Broadcast typed quote update to cross-process Redis bus & subscribers
+            quote_payload = LiveEventBroadcaster.format_quote_event(
+                instrument=state.instrument,
+                bid=state.current_bid,
+                ask=state.current_ask,
+                spread=state.spread,
+                spread_pct=state.spread_pct,
+                source_timestamp=state.quote_source_timestamp,
+                sequence_number=state.quote_sequence,
+                entry_zone_status=state.entry_zone_status,
+                distance_to_entry_zone_pct=state.distance_to_entry_zone_pct,
+            )
+            LiveEventBroadcaster.broadcast(quote_payload)
             return state
 
 
@@ -194,6 +209,15 @@ class LiveDecisionPipelineService:
         instrument_obj = Instrument.objects.filter(
             base_asset__code="XAUT", quote_asset__code="USDT"
         ).first()
+        if not instrument_obj:
+            from apps.instruments.models import Asset, AssetType, InstrumentRole, InstrumentType
+            xaut, _ = Asset.objects.get_or_create(code="XAUT", defaults={"name": "Tether Gold", "asset_type": AssetType.CRYPTO_TOKEN})
+            usdt, _ = Asset.objects.get_or_create(code="USDT", defaults={"name": "Tether USD", "asset_type": AssetType.CRYPTO_TOKEN})
+            instrument_obj, _ = Instrument.objects.get_or_create(
+                base_asset=xaut,
+                quote_asset=usdt,
+                defaults={"role": InstrumentRole.EXECUTION, "instrument_type": InstrumentType.SPOT},
+            )
 
         def _get_engine_candles(tf: str, limit: int = 128) -> list[CandleData]:
             if not instrument_obj:
@@ -431,6 +455,47 @@ class LiveDecisionPipelineService:
             )
 
             state.refresh_from_db()
+
+            # Broadcast decision updates after atomic DB commit to cross-process Redis bus & subscribers
+            sig_payload = LiveEventBroadcaster.format_signal_update(
+                instrument=event.instrument,
+                signal_fingerprint=signal_snapshot.analysis_fingerprint,
+                signal_state=signal_snapshot.state.value,
+                signal_user_decision=signal_snapshot.user_decision.value,
+                direction_score=signal_snapshot.direction.total_score,
+                timing_score=signal_snapshot.timing.total_score,
+                last_closed_candle_ts=candle_ts,
+                decision_sequence=state.decision_sequence,
+                reasons_positive=list(signal_snapshot.reasons_positive),
+                reasons_negative=list(signal_snapshot.reasons_negative),
+                hard_gate_reasons=list(signal_snapshot.hard_gate_reasons),
+            )
+            LiveEventBroadcaster.broadcast(sig_payload)
+
+            risk_payload = LiveEventBroadcaster.format_risk_plan_update(
+                instrument=event.instrument,
+                source_signal_fingerprint=risk_plan_snapshot.source_signal_fingerprint,
+                risk_plan_valid=risk_plan_snapshot.is_valid_risk_plan,
+                execution_eligible=risk_plan_snapshot.execution_eligible,
+                effective_action=risk_plan_snapshot.effective_action.value,
+                entry_min=risk_plan_snapshot.entry_min if risk_plan_snapshot.is_valid_risk_plan else None,
+                entry_mid=risk_plan_snapshot.entry_mid if risk_plan_snapshot.is_valid_risk_plan else None,
+                entry_max=risk_plan_snapshot.entry_max if risk_plan_snapshot.is_valid_risk_plan else None,
+                stop_final=risk_plan_snapshot.stop_final if risk_plan_snapshot.is_valid_risk_plan else None,
+                tp1=risk_plan_snapshot.tp1 if risk_plan_snapshot.is_valid_risk_plan else None,
+                tp2=risk_plan_snapshot.tp2 if risk_plan_snapshot.is_valid_risk_plan else None,
+                rr_tp1=risk_plan_snapshot.rr_tp1 if risk_plan_snapshot.is_valid_risk_plan else None,
+                rr_tp2=risk_plan_snapshot.rr_tp2 if risk_plan_snapshot.is_valid_risk_plan else None,
+                decision_sequence=state.decision_sequence,
+            )
+            LiveEventBroadcaster.broadcast(risk_payload)
+
+            health_payload = LiveEventBroadcaster.format_feed_health_update(
+                instrument=event.instrument,
+                feed_health=feed_health,
+            )
+            LiveEventBroadcaster.broadcast(health_payload)
+
             return signal_record, risk_record, state
 
 

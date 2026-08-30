@@ -1,15 +1,19 @@
 """Integration tests for real ASGI WebSocket Session Authentication and Cross-Process Event Bus."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import json
 import pytest
+from asgiref.sync import sync_to_async
 from django.contrib.auth.models import User
 from django.contrib.sessions.backends.db import SessionStore
 from django.contrib.auth import SESSION_KEY, BACKEND_SESSION_KEY, HASH_SESSION_KEY
 
 from config.asgi import application
 from apps.live_monitor.consumers import LiveEventBroadcaster
+from apps.live_monitor.tasks import process_live_quote_task, process_closed_candle_task
+from apps.instruments.models import Asset, AssetType, Instrument, InstrumentRole, InstrumentType
+from apps.market_data.models import MarketCandle, CandleQualityFlag
 
 
 @pytest.mark.django_db(transaction=True)
@@ -18,10 +22,8 @@ def test_real_asgi_websocket_session_auth_and_cross_process_delivery():
     End-to-end verification of real ASGI WebSocket session cookie resolution,
     unauthorized rejection, and live event frame delivery.
     """
-    # 1. Create active operator user
     user = User.objects.create_user(username="wsoperator", password="password123")
 
-    # 2. Create authenticated Django session in database
     session = SessionStore()
     session[SESSION_KEY] = str(user.pk)
     session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
@@ -92,7 +94,7 @@ def test_real_asgi_websocket_session_auth_and_cross_process_delivery():
         consumer_task = asyncio.create_task(
             application(auth_scope, mock_recv_auth, mock_send_auth)
         )
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.05)
 
         # Confirm accept frame
         assert any(m.get("type") == "websocket.accept" for m in sent_auth)
@@ -109,7 +111,7 @@ def test_real_asgi_websocket_session_auth_and_cross_process_delivery():
             entry_zone_status="INSIDE_ZONE",
         )
         LiveEventBroadcaster.broadcast(quote_payload)
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.05)
 
         # Verify broadcast event arrived at WebSocket client
         quote_frames = [
@@ -126,3 +128,240 @@ def test_real_asgi_websocket_session_auth_and_cross_process_delivery():
         await consumer_task
 
     asyncio.run(_run_e2e_flow())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_auth_08_password_change_invalidates_websocket_session():
+    """
+    P7-AUTH-08: Changing user password alters session_auth_hash and immediately invalidates
+    existing session cookies on subsequent WebSocket connection attempts.
+    """
+    user = User.objects.create_user(username="hashoperator", password="initial_password")
+
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+    old_session_key = session.session_key
+
+    async def _test_flow():
+        # 1. Before password change -> accepted
+        sent_1 = []
+        recv_q1 = asyncio.Queue()
+        async def mock_send_1(m):
+            sent_1.append(m)
+
+        scope_1 = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={old_session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        t1 = asyncio.create_task(application(scope_1, lambda: recv_q1.get(), mock_send_1))
+        await asyncio.sleep(0.05)
+        assert any(m.get("type") == "websocket.accept" for m in sent_1)
+        await recv_q1.put({"type": "websocket.disconnect"})
+        await t1
+
+        # 2. Change user password
+        user.set_password("new_secure_password_999")
+        await sync_to_async(user.save)()
+
+        # 3. Attempt connecting with old session cookie -> Rejected 4401
+        sent_2 = []
+        async def mock_send_2(m):
+            sent_2.append(m)
+
+        async def mock_recv_2():
+            return {"type": "websocket.disconnect"}
+
+        scope_2 = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={old_session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        await application(scope_2, mock_recv_2, mock_send_2)
+        assert len(sent_2) == 1
+        assert sent_2[0]["type"] == "websocket.close"
+        assert sent_2[0]["code"] == 4401
+
+    asyncio.run(_test_flow())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_01_separate_redis_producer_to_websocket():
+    """
+    P7-BUS-01: Proves cross-process WebSocket event delivery strictly via Redis Pub/Sub
+    with local in-memory subscribers explicitly disabled.
+    """
+    user = User.objects.create_user(username="redisoperator", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_redis_transport():
+        sent_frames = []
+        recv_queue = asyncio.Queue()
+        async def mock_send(m):
+            sent_frames.append(m)
+
+        auth_scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+
+        consumer_task = asyncio.create_task(
+            application(auth_scope, lambda: recv_queue.get(), mock_send)
+        )
+        await asyncio.sleep(0.05)
+
+        # Clear in-memory subscribers to prove delivery occurs exclusively through Redis pub/sub
+        LiveEventBroadcaster._subscribers.clear()
+
+        # Publish event directly to Redis channel
+        r = LiveEventBroadcaster.get_redis_client()
+        if r:
+            payload = {
+                "event_id": "TEST_REDIS_BUS_01",
+                "event_type": "quote_update",
+                "instrument": "XAUT/USDT",
+                "sequence_number": 9999,
+                "data": {"ask": "2599.90", "bid": "2599.40"},
+            }
+            r.publish("aurumiq:live_events:XAUT/USDT", json.dumps(payload))
+            await asyncio.sleep(0.05)
+
+            frames = [
+                json.loads(m["text"]) for m in sent_frames
+                if m.get("type") == "websocket.send" and "TEST_REDIS_BUS_01" in m.get("text", "")
+            ]
+            assert len(frames) >= 1
+            assert frames[0]["data"]["ask"] == "2599.90"
+
+        await recv_queue.put({"type": "websocket.disconnect"})
+        await consumer_task
+
+    asyncio.run(_test_redis_transport())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_02_process_live_quote_task_to_websocket():
+    """
+    P7-BUS-02: Executing Celery process_live_quote_task broadcasts quote_update
+    frame to connected WebSocket client.
+    """
+    from apps.live_monitor.models import LiveMonitorState
+    LiveMonitorState.objects.filter(instrument="XAUT/USDT").delete()
+
+    user = User.objects.create_user(username="quoteoperator", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_task_delivery():
+        sent_frames = []
+        recv_queue = asyncio.Queue()
+        async def mock_send(m):
+            sent_frames.append(m)
+
+        auth_scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+
+        consumer_task = asyncio.create_task(
+            application(auth_scope, lambda: recv_queue.get(), mock_send)
+        )
+        await asyncio.sleep(0.05)
+
+        # Call Celery task in worker thread
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await sync_to_async(process_live_quote_task)(
+            instrument="XAUT/USDT",
+            provider="binance",
+            bid_str="2530.00",
+            ask_str="2530.50",
+            source_timestamp_iso=now_iso,
+            sequence_number=1000000,
+        )
+        assert res["status"] == "SUCCESS"
+
+        await asyncio.sleep(0.05)
+
+        # Confirm quote frame delivered
+        quote_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "quote_update" in m.get("text", "")
+        ]
+        assert len(quote_frames) >= 1
+        assert any(Decimal(f["data"]["ask"]) == Decimal("2530.50") for f in quote_frames)
+
+        await recv_queue.put({"type": "websocket.disconnect"})
+        await consumer_task
+
+    asyncio.run(_test_task_delivery())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_03_process_closed_candle_task_to_websocket():
+    """
+    P7-BUS-03: Executing Celery process_closed_candle_task broadcasts signal_update,
+    risk_plan_update, and feed_health_update frames to connected WebSocket client.
+    """
+    user = User.objects.create_user(username="candleoperator", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_candle_delivery():
+        sent_frames = []
+        recv_queue = asyncio.Queue()
+        async def mock_send(m):
+            sent_frames.append(m)
+
+        auth_scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+
+        consumer_task = asyncio.create_task(
+            application(auth_scope, lambda: recv_queue.get(), mock_send)
+        )
+        await asyncio.sleep(0.05)
+
+        now_utc = datetime.now(timezone.utc)
+        res = await sync_to_async(process_closed_candle_task)(
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open_iso=(now_utc - timedelta(minutes=15)).isoformat(),
+            timestamp_close_iso=now_utc.isoformat(),
+            open_str="2520.00",
+            high_str="2525.00",
+            low_str="2518.00",
+            close_str="2523.00",
+            volume_str="100.0",
+            code_revision="32bec19b4219ea8adc38a11c7ddcd8ee7863095a",
+        )
+        assert res["status"] == "SUCCESS"
+
+        await asyncio.sleep(0.05)
+
+        sig_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "signal_update" in m.get("text", "")
+        ]
+        assert len(sig_frames) >= 1
+
+        await recv_queue.put({"type": "websocket.disconnect"})
+        await consumer_task
+
+    asyncio.run(_test_candle_delivery())

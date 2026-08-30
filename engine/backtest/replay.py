@@ -81,6 +81,7 @@ class PointInTimeReplay:
             closed_1d = self.dataset.get_closed_candles("1d", as_of=t_utc)
 
             # Query PIT reference feeds
+            closed_xau = self.dataset.get_xau_candles(as_of=t_utc)
             xau_price, xau_bull, xau_ts = self.dataset.get_xau_reference(as_of=t_utc)
             usdt_rate, usdt_ts = self.dataset.get_usdt_rate(as_of=t_utc)
             macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
@@ -92,6 +93,7 @@ class PointInTimeReplay:
                     as_of=t_utc,
                     candles_4h=closed_4h if closed_4h else None,
                     candles_1d=closed_1d if closed_1d else None,
+                    candles_xau=closed_xau if closed_xau else None,
                     xau_reference_price=xau_price,
                     xau_reference_is_bullish=xau_bull,
                     xau_reference_ts=xau_ts,
@@ -116,7 +118,7 @@ class PointInTimeReplay:
                     [c.close for c in closed_15m],
                     period=14,
                 )
-                atr_val = float(atr_dec) if atr_dec is not None else 1.0
+                atr_val = float(atr_dec) if atr_dec is not None else None
                 latest_close = closed_15m[-1].close
 
                 risk_plan = self.risk_planner.plan(

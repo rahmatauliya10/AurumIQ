@@ -24,6 +24,8 @@ plotly==7.0.0
 structlog==26.1.0
 requests==2.34.2
 websockets==17.1
+uvicorn==0.34.0
+gunicorn==23.0.0
 
 # Dev, Linting & Testing
 pytest==9.1.1
