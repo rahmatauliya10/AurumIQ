@@ -1,7 +1,7 @@
 """
 Contract & Acceptance Tests for Phase 2 XAUUSD Revalidation:
 - XAU-P2-01: Volume Semantics & Evidence Types (REAL_VOLUME, TICK_VOLUME, PROXY_VOLUME, UNAVAILABLE, Mixed semantics safety)
-- XAU-P2-02 / Regime Revalidation: Calibration Profile Segregation, Fail-Closed Unknown State, Causality & Fixture Invariance
+- XAUUSD Regime Revalidation Tests: Calibration Profile Segregation, Fail-Closed Unknown State, Causality & Fixture Invariance
 """
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -49,6 +49,81 @@ def _make_candle(
         is_closed=is_closed,
         volume_evidence=evidence,
     )
+
+
+# ============================================================================
+# Feature Engine Closed-Candle & Empty Input Regressions
+# ============================================================================
+
+@pytest.mark.unit
+def test_feature_engine_empty_input_regression():
+    """
+    Patch 1: FeatureEngine().extract_features([]) must safely return an empty FeatureSnapshot
+    without exceptions, with volume_evidence=UNAVAILABLE, volume_usable=False, volume_reason='EMPTY_CANDLES'.
+    """
+    engine = FeatureEngine()
+    snapshot = engine.extract_features([])
+
+    assert isinstance(snapshot, FeatureSnapshot)
+    assert snapshot.ema20 is None
+    assert snapshot.ema200 is None
+    assert snapshot.volume_evidence == VolumeEvidenceType.UNAVAILABLE
+    assert snapshot.volume_usable is False
+    assert snapshot.volume_reason == "EMPTY_CANDLES"
+
+
+@pytest.mark.acceptance
+def test_closed_and_open_forming_candle_invariance():
+    """
+    Patch 2: FeatureEngine must compute technical indicators and features strictly from CLOSED candles.
+    An extreme open/forming candle appended at T+1 must have zero effect on the resulting snapshot.
+    """
+    engine = FeatureEngine()
+
+    # 250 closed candles with steady trend
+    closed_candles = [_make_candle(i, close=str(2500 + i), high=str(2505 + i), low=str(2495 + i), is_closed=True) for i in range(250)]
+    snapshot_closed_only = engine.extract_features(closed_candles)
+
+    # Append 1 extreme OPEN candle with huge spike and volume
+    open_spike_candle = _make_candle(
+        250,
+        close="3500.00",
+        high="4000.00",
+        low="2400.00",
+        volume="999999.0",
+        is_closed=False,
+    )
+    candles_with_open = closed_candles + [open_spike_candle]
+    snapshot_with_open = engine.extract_features(candles_with_open)
+
+    # Assert 100% field-by-field equality between the two snapshots
+    assert snapshot_closed_only.timestamp == snapshot_with_open.timestamp
+    assert snapshot_closed_only.timestamp == closed_candles[-1].timestamp_open
+    assert snapshot_closed_only.ema20 == snapshot_with_open.ema20
+    assert snapshot_closed_only.ema50 == snapshot_with_open.ema50
+    assert snapshot_closed_only.ema200 == snapshot_with_open.ema200
+    assert snapshot_closed_only.ema_slope_20 == snapshot_with_open.ema_slope_20
+    assert snapshot_closed_only.ema_alignment == snapshot_with_open.ema_alignment
+    assert snapshot_closed_only.adx == snapshot_with_open.adx
+    assert snapshot_closed_only.plus_di == snapshot_with_open.plus_di
+    assert snapshot_closed_only.minus_di == snapshot_with_open.minus_di
+    assert snapshot_closed_only.rsi14 == snapshot_with_open.rsi14
+    assert snapshot_closed_only.macd_line == snapshot_with_open.macd_line
+    assert snapshot_closed_only.macd_signal == snapshot_with_open.macd_signal
+    assert snapshot_closed_only.macd_hist == snapshot_with_open.macd_hist
+    assert snapshot_closed_only.roc12 == snapshot_with_open.roc12
+    assert snapshot_closed_only.atr14 == snapshot_with_open.atr14
+    assert snapshot_closed_only.atr_pct == snapshot_with_open.atr_pct
+    assert snapshot_closed_only.bb_upper == snapshot_with_open.bb_upper
+    assert snapshot_closed_only.bb_middle == snapshot_with_open.bb_middle
+    assert snapshot_closed_only.bb_lower == snapshot_with_open.bb_lower
+    assert snapshot_closed_only.bb_bandwidth == snapshot_with_open.bb_bandwidth
+    assert snapshot_closed_only.realized_vol_20 == snapshot_with_open.realized_vol_20
+    assert snapshot_closed_only.volume_ratio_20 == snapshot_with_open.volume_ratio_20
+    assert snapshot_closed_only.volume_zscore_20 == snapshot_with_open.volume_zscore_20
+    assert snapshot_closed_only.volume_evidence == snapshot_with_open.volume_evidence
+    assert snapshot_closed_only.volume_usable == snapshot_with_open.volume_usable
+    assert snapshot_closed_only.volume_reason == snapshot_with_open.volume_reason
 
 
 # ============================================================================
@@ -156,14 +231,37 @@ def test_xau_p2_01_e_missing_or_non_positive_volume():
 
 
 @pytest.mark.unit
-def test_xau_p2_01_f_invalid_evidence_label_defaults_safely():
+def test_xau_p2_01_f_strict_enum_validation_arbitrary_label():
     """
-    XAU-P2-01 F: Invalid/unknown volume evidence labels are safely treated as UNAVAILABLE.
+    XAU-P2-01 F / Patch 3: Arbitrary or unknown runtime volume evidence labels
+    such as 'FABRICATED_VOLUME' or 'FAKE' must NEVER produce is_usable=True.
+    Must return evidence_type=UNAVAILABLE, is_usable=False, reason='INVALID_VOLUME_EVIDENCE'.
     """
-    candles = [_make_candle(i, volume="100.0", evidence=VolumeEvidenceType.REAL_VOLUME) for i in range(24)]
-    # Append candle with None volume_evidence
+    # 1. String "FABRICATED_VOLUME"
+    candles_fake = [_make_candle(i, volume="100.0", evidence=VolumeEvidenceType.REAL_VOLUME) for i in range(24)]
     t0 = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=15 * 24)
-    candle_bad_label = CandleData(
+    candle_fabricated = CandleData(
+        timestamp_open=t0,
+        timestamp_close=t0 + timedelta(minutes=15),
+        open=Decimal("2500.00"),
+        high=Decimal("2505.00"),
+        low=Decimal("2495.00"),
+        close=Decimal("2500.00"),
+        volume=Decimal("100.0"),
+        is_closed=True,
+        volume_evidence="FABRICATED_VOLUME",  # type: ignore
+    )
+    candles_fake.append(candle_fabricated)
+
+    res = calculate_volume_features(candles_fake, period=20)
+    assert res.evidence_type == VolumeEvidenceType.UNAVAILABLE
+    assert res.is_usable is False
+    assert res.ratio is None
+    assert res.zscore is None
+    assert res.reason == "INVALID_VOLUME_EVIDENCE"
+
+    # 2. None evidence label
+    candle_none_ev = CandleData(
         timestamp_open=t0,
         timestamp_close=t0 + timedelta(minutes=15),
         open=Decimal("2500.00"),
@@ -174,12 +272,40 @@ def test_xau_p2_01_f_invalid_evidence_label_defaults_safely():
         is_closed=True,
         volume_evidence=None,  # type: ignore
     )
-    candles.append(candle_bad_label)
+    candles_none_ev = [_make_candle(i, volume="100.0", evidence=VolumeEvidenceType.REAL_VOLUME) for i in range(24)] + [candle_none_ev]
+    res_none_ev = calculate_volume_features(candles_none_ev, period=20)
+    assert res_none_ev.evidence_type == VolumeEvidenceType.UNAVAILABLE
+    assert res_none_ev.is_usable is False
+    assert res_none_ev.reason == "INVALID_VOLUME_EVIDENCE"
 
-    res = calculate_volume_features(candles, period=20)
-    assert res.evidence_type == VolumeEvidenceType.UNAVAILABLE
-    assert res.is_usable is False
-    assert res.ratio is None
+
+@pytest.mark.unit
+def test_xau_p2_01_full_window_non_positive_volume_validation():
+    """
+    XAU-P2-01 / Patch 4: If ANY bar in the rolling window contains non-positive volume
+    (0 or negative), the entire window is disqualified as UNAVAILABLE.
+    """
+    # 1. Bar 5 in 20-bar window has volume 0
+    candles_zero_early = [_make_candle(i, volume="100.0", evidence=VolumeEvidenceType.REAL_VOLUME) for i in range(25)]
+    candles_zero_early[10] = _make_candle(10, volume="0.0", evidence=VolumeEvidenceType.REAL_VOLUME)
+
+    res_zero = calculate_volume_features(candles_zero_early, period=20)
+    assert res_zero.evidence_type == VolumeEvidenceType.UNAVAILABLE
+    assert res_zero.is_usable is False
+    assert res_zero.ratio is None
+    assert res_zero.zscore is None
+    assert res_zero.reason == "UNAVAILABLE_VOLUME"
+
+    # 2. Bar 8 in 20-bar window has negative volume
+    candles_neg_early = [_make_candle(i, volume="100.0", evidence=VolumeEvidenceType.REAL_VOLUME) for i in range(25)]
+    candles_neg_early[12] = _make_candle(12, volume="-50.0", evidence=VolumeEvidenceType.REAL_VOLUME)
+
+    res_neg = calculate_volume_features(candles_neg_early, period=20)
+    assert res_neg.evidence_type == VolumeEvidenceType.UNAVAILABLE
+    assert res_neg.is_usable is False
+    assert res_neg.ratio is None
+    assert res_neg.zscore is None
+    assert res_neg.reason == "UNAVAILABLE_VOLUME"
 
 
 @pytest.mark.unit
@@ -236,8 +362,75 @@ def test_xau_p2_01_i_no_volume_fabrication_in_feature_engine():
 
 
 # ============================================================================
-# Regime Revalidation Tests
+# XAUUSD Regime Revalidation Tests
 # ============================================================================
+
+@pytest.mark.unit
+def test_uncalibrated_xauusd_profile_has_no_hidden_thresholds():
+    """
+    Patch 5: uncalibrated_xauusd_profile() must contain NO configured numerical thresholds (all None),
+    guaranteeing zero hidden fallback to historical XAUT reference boundaries.
+    """
+    profile = RegimeThresholdProfile.uncalibrated_xauusd_profile()
+    assert profile.name == "XAUUSD_UNCALIBRATED"
+    assert profile.is_calibrated is False
+    assert profile.adx_trend_threshold is None
+    assert profile.slope_boundary is None
+    assert profile.high_vol_realized_pct is None
+    assert profile.high_vol_atr_pct is None
+    assert profile.high_vol_bb_bandwidth_pct is None
+    assert profile.rsi_bull_threshold is None
+    assert profile.rsi_bear_threshold is None
+
+
+@pytest.mark.unit
+def test_legacy_xaut_profile_preserves_historical_boundaries():
+    """
+    Patch 5: legacy_xaut_profile() explicitly defines the frozen historical XAUT boundaries.
+    """
+    profile = RegimeThresholdProfile.legacy_xaut_profile()
+    assert profile.name == "LEGACY_XAUT_REFERENCE"
+    assert profile.is_calibrated is True
+    assert profile.adx_trend_threshold == 20.0
+    assert profile.slope_boundary == 0.05
+    assert profile.high_vol_realized_pct == 5.0
+    assert profile.high_vol_atr_pct == 3.0
+    assert profile.high_vol_bb_bandwidth_pct == 15.0
+    assert profile.rsi_bull_threshold == 50.0
+    assert profile.rsi_bear_threshold == 50.0
+
+
+@pytest.mark.unit
+def test_calibrated_profile_with_missing_fields_fails_safe():
+    """
+    Patch 5: A profile marked is_calibrated=True but with missing/None boundary values
+    must fail safe to UNKNOWN with CALIBRATION_REQUIRED rather than throwing a TypeError.
+    """
+    incomplete_profile = RegimeThresholdProfile(
+        name="INCOMPLETE_CALIBRATION",
+        is_calibrated=True,
+        adx_trend_threshold=None,  # Missing!
+        slope_boundary=0.05,
+        high_vol_realized_pct=5.0,
+        high_vol_atr_pct=3.0,
+        high_vol_bb_bandwidth_pct=15.0,
+        rsi_bull_threshold=50.0,
+        rsi_bear_threshold=50.0,
+    )
+    engine = RegimeEngine(profile=incomplete_profile)
+    features = FeatureSnapshot(
+        timestamp=datetime.now(timezone.utc),
+        ema20=Decimal("2550"), ema50=Decimal("2500"), ema200=Decimal("2400"),
+        ema_slope_20=0.15, ema_alignment=1, adx=30.0, plus_di=35.0, minus_di=10.0,
+        rsi14=65.0, macd_line=Decimal("10"), macd_signal=Decimal("8"), macd_hist=Decimal("2"), roc12=4.0,
+        atr14=Decimal("10"), atr_pct=0.4, bb_upper=Decimal("2570"), bb_middle=Decimal("2550"),
+        bb_lower=Decimal("2530"), bb_bandwidth=1.5, realized_vol_20=1.0, volume_ratio_20=1.2, volume_zscore_20=0.5,
+    )
+    res = engine.classify(features)
+    assert res.regime == RegimeType.UNKNOWN
+    assert res.confidence == 0.0
+    assert res.details.get("reason") == "CALIBRATION_REQUIRED"
+
 
 @pytest.mark.unit
 def test_xauusd_uncalibrated_regime_fails_closed_to_unknown():

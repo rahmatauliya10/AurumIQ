@@ -79,7 +79,29 @@ class RegimeEngine:
                 },
             )
 
-        # 2. Check for sufficient lookback
+        # 2. Validate that all required numerical thresholds are configured when calibrated
+        required_thresholds = [
+            self.profile.adx_trend_threshold,
+            self.profile.slope_boundary,
+            self.profile.high_vol_realized_pct,
+            self.profile.high_vol_atr_pct,
+            self.profile.high_vol_bb_bandwidth_pct,
+            self.profile.rsi_bull_threshold,
+            self.profile.rsi_bear_threshold,
+        ]
+        if any(v is None for v in required_thresholds):
+            return RegimeResult(
+                regime=RegimeType.UNKNOWN,
+                confidence=0.0,
+                timestamp=features.timestamp,
+                details={
+                    "reason": "CALIBRATION_REQUIRED",
+                    "profile": self.profile.name,
+                    "message": f"Regime threshold profile '{self.profile.name}' is missing required numerical boundaries.",
+                },
+            )
+
+        # 3. Check for sufficient lookback
         if features.ema200 is None or features.adx is None or features.rsi14 is None:
             return RegimeResult(
                 regime=RegimeType.UNKNOWN,
@@ -88,7 +110,8 @@ class RegimeEngine:
                 details={"reason": "Insufficient historical lookback bars for 200-period indicators."},
             )
 
-        # 3. High Volatility Check
+        # 4. High Volatility Check
+
         is_high_vol = False
         vol_reasons = []
         if features.realized_vol_20 is not None and features.realized_vol_20 > self.profile.high_vol_realized_pct:

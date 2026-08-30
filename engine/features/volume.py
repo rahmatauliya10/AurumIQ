@@ -11,9 +11,14 @@ def calculate_volume_features(candles: Sequence[CandleData], period: int = 20) -
     Extract volume features with strict semantic evidence validation (XAU-P2-01).
     Guarantees:
       - UNAVAILABLE volume produces is_usable=False and ratio=None, zscore=None.
-      - Mixing incompatible volume types across the rolling window produces is_usable=False.
+      - Any non-positive (<= 0), missing, or UNAVAILABLE bar anywhere in the rolling window
+        disqualifies the entire window as UNAVAILABLE.
+      - Unknown/invalid runtime evidence labels (e.g. "FABRICATED_VOLUME") return is_usable=False
+        with reason="INVALID_VOLUME_EVIDENCE".
+      - Mixing incompatible volume types across the rolling window produces is_usable=False
+        with reason="MIXED_VOLUME_SEMANTICS".
       - PROXY_VOLUME, TICK_VOLUME, REAL_VOLUME are explicitly labeled and verified.
-      - No volume fabrication or silent assumption.
+      - Zero volume fabrication or silent assumption.
     """
     if not candles:
         return VolumeFeatureResult(
@@ -24,23 +29,12 @@ def calculate_volume_features(candles: Sequence[CandleData], period: int = 20) -
             reason="EMPTY_CANDLES",
         )
 
-    current_candle = candles[-1]
-    curr_evidence = current_candle.volume_evidence or VolumeEvidenceType.UNAVAILABLE
-
-    # 1. Check for unavailable / invalid current volume
-    if curr_evidence == VolumeEvidenceType.UNAVAILABLE or current_candle.volume is None or current_candle.volume <= Decimal("0"):
-        return VolumeFeatureResult(
-            evidence_type=VolumeEvidenceType.UNAVAILABLE,
-            is_usable=False,
-            ratio=None,
-            zscore=None,
-            reason="UNAVAILABLE_VOLUME",
-        )
-
-    # 2. Check sufficient lookback
+    # 1. Check sufficient lookback
     if len(candles) < period or period <= 0:
+        curr_cand = candles[-1]
+        ev = curr_cand.volume_evidence if isinstance(curr_cand.volume_evidence, VolumeEvidenceType) else VolumeEvidenceType.UNAVAILABLE
         return VolumeFeatureResult(
-            evidence_type=curr_evidence,
+            evidence_type=ev,
             is_usable=False,
             ratio=None,
             zscore=None,
@@ -48,28 +42,52 @@ def calculate_volume_features(candles: Sequence[CandleData], period: int = 20) -
         )
 
     window = candles[-period:]
+    current_candle = window[-1]
 
-    # 3. Check for mixed volume semantics across the rolling window
+    # 2. Strict Enum Validation across entire window
+    for c in window:
+        if c.volume_evidence not in (
+            VolumeEvidenceType.REAL_VOLUME,
+            VolumeEvidenceType.TICK_VOLUME,
+            VolumeEvidenceType.PROXY_VOLUME,
+            VolumeEvidenceType.UNAVAILABLE,
+        ) or not isinstance(c.volume_evidence, VolumeEvidenceType):
+            return VolumeFeatureResult(
+                evidence_type=VolumeEvidenceType.UNAVAILABLE,
+                is_usable=False,
+                ratio=None,
+                zscore=None,
+                reason="INVALID_VOLUME_EVIDENCE",
+            )
+
+    # 3. Validate entire window for non-positive or unavailable volume
+    for c in window:
+        if (
+            c.volume_evidence == VolumeEvidenceType.UNAVAILABLE
+            or c.volume is None
+            or c.volume <= Decimal("0")
+        ):
+            return VolumeFeatureResult(
+                evidence_type=VolumeEvidenceType.UNAVAILABLE,
+                is_usable=False,
+                ratio=None,
+                zscore=None,
+                reason="UNAVAILABLE_VOLUME",
+            )
+
+    # 4. Check for mixed volume semantics across the rolling window
     unique_evidence_types = {c.volume_evidence for c in window}
     if len(unique_evidence_types) > 1:
         return VolumeFeatureResult(
-            evidence_type=curr_evidence,
+            evidence_type=current_candle.volume_evidence,
             is_usable=False,
             ratio=None,
             zscore=None,
             reason="MIXED_VOLUME_SEMANTICS",
         )
 
-    if VolumeEvidenceType.UNAVAILABLE in unique_evidence_types:
-        return VolumeFeatureResult(
-            evidence_type=VolumeEvidenceType.UNAVAILABLE,
-            is_usable=False,
-            ratio=None,
-            zscore=None,
-            reason="UNAVAILABLE_VOLUME",
-        )
-
-    # 4. Valid homogeneous volume window calculation
+    # 5. Valid homogeneous volume window calculation
+    curr_evidence = current_candle.volume_evidence
     volumes = [c.volume for c in window]
     ratio = calculate_volume_ratio(volumes, period)
     zscore = calculate_volume_zscore(volumes, period)
@@ -81,6 +99,7 @@ def calculate_volume_features(candles: Sequence[CandleData], period: int = 20) -
         zscore=zscore,
         reason="VALID",
     )
+
 
 
 def calculate_volume_ratio(volumes: Sequence[Decimal], period: int = 20) -> Optional[float]:

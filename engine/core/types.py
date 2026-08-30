@@ -155,13 +155,13 @@ class RegimeThresholdProfile:
     """
     name: str = "LEGACY_XAUT_REFERENCE"
     is_calibrated: bool = True
-    adx_trend_threshold: float = 20.0
-    slope_boundary: float = 0.05
-    high_vol_realized_pct: float = 5.0
-    high_vol_atr_pct: float = 3.0
-    high_vol_bb_bandwidth_pct: float = 15.0
-    rsi_bull_threshold: float = 50.0
-    rsi_bear_threshold: float = 50.0
+    adx_trend_threshold: Optional[float] = 20.0
+    slope_boundary: Optional[float] = 0.05
+    high_vol_realized_pct: Optional[float] = 5.0
+    high_vol_atr_pct: Optional[float] = 3.0
+    high_vol_bb_bandwidth_pct: Optional[float] = 15.0
+    rsi_bull_threshold: Optional[float] = 50.0
+    rsi_bear_threshold: Optional[float] = 50.0
     details: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -181,15 +181,23 @@ class RegimeThresholdProfile:
 
     @classmethod
     def uncalibrated_xauusd_profile(cls) -> "RegimeThresholdProfile":
-        """Explicitly uncalibrated profile for XAUUSD (requires empirical calibration)."""
+        """Explicitly uncalibrated profile for XAUUSD with NO configured empirical numerical boundaries."""
         return cls(
             name="XAUUSD_UNCALIBRATED",
             is_calibrated=False,
+            adx_trend_threshold=None,
+            slope_boundary=None,
+            high_vol_realized_pct=None,
+            high_vol_atr_pct=None,
+            high_vol_bb_bandwidth_pct=None,
+            rsi_bull_threshold=None,
+            rsi_bear_threshold=None,
             details={
                 "calibration_status": "CALIBRATION_REQUIRED",
                 "reason": "XAUUSD empirical regime thresholds not configured.",
             },
         )
+
 
 
 @dataclass(frozen=True)
