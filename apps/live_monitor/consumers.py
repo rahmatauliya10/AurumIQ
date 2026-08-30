@@ -177,6 +177,7 @@ class LiveMonitorWebSocketHandler:
         self.last_quote_sequence: Optional[int] = None
         self.last_decision_sequence: Optional[int] = None
         self.message_queue: list[str] = []
+        self.async_sender = None
 
     def connect(self) -> bool:
         """Enforce authentication check on connection (P7-25)."""
@@ -204,3 +205,54 @@ class LiveMonitorWebSocketHandler:
 
         msg_str = json.dumps(event_payload)
         self.message_queue.append(msg_str)
+        if self.async_sender:
+            try:
+                import asyncio
+                asyncio.create_task(self.async_sender(msg_str))
+            except Exception as e:
+                logger.debug("async_send_failed", error=str(e))
+
+
+class LiveMonitorAsyncWebsocketConsumer:
+    """
+    Native ASGI 3.0 WebSocket Application for real-time live monitoring.
+    Handles connect, authentication verification, disconnect, and streaming.
+    """
+
+    def __init__(self, scope, receive, send):
+        self.scope = scope
+        self.receive = receive
+        self.send = send
+        self.handler: Optional[LiveMonitorWebSocketHandler] = None
+
+    async def __call__(self):
+        # Authenticate user from ASGI scope
+        user = self.scope.get("user")
+        if not user or not getattr(user, "is_authenticated", False):
+            await self.send({"type": "websocket.close", "code": 4401})
+            return
+
+        # Accept websocket connection
+        await self.send({"type": "websocket.accept"})
+        
+        self.handler = LiveMonitorWebSocketHandler(user=user, instrument="XAUT/USDT")
+        self.handler.connect()
+
+        async def _async_send(msg_text: str):
+            await self.send({"type": "websocket.send", "text": msg_text})
+
+        self.handler.async_sender = _async_send
+
+        try:
+            while True:
+                message = await self.receive()
+                msg_type = message.get("type")
+                if msg_type == "websocket.disconnect":
+                    break
+                elif msg_type == "websocket.receive":
+                    text = message.get("text", "")
+                    if text == "ping":
+                        await self.send({"type": "websocket.send", "text": "pong"})
+        finally:
+            if self.handler:
+                self.handler.disconnect()

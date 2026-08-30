@@ -1,0 +1,95 @@
+name: aurumiq-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aurumiq_postgres_prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-xaut_db}
+      POSTGRES_USER: ${POSTGRES_USER:-xaut_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xaut_user} -d ${POSTGRES_DB:-xaut_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aurumiq_internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: aurumiq_redis_prod
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-""}
+    volumes:
+      - redis_data_prod:/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aurumiq_internal
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prod
+    container_name: aurumiq_web_prod
+    restart: always
+    env_file:
+      - ../.env.prod
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aurumiq_internal
+
+  celery_worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prod
+    container_name: aurumiq_celery_worker_prod
+    command: celery -A config worker -l INFO -Q market_data,analysis,backtest,machine_learning,maintenance --concurrency=4
+    restart: always
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aurumiq_internal
+
+  celery_beat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prod
+    container_name: aurumiq_celery_beat_prod
+    command: celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    restart: always
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aurumiq_internal
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:
+
+networks:
+  aurumiq_internal:
+    driver: bridge

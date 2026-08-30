@@ -360,3 +360,70 @@ class Phase7BTargetedTests(TestCase):
         assert data["risk_plan_valid"] is False
         assert data["execution_eligible"] is False
         assert data["effective_action"] == "WAIT"
+
+    # --- P7-28: ASGI WebSocket Transport Handshake & Message Framing ---
+    def test_p7_28_asgi_websocket_transport_handshake_and_frames(self):
+        import asyncio
+        from config.asgi import application
+        from apps.live_monitor.consumers import LiveEventBroadcaster
+
+        async def _run_test():
+            # 1. Unauthenticated ASGI scope rejected with close code 4401
+            sent_messages_unauth = []
+            async def mock_send_unauth(msg):
+                sent_messages_unauth.append(msg)
+
+            async def mock_recv_unauth():
+                return {"type": "websocket.disconnect"}
+
+            unauth_scope = {"type": "websocket", "user": None, "path": "/ws/live/"}
+            await application(unauth_scope, mock_recv_unauth, mock_send_unauth)
+            assert len(sent_messages_unauth) == 1
+            assert sent_messages_unauth[0]["type"] == "websocket.close"
+            assert sent_messages_unauth[0]["code"] == 4401
+
+            # 2. Authenticated ASGI scope accepts and frames messages
+            sent_messages_auth = []
+            recv_queue = asyncio.Queue()
+
+            async def mock_send_auth(msg):
+                sent_messages_auth.append(msg)
+
+            async def mock_recv_auth():
+                return await recv_queue.get()
+
+            auth_scope = {"type": "websocket", "user": self.user, "path": "/ws/live/"}
+            
+            # Start consumer task
+            consumer_task = asyncio.create_task(
+                application(auth_scope, mock_recv_auth, mock_send_auth)
+            )
+            await asyncio.sleep(0.01)
+
+            assert any(m.get("type") == "websocket.accept" for m in sent_messages_auth)
+
+            # Broadcast live quote event
+            payload = LiveEventBroadcaster.format_quote_event(
+                instrument="XAUT/USDT",
+                bid=Decimal("2515.00"),
+                ask=Decimal("2515.50"),
+                spread=Decimal("0.50"),
+                spread_pct=Decimal("0.0198"),
+                source_timestamp=datetime.now(timezone.utc),
+                sequence_number=201,
+                entry_zone_status="INSIDE_ZONE",
+            )
+            LiveEventBroadcaster.broadcast(payload)
+            await asyncio.sleep(0.01)
+
+            # Ping-Pong frame
+            await recv_queue.put({"type": "websocket.receive", "text": "ping"})
+            await asyncio.sleep(0.01)
+            assert any(m.get("text") == "pong" for m in sent_messages_auth)
+
+            # Disconnect
+            await recv_queue.put({"type": "websocket.disconnect"})
+            await consumer_task
+
+        asyncio.run(_run_test())
+

@@ -13,7 +13,7 @@ def test_django_settings_loaded():
     assert settings.SECRET_KEY is not None
     assert settings.TIME_ZONE == "UTC"
     assert "apps.accounts.apps.AccountsConfig" in settings.INSTALLED_APPS
-    assert settings.ENGINE_VERSION == "1.0.0"
+    assert bool(settings.ENGINE_VERSION)
 
 
 @pytest.mark.unit

@@ -69,11 +69,11 @@ AurumIQ is a research-grade, production-hardened algorithmic intelligence and de
 
 ---
 
-## 🚀 Quick Start (Development & Testing)
+## 🚀 Deployment & Operation
 
-### Running with Docker Compose
+### Development Mode (Local Docker Compose)
 ```bash
-# Start PostgreSQL, Redis, Django Web, and Celery Worker
+# Start PostgreSQL, Redis, Django Web, and Celery Worker (Development)
 docker compose -f docker/docker-compose.yml up -d
 
 # Run Django system check
@@ -81,12 +81,17 @@ docker compose -f docker/docker-compose.yml exec web python manage.py check
 
 # Run full multi-phase regression suite (Phase 0 - 7)
 docker compose -f docker/docker-compose.yml exec web pytest
+
+# Create Local Operator User
+docker compose -f docker/docker-compose.yml exec web python manage.py createsuperuser
 ```
 
-### Operator Sign-In
-Navigate to `http://localhost:8000/`. Default operator credentials:
-- **Username**: `operator`
-- **Password**: `aurumiq123`
+### Production Mode (Hardened ASGI Deployment)
+```bash
+# Build and run production-grade ASGI container stack with isolated networking
+docker compose -f docker/docker-compose.prod.yml up -d --build
+```
+Navigate to `http://localhost:8000/accounts/login/` and sign in with your provisioned operator credentials.
 
 ---
 

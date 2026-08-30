@@ -77,25 +77,70 @@ def analyze_closed_candle(
         candles_4h = _get_candles("4h", 64)
         candles_1d = _get_candles("1d", 32)
 
-        # Retrieve latest XAU/USD benchmark candle <= candle_ts if available
-        xau_candle = (
+        # Retrieve historical XAU/USD benchmark candles <= candle_ts
+        xau_qs = (
             MarketCandle.objects.filter(
                 instrument__base_asset__code="XAU",
                 instrument__quote_asset__code="USD",
                 timestamp_close__lte=candle_ts,
                 is_closed=True,
             )
-            .order_by("-timestamp_close")
-            .first()
+            .order_by("-timestamp_close")[:64]
         )
-        xau_ref_price = float(xau_candle.close) if xau_candle else None
-        xau_ref_bullish = bool(xau_candle.close >= xau_candle.open) if xau_candle else None
-        xau_ref_ts = xau_candle.timestamp_close if xau_candle else None
+        candles_xau = [
+            CandleData(
+                timestamp_open=c.timestamp_open,
+                timestamp_close=c.timestamp_close,
+                open=c.open,
+                high=c.high,
+                low=c.low,
+                close=c.close,
+                volume=c.volume,
+                is_closed=c.is_closed,
+                source_id=c.source,
+            )
+            for c in reversed(list(xau_qs))
+        ]
+        latest_xau = candles_xau[-1] if candles_xau else None
+        xau_ref_price = float(latest_xau.close) if latest_xau else None
+        xau_ref_bullish = bool(latest_xau.close >= latest_xau.open) if latest_xau else None
+        xau_ref_ts = latest_xau.timestamp_close if latest_xau else None
 
         # Retrieve latest USDT rate from 15m candle or state
         latest_15m = candles_15m[-1]
         usdt_rate = float(latest_15m.quote_rate) if latest_15m.quote_rate else None
         usdt_rate_ts = latest_15m.timestamp_close if usdt_rate else None
+
+        # Authoritative Provider Health & Data Quality Lookup
+        effective_provider_status = provider_status
+        effective_is_stale = is_stale_feed
+        effective_is_transition = is_provider_transition
+
+        from apps.instruments.models import ProviderHealthSnapshot
+        latest_health = (
+            ProviderHealthSnapshot.objects.filter(
+                listing__instrument=instrument,
+                checked_at__lte=candle_ts,
+            )
+            .order_by("-checked_at")
+            .first()
+        )
+        if latest_health:
+            effective_provider_status = latest_health.status
+            effective_is_transition = (latest_health.status == "TRANSITION")
+
+        from apps.market_data.models import DataQualitySnapshot
+        latest_dq = (
+            DataQualitySnapshot.objects.filter(
+                instrument=instrument,
+                timeframe=timeframe,
+                timestamp__lte=candle_ts,
+            )
+            .order_by("-timestamp")
+            .first()
+        )
+        if latest_dq and (latest_dq.is_stale or latest_dq.hard_fail):
+            effective_is_stale = True
 
         engine = XautSignalEngine(
             engine_version=engine_version,
@@ -123,6 +168,7 @@ def analyze_closed_candle(
             candles_15m=candles_15m,
             candles_4h=candles_4h if candles_4h else None,
             candles_1d=candles_1d if candles_1d else None,
+            candles_xau=candles_xau if candles_xau else None,
             as_of=candle_ts,
             instrument=instrument.symbol,
             timeframe=timeframe,
@@ -131,9 +177,9 @@ def analyze_closed_candle(
             xau_reference_ts=xau_ref_ts,
             usdt_rate=usdt_rate,
             usdt_rate_ts=usdt_rate_ts,
-            provider_status=provider_status,
-            is_feed_stale=is_stale_feed,
-            is_provider_transition=is_provider_transition,
+            provider_status=effective_provider_status,
+            is_feed_stale=effective_is_stale,
+            is_provider_transition=effective_is_transition,
             macro_context=macro_ctx_obj,
         )
 

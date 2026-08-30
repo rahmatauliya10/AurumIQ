@@ -74,6 +74,7 @@ class XautSignalEngine:
         timeframe: str = "15m",
         candles_4h: Optional[Sequence[CandleData]] = None,
         candles_1d: Optional[Sequence[CandleData]] = None,
+        candles_xau: Optional[Sequence[CandleData]] = None,
         xau_reference_price: Optional[Decimal] = None,
         xau_reference_is_bullish: Optional[bool] = None,
         xau_reference_ts: Optional[datetime] = None,
@@ -155,18 +156,26 @@ class XautSignalEngine:
             if len(valid_1d) >= 32:
                 features_1d = self.feature_engine.extract_features(valid_1d)
 
-        # 3. Normalized Basis Evaluation (Statistical Rolling Z-Score)
+        # 3. Normalized Basis Evaluation (Statistical Rolling Z-Score with True Historical Pairing)
         xaut_basis_z: Optional[float] = None
         if xau_reference_price is not None and usdt_rate is not None and latest_candle and float(xau_reference_price) > 0:
-            xaut_usd = float(latest_candle.close) * float(usdt_rate)
-            xau_usd = float(xau_reference_price)
-            current_basis_pct = (xaut_usd - xau_usd) / xau_usd
+            xaut_usd_current = float(latest_candle.close) * float(usdt_rate)
+            xau_usd_current = float(xau_reference_price)
+            current_basis_pct = (xaut_usd_current - xau_usd_current) / xau_usd_current
             
             basis_pct_series = []
-            for c in valid_15m[-32:]:
-                c_rate = float(c.quote_rate) if c.quote_rate else float(usdt_rate)
-                c_xaut_usd = float(c.close) * c_rate
-                basis_pct_series.append((c_xaut_usd - xau_usd) / xau_usd)
+            if candles_xau:
+                xau_by_time = {
+                    (c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)): float(c.close)
+                    for c in candles_xau if c.is_closed
+                }
+                for c in valid_15m[-32:]:
+                    c_ts = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)
+                    if c_ts in xau_by_time and xau_by_time[c_ts] > 0:
+                        c_rate = float(c.quote_rate) if c.quote_rate else float(usdt_rate)
+                        c_xaut_usd = float(c.close) * c_rate
+                        c_xau_usd = xau_by_time[c_ts]
+                        basis_pct_series.append((c_xaut_usd - c_xau_usd) / c_xau_usd)
 
             if len(basis_pct_series) >= 8:
                 mean_basis = sum(basis_pct_series) / len(basis_pct_series)
@@ -175,9 +184,9 @@ class XautSignalEngine:
                 if std_basis > 1e-6:
                     xaut_basis_z = round((current_basis_pct - mean_basis) / std_basis, 2)
                 else:
-                    xaut_basis_z = 0.0
+                    xaut_basis_z = None
             else:
-                xaut_basis_z = 0.0
+                xaut_basis_z = None
 
         # 4. Hard Gate Evaluation
         is_blackout = macro_context.is_in_blackout if macro_context else False

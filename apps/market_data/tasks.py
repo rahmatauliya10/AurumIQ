@@ -110,8 +110,8 @@ def ingest_primary_candles(
                 else:
                     quality_flag = CandleQualityFlag.OK
 
-                # Point-in-time rate matching: find latest rate <= candle close timestamp
-                candle_rate = current_usdt_rate
+                # Point-in-time rate matching: find latest historical rate <= candle close timestamp
+                candle_rate = None
                 if hist_usdt_rates:
                     matching_rates = [
                         r[1] for r in hist_usdt_rates
@@ -119,8 +119,19 @@ def ingest_primary_candles(
                     ]
                     if matching_rates:
                         candle_rate = matching_rates[-1]
+                elif not raw.is_closed:
+                    # Forming / open bar only may use current ticker rate
+                    candle_rate = current_usdt_rate
 
-                candle_norm = normalizer.normalize_price(raw.close, candle_rate)
+                if candle_rate is not None:
+                    candle_norm = normalizer.normalize_price(raw.close, candle_rate)
+                    norm_quote_rate = candle_norm.rate
+                    norm_close_usd = candle_norm.normalized_price
+                else:
+                    norm_quote_rate = None
+                    norm_close_usd = None
+                    quality_flag = CandleQualityFlag.SUSPECT
+                    violations += 1
 
                 MarketCandle.objects.update_or_create(
                     instrument=instrument,
@@ -134,8 +145,8 @@ def ingest_primary_candles(
                         "low": raw.low,
                         "close": raw.close,
                         "volume": raw.volume,
-                        "quote_rate": candle_norm.rate,
-                        "close_usd": candle_norm.normalized_price,
+                        "quote_rate": norm_quote_rate,
+                        "close_usd": norm_close_usd,
                         "is_closed": raw.is_closed,
                         "data_quality_flag": quality_flag,
                     },

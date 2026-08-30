@@ -70,6 +70,31 @@ class PointInTimeDataset:
         self._candles[tf].append(candle)
         self._candles[tf].sort(key=lambda c: _to_utc(c.timestamp_open))
 
+    def add_xau_reference(self, timestamp: datetime, price: Decimal, is_bullish: bool = True) -> None:
+        """Add a point-in-time XAU reference price."""
+        self._xau_references.append((_to_utc(timestamp), price, is_bullish))
+        self._xau_references.sort(key=lambda x: x[0])
+
+    def add_xau_candle(self, candle: CandleData) -> None:
+        """Add an XAU candle as reference and direction indicator."""
+        is_bullish = candle.close >= candle.open
+        self.add_xau_reference(candle.timestamp_close, candle.close, is_bullish)
+
+    def add_usdt_rate(self, timestamp: datetime, rate: Decimal) -> None:
+        """Add a point-in-time USDT normalization rate."""
+        self._usdt_rates.append((_to_utc(timestamp), rate))
+        self._usdt_rates.sort(key=lambda x: x[0])
+
+    def add_macro_context(self, timestamp: datetime, context: MacroEventContext) -> None:
+        """Add a point-in-time MacroEventContext."""
+        self._macro_events.append((_to_utc(timestamp), context))
+        self._macro_events.sort(key=lambda x: x[0])
+
+    def add_quote(self, quote: QuoteData) -> None:
+        """Add a market quote for execution simulation."""
+        self._quotes.append(quote)
+        self._quotes.sort(key=lambda q: _to_utc(q.timestamp))
+
     def get_closed_candles(self, timeframe: str, as_of: datetime) -> List[CandleData]:
         """
         Retrieve closed candles strictly on or before as_of (P6-01, P6-03).
