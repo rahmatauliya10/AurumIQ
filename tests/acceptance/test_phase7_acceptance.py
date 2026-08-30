@@ -180,6 +180,9 @@ class Phase7AcceptanceTests(TestCase):
             xau_reference_price=Decimal("2540.00"),
             xau_reference_is_bullish=True,
             usdt_rate=Decimal("1.0000"),
+            provider_status="HEALTHY",
+            is_provider_transition=False,
+            is_feed_stale=False,
         )
 
         engine_direct = XautSignalEngine(code_revision=self.code_revision)
@@ -191,6 +194,9 @@ class Phase7AcceptanceTests(TestCase):
             xau_reference_price=Decimal("2540.00"),
             xau_reference_is_bullish=True,
             usdt_rate=Decimal("1.0000"),
+            provider_status="HEALTHY",
+            is_provider_transition=False,
+            is_feed_stale=False,
         )
 
         assert sig_rec.analysis_fingerprint == snap_direct.analysis_fingerprint
@@ -540,15 +546,7 @@ class Phase7AcceptanceTests(TestCase):
         from apps.analysis.services import AnalysisPersistenceService
         from engine.backtest.repository import PointInTimeDataset
         from engine.backtest.replay import PointInTimeReplay
-        from engine.core.types import (
-            Cycle3ASnapshot,
-            SessionContext,
-            SwingDurationContext,
-            MacroEventContext,
-            CalendarSeasonalityContext,
-            SessionType,
-            SampleQuality,
-        )
+        from engine.backtest.clock import ReplayClock
 
         last_candle = self.candles_15m[-1]
         t_decision = last_candle.timestamp_close
@@ -604,18 +602,24 @@ class Phase7AcceptanceTests(TestCase):
             xau_reference_ts=t_decision,
             usdt_rate=Decimal("1.0000"),
             usdt_rate_ts=t_decision,
+            macro_context=cycle_snap.macro_event,
+            provider_status="HEALTHY",
+            is_provider_transition=False,
+            is_feed_stale=False,
         )
 
         # 2. Execute PointInTimeReplay
         dataset = PointInTimeDataset(
             candles_15m=self.candles_15m,
             candles_4h=self.candles_4h,
+            candles_1d=self.candles_1d,
             cycle_3a=[cycle_snap],
         )
         for c in self.candles_xau:
             dataset.add_xau_candle(c)
         dataset.add_xau_reference(t_decision, Decimal("2540.00"), True)
         dataset.add_usdt_rate(t_decision, Decimal("1.0000"))
+        dataset.add_macro_context(t_decision, cycle_snap.macro_event)
 
         signal_engine = XautSignalEngine(code_revision=self.code_revision)
         risk_planner = RiskPlanner(code_revision=self.code_revision)
@@ -624,7 +628,6 @@ class Phase7AcceptanceTests(TestCase):
             signal_engine=signal_engine,
             risk_planner=risk_planner,
         )
-        from engine.backtest.clock import ReplayClock
         clock = ReplayClock([t_decision])
         signals, trades = replay.run(clock=clock)
 
@@ -643,4 +646,177 @@ class Phase7AcceptanceTests(TestCase):
         assert cycle_comp is not None
         assert cycle_comp.is_available is True
         assert cycle_comp.score > 0.0
+
+    # --- P7-CTX-01: MISSING DATA QUALITY IN ACTUAL LIVE TASK FAILS CLOSED ---
+    def test_p7_ctx_01_missing_dq_in_actual_live_task_fails_closed(self):
+        """P7-CTX-01: When DataQualitySnapshot is missing, live task strictly fails closed."""
+        from apps.market_data.models import DataQualitySnapshot
+        from apps.live_monitor.tasks import process_closed_candle_task
+
+        last_candle = self.candles_15m[-1]
+        DataQualitySnapshot.objects.filter(instrument=self.xaut_inst).delete()
+
+        res = process_closed_candle_task.apply(
+            kwargs={
+                "instrument": "XAUT/USDT",
+                "timeframe": "15m",
+                "timestamp_open_iso": last_candle.timestamp_open.isoformat(),
+                "timestamp_close_iso": last_candle.timestamp_close.isoformat(),
+                "open_str": str(last_candle.open),
+                "high_str": str(last_candle.high),
+                "low_str": str(last_candle.low),
+                "close_str": str(last_candle.close),
+                "volume_str": str(last_candle.volume),
+                "code_revision": self.code_revision,
+            }
+        ).get()
+
+        assert res["status"] == "SUCCESS"
+        assert res["signal_state"] == "FORCE_WAIT"
+        assert res["signal_user_decision"] == "WAIT"
+
+    # --- P7-CTX-02: MISSING PROVIDER HEALTH CANNOT BECOME HEALTHY ---
+    def test_p7_ctx_02_missing_provider_health_cannot_become_healthy(self):
+        """P7-CTX-02: When ProviderHealthSnapshot is missing, live task fails closed."""
+        from apps.instruments.models import ProviderHealthSnapshot
+        from apps.live_monitor.tasks import process_closed_candle_task
+
+        last_candle = self.candles_15m[-1]
+        ProviderHealthSnapshot.objects.all().delete()
+
+        res = process_closed_candle_task.apply(
+            kwargs={
+                "instrument": "XAUT/USDT",
+                "timeframe": "15m",
+                "timestamp_open_iso": last_candle.timestamp_open.isoformat(),
+                "timestamp_close_iso": last_candle.timestamp_close.isoformat(),
+                "open_str": str(last_candle.open),
+                "high_str": str(last_candle.high),
+                "low_str": str(last_candle.low),
+                "close_str": str(last_candle.close),
+                "volume_str": str(last_candle.volume),
+                "code_revision": self.code_revision,
+            }
+        ).get()
+
+        assert res["status"] == "SUCCESS"
+        assert res["signal_state"] == "FORCE_WAIT"
+        assert res["signal_user_decision"] == "WAIT"
+
+    # --- P7-MACRO-02: PERSISTED PHASE 3A BLACKOUT -> LIVE FORCE_WAIT ---
+    def test_p7_macro_02_persisted_phase3a_blackout_live_force_wait(self):
+        """P7-MACRO-02: Persisted Phase3A snapshot with is_blocked_by_event=True forces live FORCE_WAIT."""
+        from apps.analysis.models import CycleSnapshotRecord
+
+        last_candle = self.candles_15m[-1]
+        t_decision = last_candle.timestamp_close
+
+        CycleSnapshotRecord.objects.update_or_create(
+            instrument=self.xaut_inst,
+            timeframe="15m",
+            timestamp=t_decision,
+            cycle_version="3.0.0-3A",
+            defaults={
+                "session": "LONDON",
+                "session_progress_pct": 50.0,
+                "is_high_liquidity": True,
+                "bars_since_last_swing": 8,
+                "pullback_age_percentile": 60.0,
+                "is_mature_pullback": True,
+                "is_blocked_by_event": True,
+                "cycle_score_3a": 0.0,
+                "details": {
+                    "macro_feed_healthy": True,
+                    "macro_active_event": "CPI Release",
+                },
+            },
+        )
+
+        event = CandleClosedEvent(
+            event_id="EVT_MACRO_02",
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open=last_candle.timestamp_open,
+            timestamp_close=last_candle.timestamp_close,
+            open=last_candle.open,
+            high=last_candle.high,
+            low=last_candle.low,
+            close=last_candle.close,
+            volume=last_candle.volume,
+            is_closed=True,
+        )
+
+        sig_rec, risk_rec, state = LiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision=self.code_revision,
+            xau_reference_price=Decimal("2540.00"),
+            xau_reference_is_bullish=True,
+            xau_reference_ts=t_decision,
+            usdt_rate=Decimal("1.0000"),
+            usdt_rate_ts=t_decision,
+            is_feed_stale=False,
+            is_provider_transition=False,
+            provider_status="HEALTHY",
+        )
+
+        assert sig_rec.state == "FORCE_WAIT"
+        assert sig_rec.user_decision == "WAIT"
+
+    # --- P6-MACRO-01: PERSISTED PHASE 3A BLACKOUT -> REPLAY FORCE_WAIT ---
+    def test_p6_macro_01_persisted_phase3a_blackout_replay_force_wait(self):
+        """P6-MACRO-01: Persisted Phase3A snapshot with is_blocked_by_event=True forces replay FORCE_WAIT."""
+        from engine.backtest.repository import PointInTimeDataset
+        from engine.backtest.replay import PointInTimeReplay
+        from engine.backtest.clock import ReplayClock
+        from engine.core.types import (
+            Cycle3ASnapshot,
+            SessionContext,
+            SwingDurationContext,
+            MacroEventContext,
+            CalendarSeasonalityContext,
+            SessionType,
+            SignalState,
+            UserDecision,
+        )
+
+        last_candle = self.candles_15m[-1]
+        t_decision = last_candle.timestamp_close
+
+        snap_blocked = Cycle3ASnapshot(
+            timestamp=t_decision,
+            session=SessionContext(session=SessionType.LONDON, progress_pct=50.0, is_high_liquidity=True, local_times={}),
+            swing_duration=SwingDurationContext(market_age_bars=10, market_age_hours=2.5, known_age_bars=8, known_age_hours=2.0, pullback_age_percentile=50.0, is_mature=False, maturity_score=10.0),
+            macro_event=MacroEventContext(is_in_blackout=True, is_feed_healthy=True, active_event_name="FOMC"),
+            calendar=CalendarSeasonalityContext(day_of_week=2, day_name="Wednesday", hour_utc=10, month=8, is_month_end_flow=False, stability_score=0.8, seasonality_score=3.0),
+            is_blocked_by_event=True,
+            cycle_score_3a=0.0,
+            cycle_version="3.0.0-3A",
+        )
+
+        dataset = PointInTimeDataset(
+            candles_15m=self.candles_15m,
+            candles_4h=self.candles_4h,
+            candles_1d=self.candles_1d,
+            cycle_3a=[snap_blocked],
+        )
+        for c in self.candles_xau:
+            dataset.add_xau_candle(c)
+        dataset.add_xau_reference(t_decision, Decimal("2540.00"), True)
+        dataset.add_usdt_rate(t_decision, Decimal("1.0000"))
+
+        signal_engine = XautSignalEngine(code_revision=self.code_revision)
+        risk_planner = RiskPlanner(code_revision=self.code_revision)
+        replay = PointInTimeReplay(
+            dataset=dataset,
+            signal_engine=signal_engine,
+            risk_planner=risk_planner,
+        )
+        clock = ReplayClock([t_decision])
+        signals, trades = replay.run(clock=clock)
+
+        assert len(signals) >= 1
+        last_sig = signals[-1]
+        assert last_sig.state == SignalState.FORCE_WAIT
+        assert last_sig.user_decision == UserDecision.WAIT
+
 

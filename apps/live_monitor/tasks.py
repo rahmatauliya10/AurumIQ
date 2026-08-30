@@ -76,8 +76,9 @@ def process_closed_candle_task(
     xau_price_str: Optional[str] = None,
     xau_bullish: Optional[bool] = None,
     usdt_rate_str: Optional[str] = None,
-    is_provider_transition: bool = False,
-    is_feed_stale: bool = False,
+    provider_status: Optional[str] = None,
+    is_provider_transition: Optional[bool] = None,
+    is_feed_stale: Optional[bool] = None,
 ) -> dict:
     """Execute closed candle signal and risk evaluation with version-pinned provenance (P7-C6)."""
     if not code_revision:
@@ -147,7 +148,8 @@ def process_closed_candle_task(
                 usdt_ts = latest_norm.timestamp_close
 
         eff_provider_transition = is_provider_transition
-        if not eff_provider_transition:
+        eff_provider_status = provider_status or "HEALTHY"
+        if eff_provider_transition is None:
             from apps.instruments.models import ProviderHealthSnapshot
             latest_health = (
                 ProviderHealthSnapshot.objects.filter(
@@ -158,10 +160,14 @@ def process_closed_candle_task(
                 .first()
             )
             if latest_health:
+                eff_provider_status = latest_health.status
                 eff_provider_transition = bool(latest_health.status == "TRANSITION")
+            else:
+                eff_provider_status = "DOWN"
+                eff_provider_transition = True
 
         eff_feed_stale = is_feed_stale
-        if not eff_feed_stale:
+        if eff_feed_stale is None:
             from apps.market_data.models import DataQualitySnapshot
             latest_dq = (
                 DataQualitySnapshot.objects.filter(
@@ -174,6 +180,28 @@ def process_closed_candle_task(
             )
             if latest_dq:
                 eff_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail)
+            else:
+                eff_feed_stale = True
+
+        # Phase 3A Cycle & PIT Macro Context Resolution
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        from engine.core.types import MacroEventContext
+        latest_cycle = (
+            CycleSnapshotRecord.objects.filter(
+                instrument__base_asset__code="XAUT",
+                instrument__quote_asset__code="USDT",
+                timeframe=timeframe,
+                timestamp__lte=ts_close,
+                cycle_version=cycle_version,
+            )
+            .order_by("-timestamp")
+            .first()
+        )
+        macro_ctx = None
+        if latest_cycle:
+            cycle_snap = AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(latest_cycle)
+            macro_ctx = cycle_snap.macro_event
 
         signal_record, risk_record, state = LiveDecisionPipelineService.process_closed_candle(
             event=event,
@@ -188,8 +216,10 @@ def process_closed_candle_task(
             xau_reference_ts=xau_ts,
             usdt_rate=usdt_r,
             usdt_rate_ts=usdt_ts,
+            provider_status=eff_provider_status,
             is_provider_transition=eff_provider_transition,
             is_feed_stale=eff_feed_stale,
+            macro_context=macro_ctx,
         )
 
         return {

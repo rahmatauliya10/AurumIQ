@@ -190,8 +190,15 @@ class XautSignalEngine:
             else:
                 xaut_basis_z = None
 
-        # 4. Hard Gate Evaluation
-        is_blackout = macro_context.is_in_blackout if macro_context else False
+        # 4. Hard Gate Evaluation & Macro Context Resolution
+        if macro_context is None and cycle_3a is not None and cycle_3a.macro_event is not None:
+            macro_context = cycle_3a.macro_event
+
+        is_blackout = (
+            macro_context.is_in_blackout
+            if macro_context
+            else (cycle_3a.is_blocked_by_event if cycle_3a else False)
+        )
         is_missing_xau_gate = xau_reference_price is None or xau_reference_is_bullish is None
         is_missing_norm_gate = usdt_rate is None
 
@@ -256,6 +263,15 @@ class XautSignalEngine:
             user_decision=user_decision,
         )
 
+        if macro_context is None:
+            macro_state = "MISSING"
+        elif not macro_context.is_feed_healthy:
+            macro_state = "UNHEALTHY"
+        elif macro_context.is_in_blackout:
+            macro_state = "BLACKOUT"
+        else:
+            macro_state = "NORMAL"
+
         fingerprint = compute_canonical_fingerprint(
             instrument=instrument,
             timeframe=timeframe,
@@ -268,11 +284,15 @@ class XautSignalEngine:
             code_revision=self.code_revision,
             closed_candles_4h=valid_4h if candles_4h else None,
             closed_candles_1d=valid_1d if candles_1d else None,
+            closed_candles_xau=candles_xau if candles_xau else None,
+            cycle_3a=cycle_3a,
             xau_reference_val=str(xau_reference_price) if xau_reference_price else None,
             xau_reference_ts=xau_reference_ts.isoformat() if xau_reference_ts else None,
             usdt_rate_val=str(usdt_rate) if usdt_rate else None,
             usdt_rate_ts=usdt_rate_ts.isoformat() if usdt_rate_ts else None,
-            macro_state="BLACKOUT" if (macro_context and macro_context.is_in_blackout) else "NORMAL",
+            macro_state=macro_state,
+            is_feed_stale=is_feed_stale,
+            is_provider_transition=is_provider_transition,
             provider_status=provider_status,
             feature_version=self.feature_version,
             cycle_version=self.cycle_version,

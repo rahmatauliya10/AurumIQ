@@ -209,3 +209,125 @@ def test_p3a_13_versioned_cycle_snapshot_immutability():
 
     assert rec_v1.cycle_score_3a == 29.5
     assert rec_v2.cycle_score_3a == 34.0
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_p3a_rehydrate_01_persistence_roundtrip_lossless():
+    """
+    P3A-REHYDRATE-01: Verify original Cycle3ASnapshot -> persistence -> rehydrate
+    preserves all canonical Phase 3A fields losslessly without fabricated defaults.
+    """
+    from engine.core.types import SampleQuality
+    xaut = Asset.objects.create(code="XAUT_RH", name="Tether Gold RH")
+    usdt = Asset.objects.create(code="USDT_RH", name="Tether USD RH")
+    inst = Instrument.objects.create(base_asset=xaut, quote_asset=usdt, instrument_type=InstrumentType.SPOT)
+
+    now = datetime(2026, 8, 29, 15, 30, tzinfo=timezone.utc)
+
+    original_snap = Cycle3ASnapshot(
+        timestamp=now,
+        session=SessionContext(
+            session=SessionType.LONDON_NY_OVERLAP,
+            progress_pct=65.5,
+            is_high_liquidity=True,
+            local_times={"UTC": "15:30", "London": "16:30", "NY": "11:30"},
+            expectancy_score=18.5,
+            sample_quality=SampleQuality.HIGH,
+            effective_n=150.0,
+        ),
+        swing_duration=SwingDurationContext(
+            market_age_bars=15,
+            market_age_hours=3.75,
+            known_age_bars=12,
+            known_age_hours=3.0,
+            pullback_age_percentile=68.0,
+            is_mature=True,
+            maturity_score=22.5,
+            sample_quality=SampleQuality.HIGH,
+            effective_n=85.0,
+        ),
+        macro_event=MacroEventContext(
+            is_in_blackout=False,
+            minutes_to_next_event=120,
+            minutes_since_last_event=45,
+            active_event_name="FOMC Preview",
+            point_in_time_value="HOLD",
+            is_feed_healthy=True,
+        ),
+        calendar=CalendarSeasonalityContext(
+            day_of_week=4,
+            day_name="Friday",
+            hour_utc=15,
+            month=8,
+            is_month_end_flow=True,
+            stability_score=0.92,
+            seasonality_score=4.8,
+            sample_quality=SampleQuality.HIGH,
+            effective_n=110.0,
+        ),
+        is_blocked_by_event=False,
+        cycle_score_3a=42.5,
+        cycle_version="3.0.0-3A",
+    )
+
+    AnalysisPersistenceService.save_analysis_snapshots(
+        instrument=inst,
+        timeframe="15m",
+        cycle_3a=original_snap,
+    )
+
+    rec = CycleSnapshotRecord.objects.get(
+        instrument=inst,
+        timeframe="15m",
+        timestamp=now,
+        cycle_version="3.0.0-3A",
+    )
+
+    rehydrated = AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(rec)
+
+    # Invariants: 100% field parity
+    assert rehydrated.timestamp == original_snap.timestamp
+    assert rehydrated.cycle_version == original_snap.cycle_version
+    assert rehydrated.cycle_score_3a == original_snap.cycle_score_3a
+    assert rehydrated.is_blocked_by_event == original_snap.is_blocked_by_event
+
+    # Session fields
+    assert rehydrated.session.session == original_snap.session.session
+    assert rehydrated.session.progress_pct == original_snap.session.progress_pct
+    assert rehydrated.session.is_high_liquidity == original_snap.session.is_high_liquidity
+    assert rehydrated.session.expectancy_score == original_snap.session.expectancy_score
+    assert rehydrated.session.sample_quality == original_snap.session.sample_quality
+    assert rehydrated.session.effective_n == original_snap.session.effective_n
+    assert rehydrated.session.local_times == original_snap.session.local_times
+
+    # Swing Duration fields
+    assert rehydrated.swing_duration.market_age_bars == original_snap.swing_duration.market_age_bars
+    assert rehydrated.swing_duration.market_age_hours == original_snap.swing_duration.market_age_hours
+    assert rehydrated.swing_duration.known_age_bars == original_snap.swing_duration.known_age_bars
+    assert rehydrated.swing_duration.known_age_hours == original_snap.swing_duration.known_age_hours
+    assert rehydrated.swing_duration.pullback_age_percentile == original_snap.swing_duration.pullback_age_percentile
+    assert rehydrated.swing_duration.is_mature == original_snap.swing_duration.is_mature
+    assert rehydrated.swing_duration.maturity_score == original_snap.swing_duration.maturity_score
+    assert rehydrated.swing_duration.sample_quality == original_snap.swing_duration.sample_quality
+    assert rehydrated.swing_duration.effective_n == original_snap.swing_duration.effective_n
+
+    # Calendar Seasonality fields
+    assert rehydrated.calendar.day_of_week == original_snap.calendar.day_of_week
+    assert rehydrated.calendar.day_name == original_snap.calendar.day_name
+    assert rehydrated.calendar.hour_utc == original_snap.calendar.hour_utc
+    assert rehydrated.calendar.month == original_snap.calendar.month
+    assert rehydrated.calendar.is_month_end_flow == original_snap.calendar.is_month_end_flow
+    assert rehydrated.calendar.stability_score == original_snap.calendar.stability_score
+    assert rehydrated.calendar.seasonality_score == original_snap.calendar.seasonality_score
+    assert rehydrated.calendar.sample_quality == original_snap.calendar.sample_quality
+    assert rehydrated.calendar.effective_n == original_snap.calendar.effective_n
+
+    # Macro Event fields
+    assert rehydrated.macro_event.is_in_blackout == original_snap.macro_event.is_in_blackout
+    assert rehydrated.macro_event.minutes_to_next_event == original_snap.macro_event.minutes_to_next_event
+    assert rehydrated.macro_event.minutes_since_last_event == original_snap.macro_event.minutes_since_last_event
+    assert rehydrated.macro_event.active_event_name == original_snap.macro_event.active_event_name
+    assert rehydrated.macro_event.point_in_time_value == original_snap.macro_event.point_in_time_value
+    assert rehydrated.macro_event.is_feed_healthy == original_snap.macro_event.is_feed_healthy
+

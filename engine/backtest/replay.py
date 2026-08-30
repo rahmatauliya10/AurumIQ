@@ -88,6 +88,8 @@ class PointInTimeReplay:
             usdt_rate, usdt_ts = self.dataset.get_usdt_rate(as_of=t_utc)
             macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
             cycle_3a = self.dataset.get_cycle_3a(as_of=t_utc, cycle_version=self.cycle_version)
+            if macro_ctx is None and cycle_3a is not None and cycle_3a.macro_event:
+                macro_ctx = cycle_3a.macro_event
 
             # 2. Master Signal Evaluation @ T (Phase 4 Engine - A09)
             try:

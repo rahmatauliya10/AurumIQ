@@ -220,5 +220,5 @@ class PointInTimeDataset:
                 h.update(
                     f"first:{bars[0].timestamp_open.isoformat()}:last:{bars[-1].timestamp_close.isoformat()}".encode("utf-8")
                 )
-        h.update(f"quotes:{len(self._quotes)}:xau:{len(self._xau_references)}:usdt:{len(self._usdt_rates)}:cycle3a:{len(self._cycle_3a)}".encode("utf-8"))
+        h.update(f"quotes:{len(self._quotes)}:xau:{len(self._xau_references)}:xau_candles:{len(self._xau_candles)}:usdt:{len(self._usdt_rates)}:macro:{len(self._macro_events)}:cycle3a:{len(self._cycle_3a)}".encode("utf-8"))
         return h.hexdigest()

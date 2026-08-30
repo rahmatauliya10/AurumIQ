@@ -121,6 +121,9 @@ class Phase7ATargetedTests(TestCase):
             xau_reference_price=Decimal("2540.00"),
             xau_reference_is_bullish=True,
             usdt_rate=Decimal("1.0000"),
+            provider_status="HEALTHY",
+            is_provider_transition=False,
+            is_feed_stale=False,
         )
 
         # Baseline direct execution with exact same class and exact same candles
@@ -131,6 +134,9 @@ class Phase7ATargetedTests(TestCase):
             xau_reference_price=Decimal("2540.00"),
             xau_reference_is_bullish=True,
             usdt_rate=Decimal("1.0000"),
+            provider_status="HEALTHY",
+            is_provider_transition=False,
+            is_feed_stale=False,
         )
 
         assert sig_rec.analysis_fingerprint == snap.analysis_fingerprint

@@ -574,3 +574,135 @@ def test_p4_22_gate_precedence_collision_matrix():
     # 6. healthy feeds + sufficient data + bullish + thresholds met -> BUY_WINDOW (BUY)
     s6, d6 = evaluate_selective_gate(dir_100, tim_100, regime_bull, struct_ok, gate_healthy, is_reversal_confirmed=True, is_data_sufficient=True)
     assert s6 == SignalState.BUY_WINDOW and d6 == UserDecision.BUY
+
+
+@pytest.mark.unit
+def test_p4_fp_01_corrected_xau_historical_series_changes_fingerprint():
+    """P4-FP-01: Corrected historical XAU candle series produces a distinct canonical fingerprint."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    candles_xau_1 = [
+        CandleData(
+            timestamp_open=c.timestamp_open,
+            timestamp_close=c.timestamp_close,
+            open=c.open + Decimal("40"),
+            high=c.high + Decimal("40"),
+            low=c.low + Decimal("40"),
+            close=c.close + Decimal("40"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for c in candles_15m
+    ]
+    candles_xau_2 = [
+        CandleData(
+            timestamp_open=c.timestamp_open,
+            timestamp_close=c.timestamp_close,
+            open=c.open + Decimal("42"),
+            high=c.high + Decimal("42"),
+            low=c.low + Decimal("42"),
+            close=c.close + Decimal("42"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for c in candles_15m
+    ]
+
+    snap1 = engine.analyze(
+        candles_15m=candles_15m,
+        candles_xau=candles_xau_1,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+    )
+    snap2 = engine.analyze(
+        candles_15m=candles_15m,
+        candles_xau=candles_xau_2,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+    )
+
+    assert snap1.analysis_fingerprint != snap2.analysis_fingerprint
+
+
+@pytest.mark.unit
+def test_p4_fp_02_changed_phase3a_snapshot_changes_fingerprint():
+    """P4-FP-02: Changing Phase 3A canonical snapshot input produces a distinct fingerprint."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    snap_3a_v1 = Cycle3ASnapshot(
+        timestamp=T,
+        session=SessionContext(session=SessionType.LONDON, progress_pct=50.0, is_high_liquidity=True, local_times={}),
+        swing_duration=SwingDurationContext(market_age_bars=10, market_age_hours=2.5, known_age_bars=8, known_age_hours=2.0, pullback_age_percentile=50.0, is_mature=False, maturity_score=10.0),
+        macro_event=MacroEventContext(is_in_blackout=False, is_feed_healthy=True),
+        calendar=CalendarSeasonalityContext(day_of_week=2, day_name="Wednesday", hour_utc=10, month=8, is_month_end_flow=False, stability_score=0.8, seasonality_score=3.0),
+        is_blocked_by_event=False,
+        cycle_score_3a=30.0,
+        cycle_version="3.0.0-3A",
+    )
+    snap_3a_v2 = Cycle3ASnapshot(
+        timestamp=T,
+        session=SessionContext(session=SessionType.NEW_YORK, progress_pct=20.0, is_high_liquidity=True, local_times={}),
+        swing_duration=SwingDurationContext(market_age_bars=10, market_age_hours=2.5, known_age_bars=8, known_age_hours=2.0, pullback_age_percentile=50.0, is_mature=False, maturity_score=10.0),
+        macro_event=MacroEventContext(is_in_blackout=False, is_feed_healthy=True),
+        calendar=CalendarSeasonalityContext(day_of_week=2, day_name="Wednesday", hour_utc=10, month=8, is_month_end_flow=False, stability_score=0.8, seasonality_score=3.0),
+        is_blocked_by_event=False,
+        cycle_score_3a=30.0,
+        cycle_version="3.0.0-3A",
+    )
+
+    snap1 = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        cycle_3a=snap_3a_v1,
+    )
+    snap2 = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        cycle_3a=snap_3a_v2,
+    )
+
+    assert snap1.analysis_fingerprint != snap2.analysis_fingerprint
+
+
+@pytest.mark.unit
+def test_p4_fp_03_missing_macro_not_equal_to_normal_macro_fingerprint():
+    """P4-FP-03: Missing macro evidence does NOT collide with healthy normal macro evidence in fingerprint."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    # Missing macro context
+    snap_missing = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        macro_context=None,
+    )
+
+    # Explicit normal & healthy macro context
+    snap_normal = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        macro_context=MacroEventContext(is_in_blackout=False, is_feed_healthy=True),
+    )
+
+    assert snap_missing.analysis_fingerprint != snap_normal.analysis_fingerprint

@@ -33,11 +33,15 @@ def compute_canonical_fingerprint(
     code_revision: str,
     closed_candles_4h: Optional[List[CandleData]] = None,
     closed_candles_1d: Optional[List[CandleData]] = None,
+    closed_candles_xau: Optional[List[CandleData]] = None,
+    cycle_3a: Optional[Cycle3ASnapshot] = None,
     xau_reference_val: Optional[str] = None,
     xau_reference_ts: Optional[str] = None,
     usdt_rate_val: Optional[str] = None,
     usdt_rate_ts: Optional[str] = None,
     macro_state: Optional[str] = None,
+    is_feed_stale: bool = False,
+    is_provider_transition: bool = False,
     provider_status: str = "HEALTHY",
     feature_version: str = "feat-2026-v1",
     cycle_version: str = "3.0.0-3A",
@@ -51,7 +55,8 @@ def compute_canonical_fingerprint(
       1. Deterministic JSON: Sorted keys, compact separators, ISO-8601 UTC timestamps, strings for Decimals.
       2. Excludes live quote/ticker ticks (preserves closed-candle immutability A23).
       3. Excludes Phase 3B experimental output (preserves production weight 0.0 independence).
-      4. Includes multi-timeframe inputs and individual component breakdowns for complete material provenance.
+      4. Includes multi-timeframe inputs, historical XAU series, Phase 3A canonical identity,
+         and individual component breakdowns for complete material provenance.
     """
     as_of_iso = (
         as_of.astimezone(timezone.utc).isoformat()
@@ -71,6 +76,7 @@ def compute_canonical_fingerprint(
     candle_hashes = _hash_candles(closed_candles, 64)
     candle_4h_hashes = _hash_candles(closed_candles_4h, 32)
     candle_1d_hashes = _hash_candles(closed_candles_1d, 16)
+    candle_xau_hashes = _hash_candles(closed_candles_xau, 64)
 
     dir_components = [
         {"name": c.name, "score": str(round(c.score, 2)), "max": str(round(c.max_score, 2))}
@@ -82,6 +88,20 @@ def compute_canonical_fingerprint(
         for c in timing.components
     ] if timing.components else []
 
+    phase3a_dict: Any = "NONE"
+    if cycle_3a is not None:
+        phase3a_dict = {
+            "timestamp": cycle_3a.timestamp.isoformat() if cycle_3a.timestamp else "NONE",
+            "cycle_version": cycle_3a.cycle_version,
+            "cycle_score_3a": str(round(cycle_3a.cycle_score_3a, 2)),
+            "session": (
+                cycle_3a.session.session.value
+                if (cycle_3a.session and hasattr(cycle_3a.session.session, "value"))
+                else str(cycle_3a.session)
+            ),
+            "is_blocked_by_event": bool(cycle_3a.is_blocked_by_event),
+        }
+
     production_payload: Dict[str, Any] = {
         "instrument": instrument,
         "timeframe": timeframe,
@@ -89,13 +109,19 @@ def compute_canonical_fingerprint(
         "closed_candle_hashes": candle_hashes,
         "closed_candle_4h_hashes": candle_4h_hashes,
         "closed_candle_1d_hashes": candle_1d_hashes,
+        "closed_candle_xau_hashes": candle_xau_hashes,
         "direction_score": str(direction.total_score),
         "direction_components": dir_components,
         "timing_score": str(timing.total_score),
         "timing_components": tim_components,
         "state": state.value,
         "user_decision": user_decision.value,
-        "macro_state": macro_state or "NORMAL",
+        "macro_state": macro_state or "MISSING",
+        "hard_gate_inputs": {
+            "is_feed_stale": is_feed_stale,
+            "is_provider_transition": is_provider_transition,
+        },
+        "phase3a_identity": phase3a_dict,
         "xau_reference": {
             "value": str(xau_reference_val) if xau_reference_val else "NONE",
             "timestamp": str(xau_reference_ts) if xau_reference_ts else "NONE",

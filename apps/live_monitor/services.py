@@ -186,9 +186,9 @@ class LiveDecisionPipelineService:
         xau_reference_ts: Optional[datetime] = None,
         usdt_rate: Optional[Decimal] = None,
         usdt_rate_ts: Optional[datetime] = None,
-        provider_status: str = "HEALTHY",
-        is_provider_transition: bool = False,
-        is_feed_stale: bool = False,
+        provider_status: Optional[str] = None,
+        is_provider_transition: Optional[bool] = None,
+        is_feed_stale: Optional[bool] = None,
         macro_context: Optional[MacroEventContext] = None,
     ) -> Tuple[SignalRecord, Optional[LiveRiskPlanRecord], LiveMonitorState]:
         """
@@ -218,6 +218,42 @@ class LiveDecisionPipelineService:
                 quote_asset=usdt,
                 defaults={"role": InstrumentRole.EXECUTION, "instrument_type": InstrumentType.SPOT},
             )
+
+        # Resolve provider and feed safety fail-closed
+        from apps.instruments.models import ProviderHealthSnapshot
+        from apps.market_data.models import DataQualitySnapshot
+
+        if is_feed_stale is None:
+            latest_dq = (
+                DataQualitySnapshot.objects.filter(
+                    instrument=instrument_obj,
+                    timeframe=event.timeframe,
+                    timestamp__lte=candle_ts,
+                )
+                .order_by("-timestamp")
+                .first()
+            )
+            is_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
+
+        if is_provider_transition is None or provider_status is None:
+            latest_health = (
+                ProviderHealthSnapshot.objects.filter(
+                    listing__instrument=instrument_obj,
+                    checked_at__lte=candle_ts,
+                )
+                .order_by("-checked_at")
+                .first()
+            )
+            if latest_health:
+                if provider_status is None:
+                    provider_status = latest_health.status
+                if is_provider_transition is None:
+                    is_provider_transition = bool(latest_health.status == "TRANSITION")
+            else:
+                if provider_status is None:
+                    provider_status = "DOWN"
+                if is_provider_transition is None:
+                    is_provider_transition = True
 
         def _get_engine_candles(tf: str, limit: int = 128) -> list[CandleData]:
             if not instrument_obj:
@@ -296,6 +332,9 @@ class LiveDecisionPipelineService:
             else None
         )
 
+        if macro_context is None and cycle_3a_snapshot is not None:
+            macro_context = cycle_3a_snapshot.macro_event
+
         # Include current event candle if not already in DB
         if not any(c.timestamp_close == candle_ts for c in engine_candles):
             engine_candles.append(
@@ -334,7 +373,7 @@ class LiveDecisionPipelineService:
             xau_reference_ts=xau_reference_ts,
             usdt_rate=usdt_rate,
             usdt_rate_ts=usdt_rate_ts,
-            provider_status=provider_status,
+            provider_status=provider_status or "HEALTHY",
             is_provider_transition=is_provider_transition,
             is_feed_stale=is_feed_stale,
             macro_context=macro_context,
@@ -404,9 +443,13 @@ class LiveDecisionPipelineService:
             "macro_status": (
                 FeedStatus.DEGRADED.value
                 if (macro_context and macro_context.is_in_blackout)
-                else FeedStatus.HEALTHY.value
+                else (FeedStatus.HEALTHY.value if (macro_context and macro_context.is_feed_healthy) else FeedStatus.DOWN.value)
             ),
-            "provider_sync_status": FeedStatus.TRANSITION.value if is_provider_transition else FeedStatus.HEALTHY.value,
+            "provider_sync_status": (
+                FeedStatus.TRANSITION.value
+                if is_provider_transition
+                else (FeedStatus.HEALTHY.value if provider_status == "HEALTHY" else FeedStatus.DEGRADED.value)
+            ),
         }
 
         # Step 9: Atomically update Decision-Owned fields in LiveMonitorState (P7-C4)
