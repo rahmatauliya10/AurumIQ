@@ -15,6 +15,7 @@ from django.views.generic import ListView, TemplateView
 
 from apps.accounts.models import AuditAction, UserManagementAuditLog, UserProfile, UserRole
 from apps.accounts.permissions import RoleRequiredMixin, get_user_role
+from apps.accounts.services import disable_user_safely, update_user_role_safely
 
 
 def _get_client_ip(request: HttpRequest) -> str:
@@ -173,53 +174,24 @@ class UserEditView(RoleRequiredMixin, View):
     allowed_roles = (UserRole.ADMIN,)
 
     def post(self, request: HttpRequest, user_id: int, *args, **kwargs) -> HttpResponse:
-        target_user = get_object_or_404(User.objects.select_related("profile"), id=user_id)
-        
         new_role = request.POST.get("role", "").strip()
         new_department = request.POST.get("department", "").strip()
         first_name = request.POST.get("first_name", "").strip()
         last_name = request.POST.get("last_name", "").strip()
 
-        profile, _ = UserProfile.objects.get_or_create(user=target_user)
-        old_role = profile.role
-        old_dept = profile.department
-
-        # Track state changes
-        before_state = {
-            "role": old_role,
-            "department": old_dept,
-            "first_name": target_user.first_name,
-            "last_name": target_user.last_name,
-        }
-
-        if new_role in UserRole.values and new_role != old_role:
-            profile.role = new_role
-            UserManagementAuditLog.objects.create(
-                actor=request.user,
-                target_user=target_user,
-                action=AuditAction.ROLE_CHANGED,
-                before_state={"role": old_role},
-                after_state={"role": new_role},
-                ip_address=_get_client_ip(request),
-            )
-
-        if new_department != old_dept:
-            profile.department = new_department
-            UserManagementAuditLog.objects.create(
-                actor=request.user,
-                target_user=target_user,
-                action=AuditAction.DEPARTMENT_CHANGED,
-                before_state={"department": old_dept},
-                after_state={"department": new_department},
-                ip_address=_get_client_ip(request),
-            )
-
-        target_user.first_name = first_name
-        target_user.last_name = last_name
-        target_user.save()
-        profile.save()
-
-        messages.success(request, f"User '{target_user.username}' updated successfully.")
+        success, msg = update_user_role_safely(
+            target_user_id=user_id,
+            new_role=new_role,
+            new_department=new_department,
+            first_name=first_name,
+            last_name=last_name,
+            actor=request.user,
+            ip_address=_get_client_ip(request),
+        )
+        if success:
+            messages.success(request, msg)
+        else:
+            messages.error(request, msg)
         return redirect("accounts:user_management")
 
 
@@ -228,29 +200,15 @@ class UserToggleStatusView(RoleRequiredMixin, View):
     allowed_roles = (UserRole.ADMIN,)
 
     def post(self, request: HttpRequest, user_id: int, *args, **kwargs) -> HttpResponse:
-        target_user = get_object_or_404(User, id=user_id)
-        
-        if target_user == request.user:
-            messages.error(request, "You cannot disable your own active account.")
-            return redirect("accounts:user_management")
-
-        old_status = target_user.is_active
-        new_status = not old_status
-        target_user.is_active = new_status
-        target_user.save()
-
-        action = AuditAction.USER_ENABLED if new_status else AuditAction.USER_DISABLED
-        UserManagementAuditLog.objects.create(
+        success, msg = disable_user_safely(
+            target_user_id=user_id,
             actor=request.user,
-            target_user=target_user,
-            action=action,
-            before_state={"is_active": old_status},
-            after_state={"is_active": new_status},
             ip_address=_get_client_ip(request),
         )
-
-        status_label = "enabled" if new_status else "disabled"
-        messages.success(request, f"User '{target_user.username}' has been {status_label}.")
+        if success:
+            messages.success(request, msg)
+        else:
+            messages.error(request, msg)
         return redirect("accounts:user_management")
 
 

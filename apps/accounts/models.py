@@ -72,7 +72,7 @@ class UserManagementAuditLog(models.Model):
     )
     target_user = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="audit_logs_received",
     )
     action = models.CharField(
