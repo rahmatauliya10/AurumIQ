@@ -12,7 +12,7 @@ A candidate signal from Phase 4 must pass an objective, structure- and ATR-aware
 
 ```text
 PHASE 4 SIGNAL
-(BUY_WINDOW / SELL_WINDOW) ─── Immutable Audit Trail Preserved
+(BUY_WINDOW / [Future] SELL_WINDOW) ─── Immutable Audit Trail Preserved
        │
        ▼
 ┌────────────────────────────────────────────────────────┐
@@ -49,8 +49,9 @@ PHASE 4 SIGNAL
 
 ## 2. Invariant Contracts
 
-### Invariant 1: Source Signal Eligibility Gate (P5-25)
-Only valid candidate signals (`BUY_WINDOW` / `SELL_WINDOW`) are eligible for Risk Planning. All non-window states immediately return `is_valid_risk_plan = False` and `execution_eligible = False`.
+### Invariant 1: Source Signal Eligibility Gate
+- **Historical Baseline Contract (P5-25):** Evaluated strictly `BUY_WINDOW` candidate signal eligibility for Long setups. Non-BUY_WINDOW states returned `is_valid_risk_plan = False` and `execution_eligible = False`.
+- **Future XAUUSD Target Scope:** Will evaluate both `BUY_WINDOW` and `SELL_WINDOW` candidate eligibility (governed by future `XAU-P5-01` and `XAU-P5-02` contracts).
 
 ### Invariant 2: Phase 4 Signal Immutability (A07)
 If a Phase 4 candidate signal fails Phase 5 Risk Planning (e.g. insufficient $RR$):
@@ -83,6 +84,6 @@ $$\text{High} \ge \text{TP} \quad \text{AND} \quad \text{Low} \le \text{SL}$$
 - [x] Causal execution models (`NEXT_BAR_OPEN`, `MARKET_AFTER_SIGNAL`, `LIMIT_ZONE`) verified.
 
 ### Target XAUUSD Scope (Pending Phase 5 Code Implementation)
-- [ ] Implement side-aware Short risk planner with resistance-derived entry and stop geometry.
-- [ ] Revalidate ATR multipliers and minimum RR threshold for XAUUSD spot dynamics.
-- [ ] Verify 1m/5m intrabar replay accuracy against high-volatility spot gold spikes.
+- [ ] Implement Long risk planner revalidation on XAUUSD (`XAU-P5-01`).
+- [ ] Implement Short risk planner with resistance-derived entry and stop geometry (`XAU-P5-02`).
+- [ ] Verify Short bid/ask spread and adverse slippage semantics (`XAU-P5-03`).

@@ -11,7 +11,7 @@
 1. **Zero Exchange Trading Access (R1):** The live paper runner operates exclusively on public/read-only market feeds. The codebase contains zero exchange trading keys, broker execution integrations, or order placement capabilities.
 2. **Immutable Append-Only Logging (R5, R10):** Every live signal emitted upon candle close is stored permanently in `SignalRecord` with its complete feature vector, version metadata, and reason tree.
 3. **Side-Aware Dual Direction Support:** Full monitoring and outcome resolution for both `BUY` (Long) and `SELL` (Short) candidate setups.
-4. **14-Day Continuity-Only Gate:** The 14-day observation period functions strictly as an **operational continuity and infrastructure stability gate** (zero pipeline crashes, zero missed candle intervals, zero unhandled exceptions), **NOT a statistical significance gate**. Asymptotic statistical significance is established across multi-year walk-forward backtesting.
+4. **14-Day Continuity-Only Gate:** The 14-day observation period functions strictly as an **operational continuity and infrastructure stability gate** (zero pipeline crashes, zero missed candle intervals, zero unhandled exceptions), **NOT a statistical proof of profitability**. Statistical adequacy and edge, if any, must be assessed separately through future multi-year XAUUSD Phase 6 walk-forward validation.
 
 ---
 
@@ -48,7 +48,7 @@ SHORT SETUP (SELL):
 The system will calculate discrepancy metrics comparing live paper observations against point-in-time backtest replay over the identical date window across **three dedicated reporting dimensions**:
 1. **BUY Parity Report:** Compares live long setups against backtest long replay.
 2. **SELL Parity Report:** Compares live short setups against backtest short replay.
-3. **Combined Parity Report:** Consolidated portfolio-level execution and expectancy comparison.
+3. **Combined Parity Report:** Consolidated portfolio-level execution and expectancy comparison (`XAU-P6-03`).
 
 ### Key Parity Dimensions
 - $\Delta_{\text{Fill}} = |\text{Live\_Simulated\_Fill} - \text{Backtest\_Replay\_Fill}|$
@@ -64,6 +64,7 @@ The system will calculate discrepancy metrics comparing live paper observations 
 
 - [ ] Live analysis Celery beat task runs autonomously for all closed candle intervals.
 - [ ] Side-aware `SignalOutcome` tracker monitors and resolves BUY and SELL barriers.
+- [ ] Verify SELL live-paper barrier chronology (`XAU-P8-01`).
 - [ ] Automated parity reporting engine generates BUY, SELL, and Combined parity audits.
 - [ ] Intrabar ambiguity resolver verified on live 1m/5m quote feeds.
 - [ ] 14-day operational continuity gate successfully completed with zero pipeline failures.

@@ -68,11 +68,11 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
 - `REMOVE`: Deprecated on-chain Ethereum redemption assertions from active operational specs.
 
 ### B. Acceptance-Test Migration Matrix (Taxonomy B)
-- `LEGACY_XAUT`: Tests validating historical USDT/USD normalization and crypto basis integrity (`A17`, `A21`).
+- `LEGACY_XAUT`: Tests validating historical USDT/USD normalization formula (`A21`).
 - `KEEP_GENERIC`: Multi-timeframe repository ordering, swing detection causality, mathematical indicator parity (`A01`, `A02`, `A03`, `A05`, `A08`, `A11`, `A12`, `A13`, `A16`, `A18`, `A19`, `A20`, `A24`, `A25`, `A26`, `A27`, `A29`, `A30`, `A31`, `A33`, `A35`, `A36`, `A37`, `A38`, `A40`, `A41`, `A42`, `A43`, `A44`, `A45`, `A46`, `A47`).
 - `MODIFY_FOR_XAUUSD`: Live monitor quotes, provider health thresholds, DXY macro correlation feeds, backtest engine parity (`A04`, `A06`, `A07`, `A09`, `A10`, `A14`, `A15`, `A22`, `A23`, `A28`, `A32`, `A34`, `A39`, `A39X`).
-- `REPLACE_FOR_XAUUSD`: Single-instrument spot gold ingestion and session cycle evaluation.
-- `NEW_XAUUSD`: Planned future test contracts for side-aware Short risk evaluation, dual-direction triple-barrier outcome tracking, and 3-tier parity audits (`XAU-P1-01` through `XAU-P9-01`).
+- `REPLACE_FOR_XAUUSD`: `A17` (Historical XAUT/XAU basis integrity active contract replaced by XAUUSD provider-integrity contract).
+- `NEW_XAUUSD` (Planned Future Contracts): Approved contracts for XAUUSD scope (`XAU-P1-01`, `XAU-P1-02`, `XAU-P2-01`, `XAU-P4-01`, `XAU-P4-02`, `XAU-P4-03`, `XAU-P4-04`, `XAU-P5-01`, `XAU-P5-02`, `XAU-P5-03`, `XAU-P6-01`, `XAU-P6-02`, `XAU-P6-03`, `XAU-P7-01`, `XAU-P8-01`, `XAU-P9-01`).
 
 ---
 

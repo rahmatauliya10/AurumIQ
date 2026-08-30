@@ -40,12 +40,11 @@ DETERMINISTIC RULE ENGINE ──► Propose Candidate Setup (BUY / SELL)
 
 ### A. Side-Aware Feature Vector $X_t$
 Point-in-time features strictly knowable at candidate signal timestamp $t$:
-- **Macro & Regime Features:** Market regime classification, regime confidence, DXY correlation, macro calendar buffer.
-- **Trend & Momentum Features:** Multi-timeframe EMA slopes (15m, 1H, 4H, 1D), EMA alignment score, RSI delta, MACD histogram velocity, normalized ADX.
+- **Core Regime & Structure Features:** Market regime classification, regime confidence, multi-timeframe EMA slopes (15m, 1H, 4H, 1D), EMA alignment score, RSI delta, MACD histogram velocity, normalized ADX.
 - **Structure & Volatility Features:** Distance to active support/resistance zone, zone touch count, ATR percentile, normalized realized volatility.
 - **Time-Cycle Features:** Phase 3A session expectancy, swing duration maturity percentile, calendar seasonality stability.
 - **Setup Context:** Direction indicator (`+1` for Long, `-1` for Short), planned risk-to-reward ratio.
-*(Note: Mandatory USDT normalization and crypto basis dependencies are removed from the active XAUUSD feature matrix).*
+- **Optional Context Features (Only when reliable PIT data exists):** US Dollar Index (DXY), US 10Y Yields, Gold Futures (GC) volume proxy. *(These cross-market series are optional candidate features only and are not mandatory hard dependencies).*
 
 ### B. Binary Meta-Label $y_t$ (Side-Aware Triple-Barrier Outcome)
 $$y_t = \begin{cases} 1 & \text{if candidate reached TP before SL (-1.0R)} \\ 0 & \text{if candidate reached SL first or timed out with negative return} \end{cases}$$
@@ -76,7 +75,7 @@ $$y_t = \begin{cases} 1 & \text{if candidate reached TP before SL (-1.0R)} \\ 0 
 
 ## 5. Definition of Done Checklist (Pending Phase 9 Implementation)
 
-- [ ] Point-in-time dataset builder produces zero look-ahead training sets for XAUUSD BUY and SELL setups.
+- [ ] Point-in-time dataset builder produces zero look-ahead training sets for XAUUSD BUY and SELL setups (`XAU-P9-01`).
 - [ ] Purging and embargo walk-forward cross-validation engine operational.
 - [ ] Logistic Regression, XGBoost, and LightGBM models trained and evaluated.
 - [ ] Probability calibration verified via Brier Score and reliability diagrams.

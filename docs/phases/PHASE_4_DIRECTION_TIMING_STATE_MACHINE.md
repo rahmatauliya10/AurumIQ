@@ -17,13 +17,29 @@ AurumIQ evaluates trend conviction independently from entry trigger timing:
 ## 2. Scoring Architecture: Historical Baseline vs Target XAUUSD
 
 ### A. Legacy XAUT Baseline Scoring (Historical Reference Only)
-In the historical XAUT single-direction implementation, the Long Direction score used the following fixed weights:
-- *Regime Alignment:* 20 points
-- *Trend Slope:* 20 points
-- *Structure BOS:* 20 points
-- *Pullback Quality:* 15 points
-- *Momentum Velocity:* 15 points
-- *XAUT Basis / XAU Alignment:* 10 points (Deprecated for future XAUUSD production)
+
+#### Historical Direction Weights (LEGACY XAUT BASELINE ONLY)
+| Component | Points | Description |
+|---|:---:|---|
+| Market Regime Quality | 15 | Regime alignment and confidence |
+| 1D + 4H Trend Alignment | 20 | Multi-timeframe EMA slope alignment |
+| Confirmed Structure / BOS | 20 | Break of structure and swing bias |
+| Pullback Quality | 10 | Normalized distance to EMA cluster |
+| Momentum State | 10 | RSI position and MACD histogram velocity |
+| Volume Confirmation | 5 | Volume surge on structural break |
+| XAU Alignment & XAUT Basis Quality | 20 | Basis deviation and primary reference alignment |
+| **TOTAL** | **100** | |
+
+#### Historical Timing Weights (LEGACY XAUT BASELINE ONLY)
+| Component | Points | Description |
+|---|:---:|---|
+| Entry Zone Proximity / ATR | 25 | Distance to active support zone |
+| Closed 15m Reversal | 20 | Reversal candle pattern confirmation |
+| 15m / 1H Momentum Turn | 15 | Short-term oscillator hook |
+| Phase 3A Robust Timing | 25 | Session expectancy and swing maturity |
+| Volume Response | 10 | Volume expansion at trigger |
+| Macro Event Safety | 5 | Distance from high-impact macro window |
+| **TOTAL** | **100** | |
 
 ### B. Target XAUUSD Dual-Direction Specification (Pending Redesign)
 For the target XAUUSD instrument, scoring is generalized into side-aware evaluators:
@@ -31,7 +47,7 @@ $$\text{LongDirectionScore} = \sum w_i \cdot \text{LongEvidence}_i$$
 $$\text{ShortDirectionScore} = \sum w_i \cdot \text{ShortEvidence}_i$$
 
 > [!IMPORTANT]
-> **WEIGHTS & THRESHOLDS NOT FROZEN:**  
+> **XAUUSD WEIGHTS & THRESHOLDS NOT FROZEN:**  
 > All feature weights and score thresholds for XAUUSD are **NOT FROZEN / REVALIDATION REQUIRED**. Exact numerical parameters will be calibrated empirically during Phase 6 walk-forward backtesting. Macro components (DXY, 10Y Yields, Gold Futures) are candidate components only and carry no frozen weights at this stage.
 
 ---
@@ -85,10 +101,11 @@ This ensures 100% bitwise reproducibility between backtesting, forward observati
 
 ### Historical Baseline
 - [x] Independent Direction and Timing score separation implemented for Long baseline.
-- [x] Canonical SHA-256 fingerprinting implemented and verified (`P4-01` to `P4-24`).
+- [x] Canonical SHA-256 fingerprinting implemented and verified (`P4-01` through `P4-22`).
 - [x] Closed-candle analysis idempotency verified (`A03`).
 
 ### Target XAUUSD Scope (Pending Phase 4 Code Implementation)
-- [ ] Implement `ShortDirectionScore` and `ShortTimingScore` evaluators.
-- [ ] Implement dual-side state machine with `BUY_WINDOW` and `SELL_WINDOW`.
+- [ ] Implement `ShortDirectionScore` and `ShortTimingScore` evaluators (`XAU-P4-01`, `XAU-P4-02`).
+- [ ] Implement dual-side state machine with conflict resolution to `WAIT` (`XAU-P4-03`).
+- [ ] Verify macro blackout blocks both BUY and SELL states (`XAU-P4-04`).
 - [ ] Empirically calibrate and freeze Direction/Timing thresholds via Phase 6 backtesting.
