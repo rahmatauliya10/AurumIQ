@@ -706,3 +706,89 @@ def test_p4_fp_03_missing_macro_not_equal_to_normal_macro_fingerprint():
     )
 
     assert snap_missing.analysis_fingerprint != snap_normal.analysis_fingerprint
+
+
+@pytest.mark.unit
+def test_p4_macro_04_unhealthy_macro_feed_no_positive_points():
+    """P4-MACRO-04: Unhealthy macro feed cannot receive positive Macro Event Safety points."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    unhealthy_macro = MacroEventContext(
+        is_in_blackout=False,
+        minutes_to_next_event=None,
+        is_feed_healthy=False,
+    )
+    snap = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        macro_context=unhealthy_macro,
+    )
+
+    macro_comp = next((c for c in snap.timing.components if c.name == "Macro Event Safety"), None)
+    assert macro_comp is not None
+    assert macro_comp.score == 0.0
+    assert macro_comp.is_available is False
+    assert "unavailable or unhealthy" in macro_comp.reason
+
+
+@pytest.mark.unit
+def test_p4_macro_05_healthy_clear_macro_feed_receives_5_points():
+    """P4-MACRO-05: Healthy clear macro feed still receives existing 5 points."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    healthy_macro = MacroEventContext(
+        is_in_blackout=False,
+        minutes_to_next_event=120,
+        is_feed_healthy=True,
+    )
+    snap = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        macro_context=healthy_macro,
+    )
+
+    macro_comp = next((c for c in snap.timing.components if c.name == "Macro Event Safety"), None)
+    assert macro_comp is not None
+    assert macro_comp.score == 5.0
+    assert macro_comp.is_available is True
+    assert "Clear market window" in macro_comp.reason
+
+
+@pytest.mark.unit
+def test_p4_macro_06_macro_blackout_forces_force_wait():
+    """P4-MACRO-06: Macro blackout still results in score 0 and hard-gate FORCE_WAIT / WAIT."""
+    candles_15m = generate_candle_series(64)
+    T = candles_15m[-1].timestamp_close
+    engine = XautSignalEngine(code_revision="eae30005")
+
+    blackout_macro = MacroEventContext(
+        is_in_blackout=True,
+        minutes_to_next_event=0,
+        active_event_name="US CPI Release",
+        is_feed_healthy=True,
+    )
+    snap = engine.analyze(
+        candles_15m=candles_15m,
+        as_of=T,
+        xau_reference_price=Decimal("2540.00"),
+        xau_reference_is_bullish=True,
+        usdt_rate=Decimal("1.0"),
+        macro_context=blackout_macro,
+    )
+
+    macro_comp = next((c for c in snap.timing.components if c.name == "Macro Event Safety"), None)
+    assert macro_comp is not None
+    assert macro_comp.score == 0.0
+    assert snap.state == SignalState.FORCE_WAIT
+    assert snap.user_decision == UserDecision.WAIT
+

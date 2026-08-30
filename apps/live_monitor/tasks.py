@@ -148,8 +148,8 @@ def process_closed_candle_task(
                 usdt_ts = latest_norm.timestamp_close
 
         eff_provider_transition = is_provider_transition
-        eff_provider_status = provider_status or "HEALTHY"
-        if eff_provider_transition is None:
+        eff_provider_status = provider_status
+        if eff_provider_transition is None or eff_provider_status is None:
             from apps.instruments.models import ProviderHealthSnapshot
             latest_health = (
                 ProviderHealthSnapshot.objects.filter(
@@ -160,8 +160,10 @@ def process_closed_candle_task(
                 .first()
             )
             if latest_health:
-                eff_provider_status = latest_health.status
-                eff_provider_transition = bool(latest_health.status == "TRANSITION")
+                if eff_provider_status is None:
+                    eff_provider_status = latest_health.status
+                if eff_provider_transition is None:
+                    eff_provider_transition = bool(latest_health.status == "TRANSITION")
             else:
                 eff_provider_status = "DOWN"
                 eff_provider_transition = True
