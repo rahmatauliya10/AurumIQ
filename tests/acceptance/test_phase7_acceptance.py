@@ -819,4 +819,65 @@ class Phase7AcceptanceTests(TestCase):
         assert last_sig.state == SignalState.FORCE_WAIT
         assert last_sig.user_decision == UserDecision.WAIT
 
+    # --- P7-CTX-03: PROVIDER PARTIAL OVERRIDE FAILS CLOSED ---
+    def test_p7_ctx_03_provider_partial_override_fails_closed(self):
+        """
+        P7-CTX-03:
+          When caller provides provider_status=None and is_provider_transition=False,
+          and no ProviderHealthSnapshot exists in DB, it strictly fails closed to DOWN/FORCE_WAIT.
+          When provider_status="HEALTHY" and is_provider_transition=False are explicitly supplied,
+          healthy provider status is accepted.
+        """
+        from apps.instruments.models import ProviderHealthSnapshot
+        from apps.live_monitor.tasks import process_closed_candle_task
+
+        last_candle = self.candles_15m[-1]
+        ProviderHealthSnapshot.objects.all().delete()
+
+        # 1. Partial override (provider_status=None, is_provider_transition=False) with no DB health snapshot
+        res_fail = process_closed_candle_task.apply(
+            kwargs={
+                "instrument": "XAUT/USDT",
+                "timeframe": "15m",
+                "timestamp_open_iso": last_candle.timestamp_open.isoformat(),
+                "timestamp_close_iso": last_candle.timestamp_close.isoformat(),
+                "open_str": str(last_candle.open),
+                "high_str": str(last_candle.high),
+                "low_str": str(last_candle.low),
+                "close_str": str(last_candle.close),
+                "volume_str": str(last_candle.volume),
+                "code_revision": self.code_revision,
+                "provider_status": None,
+                "is_provider_transition": False,
+                "is_feed_stale": False,
+            }
+        ).get()
+
+        assert res_fail["status"] == "SUCCESS"
+        assert res_fail["signal_state"] == "FORCE_WAIT"
+        assert res_fail["signal_user_decision"] == "WAIT"
+
+        # 2. Deliberate complete controlled evidence (provider_status="HEALTHY", is_provider_transition=False)
+        res_pass = process_closed_candle_task.apply(
+            kwargs={
+                "instrument": "XAUT/USDT",
+                "timeframe": "15m",
+                "timestamp_open_iso": last_candle.timestamp_open.isoformat(),
+                "timestamp_close_iso": last_candle.timestamp_close.isoformat(),
+                "open_str": str(last_candle.open),
+                "high_str": str(last_candle.high),
+                "low_str": str(last_candle.low),
+                "close_str": str(last_candle.close),
+                "volume_str": str(last_candle.volume),
+                "code_revision": self.code_revision,
+                "provider_status": "HEALTHY",
+                "is_provider_transition": False,
+                "is_feed_stale": False,
+            }
+        ).get()
+
+        assert res_pass["status"] == "SUCCESS"
+        assert res_pass["signal_state"] in ("BUY_WINDOW", "READY", "WATCH", "NO_TRADE", "AVOID")
+
+
 

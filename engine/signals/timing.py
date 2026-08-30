@@ -215,18 +215,25 @@ def calculate_timing_score(
     # 6. Macro Event Safety (Max 5 pts)
     macro_score = 0.0
     macro_reason = "No macro event feed available"
-    macro_avail = macro_context is not None
+    macro_avail = False
 
     if macro_context is not None:
-        if macro_context.is_in_blackout:
+        if not macro_context.is_feed_healthy:
+            macro_score = 0.0
+            macro_reason = "Macro event feed unavailable or unhealthy"
+            macro_avail = False
+        elif macro_context.is_in_blackout:
             macro_score = 0.0
             macro_reason = f"Active macro blackout for {macro_context.active_event_name or 'event'}"
+            macro_avail = True
         elif macro_context.minutes_to_next_event is not None and macro_context.minutes_to_next_event <= 60:
             macro_score = 2.0
             macro_reason = f"High-impact event in {macro_context.minutes_to_next_event} minutes"
+            macro_avail = True
         else:
             macro_score = 5.0
             macro_reason = "Clear market window (no high-impact macro blackout)"
+            macro_avail = True
 
     components.append(
         ComponentScore(

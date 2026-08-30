@@ -250,10 +250,8 @@ class LiveDecisionPipelineService:
                 if is_provider_transition is None:
                     is_provider_transition = bool(latest_health.status == "TRANSITION")
             else:
-                if provider_status is None:
-                    provider_status = "DOWN"
-                if is_provider_transition is None:
-                    is_provider_transition = True
+                provider_status = "DOWN"
+                is_provider_transition = True
 
         def _get_engine_candles(tf: str, limit: int = 128) -> list[CandleData]:
             if not instrument_obj:
@@ -373,7 +371,7 @@ class LiveDecisionPipelineService:
             xau_reference_ts=xau_reference_ts,
             usdt_rate=usdt_rate,
             usdt_rate_ts=usdt_rate_ts,
-            provider_status=provider_status or "HEALTHY",
+            provider_status=provider_status,
             is_provider_transition=is_provider_transition,
             is_feed_stale=is_feed_stale,
             macro_context=macro_context,
