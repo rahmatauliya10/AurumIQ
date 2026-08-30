@@ -37,7 +37,6 @@ class InstrumentRole(models.TextChoices):
     QUOTE_NORMALIZATION = "QUOTE_NORMALIZATION", "Canonical Stablecoin Normalization Rate (USDT/USD)"
     QUOTE_NORMALIZATION_PROXY = "QUOTE_NORMALIZATION_PROXY", "Stablecoin Proxy Normalization Rate (USDT/USDC)"
     MACRO = "MACRO", "Macro USD Filter (DXY / Yields)"
-    PRIMARY_SIGNAL = "PRIMARY_SIGNAL", "Primary Signal Target (XAU/USD)"
 
 
 class InstrumentType(models.TextChoices):

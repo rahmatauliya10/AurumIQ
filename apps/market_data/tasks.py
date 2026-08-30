@@ -219,11 +219,14 @@ def ingest_primary_candles(
 
     for tf in timeframes:
         minutes_per_bar = {
+            "1m": 1,
+            "5m": 5,
             "15m": 15,
             "1h": 60,
             "4h": 240,
             "1d": 1440,
         }.get(tf, 15)
+
         start_time = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
 
         # Retrieve historical USDT rates for PIT normalization (legacy XAUT only)
@@ -261,24 +264,28 @@ def ingest_primary_candles(
                 task_hard_fail_reasons.append(f"PRIMARY_XAUUSD_FETCH_ERROR_{tf}: {e}")
             continue
 
-        # PATCH D: Empty Primary Data Fail Closed for XAUUSD
+        # PATCH D & PATCH 1: Empty Primary Data Fail Closed & Closed-Candle Only for XAUUSD
         usable_closed_candles = [c for c in raw_candles if c.is_closed]
-        if is_xauusd and len(usable_closed_candles) == 0:
-            DataQualitySnapshot.objects.create(
-                instrument=instrument,
-                timeframe=tf,
-                timestamp=now_utc,
-                quality_score=Decimal("0.00"),
-                gap_count=0,
-                duplicate_count=0,
-                violation_count=1,
-                is_stale=True,
-                hard_fail=True,
-                anomalies={"error": f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA: Zero usable closed candles returned for {tf}."},
-            )
-            task_hard_fail = True
-            task_hard_fail_reasons.append(f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA_{tf}")
-            continue
+        if is_xauusd:
+            if len(usable_closed_candles) == 0:
+                DataQualitySnapshot.objects.create(
+                    instrument=instrument,
+                    timeframe=tf,
+                    timestamp=now_utc,
+                    quality_score=Decimal("0.00"),
+                    gap_count=0,
+                    duplicate_count=0,
+                    violation_count=1,
+                    is_stale=True,
+                    hard_fail=True,
+                    anomalies={"error": f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA: Zero usable closed candles returned for {tf}."},
+                )
+                task_hard_fail = True
+                task_hard_fail_reasons.append(f"PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA_{tf}")
+                continue
+            candles_to_process = usable_closed_candles
+        else:
+            candles_to_process = raw_candles
 
         # 3. Secondary Provider Fetch (for XAUUSD integrity verification XAU-P1-02)
         sec_lookup = {}
@@ -311,13 +318,13 @@ def ingest_primary_candles(
                         task_hard_fail_reasons.append(f"SECONDARY_XAUUSD_FETCH_ERROR_{tf}: {e}")
 
         # Sort chronologically for deterministic gap & normalization analysis
-        raw_candles = sorted(raw_candles, key=lambda c: c.timestamp_open)
+        candles_to_process = sorted(candles_to_process, key=lambda c: c.timestamp_open)
 
         # Detect actual intervals and gap count
         gap_count = 0
         expected_delta = timedelta(minutes=minutes_per_bar)
-        for i in range(1, len(raw_candles)):
-            delta = raw_candles[i].timestamp_open - raw_candles[i-1].timestamp_open
+        for i in range(1, len(candles_to_process)):
+            delta = candles_to_process[i].timestamp_open - candles_to_process[i-1].timestamp_open
             if delta > expected_delta:
                 missing_bars = int(delta.total_seconds() // expected_delta.total_seconds()) - 1
                 gap_count += max(0, missing_bars)
@@ -332,7 +339,7 @@ def ingest_primary_candles(
             norm_res = normalizer.normalize_price(Decimal("1.0"), current_usdt_rate)
 
         with transaction.atomic():
-            for raw in raw_candles:
+            for raw in candles_to_process:
                 # OHLC logical validation
                 is_valid_ohlc, ohlc_errs = integrity_engine.validate_candle_ohlc(
                     raw.open, raw.high, raw.low, raw.close, raw.volume

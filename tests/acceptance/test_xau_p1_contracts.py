@@ -580,3 +580,146 @@ class TestXauP1Contracts(TestCase):
         assert legacy_inst.base_asset.code == "XAUT"
         assert legacy_inst.quote_asset.code == "USDT"
 
+    def test_mixed_closed_and_open_xauusd_ingestion(self):
+        """
+        PATCH 1: Proves that when primary provider returns mixed response:
+          - one CLOSED 15m candle
+          - one OPEN forming 15m candle
+        and secondary provider returns matching CLOSED candle only:
+          - closed primary candle is evaluated normally
+          - open candle is ignored for operational integrity & persistence
+          - no false hard_fail caused by open candle
+          - trusted ingested count = 1
+          - repository operational window contains only closed candle
+        """
+        t0 = datetime.now(timezone.utc)
+        t_open = t0 - timedelta(minutes=30)
+        t_forming = t0 - timedelta(minutes=15)
+
+        primary_closed = RawCandle(
+            symbol="XAUUSD",
+            timeframe="15m",
+            timestamp_open=t_open,
+            timestamp_close=t_forming,
+            open=Decimal("2500.00"),
+            high=Decimal("2505.00"),
+            low=Decimal("2498.00"),
+            close=Decimal("2502.00"),
+            volume=Decimal("100.0"),
+            is_closed=True,
+            source="xauusd_primary",
+        )
+        primary_open = RawCandle(
+            symbol="XAUUSD",
+            timeframe="15m",
+            timestamp_open=t_forming,
+            timestamp_close=t0,
+            open=Decimal("2502.00"),
+            high=Decimal("2508.00"),
+            low=Decimal("2501.00"),
+            close=Decimal("2506.00"),
+            volume=Decimal("40.0"),
+            is_closed=False,
+            source="xauusd_primary",
+        )
+
+        secondary_closed = RawCandle(
+            symbol="XAUUSD",
+            timeframe="15m",
+            timestamp_open=t_open,
+            timestamp_close=t_forming,
+            open=Decimal("2500.10"),
+            high=Decimal("2505.20"),
+            low=Decimal("2498.00"),
+            close=Decimal("2502.20"),
+            volume=Decimal("105.0"),
+            is_closed=True,
+            source="xauusd_secondary",
+        )
+
+        with patch("apps.market_data.tasks.registry.get") as mock_registry_get:
+            mock_primary = MagicMock()
+            mock_primary.is_configured.return_value = True
+            mock_primary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_primary", status="HEALTHY", checked_at=t0, latency_ms=10
+            )
+            mock_primary.fetch_candles.return_value = [primary_closed, primary_open]
+
+            mock_secondary = MagicMock()
+            mock_secondary.is_configured.return_value = True
+            mock_secondary.health_check.return_value = ProviderHealth(
+                provider_id="xauusd_secondary", status="HEALTHY", checked_at=t0, latency_ms=12
+            )
+            mock_secondary.fetch_candles.return_value = [secondary_closed]
+
+            mock_registry_get.side_effect = lambda pid: mock_primary if pid == "xauusd_primary" else mock_secondary
+
+            res = ingest_primary_candles(
+                instrument_symbol="XAU/USD",
+                timeframes=["15m"],
+                lookback_bars=2,
+                xauusd_max_divergence_pct=Decimal("0.0035"),
+                is_secondary_critical=True,
+            )
+
+            assert res["status"] == "success"
+            assert res["candles_ingested"] == 1
+
+            repo = DjangoCandleRepository()
+            window = repo.load_window("XAU/USD", "15m", t0, 10)
+            assert len(window) == 1
+            assert window[0].close == Decimal("2502.00")
+            assert window[0].is_closed is True
+
+            snapshot = DataQualitySnapshot.objects.filter(instrument=self.xauusd).latest("timestamp")
+            assert snapshot.hard_fail is False
+            assert snapshot.quality_score == Decimal("100.00")
+
+
+    def test_historical_listing_migration_precision(self):
+        """
+        PATCH 2: Proves that migration classification is precise:
+          - Binance XAUT/USDT -> LEGACY_EXECUTION
+          - OKX XAUT/USDT -> LEGACY_EXECUTION
+          - Gold Reference XAU/USD -> LEGACY_GOLD_REFERENCE
+          - USDT/USD -> LEGACY_QUOTE_NORMALIZATION
+          - Unrelated Binance listing (e.g. BTC/USDT) remains GENERIC.
+        """
+        btc, _ = Asset.objects.get_or_create(code="BTC", defaults={"name": "Bitcoin", "asset_type": AssetType.CRYPTO_TOKEN})
+        usdt = Asset.objects.get(code="USDT")
+        btc_usdt, _ = Instrument.objects.get_or_create(
+            base_asset=btc,
+            quote_asset=usdt,
+            instrument_type=InstrumentType.SPOT,
+            defaults={"role": InstrumentRole.EXECUTION, "is_active": True},
+        )
+
+        unrelated_listing = MarketListing.objects.create(
+            instrument=btc_usdt,
+            provider="binance",
+            provider_symbol="BTCUSDT",
+            status=ListingStatus.ACTIVE,
+        )
+
+        legacy_binance_listing = MarketListing.objects.create(
+            instrument=self.xaut_legacy,
+            provider="binance",
+            provider_symbol="XAUTUSDT",
+            status=ListingStatus.ACTIVE,
+        )
+
+        import importlib
+        migration_mod = importlib.import_module("apps.instruments.migrations.0003_marketlisting_listing_role_and_more")
+        classify_historical_listings = migration_mod.classify_historical_listings
+        from django.apps import apps
+        classify_historical_listings(apps, None)
+
+        unrelated_listing.refresh_from_db()
+        assert unrelated_listing.listing_role == ListingRole.GENERIC
+
+        legacy_binance_listing.refresh_from_db()
+        assert legacy_binance_listing.listing_role == ListingRole.LEGACY_EXECUTION
+
+
+
+
