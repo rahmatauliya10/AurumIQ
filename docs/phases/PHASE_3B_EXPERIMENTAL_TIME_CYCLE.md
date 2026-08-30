@@ -1,6 +1,6 @@
 # Phase 3B: Experimental Spectral Cycle Research & Promotion Gate
 
-> **Status:** 🧪 **IMPLEMENTED, VERIFIED & PENDING HUMAN REVIEW**  
+> **Status:** 🧪 **IMPLEMENTED, VERIFIED & PENDING EMPIRICAL PROMOTION**  
 > **Primary Goal:** Implement advanced spectral and wavelet time-cycle analysis (Causal ACF, Causal FFT, Continuous Wavelet Transform, Causal Hilbert Phase) with strict point-in-time safety, zero default active weight, and a multi-criteria out-of-sample promotion gate.
 
 ---
@@ -100,4 +100,4 @@ To be promoted to active scoring weight, a feature must satisfy **ALL 7 rigorous
 - [x] `production_weight` hard-locked to 0.0 while baseline is non-empirical.
 - [x] Django ORM model `ExperimentalCycleSnapshotRecord` created and migrated.
 - [x] Acceptance tests **A05, A13, A24** passing.
-- [x] Full regression suite passing **117/117 tests** in Docker.
+- [x] Full regression suite passing in Docker.

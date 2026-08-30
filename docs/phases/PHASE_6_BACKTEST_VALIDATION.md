@@ -2,37 +2,36 @@
 
 > **Status:** 🟢 **COMPLETED & FROZEN**  
 > **Phase Baseline:** `phase5-approved` (`6ac79ab7597e58fee7e9b9e3d02bc50d06c9feee`) — **FROZEN**  
-> **Primary Objective:** Empirically evaluate whether the frozen AurumIQ Phase 0–5 engine exhibits persistent, out-of-sample edge after accounting for realistic trading friction, spread deduplication, adverse slippage, explicit fees, intrabar ambiguity, and temporal regime variation.
+> **Primary Objective:** Empirically evaluate whether the frozen AurumIQ Phase 0–5 engine exhibits persistent, out-of-sample edge on XAUUSD after accounting for realistic trading friction, spread deduplication, adverse slippage, explicit fees, intrabar ambiguity, and temporal regime variation.
 
 ---
 
 ## 1. Core Operating Principles
 
 ### A. One Engine Rule (R2 & A09)
-The backtest lab NEVER duplicates trading or risk rules. Backtesting and live monitoring resolve the **exact same pure-Python `XautSignalEngine` class, version, configuration, and feature set**.
+The backtest lab NEVER duplicates trading or risk rules. Backtesting and live monitoring resolve the **exact same pure-Python `SignalEngine` class, version, configuration, and feature set**.
 
 ```text
-Historical Point-in-Time Dataset
+Historical Point-in-Time Dataset (XAUUSD)
             │
             ▼
        Replay Clock T
             │
-            ├── candles known @ T
-            ├── XAU reference known @ T
-            ├── USDT normalization rate @ T
-            └── macro state known @ T
+            ├── candles known @ T (15m, 1h, 4h, 1d)
+            ├── macro state known @ T
+            └── historical baseline reference @ T
             │
             ▼
-      Phase 0–4 Engine (XautSignalEngine)
+       Phase 0–4 Engine (SignalEngine)
             │
             ▼
-       SignalSnapshot
+       SignalSnapshot (BUY / WAIT / SELL)
             │
-            ├── WAIT / AVOID (audited in ledgers)
-            └── BUY_WINDOW
+            ├── WAIT (audited in ledgers)
+            └── BUY / SELL CANDIDATE
                      │
                      ▼
-             Phase 5 RiskPlanner
+             Phase 5 RiskPlanner (Long / Short)
                      │
              valid + eligible?
                 │          │
@@ -62,7 +61,7 @@ Historical Point-in-Time Dataset
 |---|---|
 | **P6-C1: Decision Time vs Outcome Time** | Signal evaluation at $T$ strictly accesses closed data $\le T$. Outcome simulation consumes post-$T$ data chronologically. Mutating data $> T$ never alters Signal/Risk at $T$; mutating data $> \text{exit}$ never alters completed trades; mutating data within $[T, \text{exit}]$ legitimately affects outcome. |
 | **P6-C2: Baseline Terminal Outcomes** | Terminal outcomes are strictly: `TP1_FIRST`, `SL_FIRST`, `NO_FILL`, `SKIPPED`, `CONSERVATIVE_SL_FIRST`, `UNRESOLVED`. No invented trade management (no partial closes, breakeven stops, trailing stops, or arbitrary max-holding liquidations). `TP2` is recorded strictly as observational analytics (`tp2_reached_after_tp1`, `max_favorable_extension`). |
-| **P6-C3: Frozen R Denominator** | Denominator $R$ is strictly $\text{planned\_risk\_amount} = \text{entry\_max} - \text{stop\_final} > 0$. Realized $R = \frac{\text{pnl}}{\text{planned\_risk\_amount}}$. Denominator is never redefined from actual fill price, ensuring execution quality and slippage remain transparent in realized $R$. |
+| **P6-C3: Frozen R Denominator** | Denominator $R$ is strictly $\text{planned\_risk\_amount} = |\text{entry\_boundary} - \text{stop\_final}| > 0$. Realized $R = \frac{\text{pnl}}{\text{planned\_risk\_amount}}$. Denominator is never redefined from actual fill price, ensuring execution quality and slippage remain transparent in realized $R$. |
 | **P6-C4: Normalized Drawdown Only** | Phase 6 contains no account balance, sizing, or portfolio allocation. Drawdown is strictly `max_trade_sequence_drawdown_r`, `drawdown_duration_trades`, and `maximum_consecutive_losses`. Sharpe/Sortino are computed strictly on normalized daily return series. |
 | **P6-C5: Post-Fill MFE / MAE Causality** | A candle partially elapsed at `fill_timestamp` is excluded from candle-only MFE/MAE. Only candles starting at or after `fill_timestamp` and ending on/before `exit_timestamp` are evaluated. |
 
@@ -71,10 +70,10 @@ Historical Point-in-Time Dataset
 ## 3. Cost & Friction Model (`engine/backtest/costs.py`)
 
 Configurable via `BacktestCostConfig`:
-- **Actual ASK Entry:** Spread is embedded in the quote $\rightarrow$ synthetic spread is zero (no double counting).
-- **Actual BID Long Exit:** Spread is embedded in the quote $\rightarrow$ synthetic spread is zero (no double counting).
+- **Actual Quote Entry:** Spread is embedded in the quote $\rightarrow$ synthetic spread is zero (no double counting).
+- **Actual Quote Exit:** Spread is embedded in the quote $\rightarrow$ synthetic spread is zero (no double counting).
 - **Mid / OHLC Candle:** Synthetic spread is applied exactly once (half-spread on entry, half-spread on exit).
-- **Slippage:** Strictly adverse (adds to entry price, subtracts from exit proceeds).
+- **Slippage:** Strictly adverse (adds to long entry / short exit, subtracts from long exit / short entry).
 - **Fees:** Explicit maker/taker percentage.
 
 ---
@@ -86,11 +85,11 @@ Configurable via `BacktestCostConfig`:
 | **P6-01** | PIT Candle Filtering | `timestamp_close <= as_of` & `is_closed == True` | ✅ PASS |
 | **P6-02** | Future Mutation Safety | Mutating $> T$ / $> \text{exit}$ preserves historical outputs | ✅ PASS |
 | **P6-03** | Closed Candle Only | Unclosed candle at $T$ rejected from decision set | ✅ PASS |
-| **P6-04** | Engine Reuse (A09) | Master `XautSignalEngine` directly resolved | ✅ PASS |
+| **P6-04** | Engine Reuse (A09) | Master `SignalEngine` directly resolved | ✅ PASS |
 | **P6-05** | Planner Reuse | Master `RiskPlanner` directly resolved | ✅ PASS |
 | **P6-06** | No Same-Bar Execution | $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$ strictly enforced | ✅ PASS |
-| **P6-07** | ASK Spread Integrity | Spread not double counted on actual quote entry | ✅ PASS |
-| **P6-08** | BID Spread Integrity | Spread not double counted on actual quote exit | ✅ PASS |
+| **P6-07** | Long Quote Spread Integrity | Spread not double counted on actual quote entry | ✅ PASS |
+| **P6-08** | Short Quote Spread Integrity | Spread not double counted on actual quote exit | ✅ PASS |
 | **P6-09** | Synthetic Spread Once | Mid candles receive half-spread per leg | ✅ PASS |
 | **P6-10** | Explicit Fee Accounting | Separate entry and exit fees applied | ✅ PASS |
 | **P6-11** | Adverse Slippage | Slippage always penalizes trader | ✅ PASS |
@@ -144,15 +143,3 @@ Configurable via `BacktestCostConfig`:
 - **Strict OOS Isolation (`walkforward.py`):** Candidate selection API structurally accepts only Train and Validation inputs. OOS evaluation is strictly downstream of frozen candidate selection.
 - **Component Ablation Framework (`ablation.py`):** Pure research-only framework enabling paired fold comparison without mutating production engine or auto-promoting parameters.
 - **Immutable Django Persistence (`apps/backtests/`):** Append-only audit records (`BacktestRun`, `BacktestTrade`) with canonical SHA-256 fingerprinting and idempotent task execution.
-
----
-
-## 6. Staged Phase Status
-
-```text
-PHASE 5                         ✅ FROZEN (SHA: 6ac79ab7597e58fee7e9b9e3d02bc50d06c9feee)
-PHASE 6A (Replay, Costs, Outcomes, Metrics) 🟢 COMPLETED & VERIFIED (23/23 tests pass)
-PHASE 6B (Walk-Forward, Purge, Embargo)     🟢 COMPLETED & VERIFIED (228/228 tests pass)
-PHASE 6C (Ablation Lab, Django Persistence)  🟢 COMPLETED & VERIFIED (244/244 tests pass)
-PHASE 7 (Dashboard & Live Monitoring)       ⛔ HOLD
-```

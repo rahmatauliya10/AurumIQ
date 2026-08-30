@@ -2,9 +2,9 @@
 
 ## Overview & Architecture
 
-Phase 2 establishes the core analytical intelligence layer of **AurumIQ**. It converts normalized, causal candle streams from Phase 1 into deterministic feature matrices, regime classifications, causal market structure events, and statistical confidence guards.
+Phase 2 establishes the core analytical intelligence layer of **AurumIQ**. It converts normalized, causal candle streams from Phase 1 into deterministic feature matrices, multi-timeframe regime classifications, causal market structure events (both bullish and bearish), and statistical confidence guards.
 
-All modules in `engine/` are **100% pure Python** (no Django dependencies, no database models). A dedicated Django application (`apps/analysis/`) acts as the persistence bridge.
+All modules in `engine/` are **100% pure Python** (zero Django dependencies, zero database models). A dedicated Django application (`apps/analysis/`) acts as the persistence bridge.
 
 ---
 
@@ -15,7 +15,7 @@ All calculations operate strictly on causal sequences ending at timestamp $T$. Z
 ### A. Trend Subsystem (`engine/features/trend.py`)
 - **EMAs:** EMA20, EMA50, EMA200 (calculated via recursive smoothing $\alpha = \frac{2}{N+1}$ with initial SMA seed).
 - **Normalized Slopes:** $\text{Slope}_{EMA} = \frac{EMA_t - EMA_{t-k}}{EMA_{t-k}} \times \frac{100}{k}$.
-- **Alignment Flags:** Bullish stack ($+1$ for $\text{EMA}_{20} > \text{EMA}_{50} > \text{EMA}_{200}$), Bearish stack ($-1$), Mixed ($0$).
+- **Alignment Flags:** Bullish stack ($+1$ for $\text{EMA}_{20} > \text{EMA}_{50} > \text{EMA}_{200}$), Bearish stack ($-1$ for $\text{EMA}_{20} < \text{EMA}_{50} < \text{EMA}_{200}$), Mixed ($0$).
 - **ADX & Directional Movement:** 14-period Wilder smoothed $+DI, -DI, ADX$.
 
 ### B. Momentum Subsystem (`engine/features/momentum.py`)
@@ -58,13 +58,15 @@ $$\text{MarketRegime} \in \{\text{BULL\_TREND}, \text{BEAR\_TREND}, \text{RANGE}
   - `detected_at`: When the swing became causally confirmed ($i+R$ candle close).
   - Future candles beyond $T$ have zero effect on confirmed swings up to $T$.
 
-### Hierarchy & Break of Structure (BOS) (`engine/structure/engine.py`)
+### Hierarchy & Break of Structure (BOS / CHoCH) (`engine/structure/engine.py`)
 - Higher High (HH), Higher Low (HL), Lower High (LH), Lower Low (LL).
 - **Bullish BOS:** Closed candle close breaks above the most recent confirmed swing high.
 - **Bearish BOS:** Closed candle close breaks below the most recent confirmed swing low.
+- **Change of Character (CHoCH):** First structural break against the prevailing trend direction.
 
 ### ATR-Aware Support / Resistance Zones (`engine/structure/zones.py`)
 - Support and resistance are constructed as **price zones** ($\text{Level} \pm 0.5 \times ATR$), never arbitrary single-dollar points.
+- Active zones maintain touch counts, age in bars, and invalidation boundaries.
 
 ---
 
@@ -112,7 +114,7 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 | **P2-07** | Flat-Price Indicator Edge Cases | Flat prices yield ATR=0, BB bandwidth=0, RV=0, RSI=50 without division by zero. | ✅ PASS |
 | **P2-08** | Numerical Fixture Parity | Exact numerical parity against standard mathematical fixtures for EMA, RSI, MACD, ATR, ADX, BB. | ✅ PASS |
 | **P2-09** | Confirmation Timestamp Causality | 15m candle (10:00-10:15): swing unavailable at 10:14:59, available at 10:15:00 with `detected_at = 10:15:00`. | ✅ PASS |
-| **P2-10** | BOS Event Timestamp Causality | Intra-bar breach at 10:06/10:10 yields BOS NONE; candle close at 10:15 confirms Bullish BOS at 10:15:00. | ✅ PASS |
+| **P2-10** | BOS Event Timestamp Causality | Intra-bar breach at 10:06/10:10 yields BOS NONE; candle close at 10:15 confirms Bullish/Bearish BOS at 10:15:00. | ✅ PASS |
 | **P2-11** | Realized Volatility Definition | Raw rolling % population std dev (ddof=0) of 20-period log returns verified with manual step-by-step mathematical fixture. | ✅ PASS |
 | **P2-12** | Exact Indicator Parity Fixtures | Step-by-step exact numerical fixtures for RSI14 (96.30%), MACD(12,26,9), and ADX14 (100.0%, +DI 20.0%). | ✅ PASS |
 | **P2-13** | Realized Volatility DDof Semantics | Population std dev (ddof=0, denominator 20) vs sample std dev (ddof=1, denominator 19) distinguished and verified explicitly. | ✅ PASS |
@@ -129,4 +131,4 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 - [x] `EffectiveSampleEstimator` correctly decomposes overlap, temporal clustering, and normalized HHI (P2-05, P2-06).
 - [x] Acceptance tests **A01 and A16** and targeted tests **P2-01 to P2-13** passing.
 - [x] Engine AST purity verified (zero Django imports in `engine/`).
-- [x] All **73/73 tests passing** in Docker test suite (`docker compose -f docker/docker-compose.yml exec web pytest -v`).
+- [x] All tests passing in Docker test suite (`docker compose -f docker/docker-compose.yml exec web pytest -v`).

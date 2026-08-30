@@ -2,7 +2,8 @@
 
 > **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Baseline Commit SHA:** `f3f8bbb2ab41a208e4ce8016bb5be3a3fe9d4314`  
-> **Primary Goal:** Establish rock-solid Django 5.2 LTS, Celery (5 queues), Redis, PostgreSQL, and Docker Compose foundation with strict protocol boundaries.
+> **Hardening Reference:** `fix/pre-xauusd-account-audit-hardening`  
+> **Primary Goal:** Establish rock-solid Django 5.2 LTS, Celery (5 queues), Redis, PostgreSQL, and Docker Compose foundation with strict protocol boundaries and durable user management auditing.
 
 ---
 
@@ -23,20 +24,25 @@
 - `machine_learning`: Meta-filter model training.
 - `maintenance`: System health and heartbeat checks (default queue).
 
-### C. Access Control & User Roles (`apps/accounts/`)
-- `UserProfile` model extending standard Django `User` via `post_save` signal.
-- Role enumeration with Least-Privilege default:
-  - `VIEWER` (Default): Read-only dashboard access.
+### C. Hardened Access Control & User Roles (`apps/accounts/`)
+- `UserProfile` model extending standard Django `User` with explicit role assignment:
+  - `VIEWER` (Default): Read-only dashboard and analytics access.
   - `ANALYST`: Research, backtesting lab, and model experimentation.
-  - `ADMIN`: Source management, engine configuration, user admin.
+  - `ADMIN`: Source management, engine configuration, user lifecycle administration.
+- **Authoritative Effective Admin Semantics**:
+  $$\text{Effective Active Admin} \iff \text{is\_active} = \text{True} \land (\text{is\_superuser} = \text{True} \lor \text{profile.role} = \text{ADMIN})$$
+- **Deterministic Multi-Row Locking**: Invariant validation executes within `transaction.atomic()` with `select_for_update().order_by("id")` to eliminate concurrency race conditions.
+- **Audit Durability**: `UserManagementAuditLog.target_user` configured with `on_delete=models.PROTECT`. No hard user deletion in Django Admin.
 
 ### D. Pure-Python Engine Boundary (R9)
 - `engine/core/interfaces.py`: `CandleRepository` defined as a pure `typing.Protocol` with zero Django ORM dependencies.
-- `engine/core/types.py`: `CandleData` frozen value object.
+- `engine/core/types.py`: `CandleData` frozen value object (instrument-agnostic).
 
 ### E. Container & Orchestration (`docker/`)
 - `docker/Dockerfile`: Python 3.13-slim image, non-root user (`appuser:1000`).
-- `docker/docker-compose.yml`: 5 interconnected services (`xaut_postgres`, `xaut_redis`, `xaut_web`, `xaut_celery_worker`, `xaut_celery_beat`).
+- `docker/Dockerfile.prod`: Multi-stage production container build.
+- `docker/docker-compose.yml`: 5 interconnected development services (`postgres`, `redis`, `web`, `celery_worker`, `celery_beat`).
+- `docker/docker-compose.prod.yml`: Hardened production container deployment.
 
 ---
 
@@ -62,9 +68,13 @@ apps/
     ├── admin.py
     ├── apps.py
     ├── models.py
+    ├── services.py
+    ├── views.py
     └── migrations/
         ├── __init__.py
-        └── 0001_initial.py
+        ├── 0001_initial.py
+        ├── 0002_userprofile_department_usermanagementauditlog.py
+        └── 0003_alter_usermanagementauditlog_target_user.py
 engine/
 ├── __init__.py
 └── core/
@@ -73,7 +83,9 @@ engine/
     └── types.py
 docker/
 ├── Dockerfile
-└── docker-compose.yml
+├── Dockerfile.prod
+├── docker-compose.yml
+└── docker-compose.prod.yml
 tests/
 ├── __init__.py
 ├── conftest.py
@@ -96,10 +108,11 @@ requirements-lock.txt
 ## 3. Verification & Definition of Done
 
 - [x] Docker Compose config validated (`docker compose -f docker/docker-compose.yml config` exits 0).
+- [x] Production Docker image builds cleanly (`docker build -f docker/Dockerfile.prod -t aurumiq:ci .`).
 - [x] Settings split correctly isolates test, dev, and production.
 - [x] All 5 Celery queues explicitly mapped and active on worker.
 - [x] `UserProfile` migration created with `VIEWER` least-privilege default.
-- [x] Unit test suite (`test_smoke.py`, `test_accounts.py`, `test_celery.py`) passing.
-- [x] `requirements-lock.txt` generated and committed.
+- [x] Hardened last-active admin lockout prevention and audit durability verified.
+- [x] Unit test suite (`test_smoke.py`, `test_accounts.py`, `test_celery.py`) passing 100%.
 - [x] Zero trading logic, indicators, or signal calculations present.
-- [x] Sealed with commit `f3f8bbb2ab41a208e4ce8016bb5be3a3fe9d4314`.
+- [x] Sealed with baseline commit `f3f8bbb2ab41a208e4ce8016bb5be3a3fe9d4314` and Stage 1 hardening.

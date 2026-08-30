@@ -7,7 +7,7 @@
 
 ## 1. Subsystem Architecture (`engine/cycles/`)
 
-Phase 3A contains the **proven, well-behaved time features**. Validated in isolation before any experimental spectral features (Phase 3B) are introduced.
+Phase 3A contains the **proven, well-behaved time features**. Validated in isolation before any experimental spectral features (Phase 3B) are evaluated.
 
 ```text
 PHASE 3A ROBUST TIMING
@@ -24,11 +24,11 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 ## 2. Subsystem Details & Statistical Invariants
 
 ### A. Trading Session Cycle (`engine/cycles/session.py`)
-- Standardized trading session windows evaluated via Python standard library `zoneinfo`:
+- Standardized gold trading session windows evaluated via Python standard library `zoneinfo`:
   - `ASIA`: Tokyo / Shanghai active session.
   - `LONDON_PREOPEN`: Pre-market European positioning.
   - `LONDON`: Core London morning liquidity.
-  - `LONDON_NY_OVERLAP`: Maximum global liquidity window.
+  - `LONDON_NY_OVERLAP`: Maximum global gold liquidity window.
   - `NEW_YORK`: Afternoon US session.
   - `US_LATE`: Low-liquidity closing hours.
 - **R11 & A02:** Never hard-code UTC offsets. Explicit timezone conversions handle daylight saving transitions without look-ahead error.
@@ -54,14 +54,17 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 
 ---
 
-## 3. Initial 3A Scoring Weights (Sample-Guarded)
+## 3. Preliminary 3A Scoring Weights (Subject to Revalidation)
 
-| Component | Max Weight | Guardrail |
-|---|---|---|
-| **Session Expectancy** | 15.0 | Requires $n_{eff} \ge 30$ AND `is_statistically_significant == True` |
-| **Swing Duration Maturity** | 20.0 | Requires certified $n_{eff} \ge 30$ effective sample and known age $P75-P90$ |
-| **Calendar Seasonality** | 5.0 | Requires $n_{eff} \ge 30$, statistical significance, and stability $\ge 0.60$ |
-| **Macro Event Timing** | 5.0 | Requires verified healthy feed and $> 120$m clear window |
+> [!NOTE]
+> **NOT FROZEN / REVALIDATION REQUIRED**: Preliminary weights shown below serve as structural defaults and require empirical recalibration during XAUUSD historical baseline research.
+
+| Component | Max Weight | Guardrail | Calibration Status |
+|---|---|---|:---:|
+| **Session Expectancy** | 15.0 | Requires $n_{eff} \ge 30$ AND `is_statistically_significant == True` | *Revalidation Required* |
+| **Swing Duration Maturity** | 20.0 | Requires certified $n_{eff} \ge 30$ effective sample and known age $P75-P90$ | *Revalidation Required* |
+| **Calendar Seasonality** | 5.0 | Requires $n_{eff} \ge 30$, statistical significance, and stability $\ge 0.60$ | *Revalidation Required* |
+| **Macro Event Timing** | 5.0 | Requires verified healthy feed and $> 120$m clear window | *Revalidation Required* |
 
 ---
 
@@ -98,4 +101,4 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 - [x] Macro event revision timestamp leakage eliminated (`P3A-11`) and missing feed fail-safe enforced (`P3A-12`).
 - [x] Snapshot version immutability (`unique_together` with `cycle_version`) verified (`P3A-13`).
 - [x] Engine AST purity verified (zero Django imports in `engine/cycles/`).
-- [x] Full regression suite passing **92/92 tests** in Docker.
+- [x] Full regression suite passing in Docker.
