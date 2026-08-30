@@ -107,7 +107,73 @@ def process_closed_candle_task(
         )
 
         xau_p = Decimal(xau_price_str) if xau_price_str else None
+        xau_bull = xau_bullish
+        xau_ts = None
+        if xau_p is None:
+            from apps.market_data.models import MarketCandle
+            latest_xau = (
+                MarketCandle.objects.filter(
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                    timestamp_close__lte=ts_close,
+                    is_closed=True,
+                )
+                .order_by("-timestamp_close")
+                .first()
+            )
+            if latest_xau:
+                xau_p = latest_xau.close
+                xau_bull = bool(latest_xau.close >= latest_xau.open)
+                xau_ts = latest_xau.timestamp_close
+
         usdt_r = Decimal(usdt_rate_str) if usdt_rate_str else None
+        usdt_ts = None
+        if usdt_r is None:
+            from apps.market_data.models import MarketCandle
+            latest_norm = (
+                MarketCandle.objects.filter(
+                    instrument__base_asset__code="XAUT",
+                    instrument__quote_asset__code="USDT",
+                    timeframe=timeframe,
+                    timestamp_close__lte=ts_close,
+                    is_closed=True,
+                )
+                .exclude(quote_rate__isnull=True)
+                .order_by("-timestamp_close")
+                .first()
+            )
+            if latest_norm and latest_norm.quote_rate:
+                usdt_r = latest_norm.quote_rate
+                usdt_ts = latest_norm.timestamp_close
+
+        eff_provider_transition = is_provider_transition
+        if not eff_provider_transition:
+            from apps.instruments.models import ProviderHealthSnapshot
+            latest_health = (
+                ProviderHealthSnapshot.objects.filter(
+                    listing__instrument__base_asset__code="XAUT",
+                    checked_at__lte=ts_close,
+                )
+                .order_by("-checked_at")
+                .first()
+            )
+            if latest_health:
+                eff_provider_transition = bool(latest_health.status == "TRANSITION")
+
+        eff_feed_stale = is_feed_stale
+        if not eff_feed_stale:
+            from apps.market_data.models import DataQualitySnapshot
+            latest_dq = (
+                DataQualitySnapshot.objects.filter(
+                    instrument__base_asset__code="XAUT",
+                    timeframe=timeframe,
+                    timestamp__lte=ts_close,
+                )
+                .order_by("-timestamp")
+                .first()
+            )
+            if latest_dq:
+                eff_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail)
 
         signal_record, risk_record, state = LiveDecisionPipelineService.process_closed_candle(
             event=event,
@@ -118,10 +184,12 @@ def process_closed_candle_task(
             cycle_version=cycle_version,
             risk_version=risk_version,
             xau_reference_price=xau_p,
-            xau_reference_is_bullish=xau_bullish,
+            xau_reference_is_bullish=xau_bull,
+            xau_reference_ts=xau_ts,
             usdt_rate=usdt_r,
-            is_provider_transition=is_provider_transition,
-            is_feed_stale=is_feed_stale,
+            usdt_rate_ts=usdt_ts,
+            is_provider_transition=eff_provider_transition,
+            is_feed_stale=eff_feed_stale,
         )
 
         return {

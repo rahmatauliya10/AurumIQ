@@ -160,7 +160,7 @@ def analyze_closed_candle(
             code_revision=code_revision,
         )
 
-        # Build MacroEventContext if string passed
+        # Build MacroEventContext if string passed (preserve missing macro feed semantics)
         macro_ctx_obj = None
         if isinstance(macro_context, MacroEventContext):
             macro_ctx_obj = macro_context
@@ -173,14 +173,33 @@ def analyze_closed_candle(
                 active_event_name=macro_context if is_blackout else None,
                 is_feed_healthy=True,
             )
-        else:
+        elif macro_context is not None:
             macro_ctx_obj = MacroEventContext(
                 is_in_blackout=False,
                 minutes_to_next_event=None,
                 minutes_since_last_event=None,
                 active_event_name=None,
-                is_feed_healthy=True,
+                is_feed_healthy=False,
             )
+
+        # Historical Phase 3A Cycle Snapshot (PIT)
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        cycle_rec = (
+            CycleSnapshotRecord.objects.filter(
+                instrument=instrument,
+                timeframe=timeframe,
+                timestamp__lte=candle_ts,
+                cycle_version=cycle_version,
+            )
+            .order_by("-timestamp")
+            .first()
+        )
+        cycle_3a_snapshot = (
+            AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(cycle_rec)
+            if cycle_rec
+            else None
+        )
 
         snapshot = engine.analyze(
             candles_15m=candles_15m,
@@ -199,6 +218,7 @@ def analyze_closed_candle(
             is_feed_stale=effective_is_stale,
             is_provider_transition=effective_is_transition,
             macro_context=macro_ctx_obj,
+            cycle_3a=cycle_3a_snapshot,
         )
 
         record, created = SignalPersistenceService.save_signal_snapshot(

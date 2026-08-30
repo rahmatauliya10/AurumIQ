@@ -86,7 +86,7 @@ class CandleClosedEvent:
     low: Decimal
     close: Decimal
     volume: Decimal = Decimal("0")
-    quote_rate: Decimal = Decimal("1.0")
+    quote_rate: Optional[Decimal] = None
     source: str = "binance"
     sequence_number: Optional[int] = None
     is_closed: bool = True

@@ -49,6 +49,7 @@ class PointInTimeReplay:
         run_fingerprint: str = "",
         fold_id: Optional[int] = None,
         max_holding_bars_15m: int = 96,  # 24h horizon
+        cycle_version: str = "3.0.0-3A",
     ):
         self.dataset = dataset
         self.signal_engine = signal_engine
@@ -60,6 +61,7 @@ class PointInTimeReplay:
         self.run_fingerprint = run_fingerprint
         self.fold_id = fold_id
         self.max_holding_bars_15m = max_holding_bars_15m
+        self.cycle_version = cycle_version or getattr(signal_engine, "cycle_version", "3.0.0-3A")
 
     def run(self, clock: ReplayClock) -> Tuple[List[SignalSnapshot], List[SimulatedTrade]]:
         """
@@ -85,6 +87,7 @@ class PointInTimeReplay:
             xau_price, xau_bull, xau_ts = self.dataset.get_xau_reference(as_of=t_utc)
             usdt_rate, usdt_ts = self.dataset.get_usdt_rate(as_of=t_utc)
             macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
+            cycle_3a = self.dataset.get_cycle_3a(as_of=t_utc, cycle_version=self.cycle_version)
 
             # 2. Master Signal Evaluation @ T (Phase 4 Engine - A09)
             try:
@@ -100,6 +103,7 @@ class PointInTimeReplay:
                     usdt_rate=usdt_rate,
                     usdt_rate_ts=usdt_ts,
                     macro_context=macro_ctx,
+                    cycle_3a=cycle_3a,
                 )
             except Exception:
                 # Insufficient bars for full indicator warm-up

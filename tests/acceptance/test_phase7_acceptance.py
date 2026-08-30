@@ -490,6 +490,157 @@ class Phase7AcceptanceTests(TestCase):
             low=Decimal("2495.00"),
             close=Decimal("2505.00"),
             volume=Decimal("100"),
+            is_closed=True,
         )
         assert c.quote_rate is None
+
+    # --- P1-NORM-11: MISSING CANDLECLOSEDEVENT QUOTE RATE REMAINS NONE ---
+    def test_p1_norm_11_missing_candleclosedevent_quote_rate_remains_none(self):
+        """CandleClosedEvent default quote_rate is strictly None without implicit USDT peg."""
+        evt = CandleClosedEvent(
+            event_id="EVT_NORM_11",
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open=datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc),
+            timestamp_close=datetime(2026, 3, 1, 0, 15, tzinfo=timezone.utc),
+            open=Decimal("2500.00"),
+            high=Decimal("2510.00"),
+            low=Decimal("2495.00"),
+            close=Decimal("2505.00"),
+        )
+        assert evt.quote_rate is None
+
+    # --- P7-CLOSE-01: CANDLEDATA REQUIRES EXPLICIT CLOSE STATUS ---
+    def test_p7_close_01_candledata_requires_explicit_close_status(self):
+        """CandleData strictly requires is_closed boolean argument without default True."""
+        with pytest.raises(TypeError):
+            # Missing is_closed
+            CandleData(  # type: ignore[call-arg]
+                timestamp_open=datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc),
+                timestamp_close=datetime(2026, 3, 1, 0, 15, tzinfo=timezone.utc),
+                open=Decimal("2500.00"),
+                high=Decimal("2510.00"),
+                low=Decimal("2495.00"),
+                close=Decimal("2505.00"),
+                volume=Decimal("100"),
+            )
+
+    # --- A39X: LIVE / REPLAY COMPLETE PARITY WITH PHASE 3A CYCLE SNAPSHOT ---
+    def test_a39x_live_backtest_parity_with_phase3a_cycle(self):
+        """
+        Gate A39X:
+          Complete end-to-end parity between Live Pipeline and PointInTimeReplay with:
+          - Multi-timeframe candles (15m, 4H, 1D, XAU)
+          - Point-in-time XAU reference price and USDT normalization rate
+          - MacroEventContext
+          - Persisted / Rehydrated Phase 3A Cycle3ASnapshot
+          - Proves Timing Score evaluates the Phase 3A cycle component (non-zero score).
+        """
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        from engine.backtest.repository import PointInTimeDataset
+        from engine.backtest.replay import PointInTimeReplay
+        from engine.core.types import (
+            Cycle3ASnapshot,
+            SessionContext,
+            SwingDurationContext,
+            MacroEventContext,
+            CalendarSeasonalityContext,
+            SessionType,
+            SampleQuality,
+        )
+
+        last_candle = self.candles_15m[-1]
+        t_decision = last_candle.timestamp_close
+
+        # Persist a valid Phase 3A CycleSnapshotRecord in DB
+        cycle_rec, _ = CycleSnapshotRecord.objects.update_or_create(
+            instrument=self.xaut_inst,
+            timeframe="15m",
+            timestamp=t_decision,
+            cycle_version="3.0.0-3A",
+            defaults={
+                "session": "LONDON",
+                "session_progress_pct": 50.0,
+                "is_high_liquidity": True,
+                "bars_since_last_swing": 8,
+                "pullback_age_percentile": 60.0,
+                "is_mature_pullback": True,
+                "is_blocked_by_event": False,
+                "cycle_score_3a": 20.0,
+                "details": {
+                    "session_expectancy_score": 15.0,
+                    "session_sample_quality": "HIGH",
+                    "session_effective_n": 100.0,
+                    "swing_maturity_score": 10.0,
+                    "calendar_seasonality_score": 12.0,
+                    "macro_feed_healthy": True,
+                },
+            },
+        )
+
+        cycle_snap = AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(cycle_rec)
+
+        # 1. Execute Live Pipeline
+        event = CandleClosedEvent(
+            event_id="EVT_A39X",
+            instrument="XAUT/USDT",
+            timeframe="15m",
+            timestamp_open=last_candle.timestamp_open,
+            timestamp_close=last_candle.timestamp_close,
+            open=last_candle.open,
+            high=last_candle.high,
+            low=last_candle.low,
+            close=last_candle.close,
+            volume=last_candle.volume,
+            is_closed=True,
+        )
+
+        sig_rec, risk_rec, state = LiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision=self.code_revision,
+            xau_reference_price=Decimal("2540.00"),
+            xau_reference_is_bullish=True,
+            xau_reference_ts=t_decision,
+            usdt_rate=Decimal("1.0000"),
+            usdt_rate_ts=t_decision,
+        )
+
+        # 2. Execute PointInTimeReplay
+        dataset = PointInTimeDataset(
+            candles_15m=self.candles_15m,
+            candles_4h=self.candles_4h,
+            cycle_3a=[cycle_snap],
+        )
+        for c in self.candles_xau:
+            dataset.add_xau_candle(c)
+        dataset.add_xau_reference(t_decision, Decimal("2540.00"), True)
+        dataset.add_usdt_rate(t_decision, Decimal("1.0000"))
+
+        signal_engine = XautSignalEngine(code_revision=self.code_revision)
+        risk_planner = RiskPlanner(code_revision=self.code_revision)
+        replay = PointInTimeReplay(
+            dataset=dataset,
+            signal_engine=signal_engine,
+            risk_planner=risk_planner,
+        )
+        from engine.backtest.clock import ReplayClock
+        clock = ReplayClock([t_decision])
+        signals, trades = replay.run(clock=clock)
+
+        assert len(signals) >= 1
+        last_replay_signal = signals[-1]
+
+        # Invariant: Live signal record strictly matches PointInTimeReplay signal snapshot
+        assert sig_rec.analysis_fingerprint == last_replay_signal.analysis_fingerprint
+        assert sig_rec.direction_score == last_replay_signal.direction.total_score
+        assert sig_rec.timing_score == last_replay_signal.timing.total_score
+        assert sig_rec.state == last_replay_signal.state.value
+        assert sig_rec.user_decision == last_replay_signal.user_decision.value
+
+        # Invariant: Phase 3A Timing component is active and non-zero
+        cycle_comp = next((c for c in last_replay_signal.timing.components if c.name == "Phase 3A Robust Time Cycle"), None)
+        assert cycle_comp is not None
+        assert cycle_comp.is_available is True
+        assert cycle_comp.score > 0.0
 

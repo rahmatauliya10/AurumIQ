@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from engine.core.types import (
     CandleData,
+    Cycle3ASnapshot,
     MacroEventContext,
     QuoteData,
 )
@@ -39,6 +40,7 @@ class PointInTimeDataset:
         xau_references: Optional[Sequence[Tuple[datetime, Decimal, bool]]] = None,
         usdt_rates: Optional[Sequence[Tuple[datetime, Decimal]]] = None,
         macro_events: Optional[Sequence[Tuple[datetime, MacroEventContext]]] = None,
+        cycle_3a: Optional[Sequence[Cycle3ASnapshot]] = None,
     ):
         self._candles: Dict[str, List[CandleData]] = {
             "15m": sorted(list(candles_15m or []), key=lambda c: _to_utc(c.timestamp_open)),
@@ -61,6 +63,10 @@ class PointInTimeDataset:
         self._macro_events: List[Tuple[datetime, MacroEventContext]] = sorted(
             [(_to_utc(t), ctx) for t, ctx in (macro_events or [])],
             key=lambda x: x[0]
+        )
+        self._cycle_3a: List[Cycle3ASnapshot] = sorted(
+            list(cycle_3a or []),
+            key=lambda s: _to_utc(s.timestamp)
         )
 
     def add_candle(self, timeframe: str, candle: CandleData) -> None:
@@ -188,6 +194,22 @@ class PointInTimeDataset:
             return None
         return eligible[-1][1]
 
+    def add_cycle_3a(self, snapshot: Cycle3ASnapshot) -> None:
+        """Add a point-in-time Cycle3ASnapshot."""
+        self._cycle_3a.append(snapshot)
+        self._cycle_3a.sort(key=lambda s: _to_utc(s.timestamp))
+
+    def get_cycle_3a(self, as_of: datetime, cycle_version: Optional[str] = "3.0.0-3A") -> Optional[Cycle3ASnapshot]:
+        """Retrieve the latest point-in-time Cycle3ASnapshot <= as_of matching cycle_version."""
+        as_of_utc = _to_utc(as_of)
+        eligible = [
+            s for s in self._cycle_3a
+            if _to_utc(s.timestamp) <= as_of_utc and (cycle_version is None or s.cycle_version == cycle_version)
+        ]
+        if not eligible:
+            return None
+        return eligible[-1]
+
     def compute_dataset_hash(self) -> str:
         """Compute SHA-256 digest of dataset content for run provenance."""
         h = hashlib.sha256()
@@ -198,5 +220,5 @@ class PointInTimeDataset:
                 h.update(
                     f"first:{bars[0].timestamp_open.isoformat()}:last:{bars[-1].timestamp_close.isoformat()}".encode("utf-8")
                 )
-        h.update(f"quotes:{len(self._quotes)}:xau:{len(self._xau_references)}:usdt:{len(self._usdt_rates)}".encode("utf-8"))
+        h.update(f"quotes:{len(self._quotes)}:xau:{len(self._xau_references)}:usdt:{len(self._usdt_rates)}:cycle3a:{len(self._cycle_3a)}".encode("utf-8"))
         return h.hexdigest()

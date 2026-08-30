@@ -365,3 +365,264 @@ def test_p7_bus_03_process_closed_candle_task_to_websocket():
         await consumer_task
 
     asyncio.run(_test_candle_delivery())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_auth_09_missing_hash_session_key_rejected():
+    """P7-AUTH-09: Session missing HASH_SESSION_KEY is strictly rejected with 4401."""
+    user = User.objects.create_user(username="nohashop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    # Missing HASH_SESSION_KEY
+    session.save()
+
+    async def _test():
+        sent = []
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        await application(scope, lambda: asyncio.sleep(0.1), lambda m: sent.append(m))
+        assert len(sent) == 1
+        assert sent[0]["type"] == "websocket.close"
+        assert sent[0]["code"] == 4401
+
+    asyncio.run(_test())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_auth_10_missing_backend_session_key_rejected():
+    """P7-AUTH-10: Session missing BACKEND_SESSION_KEY is strictly rejected with 4401."""
+    user = User.objects.create_user(username="nobackendop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    # Missing BACKEND_SESSION_KEY
+    session.save()
+
+    async def _test():
+        sent = []
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        await application(scope, lambda: asyncio.sleep(0.1), lambda m: sent.append(m))
+        assert len(sent) == 1
+        assert sent[0]["type"] == "websocket.close"
+        assert sent[0]["code"] == 4401
+
+    asyncio.run(_test())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_auth_11_invalid_backend_session_key_rejected():
+    """P7-AUTH-11: Session with unapproved authentication backend is strictly rejected with 4401."""
+    user = User.objects.create_user(username="badbackendop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "some.unapproved.AuthenticationBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test():
+        sent = []
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        await application(scope, lambda: asyncio.sleep(0.1), lambda m: sent.append(m))
+        assert len(sent) == 1
+        assert sent[0]["type"] == "websocket.close"
+        assert sent[0]["code"] == 4401
+
+    asyncio.run(_test())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_04_transaction_rollback_emits_no_event():
+    """P7-BUS-04: If a transaction rolls back, zero events are broadcast."""
+    user = User.objects.create_user(username="rollbackop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_flow():
+        sent_frames = []
+        recv_q = asyncio.Queue()
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        t = asyncio.create_task(application(scope, lambda: recv_q.get(), lambda m: sent_frames.append(m)))
+        await asyncio.sleep(0.05)
+
+        def _failing_transaction():
+            from django.db import transaction
+            from apps.live_monitor.services import LiveQuoteService
+            from apps.live_monitor.types import LiveQuoteEvent
+            try:
+                with transaction.atomic():
+                    event = LiveQuoteEvent(
+                        event_id="TEST_ROLLBACK_EVT_04",
+                        instrument="XAUT/USDT",
+                        provider="binance",
+                        bid=Decimal("2500"),
+                        ask=Decimal("2501"),
+                        source_timestamp=datetime.now(timezone.utc),
+                        received_timestamp=datetime.now(timezone.utc),
+                    )
+                    LiveQuoteService.process_quote(event)
+                    raise RuntimeError("Forced rollback for testing")
+            except RuntimeError:
+                pass
+
+        await sync_to_async(_failing_transaction)()
+        await asyncio.sleep(0.05)
+
+        quote_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "TEST_ROLLBACK_EVT_04" in m.get("text", "")
+        ]
+        assert len(quote_frames) == 0
+
+        await recv_q.put({"type": "websocket.disconnect"})
+        await t
+
+    asyncio.run(_test_flow())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_05_committed_quote_emits_valid_event():
+    """P7-BUS-05: Committed quote transaction emits exactly one valid quote_update event."""
+    from apps.live_monitor.models import LiveMonitorState
+    LiveMonitorState.objects.filter(instrument="XAUT/USDT").delete()
+
+    user = User.objects.create_user(username="quotecommop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_flow():
+        sent_frames = []
+        recv_q = asyncio.Queue()
+        async def mock_send(m):
+            sent_frames.append(m)
+
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        t = asyncio.create_task(application(scope, lambda: recv_q.get(), mock_send))
+        await asyncio.sleep(0.05)
+
+        def _successful_quote():
+            from django.db import transaction
+            from apps.live_monitor.services import LiveQuoteService
+            from apps.live_monitor.types import LiveQuoteEvent
+            with transaction.atomic():
+                event = LiveQuoteEvent(
+                    event_id="TEST_COMMITTED_EVT_05",
+                    instrument="XAUT/USDT",
+                    provider="binance",
+                    bid=Decimal("2540.00"),
+                    ask=Decimal("2540.50"),
+                    source_timestamp=datetime.now(timezone.utc),
+                    received_timestamp=datetime.now(timezone.utc),
+                    sequence_number=777,
+                )
+                LiveQuoteService.process_quote(event)
+
+        await sync_to_async(_successful_quote)()
+        await asyncio.sleep(0.1)
+
+        quote_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "quote_update" in m.get("text", "")
+        ]
+        assert len(quote_frames) >= 1
+        assert any(Decimal(f["data"]["ask"]) == Decimal("2540.50") and f["sequence_number"] == 777 for f in quote_frames)
+
+        await recv_q.put({"type": "websocket.disconnect"})
+        await t
+
+    asyncio.run(_test_flow())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_p7_bus_06_committed_decision_emits_all_decision_events():
+    """P7-BUS-06: Committed decision transaction emits signal, risk plan, and feed health events."""
+    user = User.objects.create_user(username="decisioncommop", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_flow():
+        sent_frames = []
+        recv_q = asyncio.Queue()
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/ws/live/",
+        }
+        t = asyncio.create_task(application(scope, lambda: recv_q.get(), lambda m: sent_frames.append(m)))
+        await asyncio.sleep(0.05)
+
+        now_utc = datetime.now(timezone.utc)
+        def _successful_decision():
+            from django.db import transaction
+            from apps.live_monitor.services import LiveDecisionPipelineService
+            from apps.live_monitor.types import CandleClosedEvent
+            with transaction.atomic():
+                event = CandleClosedEvent(
+                    event_id="TEST_DECISION_EVT_06",
+                    instrument="XAUT/USDT",
+                    timeframe="15m",
+                    timestamp_open=now_utc - timedelta(minutes=15),
+                    timestamp_close=now_utc,
+                    open=Decimal("2535.00"),
+                    high=Decimal("2542.00"),
+                    low=Decimal("2533.00"),
+                    close=Decimal("2540.00"),
+                    volume=Decimal("100.0"),
+                    is_closed=True,
+                )
+                LiveDecisionPipelineService.process_closed_candle(
+                    event=event,
+                    code_revision="32bec19b4219ea8adc38a11c7ddcd8ee7863095a",
+                )
+
+        await sync_to_async(_successful_decision)()
+        await asyncio.sleep(0.05)
+
+        sig_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "signal_update" in m.get("text", "")
+        ]
+        risk_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "risk_plan_update" in m.get("text", "")
+        ]
+        health_frames = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "feed_health_update" in m.get("text", "")
+        ]
+        assert len(sig_frames) >= 1
+        assert len(risk_frames) >= 1
+        assert len(health_frames) >= 1
+
+        await recv_q.put({"type": "websocket.disconnect"})
+        await t
+
+    asyncio.run(_test_flow())

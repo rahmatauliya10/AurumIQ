@@ -15,25 +15,40 @@ logger = structlog.get_logger(__name__)
 
 @sync_to_async
 def get_user_from_session_key(session_key: str):
-    """Resolve Django User from database session key with session auth hash verification."""
+    """Resolve Django User from database session key with strict Django session auth verification."""
     if not session_key:
         return AnonymousUser()
     try:
         session = SessionStore(session_key=session_key)
+
+        # 1. Require SESSION_KEY
         user_id = session.get(SESSION_KEY)
         if not user_id:
             return AnonymousUser()
+
+        # 2. Require BACKEND_SESSION_KEY and validate against AUTHENTICATION_BACKENDS
+        backend_path = session.get(BACKEND_SESSION_KEY)
+        if not backend_path:
+            return AnonymousUser()
+        auth_backends = getattr(settings, "AUTHENTICATION_BACKENDS", [])
+        if backend_path not in auth_backends:
+            return AnonymousUser()
+
+        # 3. Require HASH_SESSION_KEY
+        session_auth_hash = session.get(HASH_SESSION_KEY)
+        if not session_auth_hash:
+            return AnonymousUser()
+
+        # 4. Require active User
         User = get_user_model()
         user = User.objects.filter(pk=user_id, is_active=True).first()
         if not user:
             return AnonymousUser()
 
-        # Enforce session auth hash validation (invalidates session on password change)
-        session_auth_hash = session.get(HASH_SESSION_KEY)
-        if session_auth_hash:
-            user_auth_hash = user.get_session_auth_hash()
-            if not constant_time_compare(session_auth_hash, user_auth_hash):
-                return AnonymousUser()
+        # 5. Require constant-time session hash match
+        user_auth_hash = user.get_session_auth_hash()
+        if not constant_time_compare(session_auth_hash, user_auth_hash):
+            return AnonymousUser()
 
         return user
     except Exception as e:

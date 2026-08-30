@@ -142,6 +142,18 @@ def run_backtest_task(
         ).exclude(quote_rate__isnull=True).order_by("timestamp_close"):
             dataset.add_usdt_rate(c.timestamp_close, c.quote_rate)
 
+        # 4. Load historical Phase 3A CycleSnapshotRecords
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        for rec in CycleSnapshotRecord.objects.filter(
+            timeframe="15m",
+            timestamp__gte=start_dt,
+            timestamp__lte=end_dt,
+            **base_filter,
+        ).order_by("timestamp"):
+            snap = AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(rec)
+            dataset.add_cycle_3a(snap)
+
         runner = BacktestRunner()
         result = runner.run(dataset=dataset, spec=spec)
         run_obj, created = persist_backtest_run(run_result=result, dataset_identity=dataset_hash)
