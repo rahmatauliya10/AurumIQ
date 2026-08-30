@@ -1,41 +1,66 @@
-# Phase 2: Technical Indicators, Market Regime Engine & Causal Market Structure
+# Phase 2: Indicators, Market Regimes & Structural Analysis
 
-## Overview & Architecture
-
-Phase 2 establishes the core analytical intelligence layer of **AurumIQ**. It converts normalized, causal candle streams from Phase 1 into deterministic feature matrices, regime classifications, causal market structure events, and statistical confidence guards.
-
-All modules in `engine/` are **100% pure Python** (no Django dependencies, no database models). A dedicated Django application (`apps/analysis/`) acts as the persistence bridge.
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
+> **Current XAUUSD Target Status:** 🟡 **REVALIDATION REQUIRED**
 
 ---
 
-## 1. Pure-Python Indicators (`engine/features/`)
+## XAUUSD Migration Addendum
+
+### 1. Spot Gold Volume Semantics & Evidence Types (`XAU-P2-01`)
+Because spot gold trades over-the-counter (OTC) without a single centralized exchange, the engine explicitly distinguishes between volume representations:
+
+```text
+VolumeEvidenceType:
+  - REAL_VOLUME    : Authenticated exchange-matched volume
+  - TICK_VOLUME    : Broker tick frequency / quote update count
+  - PROXY_VOLUME   : Regulated Gold Futures (GC) volume proxy
+  - UNAVAILABLE    : Missing, unprovided, or malformed volume data
+```
+
+#### Volume Integrity Invariants
+1. **Zero Fabrication:** The engine never fabricates, estimates, or synthesizes missing volume.
+2. **Fail-Neutral Contribution:** If volume is `UNAVAILABLE` or invalid, its positive contribution to Direction and Timing scores is strictly `0.0`.
+3. **Proxy Volume Rules:** Regulated Gold Futures (GC) volume may only be utilized as an explicitly labeled proxy when reliable, point-in-time historical data exists.
+
+### 2. Threshold Calibration Status
+All numerical regime boundaries (ADX 20/25, ATR% 3.0%, Realized Volatility 5.0%, Bollinger Bandwidth 15.0%) documented in the historical specification represent **LEGACY BASELINE / DEFAULT REFERENCE VALUES ONLY**. For the target XAUUSD instrument, all regime boundaries and volatility thresholds are **NOT FROZEN / REVALIDATION REQUIRED** based on empirical Phase 6 validation.
+
+---
+
+## Historical XAUT Frozen Specification (Verbatim Baseline)
+
+> **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Baseline Commit SHA:** `8345c2be6cb2a781b0f55cf5fe6e9bcbbfe5e4fc`  
+> **Primary Goal:** Construct pure-Python indicators, transparent regime classification, causal market structure (swings, BOS, zones), and statistical sample guards with zero look-ahead bias.
+
+### 1. Feature Engineering Subsystems (`engine/features/`)
 
 All calculations operate strictly on causal sequences ending at timestamp $T$. Zero future lookahead.
 
-### A. Trend Subsystem (`engine/features/trend.py`)
+#### A. Trend Subsystem (`engine/features/trend.py`)
 - **EMAs:** EMA20, EMA50, EMA200 (calculated via recursive smoothing $\alpha = \frac{2}{N+1}$ with initial SMA seed).
 - **Normalized Slopes:** $\text{Slope}_{EMA} = \frac{EMA_t - EMA_{t-k}}{EMA_{t-k}} \times \frac{100}{k}$.
 - **Alignment Flags:** Bullish stack ($+1$ for $\text{EMA}_{20} > \text{EMA}_{50} > \text{EMA}_{200}$), Bearish stack ($-1$), Mixed ($0$).
 - **ADX & Directional Movement:** 14-period Wilder smoothed $+DI, -DI, ADX$.
 
-### B. Momentum Subsystem (`engine/features/momentum.py`)
+#### B. Momentum Subsystem (`engine/features/momentum.py`)
 - **RSI14:** Standard Wilder's smoothed Relative Strength Index.
 - **MACD:** Fast EMA12, Slow EMA26, Signal EMA9, Histogram delta.
 - **Rate of Change (ROC):** Normalized $k$-bar percentage momentum: $\frac{C_t - C_{t-k}}{C_{t-k}} \times 100$.
 
-### C. Volatility Subsystem (`engine/features/volatility.py`)
+#### C. Volatility Subsystem (`engine/features/volatility.py`)
 - **ATR14:** True Range rolling Wilder average.
 - **ATR %:** $\frac{\text{ATR}_{14}}{\text{Close}} \times 100$.
 - **Bollinger Bands:** 20-period SMA $\pm 2\sigma$, Bandwidth percentage.
 - **Realized Volatility:** Rolling population standard deviation ($ddof=0$) of 20-period log returns in percentage points (%).
 
-### D. Volume Subsystem (`engine/features/volume.py`)
+#### D. Volume Subsystem (`engine/features/volume.py`)
 - **Volume Ratio:** $\frac{\text{Volume}_t}{\text{SMA}_{20}(\text{Volume})}$.
 - **Volume Z-Score:** Standardized volume: $\frac{\text{Volume}_t - \mu}{\sigma}$.
 
----
-
-## 2. Deterministic Regime Engine (`engine/regime/`)
+### 2. Deterministic Regime Engine (`engine/regime/`)
 
 Transparent, rule-based classification into 6 explicit states:
 $$\text{MarketRegime} \in \{\text{BULL\_TREND}, \text{BEAR\_TREND}, \text{RANGE}, \text{HIGH\_VOLATILITY}, \text{TRANSITION}, \text{UNKNOWN}\}$$
@@ -47,39 +72,35 @@ $$\text{MarketRegime} \in \{\text{BULL\_TREND}, \text{BEAR\_TREND}, \text{RANGE}
 - **`RANGE`:** ADX $< 20$, $|\text{slope}| < 0.05$.
 - **`TRANSITION`:** Mixed alignment, conflicting momentum/trend signals, or EMA crossover in progress.
 
----
+### 3. Causal Market Structure Engine (`engine/structure/`)
 
-## 3. Causal Market Structure Engine (`engine/structure/`)
-
-### Causal Swings (`engine/structure/causal_swings.py`)
+#### Causal Swings (`engine/structure/causal_swings.py`)
 - **Causality Invariant:** A swing high/low at candle $i$ requiring $L=3, R=3$ bars is knowable **strictly at timestamp $i+R$ close**.
 - Every swing stores:
   - `timestamp`: When the peak/trough actually occurred ($i$).
   - `detected_at`: When the swing became causally confirmed ($i+R$ candle close).
   - Future candles beyond $T$ have zero effect on confirmed swings up to $T$.
 
-### Hierarchy & Break of Structure (BOS) (`engine/structure/engine.py`)
+#### Hierarchy & Break of Structure (BOS) (`engine/structure/engine.py`)
 - Higher High (HH), Higher Low (HL), Lower High (LH), Lower Low (LL).
 - **Bullish BOS:** Closed candle close breaks above the most recent confirmed swing high.
 - **Bearish BOS:** Closed candle close breaks below the most recent confirmed swing low.
 
-### ATR-Aware Support / Resistance Zones (`engine/structure/zones.py`)
+#### ATR-Aware Support / Resistance Zones (`engine/structure/zones.py`)
 - Support and resistance are constructed as **price zones** ($\text{Level} \pm 0.5 \times ATR$), never arbitrary single-dollar points.
 
----
-
-## 4. Statistical Sample Guard with Normalized HHI (`engine/guards/sample_guard.py`)
+### 4. Statistical Sample Guard with Normalized HHI (`engine/guards/sample_guard.py`)
 
 No pattern with a small sample size may inject false confidence into the system.
 
-### Normalized Herfindahl-Hirschman Index (HHI) & Autocorrelation Discount
+#### Normalized Herfindahl-Hirschman Index (HHI) & Autocorrelation Discount
 For $k$ unique observed regimes with share $s_i = \frac{n_i}{N}$:
 $$HHI = \sum_{i=1}^k s_i^2, \quad HHI_{\min} = \frac{1}{k}$$
 $$HHI_{\text{norm}} = \frac{HHI - HHI_{\min}}{1.0 - HHI_{\min}} \quad (\text{for } k > 1)$$
 
 $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_discount})$$
 
-### Tiered Confidence Table (R16 & A16)
+#### Tiered Confidence Table (R16 & A16)
 | Effective $n_{eff}$ | Confidence Level | Weight Multiplier | Action |
 |---|---|---|---|
 | $< 30$ | `INSUFFICIENT` | **0.0** | Positive score contribution completely blocked (`is_blocked = True`) |
@@ -87,17 +108,13 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 | $60 - 99$ | `MEDIUM` | **0.8** | Moderate confidence |
 | $\ge 100$ | `HIGH` | **1.0** | Full confidence weight allowed |
 
----
-
-## 5. Django Persistence Service Bridge (`apps/analysis/`)
+### 5. Django Persistence Service Bridge (`apps/analysis/`)
 
 - Models: `FeatureSnapshotRecord`, `RegimeSnapshotRecord`, `StructureSnapshotRecord` (each tracking `feature_version`).
 - Service: `AnalysisPersistenceService` translates pure engine dataclasses into database records.
 - Boundary: `engine/*` contains **zero Django imports** (verified via AST audit).
 
----
-
-## 6. Phase 2 Acceptance & Targeted Test Suite
+### 6. Phase 2 Acceptance & Targeted Test Suite
 
 | Test ID | Test Name | Assertion Criteria | Status |
 |---|---|---|:---:|
@@ -119,9 +136,7 @@ $$n_{eff} = n \times (1 - \text{HHI\_discount}) \times (1 - \text{clustering\_di
 | **PURITY** | AST Engine Purity Audit | All modules in `engine/` contain 0 Django imports. | ✅ PASS |
 | **PERSIST** | Analysis Persistence Bridge | Pure engine dataclasses persist cleanly to ORM models with `feature_version`. | ✅ PASS |
 
----
-
-## 7. Definition of Done Checklist
+### 7. Definition of Done Checklist
 
 - [x] All indicators match manually verified mathematical fixtures (P2-08, P2-11, P2-12, P2-13).
 - [x] `RegimeEngine` transparently computes regime with verified boundary units (P2-03, P2-04).

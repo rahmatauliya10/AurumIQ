@@ -1,111 +1,92 @@
-# AurumIQ — Live XAUT/USDT Signal Intelligence & Execution Readiness Platform
+# AurumIQ — Multi-Timeframe Quantitative Gold Intelligence Platform
 
-AurumIQ is a research-grade, production-hardened algorithmic intelligence and decision-support system for **XAUT/USDT** (Tether Gold). It provides point-in-time causal signal analysis, multi-timeframe regime classification, strict mathematical risk management, and real-time execution readiness monitoring.
-
----
-
-## 🛡️ Core Operating Philosophy & Safety Boundaries
-
-1. **Zero Real-Order Placement**: AurumIQ is strictly an intelligence and decision-support dashboard. It possesses zero exchange order placement APIs, private trading keys, testnet keys, or balance withdrawal capabilities.
-2. **One Engine Parity**: The identical frozen pure Python calculation engines ([engine/](file:///d:/Data%20Kacong/Antigravity%20Project/AurumIQ/engine/)) are used across historical backtesting, walk-forward validation, and live real-time decision pipelines.
-3. **Point-in-Time Causality & Immutability**: All market signals, risk boundaries, and audit records are strictly closed-bar ($T$) evaluated. Streaming live ticker quotes update only presentation quotes; signal scores, states, and fingerprints are 100% immutable.
-4. **Authoritative Fail-Closed**: In the event of stale data feeds, provider transitions, macro event blackouts, or missing canonical XAU benchmarks, the system unconditionally fails closed to `WAIT` (`FORCE_WAIT`).
+> **Target Instrument Scope:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD)  
+> **Historical Baseline:** `XAUT` (Tether Gold) historical baseline verified, frozen, and permanently retained for audit integrity.  
+> **User Decision Scope:** `BUY / WAIT / SELL` (Human decision support only — zero automated order execution).
 
 ---
 
-## 🏛️ System Architecture
+## 1. System Overview & Dual-Scope Architecture
+
+AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative market intelligence and signal analysis platform for gold trading.
 
 ```text
-                                  ┌──────────────────────────┐
-                                  │   Public Market Feeds    │
-                                  │ (Binance, OKX, XAU, USDT)│
-                                  └────────────┬─────────────┘
-                                               │
-                       ┌───────────────────────┴───────────────────────┐
-                       ▼                                               ▼
-              [ Path A: Live Quotes ]                       [ Path B: Closed Candles ]
-                       │                                               │
-             LiveQuoteService (Redis TTL)                  LiveDecisionPipelineService
-                       │                                               │
-                       │                                      XautSignalEngine (Phase 4)
-                       │                                      RiskPlanner (Phase 5)
-                       │                                               │
-                       │                                       Durable Persistence
-                       │                                    (SignalRecord, LiveRiskPlan)
-                       │                                               │
-                       └───────────────────────┬───────────────────────┘
-                                               ▼
-                                 ┌───────────────────────────┐
-                                 │   Live Monitor WebSocket  │
-                                 │  Typed Incremental Events │
-                                 └─────────────┬─────────────┘
-                                               ▼
-                                 ┌───────────────────────────┐
-                                 │  AurumIQ Live Dashboard   │
-                                 │   (Django 5.2 + Plotly)   │
-                                 └───────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                       AURUMIQ SIGNAL PIPELINE                           │
+│                                                                         │
+│  CLOSED CANDLE ENGINE (15m, 1H, 4H, 1D) ──► STATE MACHINE               │
+│  - Multi-Timeframe Indicators              - Long Direction & Timing    │
+│  - Causal Swing & Structure Detection      - Short Direction & Timing   │
+│  - Statistical Session Cycles (DST-aware)  - Decision: BUY / WAIT / SELL│
+│  - Macro Blackout Gate (Revision-Safe)     - Canonical SHA-256 Provenance│
+│                                                          │              │
+│                                                          ▼              │
+│  LIVE MONITOR (WebSocket / Redis TTL) ◄───────── RISK PLANNING GATE     │
+│  - Real-Time Presentation Only                  - Side-Aware Long/Short │
+│  - Stale Feed Guard (<30s)                      - Structural + ATR Stop │
+│  - Zone Proximity Alerts                        - RR Evaluation Gate    │
+│  - Zero Execution Code                          - Intrabar 1m/5m Replay │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Core Operating Invariants
+1. **Zero Real-Order Execution Policy (R1):** The platform contains zero exchange trading keys, broker execution bindings, order dispatch endpoints, or testnet trading capabilities. All outputs are strictly decision support.
+2. **Decoupled Two-Path Architecture:**
+   - **Path A (Live Streaming Quotes):** Low-latency WebSockets and Redis TTL ($30\text{s}$) updating presentation metrics and live zone proximity monitoring.
+   - **Path B (Closed Candles Decision Pipeline):** Strict closed-bar signal evaluation, immutable fingerprint generation, and PostgreSQL persistence on completed 15m, 1H, 4H, and 1D candles.
+3. **Intrabar Replay Segregation:** 1m and 5m streams are strictly isolated for causal fill simulation, execution latency, and intrabar barrier collision resolution during backtesting and forward paper observation.
+4. **TradingView Policy (R18 & A18):** TradingView is permitted exclusively for external visual reference or rendering via Lightweight Charts. The calculation engine contains zero scraping dependencies or network calls to TradingView.
 
 ---
 
-## 📂 Repository Layout
+## 2. Dual Status: Historical Baseline vs Current XAUUSD Target
 
-- **`engine/`**: Pure, framework-agnostic mathematical engines (zero Django/Celery/Redis imports).
-  - `engine/core/`: Interfaces, data types, and protocol definitions.
-  - `engine/features/`: Technical indicators (EMA, MACD, RSI, ADX, ATR, Realized Vol).
-  - `engine/regime/`: Causal regime classification and sample guard.
-  - `engine/structure/`: Swing high/low, BOS/CHoCH, and active supply/demand zones.
-  - `engine/cycles/`: DST-aware session cycles (Phase 3A) & research spectral methods (Phase 3B).
-  - `engine/signals/`: Direction & Timing scoring, state machine, and canonical fingerprinting.
-  - `engine/risk/`: Structure/ATR stops, dynamic TP1/TP2 targets, and position sizing.
-  - `engine/backtest/`: Walk-forward validator, cost simulation, and component ablation lab.
-- **`apps/`**: Django application layer and adapters.
-  - `apps/market_data/`: Ingestion pipelines, provider adapters, and quote normalization.
-  - `apps/analysis/`: Feature, regime, structure, and cycle snapshot persistence.
-  - `apps/signals/`: Idempotent signal persistence (`SignalRecord`).
-  - `apps/backtests/`: Asynchronous backtesting tasks and results storage.
-  - `apps/live_monitor/`: Two-path live streaming services, WebSockets, and health probes.
-- **`tests/`**: Comprehensive multi-phase test suite (Unit, Integration, and Master Acceptance gates).
+To maintain complete audit integrity, AurumIQ maintains a clear separation between the **Historical XAUT Baseline** (which verified core algorithmic infrastructure) and the **Current XAUUSD Target** (which governs active platform scope).
 
----
-
-## 🚀 Deployment & Operation
-
-### Development Mode (Local Docker Compose)
-```bash
-# Start PostgreSQL, Redis, Django Web, and Celery Worker (Development)
-docker compose -f docker/docker-compose.yml up -d
-
-# Run Django system check
-docker compose -f docker/docker-compose.yml exec web python manage.py check
-
-# Run full multi-phase regression suite (Phase 0 - 7)
-docker compose -f docker/docker-compose.yml exec web pytest
-
-# Create Local Operator User
-docker compose -f docker/docker-compose.yml exec web python manage.py createsuperuser
-```
-
-### Production Mode (Hardened ASGI Deployment)
-```bash
-# Build and run production-grade ASGI container stack with isolated networking
-docker compose -f docker/docker-compose.prod.yml up -d --build
-```
-Navigate to `http://localhost:8000/accounts/login/` and sign in with your provisioned operator credentials.
+| Phase | Specification Focus | Historical XAUT Status | Current XAUUSD Target Status |
+|---|---|:---:|:---:|
+| **Phase 0** | Foundation Architecture, PostgreSQL, Celery Queues, RBAC | ✅ `VERIFIED / FROZEN` | 🟢 `REUSABLE` |
+| **Phase 1** | Ingestion Engine, Multi-Provider Data, Health Lifecycle | ✅ `VERIFIED / FROZEN` | 🟡 `MIGRATION REQUIRED` |
+| **Phase 2** | Pure Indicators, Market Regimes, Causal Swings, Sample Guard | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED` |
+| **Phase 3A** | DST Session Cycles, Swing Maturity, Macro Blackout Gate | ✅ `VERIFIED / FROZEN` | 🟡 `EMPIRICAL REBUILD REQUIRED` |
+| **Phase 3B** | Experimental Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🟡 `REVALIDATION REQUIRED (WEIGHT = 0.0)` |
+| **Phase 4** | Direction & Timing Scores, State Machine, Fingerprinting | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `DUAL-SIDE REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| **Phase 5** | Risk Planning Engine, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | 🔴 `LONG / SHORT REDESIGN REQUIRED (NOT IMPLEMENTED)` |
+| **Phase 6** | Point-in-Time Backtesting, Walk-Forward Purge/Embargo, Ablation | ✅ `VERIFIED / FROZEN` | 🟡 `XAUUSD PIT BACKTEST REQUIRED` |
+| **Phase 7** | Dashboard UI, Plotly Charts, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ⏸️ `PRODUCT COMPLETION PAUSED` |
+| **Phase 8** | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+| **Phase 9** | ML Meta-Filter, Side-Aware Labels, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
 
 ---
 
-## 📋 Implementation Status
+## 3. Two Separate Taxonomies
 
-| Phase | Description | Status |
-|---|---|:---:|
-| **Phase 0** | Foundation, Docker, Django 5.2 LTS, 5 Named Celery Queues | ✅ **APPROVED** |
-| **Phase 1** | Market Data Ingestion, Integrity Engine, Point-in-Time Normalization | ✅ **APPROVED** |
-| **Phase 2** | Pure Feature Engine, Regime Classification & Causal Swings | ✅ **APPROVED** |
-| **Phase 3A** | Robust Time Cycles (DST Session, Swing Duration, Calendar Seasonality) | ✅ **APPROVED** |
-| **Phase 3B** | Experimental Spectral Cycles (ACF, FFT, Wavelets, Hilbert) | ✅ **APPROVED** |
-| **Phase 4** | Direction & Timing Scoring, Hard Gates & Canonical Fingerprints | ✅ **APPROVED** |
-| **Phase 5** | Risk Architecture, Dual-Layer Decisions, Execution Models | ✅ **APPROVED** |
-| **Phase 6** | Point-in-Time Walk-Forward Backtesting & Component Ablation | ✅ **APPROVED** |
-| **Phase 7** | Live Signal Intelligence, Real-Time Dashboard & Operational Resilience | ✅ **APPROVED** |
-| **Phase 8** | Live Paper Observation & Forward Execution Audit | 📋 **PLANNED** |
+### A. Repository Terminology Audit (Taxonomy A)
+- `LEGACY`: Historical XAUTUSDT candle stores, USDT/USD rate providers, baseline basis calculation tables.
+- `KEEP_GENERIC`: `CandleRepository`, `MarketDataProvider`, `Timeframe`, math statistical libraries, pure engine protocols.
+- `MIGRATE`: Primary operational specifications in `./docs/phases/` and root `README.md`.
+- `REMOVE`: Deprecated on-chain Ethereum redemption assertions from active operational specs.
+
+### B. Acceptance-Test Migration Matrix (Taxonomy B)
+- `LEGACY_XAUT`: Tests validating historical USDT/USD normalization formula (`A21`).
+- `KEEP_GENERIC`: Multi-timeframe repository ordering, swing detection causality, mathematical indicator parity (`A01`, `A02`, `A03`, `A05`, `A08`, `A11`, `A12`, `A13`, `A16`, `A18`, `A19`, `A20`, `A24`, `A25`, `A26`, `A27`, `A29`, `A30`, `A31`, `A33`, `A35`, `A36`, `A37`, `A38`, `A40`, `A41`, `A42`, `A43`, `A44`, `A45`, `A46`, `A47`).
+- `MODIFY_FOR_XAUUSD`: Live monitor quotes, provider health thresholds, DXY macro correlation feeds, backtest engine parity (`A04`, `A06`, `A07`, `A09`, `A10`, `A14`, `A15`, `A22`, `A23`, `A28`, `A32`, `A34`, `A39`, `A39X`).
+- `REPLACE_FOR_XAUUSD`: `A17` (Historical XAUT/XAU basis integrity active contract replaced by XAUUSD provider-integrity contract).
+- `NEW_XAUUSD` (Planned Future Contracts): Approved contracts for XAUUSD scope (`XAU-P1-01`, `XAU-P1-02`, `XAU-P2-01`, `XAU-P4-01`, `XAU-P4-02`, `XAU-P4-03`, `XAU-P4-04`, `XAU-P5-01`, `XAU-P5-02`, `XAU-P5-03`, `XAU-P6-01`, `XAU-P6-02`, `XAU-P6-03`, `XAU-P7-01`, `XAU-P8-01`, `XAU-P9-01`).
+
+---
+
+## 4. Technical Stack & Governance
+
+- **Backend Framework:** Django 5.2 LTS (Python 3.13)
+- **Task Queue & Cache:** Celery 5.x + Redis (5 dedicated priority queues)
+- **Database:** PostgreSQL 16 (JSONB, append-only immutable audit logs)
+- **Mathematical Engine:** Pure Python (`numpy`, `scipy`, `pandas` — zero Django/ORM dependencies in `engine/`)
+- **Documentation & Roadmap Index:** [`docs/phases/README.md`](./docs/phases/README.md)
+- **Phase Deliverables Summary:** [`docs/phases/SUMMARY.md`](./docs/phases/SUMMARY.md)
+
+---
+
+> [!IMPORTANT]
+> **GOVERNANCE & CODE FREEZE NOTICE:**  
+> All scoring weights and decision thresholds for XAUUSD remain **NOT FROZEN / REVALIDATION REQUIRED**. No automated order placement, `SELL_WINDOW` implementation, or scoring weight mutations are active in production code during documentation migration.

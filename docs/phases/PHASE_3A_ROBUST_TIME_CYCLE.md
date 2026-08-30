@@ -1,11 +1,29 @@
 # Phase 3A: Robust Time Cycle Features
 
-> **Status:** ✅ **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
-> **Primary Goal:** Implement deterministic, point-in-time robust timing features (Session Cycle, Swing Duration, Macro Event Point-in-Time Gate, and Calendar Seasonality) with strict statistical sample guards, statistical significance gates, fail-closed effective-N, and zero future lookahead.
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
+> **Current XAUUSD Target Status:** 🟡 **EMPIRICAL REBUILD REQUIRED**
 
 ---
 
-## 1. Subsystem Architecture (`engine/cycles/`)
+## XAUUSD Migration Addendum
+
+### 1. Target Scope & Empirical Rebuild Requirements
+While the mathematical architecture (DST-aware `zoneinfo` session tracking, knowable swing age calculation, revision-safe macro blackout gate, and fail-closed effective-N statistical sample guards) is completely retained, the empirical statistical distributions require rebuilding for the target `XAUUSD` instrument:
+1. **Session Expectancy Rebuild:** Empirical session return matrices must be rebuilt using multi-year historical spot XAUUSD data.
+2. **Swing Duration Distributions:** Swing duration percentiles ($P10, P50, P90$) must be recomputed on confirmed XAUUSD swings.
+3. **Calendar Seasonality Tables:** Seasonality stability and directional effect tables require empirical validation.
+4. **Macro Blackout Buffers:** Pre- and post-release blackout windows require revalidation for spot gold volatility spikes.
+5. **Scoring Weights & Thresholds:** All Phase 3A scoring weights for XAUUSD remain **NOT FROZEN / REVALIDATION REQUIRED**.
+
+---
+
+## Historical XAUT Frozen Specification (Verbatim Baseline)
+
+> **Status:** ✅ **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
+> **Primary Goal:** Implement deterministic, point-in-time robust timing features (Session Cycle, Swing Duration, Macro Event Point-in-Time Gate, and Calendar Seasonality) with strict statistical sample guards, statistical significance gates, fail-closed effective-N, and zero future lookahead.
+
+### 1. Subsystem Architecture (`engine/cycles/`)
 
 Phase 3A contains the **proven, well-behaved time features**. Validated in isolation before any experimental spectral features (Phase 3B) are introduced.
 
@@ -19,11 +37,9 @@ PHASE 3A ROBUST TIMING
 BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 ```
 
----
+### 2. Subsystem Details & Statistical Invariants
 
-## 2. Subsystem Details & Statistical Invariants
-
-### A. Trading Session Cycle (`engine/cycles/session.py`)
+#### A. Trading Session Cycle (`engine/cycles/session.py`)
 - Standardized trading session windows evaluated via Python standard library `zoneinfo`:
   - `ASIA`: Tokyo / Shanghai active session.
   - `LONDON_PREOPEN`: Pre-market European positioning.
@@ -34,27 +50,25 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 - **R11 & A02:** Never hard-code UTC offsets. Explicit timezone conversions handle daylight saving transitions without look-ahead error.
 - **P3A-06 & P3A-14 Empirical Expectancy & Significance Gate:** Zero hardcoding of expectancy scores. If no empirical historical table, or bucket $n_{eff} < 30$, or `is_statistically_significant == False`, `expectancy_score = 0.0` (`INSUFFICIENT_DATA`). Positive scores strictly require $n_{eff} \ge 30$ AND verified statistical significance.
 
-### B. Swing Duration Maturity (`engine/cycles/swing_duration.py`)
+#### B. Swing Duration Maturity (`engine/cycles/swing_duration.py`)
 - **P3A-07 Knowable Age Causality:** Distinguishes `market_age` (from formation `timestamp`) and `known_age` (from `detected_at` confirmation). Scoring and maturity readiness strictly evaluate `known_age`.
 - **P3A-08 & Timeframe Whitelist:** Strict whitelist validation (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`, `1w`). All other inputs raise `ValueError`.
 - **P3A-09, P3A-15, P3A-18 Fail-Closed Effective Sample Guard:** Zero hardcoded fallback arrays. Unknown statistical independence (`effective_n=None` and `sample_eval=None`) strictly defaults to `effective_n = 0.0`, `sample_is_blocked = True`, and `maturity_score = 0.0` (INSUFFICIENT). Raw N is NEVER assumed equal to effective N.
 
-### C. Macro Event Gate — Revision Point-in-Time Safe (`engine/cycles/events.py` & A06, A26)
+#### C. Macro Event Gate — Revision Point-in-Time Safe (`engine/cycles/events.py` & A06, A26)
 - **A06 Blackout Policy:** Scheduled high-impact event within configured blackout window (e.g. $\pm 30$ minutes) $\rightarrow$ `is_in_blackout = True` $\rightarrow$ `is_blocked_by_event = True` $\rightarrow$ forces `WAIT`.
 - **A26 Revision PiT Rule:** Releases at $t_{\text{released}} \le T$ return `initial_value`. Revisions at $t_{\text{revised}} > T$ are strictly masked.
 - **P3A-11 Revision Timestamp Leakage Prevention:** Future unscheduled revisions at $t_{\text{revised}} > T$ cannot trigger a pre-revision blackout before $t_{\text{revised}}$ occurs.
 - **P3A-12 Missing Feed Fail-Safe:** Missing or unverified macro calendar feed yields zero clear-market bonus (`macro_clear_bonus = 0.0`).
 
-### D. Calendar Seasonality (`engine/cycles/calendar.py`)
+#### D. Calendar Seasonality (`engine/cycles/calendar.py`)
 - Analyzes DOW, Hour UTC, Month, and exact Month-End flows (calculated via `calendar.monthrange`).
 - **P3A-10 & P3A-16 Empirical Effect Gate:** Stable folds alone without empirical directional effect/expectancy yield `seasonality_score = 0.0`. Positive scores require $n_{eff} \ge 30$, `is_statistically_significant == True`, and `stability >= 0.60`.
 
-### E. Closed Candle Analysis Gate (`engine/cycles/engine.py`)
+#### E. Closed Candle Analysis Gate (`engine/cycles/engine.py`)
 - **P3A-17 Gate:** `RobustTimeCycleEngine.analyze()` requires a completed candle (`is_closed=True`). An unclosed candle immediately raises `IncompleteCandleError`.
 
----
-
-## 3. Initial 3A Scoring Weights (Sample-Guarded)
+### 3. Initial 3A Scoring Weights (Sample-Guarded)
 
 | Component | Max Weight | Guardrail |
 |---|---|---|
@@ -63,9 +77,7 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 | **Calendar Seasonality** | 5.0 | Requires $n_{eff} \ge 30$, statistical significance, and stability $\ge 0.60$ |
 | **Macro Event Timing** | 5.0 | Requires verified healthy feed and $> 120$m clear window |
 
----
-
-## 4. Phase 3A Acceptance & Targeted Test Suite
+### 4. Phase 3A Acceptance & Targeted Test Suite
 
 | Test ID | Test Name | Assertion Criteria | Status |
 |---|---|---|:---:|
@@ -87,9 +99,7 @@ BASELINE BACKTEST HURDLE (Empirical Benchmark Recorder)
 | **P3A-17** | Closed Candle Engine Gate | Unclosed candle (`is_closed=False`) rejected with `IncompleteCandleError`. | ✅ PASS |
 | **P3A-18** | Fail-Closed Effective-N | Unknown statistical independence (`effective_n=None`) forces `maturity_score = 0.0`. | ✅ PASS |
 
----
-
-## 5. Definition of Done Checklist
+### 5. Definition of Done Checklist
 
 - [x] `SessionCycleEngine` strictly statistical & significance-gated (`P3A-06`, `P3A-14`).
 - [x] `SwingDurationEngine` computes knowable age from `detected_at` (`P3A-07`), timeframe whitelist (`P3A-08`), and fail-closed effective-N (`P3A-18`).

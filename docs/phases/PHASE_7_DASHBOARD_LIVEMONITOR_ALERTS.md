@@ -1,18 +1,36 @@
 # Phase 7: Dashboard, LiveMonitor & Alerts
 
-> **Status:** ✅ **APPROVED**  
-> **Primary Goal:** Build a responsive, server-rendered Django dashboard with interactive Plotly visual analytics, a real-time `LiveMonitor` (WebSocket + Redis with TTL and freshness guards), REST API endpoints, and informational alert dispatchers.
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
+> **Current XAUUSD Target Status:** ⏸️ **PRODUCT COMPLETION PAUSED**
 
 ---
 
-## 1. Dashboard Architecture (`apps/dashboard/`)
+## XAUUSD Migration Addendum
+
+### 1. Target Scope & Presentation Adaptation
+- **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold).
+- **User Decision Display:** `BUY / WAIT / SELL` across 15m, 1H, 4H, and 1D closed intervals.
+- **Live Freshness Threshold Status:** The historical 30-second Redis TTL quote freshness threshold is a **LEGACY BASELINE / REVALIDATION REQUIRED** parameter. For XAUUSD, live quote freshness thresholds and stale-data transition parameters remain **NOT FROZEN / REVALIDATION REQUIRED** based on empirical broker feed characteristics.
+
+### 2. Approved Planned Test Contracts
+- **`XAU-P7-01`**: BUY / WAIT / SELL presentation contract (`PLANNED / FUTURE CONTRACT`).
+
+---
+
+## Historical XAUT Frozen Specification (Verbatim Baseline)
+
+> **Status:** ✅ **APPROVED**  
+> **Primary Goal:** Build a responsive, server-rendered Django dashboard with interactive Plotly visual analytics, a real-time `LiveMonitor` (WebSocket + Redis with TTL and freshness guards), REST API endpoints, and informational alert dispatchers.
+
+### 1. Dashboard Architecture (`apps/dashboard/`)
 
 Server-rendered Django templates with dynamic Plotly visualizations and premium CSS styling (strictly adhering to modern dark-tech aesthetics):
 
-### Navigation Hierarchy
+#### Navigation Hierarchy
 `OVERVIEW | LIVE ANALYSIS | TIME CYCLE LAB | SIGNALS HISTORY | BACKTEST LAB | DATA INTEGRITY | SYSTEM HEALTH | AUDIT LOG`
 
-### Page Specifications
+#### Page Specifications
 1. **Overview (`overview.html`):**
    - Live XAUT price, last analysis timestamp (prominently displayed), Data Quality score.
    - Large Gauge / KPI cards: Direction Score, Timing Score, Market Regime, Active Signal State.
@@ -32,9 +50,7 @@ Server-rendered Django templates with dynamic Plotly visualizations and premium 
 6. **Data Integrity & System Health (`data_quality.html`, `system_health.html`):**
    - Provider health snapshot table, quarantine log, Celery queue heartbeats.
 
----
-
-## 2. LiveMonitor Service (`apps/live_monitor/` & A28)
+### 2. LiveMonitor Service (`apps/live_monitor/` & A28)
 
 Decouples high-frequency tick monitoring from candle-close signal computation.
 
@@ -55,18 +71,16 @@ WebSocket Stream / REST Poller ──> Redis Store (Key: livequote:XAUTUSDT, TTL
                 ENTRY_ZONE_REACHED / INVALIDATION_TOUCHED
 ```
 
-### Freshness & Health Guard Rules (A28)
+#### Freshness & Health Guard Rules (A28)
 - If quote age in Redis $> 30$ seconds $\rightarrow$ **`LIVE_DATA_STALE`**.
 - If latest `ProviderHealthSnapshot` is not `HEALTHY` or `DEGRADED` $\rightarrow$ **`PROVIDER_UNHEALTHY`**.
 - In either case, **`ENTRY_ZONE_REACHED` alerts are strictly suppressed**.
 
----
-
-## 3. Informational Alerting (`apps/alerts/`)
+### 3. Informational Alerting (`apps/alerts/`)
 
 Dispatches real-time notifications via Webhooks / Telegram without order execution capability.
 
-### Alert Payload Schema
+#### Alert Payload Schema
 ```json
 {
   "event_type": "ENTRY_ZONE_REACHED",
@@ -81,16 +95,12 @@ Dispatches real-time notifications via Webhooks / Telegram without order executi
 }
 ```
 
----
-
-## 4. TradingView Policy (R18 & A18)
+### 4. TradingView Policy (R18 & A18)
 
 - **Allowed:** TradingView Lightweight Charts library rendering internal data; manual link to external TradingView charts.
 - **Prohibited:** Scraping TradingView; fetching data from TradingView into the engine calculation pipeline.
 
----
-
-## 5. Phase 7 Acceptance Test Suite
+### 5. Phase 7 Acceptance Test Suite
 
 | Test ID | Test Name | Assertion Criteria |
 |---|---|---|
@@ -99,9 +109,7 @@ Dispatches real-time notifications via Webhooks / Telegram without order executi
 | **A18** | TradingView Isolation | Engine code has zero network calls or scraping dependencies to TradingView. |
 | **A28** | Live Quote Freshness & Health | Stale, expired, or quarantined Redis live quote emits `LIVE_DATA_STALE` and cannot trigger entry alerts. |
 
----
-
-## 6. Definition of Done Checklist
+### 6. Definition of Done Checklist
 
 - [x] Django dashboard views and Plotly charts fully responsive.
 - [x] `LiveMonitor` service operates against Redis TTL quotes with freshness guards.
@@ -109,4 +117,3 @@ Dispatches real-time notifications via Webhooks / Telegram without order executi
 - [x] AST scan validates zero trading key / execution methods in codebase.
 - [x] Acceptance tests **A11, A12, A18, A28, A39, A40, A41, A42, A43, A44, A45** passing.
 - [x] Targeted tests **P7-01 through P7-27** and **P7-AUTH-01 through P7-AUTH-07** passing.
-

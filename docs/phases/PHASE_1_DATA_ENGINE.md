@@ -1,27 +1,40 @@
-# Phase 1: Data Engine, Multi-Provider Abstraction & Market Integrity
+# Phase 1: Ingestion Pipeline & Data Engine Specification
 
-> **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
-> **Baseline Commit SHA:** `6bfb233e615ee48a819e1fb2a8de78367d97f8a9`  
-> **Primary Goal:** Build resilient multi-exchange data ingestion with 3-tier domain modeling, temporal provider health monitoring, point-in-time quote normalization, 2-source disagreement safety, canonical gold reference semantics, closed-candle gates, and a 5-point continuity verification lifecycle.
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
+> **Current XAUUSD Target Status:** 🟡 **MIGRATION REQUIRED (IMPLEMENTATION PENDING PHASE 1)**
 
 ---
 
-## 1. Domain Modeling (`apps/instruments/`)
+## XAUUSD Migration Addendum
 
-### 3-Tier Architecture (`Asset` -> `Instrument` -> `MarketListing`)
-Decouple the abstract economic asset/pair from exchange-specific listings:
+### 1. Target Scope & Architecture
+- **Primary Signal Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD).
+- **Primary Spot Provider:** Implementation pending Phase 1 (`XAU-P1-01`).
+- **Secondary Independent Spot Provider:** Implementation pending Phase 1 (`XAU-P1-02`).
+- **USDT/USD Normalization Role:** Preserved strictly for historical XAUT baseline audit; **not** a primary dependency for future spot XAUUSD processing.
+- **Provider Threshold Status:** Divergence thresholds, outlier boundaries, and failover parameters for XAUUSD spot feeds are **NOT FROZEN / REVALIDATION REQUIRED** based on empirical Phase 1 broker feed characteristics.
 
+---
+
+## Historical XAUT Frozen Specification (Verbatim Baseline)
+
+> **Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
+> **Baseline Commit SHA:** `6bfb233e615ee48a819e1fb2a8de78367d97f8a9`  
+> **Primary Goal:** Multi-source market data ingestion, resilient normalization ($XAUT_{USD} = XAUT_{USDT} \times USDTUSD$), temporal outlier quarantine, and point-in-time candle persistence with zero future look-ahead.
+
+### 1. Data Model Topology (`apps/market_data/models.py`)
+
+#### 3-Tier Hierarchy (Asset $\rightarrow$ Instrument $\rightarrow$ MarketListing)
 ```python
 class Asset(models.Model):
-    code = models.CharField(max_length=16, unique=True) # XAUT, XAU, USDT, USD, DXY
-    name = models.CharField(max_length=128)
-    asset_type = models.CharField(max_length=32)        # CRYPTO_TOKEN, COMMODITY, FIAT, INDEX
+    symbol = models.CharField(max_length=16, unique=True) # XAUT, USDT, USD, XAU, PAXG
+    asset_type = models.CharField(max_length=16)          # CRYPTO, FIAT, COMMODITY
 
 class InstrumentRole(models.TextChoices):
-    EXECUTION = "EXECUTION", "Execution Target (XAUT/USDT)"
-    GOLD_REFERENCE = "GOLD_REFERENCE", "Canonical Gold Directional Reference (XAU/USD)"
-    GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Secondary Confirmation Proxy (PAXG / Gold Futures)"
-    QUOTE_NORMALIZATION = "QUOTE_NORMALIZATION", "Canonical Stablecoin Normalization Rate (USDT/USD)"
+    PRIMARY_SIGNAL = "PRIMARY_SIGNAL", "Primary Signal Instrument (XAUT/USD)"
+    GOLD_REFERENCE = "GOLD_REFERENCE", "Canonical Commodity Spot Reference (XAU/USD)"
+    GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Tokenized Physical Proxy (PAXG/USD)"
     QUOTE_NORMALIZATION_PROXY = "QUOTE_NORMALIZATION_PROXY", "Stablecoin Proxy Normalization Rate (USDT/USDC)"
     MACRO = "MACRO", "Macro USD Filter (DXY / Yields)"
 
@@ -41,7 +54,7 @@ class MarketListing(models.Model):
     fallback_priority = models.IntegerField(default=0)
 ```
 
-### Temporal Provider Health Tracking
+#### Temporal Provider Health Tracking
 ```python
 class ProviderHealthSnapshot(models.Model):
     listing = models.ForeignKey(MarketListing, on_delete=models.CASCADE, related_name="health_snapshots")
@@ -52,11 +65,9 @@ class ProviderHealthSnapshot(models.Model):
     reason = models.TextField(blank=True)
 ```
 
----
+### 2. Multi-Provider Ingestion Architecture (`apps/market_data/`)
 
-## 2. Multi-Provider Ingestion Architecture (`apps/market_data/`)
-
-### Abstract Provider Interface (`providers/base.py`)
+#### Abstract Provider Interface (`providers/base.py`)
 ```python
 class MarketDataProvider(ABC):
     @abstractmethod
@@ -73,18 +84,16 @@ class MarketDataProvider(ABC):
     def fetch_ticker(self, symbol: str) -> TickerSnapshot | None: return None
 ```
 
-### Adapters Implemented
+#### Adapters Implemented
 1. **`BinanceProvider`** (`providers/binance.py`): Public klines endpoint `/api/v3/klines` for XAUTUSDT, exchangeInfo symbol status validation (`TRADING` vs `HALT`/`BREAK`).
 2. **`OKXProvider`** (`providers/okx.py`): Public candles endpoint `/api/v5/market/candles` with strict `confirm == "1"` closed check, public instruments status check.
 3. **`GoldReferenceProvider`** (`providers/gold_reference.py`): Strictly canonical spot XAU/USD gold reference. Reports `NOT_CONFIGURED` if no true commodity feed exists; raises error if proxy substitution is attempted.
 4. **`PaxgConfirmationProvider`** (`providers/gold_reference.py`): Secondary tokenized physical gold proxy (`PAXG/USDT`) for `GOLD_CONFIRMATION` role only.
 5. **`UsdtUsdRateProvider`** (`providers/usdt_usd.py`): Inverse Binance `USDCUSDT` rate proxy (`USDT_USDC_PROXY`). Never silently defaults to 1.0; supports historical Point-in-Time rate lookup.
 
----
+### 3. Normalization & Market Integrity Engines
 
-## 3. Normalization & Market Integrity Engines
-
-### 1. Point-in-Time Quote Normalization (`normalization.py` - R19 / A21 / P1-03 / P1-04 / P1-09)
+#### 1. Point-in-Time Quote Normalization (`normalization.py` - R19 / A21 / P1-03 / P1-04 / P1-09)
 $$\text{Deviation} = |USDTUSD - 1.0|$$
 - If deviation $\ge 2.0\%$: CRITICAL $\rightarrow$ Hard block `BUY_WINDOW`.
 - If deviation $\ge 0.5\%$: WARNING $\rightarrow$ Penalize data quality score.
@@ -92,7 +101,7 @@ $$\text{Deviation} = |USDTUSD - 1.0|$$
 - **Zero-Fallback Rule**: Missing or failed rate feed returns `None` and activates hard fail; **never defaults to 1.0**.
 - Formula: $XAUT_{USD} = XAUT_{USDT} \times USDTUSD$.
 
-### 2. 5-Point Provider Transition Lifecycle (`integrity.py` - A20 / P1-06)
+#### 2. 5-Point Provider Transition Lifecycle (`integrity.py` - A20 / P1-06)
 When primary provider fails over (e.g. Binance $\rightarrow$ OKX):
 - Engine enforces **FORCE_WAIT** until ALL 5 criteria pass:
   1. Price basis difference $\le 0.30\%$.
@@ -101,24 +110,20 @@ When primary provider fails over (e.g. Binance $\rightarrow$ OKX):
   4. Zero bad ticks ($> 3\times$ ATR).
   5. Secondary reference consensus confirms level ($\le 0.35\%$ divergence).
 
-### 3. Outlier Quarantine & 2-Source Disagreement Policy (`integrity.py` - A15 / P1-05)
+#### 3. Outlier Quarantine & 2-Source Disagreement Policy (`integrity.py` - A15 / P1-05)
 - **If $\ge 3$ sources**: Multi-source median filter quarantines any source deviating $> 0.50\%$.
 - **If $== 2$ sources**: Divergence $> 0.50\%$ triggers `TWO_SOURCE_DISAGREEMENT` and `FORCE_WAIT`. No arbitrary single-source quarantine without consensus.
 
-### 4. XAUT/XAU Basis Gate (`integrity.py` - A17 / P1-08B)
+#### 4. XAUT/XAU Basis Gate (`integrity.py` - A17 / P1-08B)
 - Divergence $> 3.0\%$ between normalized $XAUT_{USD}$ and spot $XAU_{USD}$ triggers hard fail.
 - Missing canonical spot XAU/USD price triggers `GOLD_REFERENCE_UNAVAILABLE` and blocks `BUY_WINDOW`.
 
----
-
-## 4. Timeframe Storage & Decoupled Repository
+### 4. Timeframe Storage & Decoupled Repository
 
 - **`MarketCandle`**: Strict UTC point-in-time OHLCV table with `close_usd`, `quote_rate`, and `is_closed`.
 - **`DjangoCandleRepository`**: Implements pure `engine.core.interfaces.CandleRepository` Protocol. Strictly filters `is_closed=True` in `load_window()` (P1-02), preventing forming/open bars from leaking into indicators.
 
----
-
-## 5. Acceptance & Targeted Verification Tests
+### 5. Acceptance & Targeted Verification Tests
 
 | Test ID | Test Name | Assertion Criteria | Status |
 |---|---|---|:---:|
@@ -139,9 +144,7 @@ When primary provider fails over (e.g. Binance $\rightarrow$ OKX):
 | **P1-09B** | Historical Rate Requirement | Historical normalization requires historical rate series. | ✅ PASS |
 | **INTEG** | End-to-End Ingestion | Provider fetch $\rightarrow$ normalize $\rightarrow$ validate $\rightarrow$ persist $\rightarrow$ repository load. | ✅ PASS |
 
----
-
-## 6. Definition of Done Checklist
+### 6. Definition of Done Checklist
 
 - [x] `Asset`, `Instrument`, `MarketListing` models created and seeded.
 - [x] `ProviderHealthSnapshot` temporal tracking active.
