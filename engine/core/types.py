@@ -287,9 +287,9 @@ class MacroEvent:
 class MacroEventContext:
     """Point-in-Time macro event proximity and blackout gating."""
     is_in_blackout: bool
-    minutes_to_next_event: Optional[int]
-    minutes_since_last_event: Optional[int]
-    active_event_name: Optional[str]
+    minutes_to_next_event: Optional[int] = None
+    minutes_since_last_event: Optional[int] = None
+    active_event_name: Optional[str] = None
     point_in_time_value: Optional[str] = None
     is_feed_healthy: bool = False
 

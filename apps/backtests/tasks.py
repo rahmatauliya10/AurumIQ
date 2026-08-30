@@ -152,7 +152,10 @@ def run_backtest_task(
             **base_filter,
         ).order_by("timestamp"):
             snap = AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(rec)
-            dataset.add_cycle_3a(snap)
+            if snap:
+                dataset.add_cycle_3a(snap)
+                if snap.macro_event:
+                    dataset.add_macro_context(snap.timestamp, snap.macro_event)
 
         runner = BacktestRunner()
         result = runner.run(dataset=dataset, spec=spec)
