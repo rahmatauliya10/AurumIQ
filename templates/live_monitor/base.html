@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AurumIQ — Live Signal Intelligence{% endblock %}</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Plotly.js CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="dark-theme">
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo-container">
+                <span class="logo-symbol">◈</span>
+                <span class="logo-text">AURUM<span class="logo-highlight">IQ</span></span>
+            </div>
+            <span class="badge badge-subtle">LIVE INTELLIGENCE v7.2</span>
+        </div>
+        <nav class="header-nav">
+            <a href="{% url 'live_monitor:dashboard' %}" class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">Live Monitor</a>
+            <a href="{% url 'live_monitor:history' %}" class="nav-link {% if request.resolver_match.url_name == 'history' %}active{% endif %}">Audit History</a>
+        </nav>
+        <div class="header-right">
+            <div class="ws-status-indicator" id="wsStatus">
+                <span class="status-dot online"></span>
+                <span class="status-label">CONNECTED</span>
+            </div>
+            <div class="user-badge">
+                <span class="user-avatar">👤</span>
+                <span class="user-name">{{ user.username|default:"Operator" }}</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="app-container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="app-footer">
+        <div class="footer-left">
+            <span>Deterministic Intelligence Engine • Point-in-Time Causality Active</span>
+        </div>
+        <div class="footer-right">
+            <span>Decision Support System — Non-Execution Safety Boundary Active</span>
+        </div>
+    </footer>
+
+    <script src="/static/js/dashboard.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

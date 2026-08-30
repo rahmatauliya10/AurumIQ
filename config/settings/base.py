@@ -54,6 +54,7 @@ LOCAL_APPS = [
     "apps.analysis.apps.AnalysisConfig",
     "apps.signals.apps.SignalsConfig",
     "apps.backtests.apps.BacktestsConfig",
+    "apps.live_monitor.apps.LiveMonitorConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -222,3 +223,9 @@ LOGGING = {
         },
     },
 }
+
+# Authentication URLs
+LOGIN_URL = "/accounts/login/"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/accounts/login/"
+

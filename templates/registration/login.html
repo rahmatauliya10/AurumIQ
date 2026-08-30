@@ -1,0 +1,50 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}AurumIQ — Sign In{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+    <div class="card auth-card">
+        <div class="auth-header">
+            <div class="auth-logo">
+                <span class="logo-symbol">◈</span>
+                <span class="logo-text">AURUM<span class="logo-highlight">IQ</span></span>
+            </div>
+            <h2 class="auth-title">Operator Authentication</h2>
+            <p class="auth-subtitle">Live Signal Intelligence & Decision Support System</p>
+        </div>
+
+        {% if form.errors %}
+            <div class="auth-error-box">
+                <span class="error-icon">⚠️</span>
+                <span>Invalid operator username or password. Please try again.</span>
+            </div>
+        {% endif %}
+
+        <form method="post" action="{% url 'login' %}" class="auth-form">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next|default:'/' }}">
+
+            <div class="form-group">
+                <label for="id_username" class="form-label">Operator Username</label>
+                <input type="text" name="username" autofocus autocapitalize="none" autocomplete="username" maxlength="150" required id="id_username" class="form-input" placeholder="e.g. operator">
+            </div>
+
+            <div class="form-group">
+                <label for="id_password" class="form-label">Password</label>
+                <input type="password" name="password" autocomplete="current-password" required id="id_password" class="form-input" placeholder="••••••••">
+            </div>
+
+            <button type="submit" class="btn btn-auth-submit">
+                <span>Sign In to AurumIQ</span>
+                <span class="btn-arrow">→</span>
+            </button>
+        </form>
+
+        <div class="auth-footer-notice">
+            <span class="shield-icon">🛡️</span>
+            <span>Deterministic Read-Only Decision Environment</span>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,108 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}AurumIQ — {{ symbol }} Immutable Audit History{% endblock %}
+
+{% block content %}
+<div class="history-page-container">
+    <div class="history-header">
+        <h1 class="page-title">Immutable Decision Audit History</h1>
+        <p class="page-subtitle">Chronological ledger of closed-candle SignalRecords and Phase 5 RiskPlanRecords.</p>
+    </div>
+
+    <!-- Signals Table -->
+    <section class="card history-card">
+        <div class="panel-header-row">
+            <h3 class="panel-heading">Closed-Candle Signals (`SignalRecord`)</h3>
+            <span class="badge badge-subtle">Append-Only Audit</span>
+        </div>
+        <div class="table-responsive">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Fingerprint</th>
+                        <th>State</th>
+                        <th>Decision</th>
+                        <th>Direction</th>
+                        <th>Timing</th>
+                        <th>Engine Ver</th>
+                        <th>Revision</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sig in signals %}
+                        <tr>
+                            <td>{{ sig.timestamp|date:"Y-m-d H:i" }}</td>
+                            <td class="font-mono">{{ sig.analysis_fingerprint|truncatechars:16 }}</td>
+                            <td><span class="badge badge-sm">{{ sig.state }}</span></td>
+                            <td>
+                                <span class="badge badge-sm {% if sig.user_decision == 'BUY' %}badge-success{% elif sig.user_decision == 'AVOID' %}badge-danger{% else %}badge-warning{% endif %}">
+                                    {{ sig.user_decision }}
+                                </span>
+                            </td>
+                            <td>{{ sig.direction_score|floatformat:1 }}</td>
+                            <td>{{ sig.timing_score|floatformat:1 }}</td>
+                            <td>{{ sig.engine_version }}</td>
+                            <td class="font-mono">{{ sig.code_revision|truncatechars:8 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td colspan="8" class="text-center text-muted">No historical signals recorded yet.</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Risk Plans Table -->
+    <section class="card history-card">
+        <div class="panel-header-row">
+            <h3 class="panel-heading">Phase 5 Risk Plans (`LiveRiskPlanRecord`)</h3>
+            <span class="badge badge-subtle">Deterministic Boundaries</span>
+        </div>
+        <div class="table-responsive">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Signal Time</th>
+                        <th>Linked Signal FP</th>
+                        <th>Entry Corridor</th>
+                        <th>Stop Loss</th>
+                        <th>TP1 (RR)</th>
+                        <th>TP2 (RR)</th>
+                        <th>Plan Status</th>
+                        <th>Effective Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for rp in risk_plans %}
+                        <tr>
+                            <td>{{ rp.signal_timestamp|date:"Y-m-d H:i" }}</td>
+                            <td class="font-mono">{{ rp.source_signal_fingerprint|truncatechars:16 }}</td>
+                            <td>{{ rp.entry_min }} – {{ rp.entry_max }}</td>
+                            <td class="text-danger">{{ rp.stop_final }}</td>
+                            <td class="text-success">{{ rp.tp1 }} ({{ rp.rr_tp1 }})</td>
+                            <td class="text-success">{{ rp.tp2 }} ({{ rp.rr_tp2 }})</td>
+                            <td>
+                                <span class="badge badge-sm {% if rp.is_valid_risk_plan %}badge-success{% else %}badge-warning{% endif %}">
+                                    {% if rp.is_valid_risk_plan %}VALID{% else %}INVALID{% endif %}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="badge badge-sm {% if rp.effective_action == 'BUY' %}badge-success{% elif rp.effective_action == 'AVOID' %}badge-danger{% else %}badge-warning{% endif %}">
+                                    {{ rp.effective_action }}
+                                </span>
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td colspan="8" class="text-center text-muted">No historical risk plans recorded yet.</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

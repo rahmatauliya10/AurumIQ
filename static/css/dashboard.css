@@ -1,0 +1,742 @@
+/* AurumIQ Live Intelligence Dashboard Styling */
+:root {
+    --bg-base: #0a0e17;
+    --bg-card: #131b26;
+    --bg-card-hover: #182230;
+    --border-subtle: #1f2c3f;
+    --border-bright: #2d3f58;
+    
+    --text-main: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+
+    --gold-primary: #f59e0b;
+    --gold-light: #fbbf24;
+    --gold-dim: rgba(245, 158, 11, 0.15);
+
+    --success: #10b981;
+    --success-dim: rgba(16, 185, 129, 0.15);
+    
+    --danger: #ef4444;
+    --danger-dim: rgba(239, 68, 68, 0.15);
+
+    --warning: #f59e0b;
+    --warning-dim: rgba(245, 158, 11, 0.15);
+
+    --font-main: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body.dark-theme {
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: var(--font-main);
+    line-height: 1.5;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+.app-header {
+    height: 64px;
+    background: #0f1722;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2rem;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+.header-left, .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+}
+
+.logo-container {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    font-size: 1.25rem;
+    letter-spacing: 0.05em;
+}
+
+.logo-symbol {
+    color: var(--gold-primary);
+    font-size: 1.4rem;
+}
+
+.logo-highlight {
+    color: var(--gold-primary);
+}
+
+.header-nav {
+    display: flex;
+    gap: 1.5rem;
+}
+
+.nav-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+    transition: color 0.15s ease;
+}
+
+.nav-link:hover, .nav-link.active {
+    color: var(--gold-light);
+}
+
+.ws-status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.35rem 0.75rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border-subtle);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.status-dot.online {
+    background-color: var(--success);
+    box-shadow: 0 0 8px var(--success);
+}
+
+.status-dot.offline {
+    background-color: var(--danger);
+    box-shadow: 0 0 8px var(--danger);
+}
+
+/* Main Container */
+.app-container {
+    flex: 1;
+    padding: 1.5rem 2rem;
+    max-width: 1600px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+/* Dashboard Grid */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 1.25rem;
+}
+
+/* Cards Base */
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 1.5rem;
+    transition: border-color 0.2s ease;
+}
+
+.card:hover {
+    border-color: var(--border-bright);
+}
+
+.panel-heading {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-main);
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.panel-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+/* 1. Decision Hero */
+.hero-card {
+    grid-column: span 8;
+    background: linear-gradient(145deg, #131b26 0%, #152233 100%);
+    border: 1px solid #2a3d56;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.hero-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.symbol-display {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.quote-price-box {
+    text-align: right;
+}
+
+.quote-price-box .label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+.quote-price-box .price-val {
+    font-size: 2rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--text-main);
+}
+
+.quote-price-box .spread-val {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.decision-badge-container {
+    margin: 1.5rem 0;
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+}
+
+.action-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 2rem;
+    border-radius: 12px;
+    font-size: 1.6rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+}
+
+.action-pill.action-buy {
+    background: var(--success-dim);
+    border: 2px solid var(--success);
+    color: var(--success);
+}
+
+.action-pill.action-wait {
+    background: var(--warning-dim);
+    border: 2px solid var(--warning);
+    color: var(--warning);
+}
+
+.action-pill.action-avoid {
+    background: var(--danger-dim);
+    border: 2px solid var(--danger);
+    color: var(--danger);
+}
+
+.decision-subtext {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.entry-readiness-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 0.9rem;
+}
+
+/* 2. Scores Card */
+.scores-card {
+    grid-column: span 4;
+}
+
+.score-meters-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.score-box {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+}
+
+.score-circle-wrapper {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.2rem;
+}
+
+.score-number {
+    font-size: 2rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--gold-light);
+}
+
+.score-denom {
+    font-size: 0.9rem;
+    color: var(--text-dim);
+}
+
+.score-box-label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-top: 0.25rem;
+}
+
+.score-subtext {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.meta-timestamps {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+}
+
+.meta-row {
+    display: flex;
+    justify-content: space-between;
+}
+
+.meta-label {
+    color: var(--text-dim);
+}
+
+.meta-val {
+    color: var(--text-muted);
+}
+
+/* 3. Risk Card */
+.risk-card {
+    grid-column: span 6;
+}
+
+.risk-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.risk-item {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+}
+
+.risk-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.risk-val {
+    font-size: 1.15rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    margin-top: 0.2rem;
+    display: block;
+}
+
+/* 4. Why / Explainability Card */
+.why-card {
+    grid-column: span 6;
+}
+
+.why-sections-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+}
+
+.why-subhead {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+}
+
+.reason-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.reason-item {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+
+.reason-item .bullet {
+    font-weight: bold;
+    margin-right: 0.25rem;
+}
+
+.hard-gate-box {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: #fca5a5;
+}
+
+.gate-alert-title {
+    font-weight: 700;
+    margin-bottom: 0.3rem;
+    display: block;
+}
+
+/* 5. Critical Feed Health */
+.feed-card {
+    grid-column: span 12;
+    padding: 1rem 1.5rem;
+}
+
+.feed-pills-row {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.feed-pill {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-subtle);
+    padding: 0.4rem 0.85rem;
+    border-radius: 6px;
+}
+
+.pill-dot {
+    color: var(--success);
+}
+
+.pill-name {
+    color: var(--text-dim);
+}
+
+.pill-status {
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+/* 6. Chart Card */
+.chart-card {
+    grid-column: span 12;
+    min-height: 480px;
+    display: flex;
+    flex-direction: column;
+}
+
+.chart-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.plotly-container {
+    flex: 1;
+    width: 100%;
+    min-height: 420px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.chart-loading-spinner {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+}
+
+/* Badges & Utility */
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+.badge-outline {
+    border: 1px solid var(--border-bright);
+    color: var(--text-muted);
+}
+
+.badge-status {
+    background: var(--gold-dim);
+    color: var(--gold-light);
+    border: 1px solid var(--gold-primary);
+}
+
+.badge-success {
+    background: var(--success-dim);
+    color: var(--success);
+}
+
+.badge-warning {
+    background: var(--warning-dim);
+    color: var(--warning);
+}
+
+.badge-danger {
+    background: var(--danger-dim);
+    color: var(--danger);
+}
+
+.badge-subtle {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-dim);
+}
+
+.text-success { color: var(--success) !important; }
+.text-warning { color: var(--warning) !important; }
+.text-danger { color: var(--danger) !important; }
+.text-muted { color: var(--text-muted) !important; }
+.font-mono { font-family: var(--font-mono) !important; }
+
+.btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border-bright);
+    color: var(--text-main);
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--gold-primary);
+}
+
+/* Audit Table */
+.audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.audit-table th {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-dim);
+    font-weight: 600;
+}
+
+.audit-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    color: var(--text-muted);
+}
+
+.audit-table tr:hover td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+/* Footer */
+.app-footer {
+    height: 48px;
+    background: #0b1018;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 2rem;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+    .hero-card, .scores-card, .risk-card, .why-card {
+        grid-column: span 12;
+    }
+}
+
+/* Authentication Page */
+.auth-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100dvh - 180px);
+    padding: 2rem 1rem;
+}
+
+.auth-card {
+    max-width: 440px;
+    width: 100%;
+    background: linear-gradient(160deg, #131b26 0%, #172335 100%);
+    border: 1px solid #2d3f58;
+    border-radius: 14px;
+    padding: 2.5rem 2rem;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.auth-header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.auth-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.5rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    margin-bottom: 1rem;
+}
+
+.auth-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text-main);
+    letter-spacing: -0.01em;
+}
+
+.auth-subtitle {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+.auth-error-box {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid var(--danger);
+    color: #fca5a5;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    margin-bottom: 1.5rem;
+}
+
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.form-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.form-input {
+    background: #0a0f18;
+    border: 1px solid var(--border-bright);
+    border-radius: 8px;
+    color: var(--text-main);
+    font-family: var(--font-main);
+    font-size: 0.95rem;
+    padding: 0.75rem 1rem;
+    transition: all 0.15s ease;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--gold-primary);
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+.btn-auth-submit {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    border: none;
+    color: #000;
+    font-weight: 700;
+    font-size: 1rem;
+    padding: 0.85rem 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    transition: all 0.15s ease;
+}
+
+.btn-auth-submit:hover {
+    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
+}
+
+.btn-arrow {
+    font-size: 1.1rem;
+}
+
+.auth-footer-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-top: 2rem;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-align: center;
+}
+

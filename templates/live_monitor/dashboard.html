@@ -1,0 +1,213 @@
+{% extends "live_monitor/base.html" %}
+
+{% block title %}AurumIQ — {{ symbol }} Live Signal Intelligence{% endblock %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 1. DECISION HERO (Top Section) -->
+    <section class="card hero-card" id="decisionHero">
+        <div class="hero-header">
+            <div class="instrument-title">
+                <h1 class="symbol-display" id="heroSymbol">{{ symbol }}</h1>
+                <span class="badge badge-outline" id="quoteFreshnessBadge">
+                    {% if state.is_quote_stale %}STALE QUOTE{% else %}LIVE QUOTE{% endif %}
+                </span>
+            </div>
+            <div class="quote-price-box">
+                <span class="label">CURRENT ASK</span>
+                <span class="price-val" id="heroAsk">{{ state.current_ask|default:"--" }}</span>
+                <span class="spread-val">Spread: <span id="heroSpread">{{ state.spread|default:"--" }}</span> (<span id="heroSpreadPct">{{ state.spread_pct|default:"--" }}%</span>)</span>
+            </div>
+        </div>
+
+        <div class="decision-badge-container">
+            <div class="action-pill action-{{ state.effective_action|lower }}" id="heroActionPill">
+                <span class="action-icon">
+                    {% if state.effective_action == "BUY" %}🟢{% elif state.effective_action == "AVOID" %}🔴{% else %}🟡{% endif %}
+                </span>
+                <span class="action-text" id="heroActionText">{{ state.effective_action|default:"WAIT" }}</span>
+            </div>
+            <div class="decision-subtext">
+                <span class="audit-line" id="heroSignalLayer">
+                    Signal Layer: <strong>{{ state.signal_state }}</strong> / <strong>{{ state.signal_user_decision }}</strong>
+                </span>
+                <span class="audit-divider">•</span>
+                <span class="audit-line" id="heroRiskLayer">
+                    Risk Architecture: <strong class="{% if state.risk_plan_valid %}text-success{% else %}text-warning{% endif %}">
+                        {% if state.risk_plan_valid %}VALID{% else %}INVALID (effective {{ state.effective_action }}){% endif %}
+                    </strong>
+                </span>
+            </div>
+        </div>
+
+        <div class="entry-readiness-bar">
+            <span class="readiness-label">Entry Readiness:</span>
+            <span class="badge badge-status" id="heroEntryZoneStatus">{{ state.entry_zone_status }}</span>
+            {% if state.distance_to_entry_zone_pct %}
+                <span class="distance-text">Distance to zone: <strong id="heroZoneDistance">{{ state.distance_to_entry_zone_pct }}%</strong></span>
+            {% endif %}
+        </div>
+    </section>
+
+    <!-- 2. SCORE CARDS & ENGINE INTELLIGENCE -->
+    <section class="card scores-card">
+        <h3 class="panel-heading">Signal Intelligence Scores</h3>
+        <div class="score-meters-grid">
+            <div class="score-box">
+                <div class="score-circle-wrapper">
+                    <span class="score-number" id="directionScoreVal">{{ state.direction_score|floatformat:0 }}</span>
+                    <span class="score-denom">/100</span>
+                </div>
+                <span class="score-box-label">Direction Score</span>
+                <span class="score-subtext">Macro + Regime + Swings</span>
+            </div>
+            <div class="score-box">
+                <div class="score-circle-wrapper">
+                    <span class="score-number" id="timingScoreVal">{{ state.timing_score|floatformat:0 }}</span>
+                    <span class="score-denom">/100</span>
+                </div>
+                <span class="score-box-label">Timing Score</span>
+                <span class="score-subtext">15m Reversal + Cycle 3A</span>
+            </div>
+        </div>
+        <div class="meta-timestamps">
+            <div class="meta-row">
+                <span class="meta-label">Last 15m Close:</span>
+                <span class="meta-val" id="lastClosedTs">{{ state.last_closed_candle_ts|date:"H:i:s"|default:"--" }} UTC</span>
+            </div>
+            <div class="meta-row">
+                <span class="meta-label">Last Analysis:</span>
+                <span class="meta-val" id="lastAnalysisTs">{{ state.last_analysis_timestamp|date:"H:i:s"|default:"--" }} UTC</span>
+            </div>
+            <div class="meta-row">
+                <span class="meta-label">Signal Fingerprint:</span>
+                <span class="meta-val font-mono" id="signalFingerprint">{{ state.signal_fingerprint|truncatechars:16|default:"--" }}</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- 3. RISK ARCHITECTURE PANEL -->
+    <section class="card risk-card">
+        <div class="panel-header-row">
+            <h3 class="panel-heading">Risk & Execution Boundaries</h3>
+            <span class="badge {% if state.risk_plan_valid %}badge-success{% else %}badge-warning{% endif %}" id="riskValidityBadge">
+                {% if state.risk_plan_valid %}PLAN VALID{% else %}PLAN INVALID{% endif %}
+            </span>
+        </div>
+        <div class="risk-grid">
+            <div class="risk-item">
+                <span class="risk-label">Entry Min</span>
+                <span class="risk-val" id="riskEntryMin">{{ state.entry_min|default:"--" }}</span>
+            </div>
+            <div class="risk-item">
+                <span class="risk-label">Entry Mid</span>
+                <span class="risk-val" id="riskEntryMid">{{ state.entry_mid|default:"--" }}</span>
+            </div>
+            <div class="risk-item">
+                <span class="risk-label">Entry Max</span>
+                <span class="risk-val" id="riskEntryMax">{{ state.entry_max|default:"--" }}</span>
+            </div>
+            <div class="risk-item">
+                <span class="risk-label">Stop Loss</span>
+                <span class="risk-val text-danger" id="riskStop">{{ state.stop_final|default:"--" }}</span>
+            </div>
+            <div class="risk-item">
+                <span class="risk-label">Target TP1</span>
+                <span class="risk-val text-success" id="riskTp1">{{ state.tp1|default:"--" }} (RR {{ state.rr_tp1|default:"--" }})</span>
+            </div>
+            <div class="risk-item">
+                <span class="risk-label">Target TP2</span>
+                <span class="risk-val text-success" id="riskTp2">{{ state.tp2|default:"--" }} (RR {{ state.rr_tp2|default:"--" }})</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4. WHY / EXPLAINABILITY PANEL -->
+    <section class="card why-card">
+        <h3 class="panel-heading">Decision Intelligence Rationale</h3>
+        <div class="why-sections-grid">
+            <div class="why-col">
+                <h4 class="why-subhead text-success">Positive Drivers</h4>
+                <ul class="reason-list" id="positiveReasonsList">
+                    {% for r in state.reasons_positive %}
+                        <li class="reason-item positive"><span class="bullet">✓</span> {{ r }}</li>
+                    {% empty %}
+                        <li class="reason-item text-muted">No positive drivers active.</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="why-col">
+                <h4 class="why-subhead text-warning">Cautionary & Negative Factors</h4>
+                <ul class="reason-list" id="negativeReasonsList">
+                    {% for r in state.reasons_negative %}
+                        <li class="reason-item negative"><span class="bullet">•</span> {{ r }}</li>
+                    {% empty %}
+                        <li class="reason-item text-muted">Zero cautionary factors recorded.</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        {% if state.hard_gate_reasons %}
+            <div class="hard-gate-box" id="hardGateBox">
+                <span class="gate-alert-title">⚠️ ACTIVE HARD GATES:</span>
+                <ul class="gate-reason-list">
+                    {% for g in state.hard_gate_reasons %}
+                        <li>{{ g }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% endif %}
+    </section>
+
+    <!-- 5. CRITICAL FEED HEALTH -->
+    <section class="card feed-card">
+        <h3 class="panel-heading">Critical Feed Health & Continuity</h3>
+        <div class="feed-pills-row" id="feedPillsRow">
+            <div class="feed-pill" id="feedXaut">
+                <span class="pill-dot">●</span>
+                <span class="pill-name">XAUT Feed:</span>
+                <span class="pill-status" id="feedXautStatus">{{ state.feed_health_data.xaut_status|default:"HEALTHY" }}</span>
+            </div>
+            <div class="feed-pill" id="feedXau">
+                <span class="pill-dot">●</span>
+                <span class="pill-name">XAU Spot:</span>
+                <span class="pill-status" id="feedXauStatus">{{ state.feed_health_data.xau_status|default:"HEALTHY" }}</span>
+            </div>
+            <div class="feed-pill" id="feedUsdt">
+                <span class="pill-dot">●</span>
+                <span class="pill-name">USDT Norm:</span>
+                <span class="pill-status" id="feedUsdtStatus">{{ state.feed_health_data.usdt_norm_status|default:"HEALTHY" }}</span>
+            </div>
+            <div class="feed-pill" id="feedMacro">
+                <span class="pill-dot">●</span>
+                <span class="pill-name">Macro Blackout:</span>
+                <span class="pill-status" id="feedMacroStatus">{{ state.feed_health_data.macro_status|default:"HEALTHY" }}</span>
+            </div>
+            <div class="feed-pill" id="feedProvider">
+                <span class="pill-dot">●</span>
+                <span class="pill-name">Provider Sync:</span>
+                <span class="pill-status" id="feedProviderStatus">{{ state.feed_health_data.provider_sync_status|default:"HEALTHY" }}</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- 6. PLOTLY MARKET CHART -->
+    <section class="card chart-card">
+        <div class="chart-header-row">
+            <h3 class="panel-heading">Market Structure & Execution Boundaries</h3>
+            <div class="chart-controls">
+                <span class="badge badge-subtle">15m Candles</span>
+                <button type="button" class="btn btn-sm" id="btnRefreshChart">⟳ Refresh Chart</button>
+            </div>
+        </div>
+        <div id="plotlyChartContainer" class="plotly-container">
+            <div class="chart-loading-spinner" id="chartLoader">Loading candlestick data...</div>
+        </div>
+    </section>
+</div>
+
+<!-- Embedded Initial State JSON for Zero-Latency Bootstrap -->
+<script id="initialStateJson" type="application/json">
+    {{ state_json|safe }}
+</script>
+{% endblock %}
