@@ -4,6 +4,13 @@ from django.db import models
 from apps.instruments.models import Instrument, MarketListing
 
 
+class VolumeEvidenceType(models.TextChoices):
+    REAL_VOLUME = "REAL_VOLUME", "Real Volume"
+    TICK_VOLUME = "TICK_VOLUME", "Tick Volume"
+    PROXY_VOLUME = "PROXY_VOLUME", "Proxy Volume"
+    UNAVAILABLE = "UNAVAILABLE", "Unavailable / Missing"
+
+
 class CandleQualityFlag(models.TextChoices):
     OK = "OK", "Good Quality"
     SUSPECT = "SUSPECT", "Suspect Data"
@@ -37,6 +44,13 @@ class MarketCandle(models.Model):
     low = models.DecimalField(max_digits=18, decimal_places=8)
     close = models.DecimalField(max_digits=18, decimal_places=8)
     volume = models.DecimalField(max_digits=24, decimal_places=8, default=Decimal("0"))
+    volume_evidence = models.CharField(
+        max_length=16,
+        choices=VolumeEvidenceType.choices,
+        default=VolumeEvidenceType.UNAVAILABLE,
+        db_index=True,
+        help_text="Volume semantics evidence type (REAL_VOLUME, TICK_VOLUME, PROXY_VOLUME, UNAVAILABLE)",
+    )
     
     # Normalization & Integrity
     quote_rate = models.DecimalField(
@@ -74,9 +88,14 @@ class MarketCandle(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        # Auto-compute normalized USD price if not provided
-        if self.close is not None and self.quote_rate is not None:
-            self.close_usd = (self.close * self.quote_rate).quantize(Decimal("0.00000001"))
+        # Direct USD native pricing vs legacy rate normalization
+        if self.close is not None:
+            # If quote asset is USD, close_usd is direct close (DIRECT_USD identity semantics)
+            if hasattr(self, "instrument") and self.instrument and getattr(self.instrument.quote_asset, "code", None) == "USD":
+                self.quote_rate = Decimal("1.000000")
+                self.close_usd = self.close.quantize(Decimal("0.00000001"))
+            elif self.quote_rate is not None:
+                self.close_usd = (self.close * self.quote_rate).quantize(Decimal("0.00000001"))
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:

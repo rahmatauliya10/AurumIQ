@@ -100,6 +100,14 @@ class SignalState(str, Enum):
     FORCE_WAIT = "FORCE_WAIT"
 
 
+class VolumeEvidenceType(str, Enum):
+    """Volume semantic evidence types."""
+    REAL_VOLUME = "REAL_VOLUME"
+    TICK_VOLUME = "TICK_VOLUME"
+    PROXY_VOLUME = "PROXY_VOLUME"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 @dataclass(frozen=True)
 class CandleData:
     """Immutable OHLCV candlestick object strictly decoupled from Django."""
@@ -114,6 +122,7 @@ class CandleData:
     source_id: str = "default"
     quote_rate: Optional[Decimal] = None
     close_usd: Optional[Decimal] = None
+    volume_evidence: VolumeEvidenceType = VolumeEvidenceType.UNAVAILABLE
 
 
 @dataclass(frozen=True)

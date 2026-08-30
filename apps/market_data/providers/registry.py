@@ -6,6 +6,8 @@ from .binance import BinanceProvider
 from .okx import OKXProvider
 from .gold_reference import GoldReferenceProvider
 from .usdt_usd import UsdtUsdRateProvider
+from .xauusd_spot import XauUsdSpotProvider
+from .xauusd_secondary import SecondaryXauUsdSpotProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -55,3 +57,5 @@ registry.register(BinanceProvider())
 registry.register(OKXProvider())
 registry.register(GoldReferenceProvider(canonical_url=get_configured_gold_reference_url()))
 registry.register(UsdtUsdRateProvider())
+registry.register(XauUsdSpotProvider())
+registry.register(SecondaryXauUsdSpotProvider())

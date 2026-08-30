@@ -159,6 +159,16 @@ class XautXauIntegrityResult:
     message: str
 
 
+@dataclass(frozen=True)
+class XauUsdIntegrityResult:
+    """Integrity check result comparing independent spot XAUUSD provider prices."""
+    divergence_pct: Decimal
+    is_valid: bool
+    hard_fail: bool
+    is_disagreement: bool
+    message: str
+
+
 class MarketIntegrityEngine:
     """
     Core integrity engine enforcing:
@@ -309,6 +319,118 @@ class MarketIntegrityEngine:
             basis_pct=basis_pct,
             is_valid=not hard_fail,
             hard_fail=hard_fail,
+            message=msg,
+        )
+
+    def verify_xauusd_multi_provider_integrity(
+        self,
+        primary_price: Optional[Decimal],
+        secondary_price: Optional[Decimal],
+        max_divergence_pct: Optional[Decimal] = None,
+        is_secondary_critical: bool = True,
+        is_proxy_substitution: bool = False,
+    ) -> "XauUsdIntegrityResult":
+        """
+        XAU-P1-02: Multi-Provider Spot Gold Integrity & Disagreement Gate.
+        
+        Rules:
+          - Validates consistency between primary and secondary independent spot XAUUSD providers.
+          - Disagreement is treated strictly as DATA QUALITY / INTEGRITY EVIDENCE, NEVER directional alpha.
+          - Thresholds remain NOT FROZEN / REVALIDATION REQUIRED (configurable).
+          - Proxy substitution (XAUT/PAXG) is strictly rejected for direct spot XAUUSD scope.
+          - Missing primary feed fails closed (hard_fail=True).
+          - Missing secondary feed fails closed if is_secondary_critical=True; otherwise issues advisory.
+        """
+        if is_proxy_substitution:
+            msg = (
+                "XAU-P1-02 CRITICAL: Proxy substitution rejected. "
+                "Tokenized crypto-gold (XAUT/PAXG) cannot substitute direct spot XAU/USD feed."
+            )
+            logger.critical("proxy_substitution_rejected")
+            return XauUsdIntegrityResult(
+                divergence_pct=Decimal("1.0"),
+                is_valid=False,
+                hard_fail=True,
+                is_disagreement=False,
+                message=msg,
+            )
+
+        if primary_price is None or primary_price <= 0:
+            msg = "PRIMARY_XAUUSD_UNAVAILABLE: Primary spot XAU/USD price is missing or invalid. Hard fail active."
+            logger.critical("primary_xauusd_missing_hard_fail")
+            return XauUsdIntegrityResult(
+                divergence_pct=Decimal("1.0"),
+                is_valid=False,
+                hard_fail=True,
+                is_disagreement=False,
+                message=msg,
+            )
+
+        if secondary_price is None or secondary_price <= 0:
+            if is_secondary_critical:
+                msg = (
+                    "SECONDARY_XAUUSD_UNAVAILABLE: Secondary independent XAU/USD provider price is missing "
+                    "and configured as critical. Hard gate active."
+                )
+                logger.critical("secondary_xauusd_missing_critical")
+                return XauUsdIntegrityResult(
+                    divergence_pct=Decimal("0.0"),
+                    is_valid=False,
+                    hard_fail=True,
+                    is_disagreement=False,
+                    message=msg,
+                )
+            else:
+                msg = "ADVISORY: Secondary XAU/USD provider unavailable; operating on primary source only."
+                logger.info("secondary_xauusd_optional_missing")
+                return XauUsdIntegrityResult(
+                    divergence_pct=Decimal("0.0"),
+                    is_valid=True,
+                    hard_fail=False,
+                    is_disagreement=False,
+                    message=msg,
+                )
+
+        if max_divergence_pct is None:
+            msg = (
+                "INTEGRITY_THRESHOLD_NOT_CONFIGURED: XAUUSD integrity divergence threshold is not configured "
+                "/ not calibrated. Historical A15 threshold must not be inherited. Revalidation required (fail-closed)."
+            )
+            logger.critical("xauusd_integrity_threshold_not_configured")
+            return XauUsdIntegrityResult(
+                divergence_pct=Decimal("0.0"),
+                is_valid=False,
+                hard_fail=True,
+                is_disagreement=False,
+                message=msg,
+            )
+
+        threshold = max_divergence_pct
+        min_p = min(primary_price, secondary_price)
+        divergence_pct = abs(primary_price - secondary_price) / min_p if min_p > 0 else Decimal("0")
+        is_disagreement = divergence_pct > threshold
+
+        if is_disagreement:
+            msg = (
+                f"XAU-P1-02 DISAGREEMENT: Primary ({primary_price}) and Secondary ({secondary_price}) "
+                f"diverge by {divergence_pct * 100:.2f}% > threshold ({threshold * 100:.2f}%). "
+                f"Enforcing integrity fail-closed (quality guard only, zero directional alpha)."
+            )
+            logger.warning("xauusd_provider_disagreement_fail_closed", divergence=float(divergence_pct))
+            return XauUsdIntegrityResult(
+                divergence_pct=divergence_pct,
+                is_valid=False,
+                hard_fail=True,
+                is_disagreement=True,
+                message=msg,
+            )
+
+        msg = f"OK: Primary and Secondary XAUUSD agree within {divergence_pct * 100:.2f}%."
+        return XauUsdIntegrityResult(
+            divergence_pct=divergence_pct,
+            is_valid=True,
+            hard_fail=False,
+            is_disagreement=False,
             message=msg,
         )
 

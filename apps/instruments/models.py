@@ -1,4 +1,4 @@
-"""3-Tier Domain models for Assets, Instruments, Listings and Provider Health."""
+from typing import Optional
 from django.db import models
 
 
@@ -82,6 +82,27 @@ class Instrument(models.Model):
     def symbol(self) -> str:
         return f"{self.base_asset.code}/{self.quote_asset.code}"
 
+    @classmethod
+    def get_canonical_xauusd(cls) -> Optional["Instrument"]:
+        """
+        Resolve the canonical XAU/USD primary signal instrument.
+        Preserves historical GOLD_REFERENCE role while acting as active operational target.
+        """
+        return cls.objects.filter(
+            base_asset__code="XAU",
+            quote_asset__code="USD",
+            instrument_type=InstrumentType.SPOT,
+        ).first()
+
+    @classmethod
+    def get_legacy_xaut(cls) -> Optional["Instrument"]:
+        """Resolve the historical legacy XAUT/USDT execution instrument."""
+        return cls.objects.filter(
+            base_asset__code="XAUT",
+            quote_asset__code="USDT",
+            instrument_type=InstrumentType.SPOT,
+        ).first()
+
     def __str__(self) -> str:
         return f"{self.symbol} [{self.get_instrument_type_display()}] ({self.get_role_display()})"
 
@@ -92,6 +113,15 @@ class ListingStatus(models.TextChoices):
     DELISTED = "DELISTED", "Delisted"
 
 
+class ListingRole(models.TextChoices):
+    PRIMARY_XAUUSD_SPOT = "PRIMARY_XAUUSD_SPOT", "Primary Spot XAU/USD Feed"
+    SECONDARY_XAUUSD_SPOT = "SECONDARY_XAUUSD_SPOT", "Secondary Spot XAU/USD Consensus"
+    LEGACY_EXECUTION = "LEGACY_EXECUTION", "Legacy Execution Feed (XAUT/USDT)"
+    LEGACY_GOLD_REFERENCE = "LEGACY_GOLD_REFERENCE", "Legacy Gold Reference (XAU/USD)"
+    LEGACY_QUOTE_NORMALIZATION = "LEGACY_QUOTE_NORMALIZATION", "Legacy USDT Normalization Rate"
+    GENERIC = "GENERIC", "Generic Venue Listing"
+
+
 class MarketListing(models.Model):
     """Venue-specific listing mapping an Instrument to an exchange provider."""
     instrument = models.ForeignKey(
@@ -99,8 +129,15 @@ class MarketListing(models.Model):
         on_delete=models.CASCADE,
         related_name="listings",
     )
-    provider = models.CharField(max_length=32, db_index=True)  # e.g., binance, okx, gold_reference
+    provider = models.CharField(max_length=32, db_index=True)  # e.g., binance, okx, gold_reference, xauusd_primary
     provider_symbol = models.CharField(max_length=64)          # e.g., XAUTUSDT, XAUT-USDT, XAUUSD
+    listing_role = models.CharField(
+        max_length=32,
+        choices=ListingRole.choices,
+        default=ListingRole.GENERIC,
+        db_index=True,
+        help_text="Explicit source role for deterministic provider resolution",
+    )
     status = models.CharField(
         max_length=16,
         choices=ListingStatus.choices,
@@ -123,7 +160,7 @@ class MarketListing(models.Model):
         verbose_name_plural = "Market Listings"
 
     def __str__(self) -> str:
-        return f"{self.provider.upper()}:{self.provider_symbol} -> {self.instrument.symbol}"
+        return f"{self.provider.upper()}:{self.provider_symbol} ({self.listing_role}) -> {self.instrument.symbol}"
 
 
 class ProviderHealthStatus(models.TextChoices):
@@ -131,6 +168,7 @@ class ProviderHealthStatus(models.TextChoices):
     DEGRADED = "DEGRADED", "Degraded"
     UNHEALTHY = "UNHEALTHY", "Unhealthy"
     QUARANTINED = "QUARANTINED", "Quarantined"
+    NOT_CONFIGURED = "NOT_CONFIGURED", "Not Configured"
     UNKNOWN = "UNKNOWN", "Unknown"
 
 

@@ -10,6 +10,7 @@ from apps.instruments.models import (
     InstrumentType,
     MarketListing,
     ListingStatus,
+    ListingRole,
 )
 
 
@@ -71,6 +72,7 @@ class Command(BaseCommand):
                 provider="binance",
                 defaults={
                     "provider_symbol": "XAUTUSDT",
+                    "listing_role": ListingRole.LEGACY_EXECUTION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -83,6 +85,7 @@ class Command(BaseCommand):
                 provider="okx",
                 defaults={
                     "provider_symbol": "XAUT-USDT",
+                    "listing_role": ListingRole.LEGACY_EXECUTION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.0001"),
@@ -95,10 +98,37 @@ class Command(BaseCommand):
                 provider="gold_reference",
                 defaults={
                     "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.LEGACY_GOLD_REFERENCE,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
                     "lot_size": Decimal("0.01"),
                     "fallback_priority": 0,
+                },
+            )
+            # Primary Spot Gold XAU/USD
+            MarketListing.objects.get_or_create(
+                instrument=xau_usd,
+                provider="xauusd_primary",
+                defaults={
+                    "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.PRIMARY_XAUUSD_SPOT,
+                    "status": ListingStatus.ACTIVE,
+                    "tick_size": Decimal("0.01"),
+                    "lot_size": Decimal("0.0001"),
+                    "fallback_priority": 0,
+                },
+            )
+            # Secondary Independent Spot Gold XAU/USD
+            MarketListing.objects.get_or_create(
+                instrument=xau_usd,
+                provider="xauusd_secondary",
+                defaults={
+                    "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.SECONDARY_XAUUSD_SPOT,
+                    "status": ListingStatus.ACTIVE,
+                    "tick_size": Decimal("0.01"),
+                    "lot_size": Decimal("0.0001"),
+                    "fallback_priority": 1,
                 },
             )
             # USDT/USD Normalization Rate
@@ -107,6 +137,7 @@ class Command(BaseCommand):
                 provider="usdt_usd",
                 defaults={
                     "provider_symbol": "USDTUSD",
+                    "listing_role": ListingRole.LEGACY_QUOTE_NORMALIZATION,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.0001"),
                     "lot_size": Decimal("1.0"),

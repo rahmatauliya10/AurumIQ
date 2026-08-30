@@ -20,6 +20,7 @@ class RawCandle:
     volume: Decimal
     is_closed: bool
     source: str
+    volume_evidence: str = "UNAVAILABLE"
 
 
 @dataclass(frozen=True)

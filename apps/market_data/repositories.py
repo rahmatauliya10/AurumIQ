@@ -5,7 +5,7 @@ from typing import Optional
 from django.db.models import Q
 import structlog
 from engine.core.interfaces import CandleRepository
-from engine.core.types import CandleData
+from engine.core.types import CandleData, VolumeEvidenceType
 from apps.market_data.models import MarketCandle, CandleQualityFlag
 from apps.instruments.models import Instrument
 
@@ -23,6 +23,12 @@ class DjangoCandleRepository(CandleRepository):
 
     def _to_candle_data(self, candle: MarketCandle) -> CandleData:
         """Convert ORM model instance to immutable engine CandleData dataclass."""
+        vol_evidence_str = getattr(candle, "volume_evidence", "UNAVAILABLE")
+        try:
+            vol_evidence = VolumeEvidenceType(vol_evidence_str)
+        except (ValueError, TypeError):
+            vol_evidence = VolumeEvidenceType.UNAVAILABLE
+
         return CandleData(
             timestamp_open=candle.timestamp_open,
             timestamp_close=candle.timestamp_close,
@@ -35,6 +41,7 @@ class DjangoCandleRepository(CandleRepository):
             source_id=candle.source,
             quote_rate=candle.quote_rate,
             close_usd=candle.close_usd,
+            volume_evidence=vol_evidence,
         )
 
     def get_first_bar_open_after(
