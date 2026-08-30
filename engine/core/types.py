@@ -137,6 +137,62 @@ class MarketContext:
 
 
 @dataclass(frozen=True)
+class VolumeFeatureResult:
+    """Outcome of volume feature extraction with explicit semantic labeling."""
+    evidence_type: VolumeEvidenceType
+    is_usable: bool
+    ratio: Optional[float] = None
+    zscore: Optional[float] = None
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RegimeThresholdProfile:
+    """
+    Immutable specification of numerical thresholds for regime classification.
+    Tracks calibration status to prevent uncalibrated instruments (e.g. XAUUSD)
+    from silently inheriting legacy reference boundaries.
+    """
+    name: str = "LEGACY_XAUT_REFERENCE"
+    is_calibrated: bool = True
+    adx_trend_threshold: float = 20.0
+    slope_boundary: float = 0.05
+    high_vol_realized_pct: float = 5.0
+    high_vol_atr_pct: float = 3.0
+    high_vol_bb_bandwidth_pct: float = 15.0
+    rsi_bull_threshold: float = 50.0
+    rsi_bear_threshold: float = 50.0
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def legacy_xaut_profile(cls) -> "RegimeThresholdProfile":
+        """Historical XAUT verified reference profile."""
+        return cls(
+            name="LEGACY_XAUT_REFERENCE",
+            is_calibrated=True,
+            adx_trend_threshold=20.0,
+            slope_boundary=0.05,
+            high_vol_realized_pct=5.0,
+            high_vol_atr_pct=3.0,
+            high_vol_bb_bandwidth_pct=15.0,
+            rsi_bull_threshold=50.0,
+            rsi_bear_threshold=50.0,
+        )
+
+    @classmethod
+    def uncalibrated_xauusd_profile(cls) -> "RegimeThresholdProfile":
+        """Explicitly uncalibrated profile for XAUUSD (requires empirical calibration)."""
+        return cls(
+            name="XAUUSD_UNCALIBRATED",
+            is_calibrated=False,
+            details={
+                "calibration_status": "CALIBRATION_REQUIRED",
+                "reason": "XAUUSD empirical regime thresholds not configured.",
+            },
+        )
+
+
+@dataclass(frozen=True)
 class FeatureSnapshot:
     """Immutable snapshot of computed technical indicators and features."""
     timestamp: datetime
@@ -166,10 +222,14 @@ class FeatureSnapshot:
     # Volume
     volume_ratio_20: Optional[float]
     volume_zscore_20: Optional[float]
+    volume_evidence: VolumeEvidenceType = VolumeEvidenceType.UNAVAILABLE
+    volume_usable: bool = False
+    volume_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class RegimeResult:
+
     """Deterministic market regime classification output."""
     regime: RegimeType
     confidence: float

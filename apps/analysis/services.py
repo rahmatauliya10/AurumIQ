@@ -70,6 +70,9 @@ class AnalysisPersistenceService:
                     "realized_vol_20": features.realized_vol_20,
                     "volume_ratio_20": features.volume_ratio_20,
                     "volume_zscore_20": features.volume_zscore_20,
+                    "volume_evidence": features.volume_evidence.value if hasattr(features.volume_evidence, "value") else str(features.volume_evidence or "UNAVAILABLE"),
+                    "volume_usable": bool(features.volume_usable),
+                    "volume_reason": features.volume_reason or "",
                 },
             )
 

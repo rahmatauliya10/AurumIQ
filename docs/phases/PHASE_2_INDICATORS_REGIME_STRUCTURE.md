@@ -2,7 +2,7 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **REVALIDATION REQUIRED**
+> **Current XAUUSD Target Status:** 🟡 **CORE ARCHITECTURE IMPLEMENTED / REVALIDATION REQUIRED (EMPIRICAL THRESHOLDS NOT CONFIGURED)**
 
 ---
 
@@ -21,11 +21,18 @@ VolumeEvidenceType:
 
 #### Volume Integrity Invariants
 1. **Zero Fabrication:** The engine never fabricates, estimates, or synthesizes missing volume.
-2. **Fail-Neutral Contribution:** If volume is `UNAVAILABLE` or invalid, its positive contribution to Direction and Timing scores is strictly `0.0`.
-3. **Proxy Volume Rules:** Regulated Gold Futures (GC) volume may only be utilized as an explicitly labeled proxy when reliable, point-in-time historical data exists.
+2. **Fail-Neutral Contribution:** If volume is `UNAVAILABLE` or invalid, its positive contribution to Direction and Timing scores is strictly `0.0` (`usable=False`, `ratio=None`, `zscore=None`).
+3. **No Incompatible Mixing:** A rolling volume feature window must not combine differing semantics (e.g. TICK_VOLUME + REAL_VOLUME or PROXY_VOLUME); mixed windows return `is_usable=False` and `reason="MIXED_VOLUME_SEMANTICS"`.
+4. **Proxy Volume Rules:** Regulated Gold Futures (GC) volume may only be utilized as an explicitly labeled proxy (`PROXY_VOLUME`) when reliable, point-in-time historical data exists. It does not overwrite spot volume or alter spot candle series.
 
-### 2. Threshold Calibration Status
-All numerical regime boundaries (ADX 20/25, ATR% 3.0%, Realized Volatility 5.0%, Bollinger Bandwidth 15.0%) documented in the historical specification represent **LEGACY BASELINE / DEFAULT REFERENCE VALUES ONLY**. For the target XAUUSD instrument, all regime boundaries and volatility thresholds are **NOT FROZEN / REVALIDATION REQUIRED** based on empirical Phase 6 validation.
+### 2. Threshold Calibration Status & Profile Segregation
+All numerical regime boundaries (ADX 20/25, ATR% 3.0%, Realized Volatility 5.0%, Bollinger Bandwidth 15.0%) documented in the historical specification represent **LEGACY BASELINE / DEFAULT REFERENCE VALUES ONLY**.
+
+For the target XAUUSD instrument:
+- **XAUUSD Empirical Regime Thresholds:** `NOT_CONFIGURED / NOT_FROZEN / REVALIDATION_REQUIRED`
+- **Fail-Neutral Default:** Uncalibrated XAUUSD classifications evaluate to `RegimeType.UNKNOWN` with `details={"reason": "CALIBRATION_REQUIRED"}`.
+- **Architectural Segregation:** Pure-Python `RegimeThresholdProfile` segregates mathematical indicator configuration from empirical instrument calibrations without Django coupling.
+
 
 ---
 

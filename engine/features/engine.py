@@ -7,7 +7,7 @@ from engine.core.config import EngineConfigData
 from .trend import calculate_ema, calculate_ema_slope, calculate_ema_alignment, calculate_adx
 from .momentum import calculate_rsi, calculate_macd, calculate_roc
 from .volatility import calculate_atr, calculate_bollinger_bands, calculate_realized_volatility
-from .volume import calculate_volume_ratio, calculate_volume_zscore
+from .volume import calculate_volume_features
 
 
 class FeatureEngine:
@@ -33,6 +33,9 @@ class FeatureEngine:
                 bb_upper=None, bb_middle=None, bb_lower=None, bb_bandwidth=None,
                 realized_vol_20=None,
                 volume_ratio_20=None, volume_zscore_20=None,
+                volume_evidence=VolumeEvidenceType.UNAVAILABLE,
+                volume_usable=False,
+                volume_reason="EMPTY_CANDLES",
             )
 
         latest_candle = candles[-1]
@@ -42,7 +45,6 @@ class FeatureEngine:
         closes = [c.close_usd if c.close_usd is not None else c.close for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
-        volumes = [c.volume for c in candles]
 
         # 1. Trend Features
         ema20_series = calculate_ema(closes, self.config.ema_fast_period)
@@ -75,9 +77,13 @@ class FeatureEngine:
         )
         realized_vol_20 = calculate_realized_volatility(closes, self.config.realized_vol_period)
 
-        # 4. Volume Features
-        volume_ratio_20 = calculate_volume_ratio(volumes, self.config.volume_lookback)
-        volume_zscore_20 = calculate_volume_zscore(volumes, self.config.volume_lookback)
+        # 4. Volume Features (with XAU-P2-01 semantic validation)
+        vol_res = calculate_volume_features(candles, self.config.volume_lookback)
+        volume_ratio_20 = vol_res.ratio
+        volume_zscore_20 = vol_res.zscore
+        volume_evidence = vol_res.evidence_type
+        volume_usable = vol_res.is_usable
+        volume_reason = vol_res.reason
 
         return FeatureSnapshot(
             timestamp=target_timestamp,
@@ -103,4 +109,8 @@ class FeatureEngine:
             realized_vol_20=realized_vol_20,
             volume_ratio_20=volume_ratio_20,
             volume_zscore_20=volume_zscore_20,
+            volume_evidence=volume_evidence,
+            volume_usable=volume_usable,
+            volume_reason=volume_reason,
         )
+
