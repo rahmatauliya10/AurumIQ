@@ -1,4 +1,4 @@
-"""3-Tier Domain models for Assets, Instruments, Listings and Provider Health."""
+from typing import Optional
 from django.db import models
 
 
@@ -31,6 +31,9 @@ class Asset(models.Model):
 
 
 class InstrumentRole(models.TextChoices):
+    PRIMARY_SIGNAL = "PRIMARY_SIGNAL", "Primary Signal Target (XAU/USD)"
+    PRIMARY_XAUUSD = "PRIMARY_XAUUSD", "Primary Signal Target (XAU/USD)"
+    SECONDARY_XAUUSD = "SECONDARY_XAUUSD", "Secondary Consensus Reference (XAU/USD)"
     EXECUTION = "EXECUTION", "Execution Target (XAUT/USDT)"
     GOLD_REFERENCE = "GOLD_REFERENCE", "Canonical Gold Directional Reference (XAU/USD)"
     GOLD_CONFIRMATION = "GOLD_CONFIRMATION", "Secondary Confirmation Proxy (PAXG / Gold Futures)"
@@ -81,6 +84,24 @@ class Instrument(models.Model):
     @property
     def symbol(self) -> str:
         return f"{self.base_asset.code}/{self.quote_asset.code}"
+
+    @classmethod
+    def get_canonical_xauusd(cls) -> Optional["Instrument"]:
+        """Resolve the canonical XAU/USD primary signal instrument."""
+        return cls.objects.filter(
+            base_asset__code="XAU",
+            quote_asset__code="USD",
+            instrument_type=InstrumentType.SPOT,
+        ).first()
+
+    @classmethod
+    def get_legacy_xaut(cls) -> Optional["Instrument"]:
+        """Resolve the historical legacy XAUT/USDT execution instrument."""
+        return cls.objects.filter(
+            base_asset__code="XAUT",
+            quote_asset__code="USDT",
+            instrument_type=InstrumentType.SPOT,
+        ).first()
 
     def __str__(self) -> str:
         return f"{self.symbol} [{self.get_instrument_type_display()}] ({self.get_role_display()})"

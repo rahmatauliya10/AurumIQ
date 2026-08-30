@@ -101,6 +101,30 @@ class Command(BaseCommand):
                     "fallback_priority": 0,
                 },
             )
+            # Primary Spot Gold XAU/USD
+            MarketListing.objects.get_or_create(
+                instrument=xau_usd,
+                provider="xauusd_primary",
+                defaults={
+                    "provider_symbol": "XAUUSD",
+                    "status": ListingStatus.ACTIVE,
+                    "tick_size": Decimal("0.01"),
+                    "lot_size": Decimal("0.0001"),
+                    "fallback_priority": 0,
+                },
+            )
+            # Secondary Independent Spot Gold XAU/USD
+            MarketListing.objects.get_or_create(
+                instrument=xau_usd,
+                provider="xauusd_secondary",
+                defaults={
+                    "provider_symbol": "XAUUSD",
+                    "status": ListingStatus.ACTIVE,
+                    "tick_size": Decimal("0.01"),
+                    "lot_size": Decimal("0.0001"),
+                    "fallback_priority": 1,
+                },
+            )
             # USDT/USD Normalization Rate
             MarketListing.objects.get_or_create(
                 instrument=usdt_usd,

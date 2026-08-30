@@ -42,11 +42,12 @@ def ingest_primary_candles(
     if not listing:
         return {"status": "error", "message": f"No active listing for {instrument_symbol}."}
 
+    is_direct_usd = (instrument.quote_asset.code == "USD")
     provider = registry.get(listing.provider)
-    usdt_rate_provider = registry.get("usdt_usd")
+    usdt_rate_provider = registry.get("usdt_usd") if not is_direct_usd else None
     
-    # Base fallback rate if historical query empty
-    current_usdt_rate = getattr(usdt_rate_provider, "get_current_rate", lambda: None)()
+    # Base fallback rate if historical query empty (legacy XAUT only)
+    current_usdt_rate = getattr(usdt_rate_provider, "get_current_rate", lambda: None)() if usdt_rate_provider else None
 
     normalizer = QuoteNormalizer()
     integrity_engine = MarketIntegrityEngine()
@@ -64,9 +65,9 @@ def ingest_primary_candles(
         }.get(tf, 15)
         start_time = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
 
-        # Retrieve historical USDT rates for PIT normalization (P1-09 PIT Safety)
+        # Retrieve historical USDT rates for PIT normalization (legacy XAUT only)
         hist_usdt_rates = []
-        if hasattr(usdt_rate_provider, "fetch_historical_rates"):
+        if not is_direct_usd and usdt_rate_provider and hasattr(usdt_rate_provider, "fetch_historical_rates"):
             try:
                 hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=start_time, end=now_utc)
             except Exception as e:
@@ -96,7 +97,10 @@ def ingest_primary_candles(
                 gap_count += max(0, missing_bars)
 
         violations = 0
-        norm_res = normalizer.normalize_price(Decimal("1.0"), current_usdt_rate)
+        if is_direct_usd:
+            norm_res = normalizer.normalize_direct_usd(Decimal("1.0"), now_utc)
+        else:
+            norm_res = normalizer.normalize_price(Decimal("1.0"), current_usdt_rate)
 
         with transaction.atomic():
             for raw in raw_candles:
@@ -110,28 +114,35 @@ def ingest_primary_candles(
                 else:
                     quality_flag = CandleQualityFlag.OK
 
-                # Point-in-time rate matching: find latest historical rate <= candle close timestamp
-                candle_rate = None
-                if hist_usdt_rates:
-                    matching_rates = [
-                        r[1] for r in hist_usdt_rates
-                        if r[0] <= raw.timestamp_close
-                    ]
-                    if matching_rates:
-                        candle_rate = matching_rates[-1]
-                elif not raw.is_closed:
-                    # Forming / open bar only may use current ticker rate
-                    candle_rate = current_usdt_rate
-
-                if candle_rate is not None:
-                    candle_norm = normalizer.normalize_price(raw.close, candle_rate)
+                if is_direct_usd:
+                    candle_norm = normalizer.normalize_direct_usd(raw.close, raw.timestamp_close)
                     norm_quote_rate = candle_norm.rate
                     norm_close_usd = candle_norm.normalized_price
                 else:
-                    norm_quote_rate = None
-                    norm_close_usd = None
-                    quality_flag = CandleQualityFlag.SUSPECT
-                    violations += 1
+                    # Point-in-time rate matching: find latest historical rate <= candle close timestamp
+                    candle_rate = None
+                    if hist_usdt_rates:
+                        matching_rates = [
+                            r[1] for r in hist_usdt_rates
+                            if r[0] <= raw.timestamp_close
+                        ]
+                        if matching_rates:
+                            candle_rate = matching_rates[-1]
+                    elif not raw.is_closed:
+                        # Forming / open bar only may use current ticker rate
+                        candle_rate = current_usdt_rate
+
+                    if candle_rate is not None:
+                        candle_norm = normalizer.normalize_price(raw.close, candle_rate)
+                        norm_quote_rate = candle_norm.rate
+                        norm_close_usd = candle_norm.normalized_price
+                    else:
+                        norm_quote_rate = None
+                        norm_close_usd = None
+                        quality_flag = CandleQualityFlag.SUSPECT
+                        violations += 1
+
+                vol_evidence = getattr(raw, "volume_evidence", "UNAVAILABLE")
 
                 MarketCandle.objects.update_or_create(
                     instrument=instrument,
@@ -145,6 +156,7 @@ def ingest_primary_candles(
                         "low": raw.low,
                         "close": raw.close,
                         "volume": raw.volume,
+                        "volume_evidence": vol_evidence,
                         "quote_rate": norm_quote_rate,
                         "close_usd": norm_close_usd,
                         "is_closed": raw.is_closed,

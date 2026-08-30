@@ -210,3 +210,35 @@ class QuoteNormalizer:
             rate_timestamp=rate_ts,
             message=combined_msg,
         )
+
+    def normalize_direct_usd(
+        self,
+        raw_price_usd: Decimal,
+        candle_timestamp: Optional[datetime] = None,
+    ) -> NormalizationCheckResult:
+        """
+        Direct USD normalization for native USD instruments (e.g. XAU/USD).
+        Explicit DIRECT_USD identity semantics (not a fallback normalization rate).
+        """
+        if raw_price_usd is None or raw_price_usd <= 0:
+            return NormalizationCheckResult(
+                rate=Decimal("1.000000"),
+                deviation=Decimal("0.0"),
+                is_warning=True,
+                hard_fail=True,
+                normalized_price=None,
+                is_stale=False,
+                rate_timestamp=candle_timestamp,
+                message="CRITICAL: Invalid non-positive direct USD price.",
+            )
+
+        return NormalizationCheckResult(
+            rate=Decimal("1.000000"),
+            deviation=Decimal("0.0"),
+            is_warning=False,
+            hard_fail=False,
+            normalized_price=raw_price_usd.quantize(Decimal("0.00000001")),
+            is_stale=False,
+            rate_timestamp=candle_timestamp,
+            message="OK: Direct USD native pricing (DIRECT_USD).",
+        )
