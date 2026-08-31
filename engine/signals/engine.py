@@ -10,28 +10,49 @@ from engine.core.types import (
     Cycle3ASnapshot,
     Cycle3BExperimentalSnapshot,
     DirectionScoreResult,
+    DualSideDirectionResult,
+    DualSideSignalSnapshot,
+    DualSideTimingResult,
     FeatureSnapshot,
     HardGateEvaluation,
     MacroEventContext,
     RegimeResult,
     RegimeType,
+    RuntimeFeedHealth,
+    SideDirectionScoreResult,
+    SideTimingScoreResult,
     SignalSnapshot,
     SignalState,
     StructureResult,
     TimingScoreResult,
     UserDecision,
+    XauUsdHardGateEvaluation,
 )
+from engine.cycles.profile import Cycle3AProfile
 from engine.features.engine import FeatureEngine
 from engine.regime.engine import RegimeEngine
 from engine.structure.engine import CausalStructureEngine
-from engine.signals.direction import calculate_direction_score
+from engine.signals.direction import calculate_direction_score, calculate_xauusd_dual_direction
 from engine.signals.explainer import (
     compute_canonical_fingerprint,
     compute_research_fingerprint,
+    compute_xauusd_fingerprint,
+    explain_dual_side_signal,
     explain_signal,
 )
-from engine.signals.gate import evaluate_hard_gates, evaluate_selective_gate
-from engine.signals.timing import calculate_timing_score
+from engine.signals.gate import (
+    evaluate_hard_gates,
+    evaluate_selective_gate,
+    evaluate_xauusd_candidate_gate,
+    evaluate_xauusd_hard_gates,
+)
+from engine.signals.profile import (
+    Phase4SignalProfile,
+    compute_phase4_policy_fingerprint,
+    normalize_xauusd_target,
+    uncalibrated_xauusd_signal_profile,
+)
+from engine.signals.timing import calculate_timing_score, calculate_xauusd_dual_timing
 
 
 class XautSignalEngine:
@@ -326,3 +347,221 @@ class XautSignalEngine:
             code_revision=self.code_revision,
             cycle_3b_informational=cycle_3b,
         )
+
+
+# --- Phase 4 XAUUSD Master Dual-Side Signal Engine ---
+
+class XauUsdSignalEngine:
+    """
+    Deterministic Master Signal Engine for canonical XAUUSD spot.
+
+    Strict Invariants:
+      1. Pure Python: Zero Django, ORM, Celery, or Redis imports in engine package.
+      2. Closed-Candle PIT: Evaluates closed candles across 15m, 1H, 4H, 1D.
+      3. Dual-Side Scoring: Evaluates Long and Short directions & timings independently.
+      4. Two-Layer State Machine:
+         - Layer A: Pure candidate mechanics (evaluate_xauusd_candidate_gate).
+         - Layer B: Production publication authority guard (blocks BUY/SELL until Phase 6 empirical calibration).
+      5. Zero Test Bypass Flags: No bypass arguments in production methods.
+    """
+
+    def __init__(
+        self,
+        code_revision: str = "19015f9a8cc536bb2f33b54d2c071139f26590d1",
+        engine_version: str = "4.0.0",
+        feature_version: str = "feat-2026-v1",
+        cycle_version: str = "3.0.0-3A",
+    ):
+        if not code_revision:
+            raise ValueError("code_revision is required for canonical signal provenance.")
+        self.code_revision = code_revision
+        self.engine_version = engine_version
+        self.feature_version = feature_version
+        self.cycle_version = cycle_version
+
+    @staticmethod
+    def _hash_candles(candles: Optional[Sequence[CandleData]]) -> str:
+        """Hash a candle sequence for deterministic provenance tracking."""
+        if not candles:
+            return "EMPTY_FEED"
+        import hashlib
+        import json
+        payload = [
+            {
+                "ts": c.timestamp_close.isoformat(),
+                "o": str(c.open),
+                "h": str(c.high),
+                "l": str(c.low),
+                "c": str(c.close),
+                "v": str(c.volume),
+                "closed": c.is_closed,
+            }
+            for c in candles[-5:]
+        ]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def analyze(
+        self,
+        closed_candles_15m: List[CandleData],
+        closed_candles_1h: Optional[List[CandleData]] = None,
+        closed_candles_4h: Optional[List[CandleData]] = None,
+        closed_candles_1d: Optional[List[CandleData]] = None,
+        regime_15m: Optional[RegimeResult] = None,
+        features_15m: Optional[FeatureSnapshot] = None,
+        features_1h: Optional[FeatureSnapshot] = None,
+        features_4h: Optional[FeatureSnapshot] = None,
+        features_1d: Optional[FeatureSnapshot] = None,
+        structure_15m: Optional[StructureResult] = None,
+        cycle_3a: Optional[Cycle3ASnapshot] = None,
+        cycle_3a_profile: Optional[Cycle3AProfile] = None,
+        cycle_3b_informational: Optional[Cycle3BExperimentalSnapshot] = None,
+        runtime_health: Optional[RuntimeFeedHealth] = None,
+        profile: Optional[Phase4SignalProfile] = None,
+        instrument: str = "XAUUSD",
+        timeframe: str = "15m",
+        as_of: Optional[datetime] = None,
+    ) -> DualSideSignalSnapshot:
+        """
+        Execute deterministic closed-candle dual-side signal analysis for XAUUSD.
+        """
+        norm_instrument = normalize_xauusd_target(instrument)
+        active_profile = profile if profile is not None else uncalibrated_xauusd_signal_profile()
+        policy_fp = compute_phase4_policy_fingerprint(active_profile)
+
+        # 1. Closed-candle integrity & timestamp
+        if not closed_candles_15m:
+            analysis_timestamp = as_of if as_of is not None else datetime.now(timezone.utc)
+            latest_candle_15m = None
+        else:
+            latest_candle_15m = closed_candles_15m[-1]
+            analysis_timestamp = latest_candle_15m.timestamp_close
+
+        rfh = runtime_health if runtime_health is not None else RuntimeFeedHealth()
+        if latest_candle_15m is not None and not latest_candle_15m.is_closed:
+            from dataclasses import replace
+            rfh = replace(rfh, is_unclosed_candle=True)
+
+        # 2. Dual-Side Direction Evaluation
+        dual_dir = calculate_xauusd_dual_direction(
+            regime=regime_15m,
+            features_15m=features_15m,
+            structure_15m=structure_15m,
+            features_1h=features_1h,
+            features_4h=features_4h,
+            features_1d=features_1d,
+            profile=active_profile,
+        )
+
+        # 3. Dual-Side Timing Evaluation
+        dual_tim = calculate_xauusd_dual_timing(
+            candle_15m=latest_candle_15m,
+            features_15m=features_15m,
+            structure_15m=structure_15m,
+            features_1h=features_1h,
+            cycle_3a=cycle_3a,
+            cycle_3a_profile=cycle_3a_profile,
+            profile=active_profile,
+        )
+
+        # 4. Hard Safety Gate Evaluation
+        hard_gate = evaluate_xauusd_hard_gates(
+            runtime_health=rfh,
+            profile=active_profile,
+        )
+
+        # 5. Layer A Candidate State Machine Evaluation
+        cand_result = evaluate_xauusd_candidate_gate(
+            long_direction=dual_dir.long_direction,
+            short_direction=dual_dir.short_direction,
+            long_timing=dual_tim.long_timing,
+            short_timing=dual_tim.short_timing,
+            hard_gate=hard_gate,
+            profile=active_profile,
+        )
+
+        # 6. Layer B Production Publication Authority Guard
+        if active_profile.is_production_authorized:
+            published_state = cand_result.candidate_state
+            published_user_decision = cand_result.candidate_user_decision
+        else:
+            # Production publication is strictly blocked pending Phase 6 validation
+            if hard_gate.is_blocked:
+                published_state = SignalState.FORCE_WAIT
+                published_user_decision = UserDecision.WAIT
+            else:
+                published_state = SignalState.NO_TRADE
+                published_user_decision = UserDecision.WAIT
+
+        # 7. Dual-Side Explanation
+        l_pos, l_neg, s_pos, s_neg, hg_reasons, res_reason = explain_dual_side_signal(
+            long_direction=dual_dir.long_direction,
+            short_direction=dual_dir.short_direction,
+            long_timing=dual_tim.long_timing,
+            short_timing=dual_tim.short_timing,
+            hard_gate=hard_gate,
+            candidate_result=cand_result,
+            is_production_authorized=active_profile.is_production_authorized,
+        )
+
+        # 8. Deterministic Multi-Timeframe Candle Hashes & Analysis Fingerprint
+        c15_hash = self._hash_candles(closed_candles_15m)
+        c1h_hash = self._hash_candles(closed_candles_1h)
+        c4h_hash = self._hash_candles(closed_candles_4h)
+        c1d_hash = self._hash_candles(closed_candles_1d)
+
+        cycle_3a_id = f"{cycle_3a.profile_name}:{cycle_3a.calibration_status}" if cycle_3a else None
+
+        analysis_fp = compute_xauusd_fingerprint(
+            timestamp=analysis_timestamp,
+            instrument=norm_instrument,
+            timeframe=timeframe,
+            phase4_policy_fingerprint=policy_fp,
+            closed_candle_15m_hash=c15_hash,
+            closed_candle_1h_hash=c1h_hash,
+            closed_candle_4h_hash=c4h_hash,
+            closed_candle_1d_hash=c1d_hash,
+            long_direction=dual_dir.long_direction,
+            short_direction=dual_dir.short_direction,
+            long_timing=dual_tim.long_timing,
+            short_timing=dual_tim.short_timing,
+            runtime_health=rfh,
+            published_state=published_state,
+            published_user_decision=published_user_decision,
+            candidate_state=cand_result.candidate_state,
+            candidate_user_decision=cand_result.candidate_user_decision,
+            resolution_reason=res_reason,
+            code_revision=self.code_revision,
+            cycle_3a_identity=cycle_3a_id,
+        )
+
+        return DualSideSignalSnapshot(
+            timestamp=analysis_timestamp,
+            instrument=norm_instrument,
+            timeframe=timeframe,
+            state=published_state,
+            user_decision=published_user_decision,
+            candidate_state=cand_result.candidate_state,
+            candidate_user_decision=cand_result.candidate_user_decision,
+            long_direction=dual_dir.long_direction,
+            short_direction=dual_dir.short_direction,
+            long_timing=dual_tim.long_timing,
+            short_timing=dual_tim.short_timing,
+            hard_gate=hard_gate,
+            reasons_long_positive=l_pos,
+            reasons_long_negative=l_neg,
+            reasons_short_positive=s_pos,
+            reasons_short_negative=s_neg,
+            hard_gate_reasons=hg_reasons,
+            resolution_reason=res_reason,
+            analysis_fingerprint=analysis_fp,
+            phase4_policy_fingerprint=policy_fp,
+            code_revision=self.code_revision,
+            profile_name=active_profile.name,
+            calibration_status=active_profile.calibration_status.value,
+            engine_version=self.engine_version,
+            config_version=active_profile.name,
+            feature_version=self.feature_version,
+            cycle_version=self.cycle_version,
+            cycle_3b_informational=cycle_3b_informational,
+        )
+

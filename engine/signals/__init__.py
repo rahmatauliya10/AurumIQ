@@ -18,7 +18,7 @@ from engine.signals.explainer import (
     explain_dual_side_signal,
     explain_signal,
 )
-from engine.signals.engine import XautSignalEngine
+from engine.signals.engine import XautSignalEngine, XauUsdSignalEngine
 from engine.signals.profile import (
     Phase4CalibrationStatus,
     Phase4FeedPolicy,
@@ -47,6 +47,7 @@ __all__ = [
     "explain_signal",
     "explain_dual_side_signal",
     "XautSignalEngine",
+    "XauUsdSignalEngine",
     "Phase4CalibrationStatus",
     "Phase4FeedPolicy",
     "Phase4SignalProfile",
@@ -57,6 +58,7 @@ __all__ = [
     "normalize_xauusd_target",
     "uncalibrated_xauusd_signal_profile",
 ]
+
 
 
 
