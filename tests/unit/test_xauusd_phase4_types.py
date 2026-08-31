@@ -176,6 +176,8 @@ def test_dual_side_signal_snapshot():
         reasons_short_negative=("No short setup",),
         hard_gate_reasons=(),
         resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
         analysis_fingerprint="abc123hash",
         phase4_policy_fingerprint="policy456hash",
         code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
@@ -186,3 +188,42 @@ def test_dual_side_signal_snapshot():
     assert snap.candidate_user_decision == UserDecision.BUY
     assert snap.state == SignalState.NO_TRADE
     assert snap.user_decision == UserDecision.WAIT
+    assert snap.candidate_resolution_reason == "LONG_QUALIFIED"
+    assert snap.publication_reason == "UNAUTHORIZED_PRODUCTION_PROFILE"
+
+
+@pytest.mark.unit
+def test_dual_side_signal_snapshot_mandatory_audit_fields():
+    """Verify DualSideSignalSnapshot strictly requires audit provenance fields at construction."""
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    rfh = RuntimeFeedHealth(primary_15m=FeedHealthStatus.HEALTHY)
+    hard_gate = XauUsdHardGateEvaluation(is_blocked=False, override_state=None, block_reasons=(), runtime_health=rfh)
+    long_dir = SideDirectionScoreResult(SignalSide.LONG, 85.0, 100.0, (), True, True, "v1")
+    short_dir = SideDirectionScoreResult(SignalSide.SHORT, 10.0, 100.0, (), True, False, "v1")
+    long_tim = SideTimingScoreResult(SignalSide.LONG, 80.0, 100.0, (), True, True, "v1")
+    short_tim = SideTimingScoreResult(SignalSide.SHORT, 0.0, 100.0, (), True, False, "v1")
+
+    # Missing mandatory audit fields (code_revision, analysis_fingerprint, etc.) must raise TypeError
+    with pytest.raises(TypeError):
+        DualSideSignalSnapshot(
+            timestamp=now,
+            instrument="XAUUSD",
+            timeframe="15m",
+            state=SignalState.NO_TRADE,
+            user_decision=UserDecision.WAIT,
+            candidate_state=SignalState.BUY_WINDOW,
+            candidate_user_decision=UserDecision.BUY,
+            long_direction=long_dir,
+            short_direction=short_dir,
+            long_timing=long_tim,
+            short_timing=short_tim,
+            hard_gate=hard_gate,
+            reasons_long_positive=(),
+            reasons_long_negative=(),
+            reasons_short_positive=(),
+            reasons_short_negative=(),
+            hard_gate_reasons=(),
+            resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+            # Missing candidate_resolution_reason, publication_reason, analysis_fingerprint, phase4_policy_fingerprint, code_revision, profile_name, calibration_status
+        )
+

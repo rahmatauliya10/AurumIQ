@@ -288,9 +288,13 @@ def extract_xauusd_phase3a_score(
         return 0.0
     if cycle_3a.calibration_status != cycle_3a_profile.calibration_status.value:
         return 0.0
-    # Timeframe authority check
+    # Explicit timeframe authority check: prof_tf must be non-empty and match decision_timeframe
     prof_tf = getattr(cycle_3a_profile, "timeframe", None)
-    if prof_tf is not None and prof_tf.strip().lower() != decision_timeframe.strip().lower():
+    if not prof_tf or not isinstance(prof_tf, str) or not prof_tf.strip():
+        return 0.0
+    if not decision_timeframe or not isinstance(decision_timeframe, str) or not decision_timeframe.strip():
+        return 0.0
+    if prof_tf.strip().lower() != decision_timeframe.strip().lower():
         return 0.0
     raw_score = float(cycle_3a.cycle_score_3a) if hasattr(cycle_3a, "cycle_score_3a") else 0.0
     return float(round(max(0.0, min(max_points, raw_score)), 2))

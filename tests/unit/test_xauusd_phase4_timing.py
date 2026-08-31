@@ -157,13 +157,14 @@ def test_phase3a_target_authority_guard():
         calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN.value,
     )
 
-    # 1. Matching frozen profile -> returns score
+    # 1. Matching frozen profile with explicit timeframe -> returns score
     frozen_prof = Cycle3AProfile(
         name="XAUUSD_FROZEN_v1",
         target_instrument="XAUUSD",
+        timeframe="15m",
         calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN,
     )
-    assert extract_xauusd_phase3a_score(snap, frozen_prof) == 85.0
+    assert extract_xauusd_phase3a_score(snap, frozen_prof, decision_timeframe="15m") == 85.0
 
     # 2. Profile target mismatch (e.g. XAUT) -> returns 0.0
     xaut_prof = Cycle3AProfile(
@@ -190,7 +191,28 @@ def test_phase3a_target_authority_guard():
     )
     assert extract_xauusd_phase3a_score(snap, tf_mismatch_prof, decision_timeframe="15m") == 0.0
 
-    # 5. Profile is None -> returns 0.0
+    # 5. Profile timeframe is None or empty -> returns 0.0
+    tf_none_prof = Cycle3AProfile(
+        name="XAUUSD_FROZEN_v1",
+        target_instrument="XAUUSD",
+        timeframe=None,
+        calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN,
+    )
+    assert extract_xauusd_phase3a_score(snap, tf_none_prof, decision_timeframe="15m") == 0.0
+
+    tf_empty_prof = Cycle3AProfile(
+        name="XAUUSD_FROZEN_v1",
+        target_instrument="XAUUSD",
+        timeframe="   ",
+        calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN,
+    )
+    assert extract_xauusd_phase3a_score(snap, tf_empty_prof, decision_timeframe="15m") == 0.0
+
+    # 6. Decision timeframe empty -> returns 0.0
+    assert extract_xauusd_phase3a_score(snap, frozen_prof, decision_timeframe="") == 0.0
+    assert extract_xauusd_phase3a_score(snap, frozen_prof, decision_timeframe="  ") == 0.0
+
+    # 7. Profile is None -> returns 0.0
     assert extract_xauusd_phase3a_score(snap, None) == 0.0
 
 

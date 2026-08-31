@@ -154,39 +154,43 @@ def analyze_closed_candle(
                 )
                 effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
 
+            def _map_provider_health_status(raw_status: Optional[str]) -> FeedHealthStatus:
+                if not raw_status:
+                    return FeedHealthStatus.UNKNOWN
+                st = str(raw_status).strip().upper()
+                if st == "HEALTHY":
+                    return FeedHealthStatus.HEALTHY
+                elif st in ("UNHEALTHY", "QUARANTINED", "DEGRADED"):
+                    return FeedHealthStatus.UNHEALTHY
+                elif st == "NOT_CONFIGURED":
+                    return FeedHealthStatus.MISSING
+                elif st == "TRANSITION":
+                    return FeedHealthStatus.TRANSITION
+                return FeedHealthStatus.UNKNOWN
+
             # Authoritative Primary Provider Health Lookup
-            if provider_status is not None:
-                if is_provider_transition or provider_status == "TRANSITION":
-                    primary_health_status = FeedHealthStatus.TRANSITION
-                elif provider_status == "HEALTHY":
-                    primary_health_status = FeedHealthStatus.HEALTHY
-                elif provider_status in ("UNHEALTHY", "QUARANTINED"):
-                    primary_health_status = FeedHealthStatus.UNHEALTHY
-                else:
-                    primary_health_status = FeedHealthStatus.UNKNOWN
+            if is_provider_transition:
+                primary_health_status = FeedHealthStatus.TRANSITION
+            elif provider_status is not None:
+                primary_health_status = _map_provider_health_status(provider_status)
             else:
-                primary_listing_health = (
-                    ProviderHealthSnapshot.objects.filter(
-                        listing__instrument=instrument,
-                        listing__listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
-                        checked_at__lte=candle_ts,
+                has_primary = instrument.listings.filter(listing_role=ListingRole.PRIMARY_XAUUSD_SPOT).exists()
+                if not has_primary:
+                    primary_health_status = FeedHealthStatus.MISSING
+                else:
+                    primary_listing_health = (
+                        ProviderHealthSnapshot.objects.filter(
+                            listing__instrument=instrument,
+                            listing__listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+                            checked_at__lte=candle_ts,
+                        )
+                        .order_by("-checked_at")
+                        .first()
                     )
-                    .order_by("-checked_at")
-                    .first()
-                )
-                if primary_listing_health:
-                    st = primary_listing_health.status
-                    if st == "HEALTHY":
-                        primary_health_status = FeedHealthStatus.HEALTHY
-                    elif st == "TRANSITION":
-                        primary_health_status = FeedHealthStatus.TRANSITION
-                    elif st in ("UNHEALTHY", "QUARANTINED"):
-                        primary_health_status = FeedHealthStatus.UNHEALTHY
+                    if primary_listing_health:
+                        primary_health_status = _map_provider_health_status(primary_listing_health.status)
                     else:
                         primary_health_status = FeedHealthStatus.UNKNOWN
-                else:
-                    has_primary = instrument.listings.filter(listing_role=ListingRole.PRIMARY_XAUUSD_SPOT).exists()
-                    primary_health_status = FeedHealthStatus.UNKNOWN if has_primary else FeedHealthStatus.HEALTHY
 
             # Primary 15m combines DQ staleness and provider health
             if effective_is_stale:
@@ -195,27 +199,23 @@ def analyze_closed_candle(
                 primary_15m_status = primary_health_status
 
             # Authoritative Secondary Provider Health Lookup
-            secondary_listing_health = (
-                ProviderHealthSnapshot.objects.filter(
-                    listing__instrument=instrument,
-                    listing__listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
-                    checked_at__lte=candle_ts,
+            has_secondary = instrument.listings.filter(listing_role=ListingRole.SECONDARY_XAUUSD_SPOT).exists()
+            if not has_secondary:
+                sec_status = FeedHealthStatus.MISSING
+            else:
+                secondary_listing_health = (
+                    ProviderHealthSnapshot.objects.filter(
+                        listing__instrument=instrument,
+                        listing__listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+                        checked_at__lte=candle_ts,
+                    )
+                    .order_by("-checked_at")
+                    .first()
                 )
-                .order_by("-checked_at")
-                .first()
-            )
-            if secondary_listing_health:
-                st_sec = secondary_listing_health.status
-                if st_sec == "HEALTHY":
-                    sec_status = FeedHealthStatus.HEALTHY
-                elif st_sec == "TRANSITION":
-                    sec_status = FeedHealthStatus.TRANSITION
-                elif st_sec in ("UNHEALTHY", "QUARANTINED"):
-                    sec_status = FeedHealthStatus.UNHEALTHY
+                if secondary_listing_health:
+                    sec_status = _map_provider_health_status(secondary_listing_health.status)
                 else:
                     sec_status = FeedHealthStatus.UNKNOWN
-            else:
-                sec_status = FeedHealthStatus.MISSING
 
             rfh = RuntimeFeedHealth(
                 primary_15m=primary_15m_status,

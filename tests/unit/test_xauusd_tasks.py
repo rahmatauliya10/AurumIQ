@@ -56,12 +56,50 @@ def populated_candles(db, xauusd_instrument):
 
 
 @pytest.mark.django_db
-def test_xauusd_task_primary_secondary_routing(xauusd_instrument, populated_candles):
-    """Verify primary and secondary provider health resolution via ListingRole."""
+def test_xauusd_task_no_primary_listing_fails_closed(xauusd_instrument, populated_candles):
+    """Verify missing primary listing fails closed to FORCE_WAIT (MISSING)."""
     t0 = populated_candles
-    t0_iso = t0.isoformat()
+    res = analyze_closed_candle(
+        instrument_id=xauusd_instrument.id,
+        timeframe="15m",
+        candle_timestamp_iso=t0.isoformat(),
+        code_revision="test-rev-p4",
+        macro_context="CLEAR",
+        is_stale_feed=False,
+    )
+    assert res["status"] == "SUCCESS"
+    assert res["state"] == "FORCE_WAIT"
+    assert res["user_decision"] == "WAIT"
 
-    # Create Primary & Secondary listings
+
+@pytest.mark.django_db
+def test_xauusd_task_primary_listing_without_health_snapshot_fails_closed(xauusd_instrument, populated_candles):
+    """Verify primary listing with no health snapshot fails closed to FORCE_WAIT (UNKNOWN)."""
+    t0 = populated_candles
+    MarketListing.objects.create(
+        instrument=xauusd_instrument,
+        provider="primary_venue",
+        provider_symbol="XAUUSD",
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        status=ListingStatus.ACTIVE,
+    )
+    res = analyze_closed_candle(
+        instrument_id=xauusd_instrument.id,
+        timeframe="15m",
+        candle_timestamp_iso=t0.isoformat(),
+        code_revision="test-rev-p4",
+        macro_context="CLEAR",
+        is_stale_feed=False,
+    )
+    assert res["status"] == "SUCCESS"
+    assert res["state"] == "FORCE_WAIT"
+    assert res["user_decision"] == "WAIT"
+
+
+@pytest.mark.django_db
+def test_xauusd_task_healthy_primary_and_missing_secondary_not_blocked(xauusd_instrument, populated_candles):
+    """Verify valid HEALTHY primary and missing optional secondary does NOT trigger FORCE_WAIT."""
+    t0 = populated_candles
     primary_listing = MarketListing.objects.create(
         instrument=xauusd_instrument,
         provider="primary_venue",
@@ -69,52 +107,80 @@ def test_xauusd_task_primary_secondary_routing(xauusd_instrument, populated_cand
         listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
         status=ListingStatus.ACTIVE,
     )
-    secondary_listing = MarketListing.objects.create(
-        instrument=xauusd_instrument,
-        provider="secondary_venue",
-        provider_symbol="XAUUSD",
-        listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
-        status=ListingStatus.ACTIVE,
-    )
-
-    # 1. Primary HEALTHY, Secondary MISSING -> Success (Layer B: NO_TRADE / WAIT, NOT FORCE_WAIT)
     ProviderHealthSnapshot.objects.create(
         listing=primary_listing,
         status="HEALTHY",
         checked_at=t0,
     )
-
     res = analyze_closed_candle(
         instrument_id=xauusd_instrument.id,
         timeframe="15m",
-        candle_timestamp_iso=t0_iso,
+        candle_timestamp_iso=t0.isoformat(),
         code_revision="test-rev-p4",
         macro_context="CLEAR",
         is_stale_feed=False,
     )
-
     assert res["status"] == "SUCCESS"
     assert res["state"] == "NO_TRADE"
     assert res["user_decision"] == "WAIT"
     assert res["direction_score"] is None
     assert res["timing_score"] is None
 
-    # 2. Primary TRANSITION -> trips FORCE_WAIT
+
+@pytest.mark.django_db
+def test_xauusd_task_explicit_provider_transition_forces_wait(xauusd_instrument, populated_candles):
+    """Verify is_provider_transition=True forces FORCE_WAIT regardless of provider_status."""
+    t0 = populated_candles
+    primary_listing = MarketListing.objects.create(
+        instrument=xauusd_instrument,
+        provider="primary_venue",
+        provider_symbol="XAUUSD",
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        status=ListingStatus.ACTIVE,
+    )
     ProviderHealthSnapshot.objects.create(
         listing=primary_listing,
-        status="TRANSITION",
-        checked_at=t0 + timedelta(minutes=1),
+        status="HEALTHY",
+        checked_at=t0,
     )
-
-    res_trans = analyze_closed_candle(
+    res = analyze_closed_candle(
         instrument_id=xauusd_instrument.id,
         timeframe="15m",
-        candle_timestamp_iso=(t0 + timedelta(minutes=1)).isoformat(),
+        candle_timestamp_iso=t0.isoformat(),
+        code_revision="test-rev-p4",
+        macro_context="CLEAR",
+        is_stale_feed=False,
+        is_provider_transition=True,
+    )
+    assert res["status"] == "SUCCESS"
+    assert res["state"] == "FORCE_WAIT"
+    assert res["user_decision"] == "WAIT"
+
+
+@pytest.mark.django_db
+def test_xauusd_task_degraded_primary_fails_closed(xauusd_instrument, populated_candles):
+    """Verify DEGRADED primary snapshot deterministically fails closed to FORCE_WAIT."""
+    t0 = populated_candles
+    primary_listing = MarketListing.objects.create(
+        instrument=xauusd_instrument,
+        provider="primary_venue",
+        provider_symbol="XAUUSD",
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        status=ListingStatus.ACTIVE,
+    )
+    ProviderHealthSnapshot.objects.create(
+        listing=primary_listing,
+        status="DEGRADED",
+        checked_at=t0,
+    )
+    res = analyze_closed_candle(
+        instrument_id=xauusd_instrument.id,
+        timeframe="15m",
+        candle_timestamp_iso=t0.isoformat(),
         code_revision="test-rev-p4",
         macro_context="CLEAR",
         is_stale_feed=False,
     )
-
-    assert res_trans["status"] == "SUCCESS"
-    assert res_trans["state"] == "FORCE_WAIT"
-    assert res_trans["user_decision"] == "WAIT"
+    assert res["status"] == "SUCCESS"
+    assert res["state"] == "FORCE_WAIT"
+    assert res["user_decision"] == "WAIT"

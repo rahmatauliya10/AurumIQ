@@ -735,13 +735,13 @@ class DualSideSignalSnapshot:
     reasons_short_negative: Tuple[str, ...]
     hard_gate_reasons: Tuple[str, ...]
     resolution_reason: str
-    analysis_fingerprint: str = ""
-    phase4_policy_fingerprint: str = ""
-    code_revision: str = ""
-    profile_name: str = ""
-    calibration_status: str = ""
-    candidate_resolution_reason: str = ""       # Layer A raw candidate resolution reason
-    publication_reason: str = ""                # Layer B published publication reason
+    candidate_resolution_reason: str           # Layer A raw candidate resolution reason
+    publication_reason: str                    # Layer B published publication reason
+    analysis_fingerprint: str
+    phase4_policy_fingerprint: str
+    code_revision: str
+    profile_name: str
+    calibration_status: str
     research_fingerprint: Optional[str] = None
     engine_version: str = "4.0.0"
     config_version: str = "cfg-2026-v1"

@@ -165,38 +165,104 @@ def test_matrix_d_unclosed_candle_le_t_causes_force_wait(candidate_profile, base
 
 
 @pytest.mark.unit
-def test_matrix_e_future_higher_timeframes_mutation_invariance(candidate_profile, base_rfh):
+@pytest.mark.parametrize("tf_name, tf_mins, delta", [
+    ("1h", 60, timedelta(hours=1)),
+    ("4h", 240, timedelta(hours=4)),
+    ("1d", 1440, timedelta(days=1)),
+])
+def test_matrix_e_future_higher_timeframes_mutation_invariance(candidate_profile, base_rfh, tf_name, tf_mins, delta):
     """Matrix E: Future 1H, 4H, 1D candles > T mutated do not alter T fingerprint."""
     t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-    c15_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=15)
-    c1h_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=60)
-    c4h_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=240)
-    c1d_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=1440)
+    c15 = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=15)]
+    c1h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=60)]
+    c4h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=240)]
+    c1d = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=1440)]
 
-    # Future higher timeframe candles
-    c1h_future_a = _make_candle(t0 + timedelta(hours=1), 2600.0, is_closed=True, tf_mins=60)
-    c1h_future_b = _make_candle(t0 + timedelta(hours=1), 2200.0, is_closed=True, tf_mins=60)
+    c_future_a = _make_candle(t0 + delta, 2600.0, is_closed=True, tf_mins=tf_mins)
+    c_future_b = _make_candle(t0 + delta, 2100.0, is_closed=True, tf_mins=tf_mins)
+
+    kwargs_a = {"closed_candles_15m": c15, "closed_candles_1h": list(c1h), "closed_candles_4h": list(c4h), "closed_candles_1d": list(c1d)}
+    kwargs_b = {"closed_candles_15m": c15, "closed_candles_1h": list(c1h), "closed_candles_4h": list(c4h), "closed_candles_1d": list(c1d)}
+
+    kwargs_a[f"closed_candles_{tf_name}"].append(c_future_a)
+    kwargs_b[f"closed_candles_{tf_name}"].append(c_future_b)
 
     engine = XauUsdSignalEngine(code_revision="test-rev-p4")
 
     res_a = engine.analyze(
-        closed_candles_15m=[c15_1],
-        closed_candles_1h=[c1h_1, c1h_future_a],
-        closed_candles_4h=[c4h_1],
-        closed_candles_1d=[c1d_1],
         runtime_health=base_rfh,
         profile=candidate_profile,
         as_of=t0,
+        **kwargs_a,
     )
-
     res_b = engine.analyze(
-        closed_candles_15m=[c15_1],
-        closed_candles_1h=[c1h_1, c1h_future_b],
-        closed_candles_4h=[c4h_1],
-        closed_candles_1d=[c1d_1],
         runtime_health=base_rfh,
         profile=candidate_profile,
         as_of=t0,
+        **kwargs_b,
     )
 
     assert res_a.analysis_fingerprint == res_b.analysis_fingerprint
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tf_name, tf_mins, delta", [
+    ("1h", 60, timedelta(hours=1)),
+    ("4h", 240, timedelta(hours=4)),
+    ("1d", 1440, timedelta(days=1)),
+])
+def test_matrix_f_future_higher_tf_unclosed_ignored_no_force_wait(candidate_profile, base_rfh, tf_name, tf_mins, delta):
+    """Matrix F: Future unclosed higher-TF candle > T is ignored and MUST NOT trigger FORCE_WAIT."""
+    t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    c15 = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=15)]
+    c1h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=60)]
+    c4h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=240)]
+    c1d = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=1440)]
+
+    c_future_unclosed = _make_candle(t0 + delta, 2550.0, is_closed=False, tf_mins=tf_mins)
+    kwargs = {"closed_candles_15m": c15, "closed_candles_1h": list(c1h), "closed_candles_4h": list(c4h), "closed_candles_1d": list(c1d)}
+    kwargs[f"closed_candles_{tf_name}"].append(c_future_unclosed)
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
+    snapshot = engine.analyze(
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+        **kwargs,
+    )
+
+    assert snapshot.hard_gate.is_blocked is False
+    assert snapshot.hard_gate.runtime_health.is_unclosed_candle is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tf_name, tf_mins", [
+    ("1h", 60),
+    ("4h", 240),
+    ("1d", 1440),
+])
+def test_matrix_g_unclosed_higher_tf_candle_le_t_causes_force_wait(candidate_profile, base_rfh, tf_name, tf_mins):
+    """Matrix G: Unclosed higher-TF decision candle <= T causes immediate FORCE_WAIT."""
+    t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    c15 = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=15)]
+    c1h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=60)]
+    c4h = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=240)]
+    c1d = [_make_candle(t0, 2500.0, is_closed=True, tf_mins=1440)]
+
+    # Replace the <= T candle with an unclosed one
+    kwargs = {"closed_candles_15m": c15, "closed_candles_1h": list(c1h), "closed_candles_4h": list(c4h), "closed_candles_1d": list(c1d)}
+    kwargs[f"closed_candles_{tf_name}"] = [_make_candle(t0, 2500.0, is_closed=False, tf_mins=tf_mins)]
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
+    snapshot = engine.analyze(
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+        **kwargs,
+    )
+
+    assert snapshot.state == SignalState.FORCE_WAIT
+    assert snapshot.user_decision == UserDecision.WAIT
+    assert snapshot.hard_gate.is_blocked is True
+    assert snapshot.hard_gate.runtime_health.is_unclosed_candle is True
+

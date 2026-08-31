@@ -235,10 +235,14 @@ def compute_phase4_policy_fingerprint(profile: Phase4SignalProfile) -> str:
     def _encode_val(v: Any) -> Any:
         if v is None:
             return "NONE"
-        if isinstance(v, (int, float)):
+        if isinstance(v, bool):
+            return "TRUE" if v else "FALSE"
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
             if not math.isfinite(v):
                 raise ValueError(f"Non-finite float in policy fingerprint: {v}")
-            return f"{float(v):.8f}"
+            return float(v).hex()
         if isinstance(v, Enum):
             return v.value
         if isinstance(v, (dict, MappingProxyType, Mapping)):

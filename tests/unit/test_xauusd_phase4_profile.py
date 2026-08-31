@@ -251,3 +251,47 @@ def test_lossless_policy_fingerprint_numeric_precision():
     )
     assert compute_phase4_policy_fingerprint(prof1) != compute_phase4_policy_fingerprint(prof2)
 
+
+@pytest.mark.unit
+def test_sub_8th_decimal_policy_fingerprint_no_collision():
+    """
+    Hostile test: Two valid policy configurations differing ONLY beyond the 8th decimal place
+    MUST produce different policy fingerprints under exact lossless float representation.
+    """
+    # 15.000000001 + 9.999999999 + 10 + 10 + 20 + 15 + 10 + 10 = 100.0
+    w_regime_a = 15.000000001
+    w_trend_1h_a = 9.999999999
+
+    # 15.000000002 + 9.999999998 + 10 + 10 + 20 + 15 + 10 + 10 = 100.0
+    w_regime_b = 15.000000002
+    w_trend_1h_b = 9.999999998
+
+    # Verify they collide under 8-decimal string formatting
+    assert f"{w_regime_a:.8f}" == f"{w_regime_b:.8f}"
+
+    prof_a = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(w_regime_a, w_trend_1h_a, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+        short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+    )
+    prof_b = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(w_regime_b, w_trend_1h_b, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+        short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+    )
+
+    fp_a = compute_phase4_policy_fingerprint(prof_a)
+    fp_b = compute_phase4_policy_fingerprint(prof_b)
+    assert fp_a != fp_b
+
+

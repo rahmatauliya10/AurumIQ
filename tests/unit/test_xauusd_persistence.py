@@ -82,6 +82,8 @@ def test_save_dual_side_snapshot_null_legacy_scores(test_instrument):
         reasons_short_negative=("No short trigger",),
         hard_gate_reasons=(),
         resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
         analysis_fingerprint="test_xauusd_fp_123456",
         phase4_policy_fingerprint="policy_fp_789",
         code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
