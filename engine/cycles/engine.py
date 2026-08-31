@@ -16,7 +16,7 @@ from engine.core.types import (
 )
 from engine.cycles.calendar import calculate_calendar_seasonality
 from engine.cycles.events import evaluate_macro_event_risk
-from engine.cycles.profile import Cycle3AProfile
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import calculate_swing_duration
 
@@ -31,7 +31,7 @@ class RobustTimeCycleEngine:
       3. Macroeconomic event blackout gate (A06), PiT revision safety (A26, P3A-11), and missing feed safety (P3A-12).
       4. Calendar seasonality flows with empirical effect gate and exact month length (P3A-10, P3A-16).
       5. Enforces closed candle analysis boundary (P3A-17).
-      6. Consolidates into immutable Cycle3ASnapshot with explicit Profile isolation.
+      6. Consolidates into immutable Cycle3ASnapshot with explicit Profile and CalibrationStatus isolation.
     """
 
     def __init__(
@@ -40,9 +40,23 @@ class RobustTimeCycleEngine:
         cycle_version: str = "3.0.0-3A",
         blackout_minutes: Optional[int] = None,
     ):
-        self.profile = profile if profile is not None else Cycle3AProfile.legacy_xaut_profile()
+        if profile is not None:
+            self.profile = profile
+        else:
+            if blackout_minutes is not None:
+                # Historical legacy customization
+                self.profile = Cycle3AProfile(
+                    name="LEGACY_XAUT_REFERENCE",
+                    calibration_status=CalibrationStatus.LEGACY_REFERENCE,
+                    target_instrument="XAUT",
+                    macro_blackout_pre_minutes=blackout_minutes,
+                    macro_blackout_post_minutes=blackout_minutes,
+                )
+            else:
+                self.profile = Cycle3AProfile.legacy_xaut_profile()
+
         self.cycle_version = cycle_version
-        self.blackout_minutes = blackout_minutes if blackout_minutes is not None else (self.profile.macro_blackout_minutes or 30)
+        self.blackout_minutes = blackout_minutes
 
     @classmethod
     def for_legacy_xaut(cls) -> "RobustTimeCycleEngine":
@@ -50,9 +64,28 @@ class RobustTimeCycleEngine:
         return cls(profile=Cycle3AProfile.legacy_xaut_profile())
 
     @classmethod
-    def for_xauusd(cls, profile: Optional[Cycle3AProfile] = None) -> "RobustTimeCycleEngine":
-        """Factory method for XAUUSD target profile (uncalibrated fail-safe by default)."""
-        return cls(profile=profile or Cycle3AProfile.uncalibrated_xauusd_profile())
+    def for_xauusd(
+        cls,
+        profile: Optional[Cycle3AProfile] = None,
+        timeframe: Optional[str] = None,
+    ) -> "RobustTimeCycleEngine":
+        """
+        Factory method for XAUUSD target profile.
+        Strictly validates target instrument matches XAUUSD and enforces PENDING_DATA by default.
+        """
+        if profile is not None:
+            target = profile.target_instrument.upper().replace("/", "")
+            if target != "XAUUSD":
+                raise ValueError(
+                    f"Invalid profile for XAUUSD engine: target instrument is '{profile.target_instrument}', "
+                    f"expected 'XAUUSD'."
+                )
+            if timeframe is not None and profile.timeframe is not None and profile.timeframe != timeframe:
+                raise ValueError(
+                    f"Profile timeframe '{profile.timeframe}' does not match requested timeframe '{timeframe}'."
+                )
+            return cls(profile=profile)
+        return cls(profile=Cycle3AProfile.uncalibrated_xauusd_profile(timeframe=timeframe))
 
     def analyze(
         self,
@@ -82,16 +115,31 @@ class RobustTimeCycleEngine:
 
         as_of = latest_candle.timestamp_close
 
-        # Determine effective profile
+        # Determine effective profile with strict instrument segregation
         eff_profile = profile
         if eff_profile is None:
-            if instrument is not None and instrument.upper().replace("/", "") in ("XAUUSD", "XAU"):
-                if self.profile.is_calibrated and self.profile.name != "LEGACY_XAUT_REFERENCE":
-                    eff_profile = self.profile
+            if instrument is not None:
+                norm_inst = instrument.upper().replace("/", "")
+                if norm_inst == "XAUUSD":
+                    if self.profile.target_instrument.upper().replace("/", "") == "XAUUSD":
+                        eff_profile = self.profile
+                    else:
+                        eff_profile = Cycle3AProfile.uncalibrated_xauusd_profile(timeframe=timeframe)
+                elif norm_inst in ("XAUT", "XAUTUSD"):
+                    if self.profile.target_instrument.upper().replace("/", "") == "XAUT":
+                        eff_profile = self.profile
+                    else:
+                        eff_profile = Cycle3AProfile.legacy_xaut_profile()
                 else:
-                    eff_profile = Cycle3AProfile.uncalibrated_xauusd_profile()
+                    eff_profile = self.profile
             else:
                 eff_profile = self.profile
+
+        # Timeframe integrity validation
+        if eff_profile.timeframe is not None and eff_profile.timeframe != timeframe:
+            raise ValueError(
+                f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
+            )
 
         # 1. Trading Session Cycle (A02, P3A-06, P3A-14)
         session_ctx = classify_session(
@@ -113,11 +161,11 @@ class RobustTimeCycleEngine:
         )
 
         # 3. Macro Event Risk & Revision Gate (A06, A26, P3A-11, P3A-12)
-        macro_blackout = eff_profile.macro_blackout_minutes if (eff_profile and eff_profile.macro_blackout_minutes is not None) else self.blackout_minutes
         macro_ctx = evaluate_macro_event_risk(
             as_of=as_of,
             events=macro_events,
-            blackout_minutes=macro_blackout,
+            blackout_pre_minutes=eff_profile.macro_blackout_pre_minutes,
+            blackout_post_minutes=eff_profile.macro_blackout_post_minutes,
             profile=eff_profile,
         )
 
@@ -132,24 +180,34 @@ class RobustTimeCycleEngine:
         # Hard Risk Gate: If high-impact event is in blackout, cycle score is blocked
         is_blocked = macro_ctx.is_in_blackout
 
-        if is_blocked or not eff_profile.is_calibrated:
+        if is_blocked or not eff_profile.is_production_scoring_enabled:
             total_cycle_score = 0.0
         else:
-            # Macro clear bonus: ONLY granted if feed is healthy and event is verified far away (P3A-12)
+            # Macro clear bonus: ONLY granted if feed is healthy, scoring is enabled, and event is verified far away
             if macro_ctx.is_feed_healthy:
-                far_win = eff_profile.macro_clear_window_far_minutes if eff_profile.macro_clear_window_far_minutes is not None else 120
-                near_win = eff_profile.macro_clear_window_near_minutes if eff_profile.macro_clear_window_near_minutes is not None else 60
-                bonus_far = eff_profile.macro_clear_bonus_far if eff_profile.macro_clear_bonus_far is not None else 5.0
-                bonus_near = eff_profile.macro_clear_bonus_near if eff_profile.macro_clear_bonus_near is not None else 2.0
+                far_win = eff_profile.macro_clear_window_far_minutes
+                near_win = eff_profile.macro_clear_window_near_minutes
+                bonus_far = eff_profile.macro_clear_bonus_far
+                bonus_near = eff_profile.macro_clear_bonus_near
 
-                if macro_ctx.minutes_to_next_event is not None and macro_ctx.minutes_to_next_event > far_win:
+                if (
+                    far_win is not None
+                    and bonus_far is not None
+                    and macro_ctx.minutes_to_next_event is not None
+                    and macro_ctx.minutes_to_next_event > far_win
+                ):
                     macro_clear_bonus = bonus_far
-                elif macro_ctx.minutes_to_next_event is not None and macro_ctx.minutes_to_next_event > near_win:
+                elif (
+                    near_win is not None
+                    and bonus_near is not None
+                    and macro_ctx.minutes_to_next_event is not None
+                    and macro_ctx.minutes_to_next_event > near_win
+                ):
                     macro_clear_bonus = bonus_near
                 else:
                     macro_clear_bonus = 0.0
             else:
-                macro_clear_bonus = 0.0  # Zero bonus if macro feed is missing or unverified
+                macro_clear_bonus = 0.0
 
             raw_score = (
                 session_ctx.expectancy_score +
@@ -168,4 +226,7 @@ class RobustTimeCycleEngine:
             is_blocked_by_event=is_blocked,
             cycle_score_3a=total_cycle_score,
             cycle_version=self.cycle_version,
+            profile_name=eff_profile.name,
+            calibration_status=eff_profile.calibration_status.value,
+            calibration_artifact_version=eff_profile.details.get("calibration_version"),
         )

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from engine.core.types import CalendarEffectEntry, CalendarSeasonalityContext, SampleQuality
-from engine.cycles.profile import Cycle3AProfile
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -21,11 +21,13 @@ def calculate_calendar_seasonality(
 
     Statistical No-Evidence & Empirical Effect Gate (P3A-10, P3A-16):
       - Stable folds alone without empirical directional effect/expectancy yield seasonality_score = 0.0.
-      - If no calendar_effect_table, or bucket has effective_n < 30, or NOT is_statistically_significant,
-        or expectancy_r <= 0, or stability < 0.60:
+      - If no calendar_effect_table, or bucket has effective_n < min_eff_n, or NOT is_statistically_significant,
+        or expectancy_r <= 0, or stability < stability_thresh:
         seasonality_score strictly defaults to 0.0.
-      - Positive score is only granted when empirical statistical evidence confirms an edge.
-      - If profile is provided and is_calibrated=False, returns seasonality_score = 0.0.
+      - Positive score is only granted when empirical statistical evidence confirms an edge AND
+        profile production scoring is enabled.
+      - If profile production scoring is disabled (PENDING_DATA / CANDIDATE_NOT_FROZEN),
+        strictly returns seasonality_score = 0.0.
 
     Precise Month-End Flow:
       - Uses calendar.monthrange to calculate exact month length.
@@ -59,8 +61,8 @@ def calculate_calendar_seasonality(
             stability = sum(valid_scores) / float(n_folds)
             stability = float(round(max(0.0, min(1.0, stability)), 4))
 
-    # Uncalibrated profile check: strictly 0.0 seasonality score
-    if profile is not None and not profile.is_calibrated:
+    # Profile governance check: if production scoring is disabled, return 0.0 score
+    if profile is not None and not profile.is_production_scoring_enabled:
         return CalendarSeasonalityContext(
             day_of_week=dow,
             day_name=day_name,
@@ -75,15 +77,33 @@ def calculate_calendar_seasonality(
 
     # Determine effective calendar effect table and thresholds
     effect_table = calendar_effect_table
-    if effect_table is None and profile is not None and profile.is_calibrated:
+    if effect_table is None and profile is not None and profile.is_production_scoring_enabled:
         effect_table = profile.calendar_effect_table
 
-    min_eff_n = profile.calendar_min_effective_n if (profile and profile.calendar_min_effective_n is not None) else 30.0
-    stability_thresh = profile.calendar_stability_threshold if (profile and profile.calendar_stability_threshold is not None) else 0.60
-    max_score = profile.calendar_max_score if (profile and profile.calendar_max_score is not None) else 5.0
-    exp_multiplier = profile.calendar_expectancy_multiplier if (profile and profile.calendar_expectancy_multiplier is not None) else 10.0
+    if profile is not None:
+        min_eff_n = profile.calendar_min_effective_n
+        stability_thresh = profile.calendar_stability_threshold
+        max_score = profile.calendar_max_score
+        exp_multiplier = profile.calendar_expectancy_multiplier
+    else:
+        min_eff_n = 30.0
+        stability_thresh = 0.60
+        max_score = 5.0
+        exp_multiplier = 10.0
 
-    # Evaluate against Empirical Calendar Effect Table (P3A-16)
+    if min_eff_n is None or stability_thresh is None or max_score is None or exp_multiplier is None:
+        return CalendarSeasonalityContext(
+            day_of_week=dow,
+            day_name=day_name,
+            hour_utc=hour,
+            month=month,
+            is_month_end_flow=is_month_end,
+            stability_score=stability,
+            seasonality_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
+
     seasonality_score = 0.0
     if effect_table:
         bucket_key = "MONTH_END" if is_month_end else f"DOW_{dow}_HOUR_{hour}"
@@ -92,7 +112,6 @@ def calculate_calendar_seasonality(
             effective_n = entry.effective_n
             entry_stability = entry.stability if entry.stability > 0 else stability
 
-            # Guardrail: requires effective_n >= min_eff_n, statistical significance, and stability >= stability_thresh
             if (
                 effective_n >= min_eff_n
                 and entry.is_statistically_significant

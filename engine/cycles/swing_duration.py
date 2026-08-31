@@ -12,7 +12,7 @@ from engine.core.types import (
     SwingDurationContext,
     SwingPoint,
 )
-from engine.cycles.profile import Cycle3AProfile
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 
 # Strict whitelist of authorized operational timeframes in AurumIQ
 ALLOWED_TIMEFRAMES = {
@@ -53,6 +53,8 @@ def calculate_swing_duration(
     Calculate causal swing duration maturity and age percentiles.
 
     Causality Invariants (P3A-07):
+      - Point-in-Time filtering: Evaluates ONLY swings with confirmed detected_at <= as_of.
+        Future swing confirmations at detected_at > as_of are strictly excluded.
       - market_age: Elapsed time/bars from physical swing peak/trough (timestamp).
       - known_age: Elapsed time/bars from confirmation point (detected_at).
       - Scoring and maturity decisions MUST strictly evaluate knowable age (detected_at).
@@ -62,14 +64,22 @@ def calculate_swing_duration(
       - Unknown independence (sample_eval=None and effective_n=None) MUST FAIL CLOSED:
         eff_n defaults to 0.0, maturity_score = 0.0 (INSUFFICIENT).
       - Raw N must NEVER be assumed equal to effective N.
-      - If eff_n < 30.0 or sample_is_blocked: maturity_score = 0.0 (INSUFFICIENT).
+      - If eff_n < min_eff_n or sample_is_blocked: maturity_score = 0.0 (INSUFFICIENT).
       - Percentile may remain descriptive, but confidence score strictly defaults to 0.0.
       - Zero hardcoded fallback distributions allowed.
-      - If profile is provided and is_calibrated=False, returns maturity_score = 0.0.
+      - If profile production scoring is disabled (PENDING_DATA / CANDIDATE_NOT_FROZEN),
+        strictly returns maturity_score = 0.0.
     """
     tf_sec = timeframe_to_seconds(timeframe)
+    as_of = latest_candle.timestamp_close if latest_candle.is_closed else latest_candle.timestamp_open
 
-    if not structure.swings:
+    # Strict Point-in-Time swing filtering: only confirmed swings knowable as of as_of
+    eligible_swings = [
+        s for s in structure.swings
+        if s.is_confirmed and s.detected_at <= as_of
+    ]
+
+    if not eligible_swings:
         return SwingDurationContext(
             market_age_bars=0,
             market_age_hours=0.0,
@@ -82,8 +92,7 @@ def calculate_swing_duration(
             effective_n=0.0,
         )
 
-    last_swing = structure.swings[-1]
-    as_of = latest_candle.timestamp_close if latest_candle.is_closed else latest_candle.timestamp_open
+    last_swing = eligible_swings[-1]
 
     # 1. Market age (from formation timestamp)
     market_delta_sec = max(0.0, (as_of - last_swing.timestamp).total_seconds())
@@ -96,7 +105,7 @@ def calculate_swing_duration(
     known_bars = max(0, int(known_delta_sec // tf_sec))
 
     durations_seq = historical_durations
-    if durations_seq is None and profile is not None and profile.is_calibrated:
+    if durations_seq is None and profile is not None and profile.is_production_scoring_enabled:
         durations_seq = profile.historical_durations
 
     raw_n = len(durations_seq) if durations_seq else 0
@@ -108,8 +117,8 @@ def calculate_swing_duration(
         pos = bisect.bisect_left(durations, known_bars)
         percentile = float(round(min(100.0, max(0.0, (pos / raw_n) * 100.0)), 2))
 
-    # Uncalibrated profile check: strictly 0.0 maturity score
-    if profile is not None and not profile.is_calibrated:
+    # Profile governance check: if production scoring is disabled, return 0.0 score
+    if profile is not None and not profile.is_production_scoring_enabled:
         return SwingDurationContext(
             market_age_bars=market_bars,
             market_age_hours=market_hours,
@@ -122,7 +131,25 @@ def calculate_swing_duration(
             effective_n=0.0,
         )
 
-    min_eff_n = profile.swing_min_effective_n if (profile and profile.swing_min_effective_n is not None) else 30.0
+    if profile is not None:
+        min_eff_n = profile.swing_min_effective_n
+        max_score = profile.swing_max_score
+    else:
+        min_eff_n = 30.0
+        max_score = 20.0
+
+    if min_eff_n is None or max_score is None:
+        return SwingDurationContext(
+            market_age_bars=market_bars,
+            market_age_hours=market_hours,
+            known_age_bars=known_bars,
+            known_age_hours=known_hours,
+            pullback_age_percentile=percentile,
+            is_mature=False,
+            maturity_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
 
     # 3. Determine effective N and sample quality (P3A-18: Fail Closed on Unknown Effective-N)
     if sample_eval is not None:
@@ -133,7 +160,6 @@ def calculate_swing_duration(
         sample_is_blocked = eff_n < min_eff_n
     else:
         # Raw N must NEVER be assumed equal to effective N.
-        # Unknown statistical independence forces eff_n = 0.0 and sample_is_blocked = True.
         eff_n = 0.0
         sample_is_blocked = True
 
@@ -163,9 +189,6 @@ def calculate_swing_duration(
         weight_mult = 1.0
 
     is_mature = (75.0 <= percentile <= 95.0) if percentile is not None else False
-
-    # Compute maturity readiness score (Max score from profile or default 20.0 in Phase 3A)
-    max_score = profile.swing_max_score if (profile and profile.swing_max_score is not None) else 20.0
 
     if percentile is not None:
         if 75.0 <= percentile <= 90.0:

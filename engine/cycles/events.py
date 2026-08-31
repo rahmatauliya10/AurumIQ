@@ -3,20 +3,22 @@ from datetime import datetime, timezone
 from typing import List, Optional, Sequence
 
 from engine.core.types import EventImpact, MacroEvent, MacroEventContext
-from engine.cycles.profile import Cycle3AProfile
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 
 
 def evaluate_macro_event_risk(
     as_of: datetime,
     events: Optional[Sequence[MacroEvent]] = None,
-    blackout_minutes: Optional[int] = 30,
+    blackout_pre_minutes: Optional[int] = None,
+    blackout_post_minutes: Optional[int] = None,
+    blackout_minutes: Optional[int] = None,
     profile: Optional[Cycle3AProfile] = None,
 ) -> MacroEventContext:
     """
     Evaluate macroeconomic event risk at a specific point-in-time timestamp.
 
     Acceptance Rule A06 (Macro Event Blackout Gate):
-      If a HIGH impact event is within [-blackout_minutes, +blackout_minutes] of scheduled time,
+      If a HIGH impact event is within [-pre_window, +post_window] of scheduled time,
       `is_in_blackout` is set to True (prohibiting BUY_WINDOW and forcing WAIT).
 
     Acceptance Rule A26 & P3A-11 (Point-in-Time Revision Safety):
@@ -26,8 +28,10 @@ def evaluate_macro_event_risk(
       - If revised_at > as_of, the revision is strictly masked, returning initial_value.
       - Only if revised_at <= as_of is the revised value returned.
 
-    Fail-Safe Rule (P3A-12):
-      - If events list is empty or None, is_feed_healthy is False. Zero clear-market bonus allowed.
+    Uncalibrated / Zero-Fallback Governance:
+      - If macro timing calibration is absent (pre/post windows are None), descriptive
+        metrics (minutes_to_next, minutes_since_last, PIT value) are computed without
+        inventing numerical blackout boundaries or awarding clear-market bonuses.
     """
     if as_of.tzinfo is None:
         as_of_utc = as_of.replace(tzinfo=timezone.utc)
@@ -44,14 +48,22 @@ def evaluate_macro_event_risk(
             is_feed_healthy=False,
         )
 
-    # Determine effective blackout window
-    effective_blackout = blackout_minutes
-    if effective_blackout is None and profile is not None:
-        effective_blackout = profile.macro_blackout_minutes
-    if effective_blackout is None:
-        effective_blackout = 30
+    # Determine pre and post blackout windows
+    pre_win = blackout_pre_minutes
+    post_win = blackout_post_minutes
 
-    # Filter events to only high-impact ones for blackout gating
+    if pre_win is None and post_win is None:
+        if blackout_minutes is not None:
+            pre_win = blackout_minutes
+            post_win = blackout_minutes
+        elif profile is not None:
+            pre_win = profile.macro_blackout_pre_minutes
+            post_win = profile.macro_blackout_post_minutes
+        else:
+            # Unprofiled legacy fallback (only when no profile is supplied)
+            pre_win = 30
+            post_win = 30
+
     high_impact_events = [e for e in events if e.impact == EventImpact.HIGH]
 
     is_in_blackout = False
@@ -65,35 +77,36 @@ def evaluate_macro_event_risk(
         sched_utc = event.scheduled_at.astimezone(timezone.utc) if event.scheduled_at.tzinfo else event.scheduled_at.replace(tzinfo=timezone.utc)
         diff_minutes = int((sched_utc - as_of_utc).total_seconds() // 60)
 
-        # Check proximity to future scheduled events
+        # Proximity to future scheduled event (scheduled in future -> diff_minutes >= 0)
         if diff_minutes >= 0:
             if min_to_next is None or diff_minutes < min_to_next:
                 min_to_next = diff_minutes
-        # Check proximity from past scheduled events
+        # Proximity from past scheduled event (scheduled in past -> diff_minutes < 0)
         else:
             elapsed_minutes = abs(diff_minutes)
             if min_since_last is None or elapsed_minutes < min_since_last:
                 min_since_last = elapsed_minutes
 
-        # Check scheduled blackout window [-blackout_minutes, +blackout_minutes] around scheduled time
-        if abs(diff_minutes) <= effective_blackout:
-            is_in_blackout = True
-            active_event_name = event.name
+        # Check configured scheduled blackout window [-pre_win, +post_win]
+        # as_of is between [sched - pre_win, sched + post_win]
+        # Equivalent: -post_win <= diff_minutes <= pre_win
+        if pre_win is not None and post_win is not None:
+            if -post_win <= diff_minutes <= pre_win:
+                is_in_blackout = True
+                active_event_name = event.name
 
         # Post-revision publication blackout window (only if revision has ACTUALLY been published as of as_of_utc)
         if event.revised_at is not None:
             rev_utc = event.revised_at.astimezone(timezone.utc) if event.revised_at.tzinfo else event.revised_at.replace(tzinfo=timezone.utc)
             if as_of_utc >= rev_utc:
-                # Revision is known. Apply post-revision blackout window [0, +blackout_minutes]
                 rev_elapsed_min = int((as_of_utc - rev_utc).total_seconds() // 60)
-                if 0 <= rev_elapsed_min <= effective_blackout:
+                if post_win is not None and 0 <= rev_elapsed_min <= post_win:
                     is_in_blackout = True
                     active_event_name = f"{event.name} (Revision)"
 
         # Point-in-Time value resolution (A26)
         rel_utc = event.released_at.astimezone(timezone.utc) if event.released_at.tzinfo else event.released_at.replace(tzinfo=timezone.utc)
         if as_of_utc >= rel_utc:
-            # Value has been released
             effective_time = rel_utc
             val = event.initial_value
             if event.revised_at is not None:
