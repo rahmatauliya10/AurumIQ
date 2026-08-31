@@ -1,16 +1,20 @@
-"""Timing Score calculation engine (Phase 4 Config Version 1.0)."""
 from decimal import Decimal
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from engine.core.types import (
     CandleData,
     ComponentScore,
     Cycle3ASnapshot,
+    DualSideTimingResult,
     FeatureSnapshot,
     MacroEventContext,
+    SideTimingScoreResult,
+    SignalSide,
     StructureResult,
     TimingScoreResult,
 )
+from engine.cycles.profile import CalibrationStatus as Cycle3ACalibrationStatus, Cycle3AProfile
+from engine.signals.profile import normalize_xauusd_target
 
 
 def calculate_timing_score(
@@ -257,3 +261,289 @@ def calculate_timing_score(
         is_timing_ready=is_ready,
         config_version=config_version,
     )
+
+
+# --- Phase 4 XAUUSD Dual-Side Timing Scoring Engine ---
+
+def extract_xauusd_phase3a_score(
+    cycle_3a: Optional[Cycle3ASnapshot],
+    cycle_3a_profile: Optional[Cycle3AProfile],
+    decision_timeframe: str = "15m",
+) -> float:
+    """
+    Extract Phase 3A Timing contribution for XAUUSD with strict profile authority evidence.
+    Returns 0.0 unless explicit XAUUSD PRODUCTION_FROZEN profile authority is proven.
+    """
+    if cycle_3a is None or cycle_3a_profile is None:
+        return 0.0
+    try:
+        if normalize_xauusd_target(cycle_3a_profile.target_instrument) != "XAUUSD":
+            return 0.0
+    except ValueError:
+        return 0.0
+    if cycle_3a_profile.calibration_status != Cycle3ACalibrationStatus.PRODUCTION_FROZEN:
+        return 0.0
+    if cycle_3a.profile_name != cycle_3a_profile.name:
+        return 0.0
+    if cycle_3a.calibration_status != cycle_3a_profile.calibration_status.value:
+        return 0.0
+    return float(round(cycle_3a.cycle_score_3a, 2))
+
+
+def calculate_xauusd_dual_timing(
+    candle_15m: Optional[CandleData],
+    features_15m: Optional[FeatureSnapshot],
+    structure_15m: Optional[StructureResult],
+    features_1h: Optional[FeatureSnapshot] = None,
+    cycle_3a: Optional[Cycle3ASnapshot] = None,
+    cycle_3a_profile: Optional[Cycle3AProfile] = None,
+    profile: Optional[Any] = None,
+) -> DualSideTimingResult:
+    """
+    Calculate independent Long and Short Timing Scores (0.0 to 100.0) from closed-candle timing triggers.
+    Strict Invariants:
+      1. Macro Safety is strictly excluded from scoring (handled only in Hard Safety Gate).
+      2. Phase 3A contribution requires proven Cycle3AProfile XAUUSD PRODUCTION_FROZEN authority.
+      3. If profile is uncalibrated or None, evaluates descriptive components with is_valid=False and total_score=None.
+    """
+    is_calibrated = (
+        profile is not None
+        and hasattr(profile, "is_fully_configured")
+        and profile.is_fully_configured
+    )
+    cfg_version = getattr(profile, "name", "XAUUSD_UNCALIBRATED") if profile else "XAUUSD_UNCALIBRATED"
+
+    long_policy = getattr(profile, "long_timing", None) if profile else None
+    short_policy = getattr(profile, "short_timing", None) if profile else None
+
+    def _evaluate_side(
+        side: SignalSide,
+        policy: Any,
+    ) -> SideTimingScoreResult:
+        components: List[ComponentScore] = []
+
+        w_zone = getattr(policy, "weight_entry_zone", None) if is_calibrated and policy else 25.0
+        w_rev = getattr(policy, "weight_reversal_confirmation_15m", None) if is_calibrated and policy else 25.0
+        w_mom = getattr(policy, "weight_momentum_turn_15m_1h", None) if is_calibrated and policy else 20.0
+        w_p3a = getattr(policy, "weight_phase3a", None) if is_calibrated and policy else 20.0
+        w_vol = getattr(policy, "weight_volume_response", None) if is_calibrated and policy else 10.0
+
+        # 1. Entry Zone Proximity
+        zone_score = 0.0
+        zone_reason = f"No active {side.value} entry zone proximity available"
+        zone_avail = False
+
+        if features_15m is not None and features_15m.atr14 and candle_15m is not None:
+            atr = float(features_15m.atr14)
+            c_close = float(candle_15m.close)
+            if side == SignalSide.LONG:
+                ref_p = float(features_15m.ema20) if features_15m.ema20 else c_close
+                dist_atr = abs(c_close - ref_p) / atr if atr > 0 else 999.0
+                if dist_atr <= 0.5:
+                    zone_score = w_zone
+                    zone_reason = f"Ideal buy zone proximity ({round(dist_atr, 2)} ATR from EMA20)"
+                    zone_avail = True
+                elif dist_atr <= 1.0:
+                    zone_score = w_zone * 0.60
+                    zone_reason = f"Acceptable buy zone proximity ({round(dist_atr, 2)} ATR from EMA20)"
+                    zone_avail = True
+                else:
+                    zone_score = w_zone * 0.20
+                    zone_reason = f"Stretched from buy zone ({round(dist_atr, 2)} ATR)"
+                    zone_avail = True
+            else:  # SHORT
+                ref_p = float(features_15m.ema20) if features_15m.ema20 else c_close
+                dist_atr = abs(c_close - ref_p) / atr if atr > 0 else 999.0
+                if dist_atr <= 0.5:
+                    zone_score = w_zone
+                    zone_reason = f"Ideal sell zone proximity ({round(dist_atr, 2)} ATR from EMA20)"
+                    zone_avail = True
+                elif dist_atr <= 1.0:
+                    zone_score = w_zone * 0.60
+                    zone_reason = f"Acceptable sell zone proximity ({round(dist_atr, 2)} ATR from EMA20)"
+                    zone_avail = True
+                else:
+                    zone_score = w_zone * 0.20
+                    zone_reason = f"Stretched from sell zone ({round(dist_atr, 2)} ATR)"
+                    zone_avail = True
+
+        components.append(
+            ComponentScore(
+                name="Entry Zone Proximity",
+                score=round(zone_score, 2) if is_calibrated else 0.0,
+                max_score=w_zone if is_calibrated else 0.0,
+                reason=zone_reason,
+                is_available=zone_avail,
+            )
+        )
+
+        # 2. Closed 15m Reversal Confirmation
+        rev_score = 0.0
+        rev_reason = "No candle data for reversal check"
+        rev_avail = candle_15m is not None
+
+        if candle_15m is not None:
+            o_p = float(candle_15m.open)
+            h_p = float(candle_15m.high)
+            l_p = float(candle_15m.low)
+            c_p = float(candle_15m.close)
+            candle_range = h_p - l_p
+
+            if candle_range > 0:
+                if side == SignalSide.LONG:
+                    lower_wick = min(o_p, c_p) - l_p
+                    lower_wick_pct = lower_wick / candle_range
+                    close_in_upper = (c_p - l_p) / candle_range
+                    if lower_wick_pct >= 0.35 and close_in_upper >= 0.60:
+                        rev_score = w_rev
+                        rev_reason = f"Strong bullish rejection pin ({round(lower_wick_pct * 100, 1)}% wick)"
+                    elif c_p > o_p:
+                        rev_score = w_rev * 0.60
+                        rev_reason = "Bullish candle close"
+                    else:
+                        rev_score = 0.0
+                        rev_reason = "Bearish candle close on trigger"
+                else:  # SHORT
+                    upper_wick = h_p - max(o_p, c_p)
+                    upper_wick_pct = upper_wick / candle_range
+                    close_in_lower = (h_p - c_p) / candle_range
+                    if upper_wick_pct >= 0.35 and close_in_lower >= 0.60:
+                        rev_score = w_rev
+                        rev_reason = f"Strong bearish rejection pin ({round(upper_wick_pct * 100, 1)}% wick)"
+                    elif c_p < o_p:
+                        rev_score = w_rev * 0.60
+                        rev_reason = "Bearish candle close"
+                    else:
+                        rev_score = 0.0
+                        rev_reason = "Bullish candle close on trigger"
+
+        components.append(
+            ComponentScore(
+                name="15m Reversal Confirmation",
+                score=round(rev_score, 2) if is_calibrated else 0.0,
+                max_score=w_rev if is_calibrated else 0.0,
+                reason=rev_reason,
+                is_available=rev_avail,
+            )
+        )
+
+        # 3. 15m + 1H Momentum Turn
+        mom_score = 0.0
+        mom_reasons = []
+        mom_avail = features_15m is not None
+
+        if features_15m is not None:
+            if features_15m.rsi14 is not None:
+                rsi15 = features_15m.rsi14
+                if side == SignalSide.LONG:
+                    if 45.0 <= rsi15 <= 65.0:
+                        mom_score += w_mom * 0.50
+                        mom_reasons.append(f"15m RSI bull zone ({round(rsi15, 1)})")
+                    elif rsi15 < 45.0 and features_15m.roc12 and features_15m.roc12 > 0:
+                        mom_score += w_mom * 0.30
+                        mom_reasons.append(f"15m RSI recovering ({round(rsi15, 1)})")
+                else:  # SHORT
+                    if 35.0 <= rsi15 <= 55.0:
+                        mom_score += w_mom * 0.50
+                        mom_reasons.append(f"15m RSI bear zone ({round(rsi15, 1)})")
+                    elif rsi15 > 55.0 and features_15m.roc12 and features_15m.roc12 < 0:
+                        mom_score += w_mom * 0.30
+                        mom_reasons.append(f"15m RSI turning down ({round(rsi15, 1)})")
+
+            if features_1h is not None and features_1h.rsi14 is not None:
+                rsi1h = features_1h.rsi14
+                if side == SignalSide.LONG and rsi1h >= 45.0:
+                    mom_score += w_mom * 0.50
+                    mom_reasons.append(f"1H RSI supportive ({round(rsi1h, 1)})")
+                elif side == SignalSide.SHORT and rsi1h <= 55.0:
+                    mom_score += w_mom * 0.50
+                    mom_reasons.append(f"1H RSI supportive ({round(rsi1h, 1)})")
+
+        components.append(
+            ComponentScore(
+                name="15m + 1H Momentum Turn",
+                score=round(mom_score, 2) if is_calibrated else 0.0,
+                max_score=w_mom if is_calibrated else 0.0,
+                reason="; ".join(mom_reasons) if mom_reasons else "Missing momentum turn evidence",
+                is_available=mom_avail,
+            )
+        )
+
+        # 4. Phase 3A Cycle Timing
+        p3a_pts = extract_xauusd_phase3a_score(cycle_3a, cycle_3a_profile, "15m")
+        p3a_score = round(p3a_pts * (w_p3a / 100.0), 2)
+        p3a_reason = f"Phase 3A contribution ({round(p3a_score, 2)}/{w_p3a} pts)" if p3a_pts > 0 else "Phase 3A uncalibrated or unavailable"
+        p3a_avail = p3a_pts > 0
+
+        components.append(
+            ComponentScore(
+                name="Phase 3A Cycle Timing",
+                score=p3a_score if is_calibrated else 0.0,
+                max_score=w_p3a if is_calibrated else 0.0,
+                reason=p3a_reason,
+                is_available=p3a_avail,
+            )
+        )
+
+        # 5. Volume Response
+        vol_score = 0.0
+        vol_reason = "No volume response data available"
+        vol_avail = features_15m is not None and features_15m.volume_ratio_20 is not None
+
+        if vol_avail and features_15m:
+            v_ratio = features_15m.volume_ratio_20 or 0.0
+            if v_ratio >= 1.2:
+                vol_score = w_vol
+                vol_reason = f"Strong trigger volume response ({round(v_ratio, 2)}x)"
+            elif v_ratio >= 0.9:
+                vol_score = w_vol * 0.60
+                vol_reason = f"Normal trigger volume response ({round(v_ratio, 2)}x)"
+            else:
+                vol_score = w_vol * 0.20
+                vol_reason = f"Weak trigger volume response ({round(v_ratio, 2)}x)"
+
+        components.append(
+            ComponentScore(
+                name="Volume Response",
+                score=round(vol_score, 2) if is_calibrated else 0.0,
+                max_score=w_vol if is_calibrated else 0.0,
+                reason=vol_reason,
+                is_available=vol_avail,
+            )
+        )
+
+        if not is_calibrated:
+            return SideTimingScoreResult(
+                side=side,
+                total_score=None,
+                max_score=0.0,
+                components=tuple(components),
+                is_valid=False,
+                is_timing_ready=False,
+                config_version=cfg_version,
+            )
+
+        total = sum(c.score for c in components)
+        total_clamped = float(round(max(0.0, min(100.0, total)), 2))
+        th_ready = getattr(profile.long_gate if side == SignalSide.LONG else profile.short_gate, "threshold_ready_timing", 70.0)
+        is_ready = total_clamped >= (th_ready or 70.0)
+
+        return SideTimingScoreResult(
+            side=side,
+            total_score=total_clamped,
+            max_score=100.0,
+            components=tuple(components),
+            is_valid=True,
+            is_timing_ready=is_ready,
+            config_version=cfg_version,
+        )
+
+    long_res = _evaluate_side(SignalSide.LONG, long_policy)
+    short_res = _evaluate_side(SignalSide.SHORT, short_policy)
+
+    return DualSideTimingResult(
+        long_timing=long_res,
+        short_timing=short_res,
+        is_calibrated=is_calibrated,
+    )
+
