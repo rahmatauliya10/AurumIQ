@@ -1,5 +1,5 @@
 """Phase 4 Direction Score, Timing Score, and Selective Gate Signals package."""
-from engine.signals.direction import calculate_direction_score
+from engine.signals.direction import calculate_direction_score, calculate_xauusd_dual_direction
 from engine.signals.timing import calculate_timing_score
 from engine.signals.gate import evaluate_hard_gates, evaluate_selective_gate
 from engine.signals.explainer import (
@@ -22,6 +22,7 @@ from engine.signals.profile import (
 
 __all__ = [
     "calculate_direction_score",
+    "calculate_xauusd_dual_direction",
     "calculate_timing_score",
     "evaluate_hard_gates",
     "evaluate_selective_gate",
@@ -39,4 +40,5 @@ __all__ = [
     "normalize_xauusd_target",
     "uncalibrated_xauusd_signal_profile",
 ]
+
 
