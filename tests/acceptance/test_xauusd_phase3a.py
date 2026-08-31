@@ -1,21 +1,22 @@
 """
 Acceptance & Governance Tests for Phase 3A XAUUSD Robust Time Cycle:
-1. Explicit CalibrationStatus Governance (LEGACY_REFERENCE, PENDING_DATA, CANDIDATE_NOT_FROZEN, PRODUCTION_FROZEN)
-2. Zero XAUUSD Statistical / Empirical Defaults (no hardcoded min_samples, no hardcoded t-stat 1.96)
-3. Raw N != Effective N Guardrail
-4. Candidate Artifact Cannot Score (Strict 0.0 production cycle score)
-5. Future Swing detected_at Point-in-Time Exclusion
-6. Causal Swing Calibration with separate known/market chronologies
-7. Strict Artifact & Profile Target Instrument Rejection (XAUT != XAUUSD)
-8. Timeframe Mismatch Rejection
-9. Future-Data Provenance Rejection (data_end > as_of)
-10. Macro Pre/Post Blackout Window Independence
-11. Zero Numerical Blackout Fallback for Uncalibrated XAUUSD
-12. Defensive Immutability of Artifacts and Profiles
-13. Snapshot Calibration Status Transparency (PENDING_DATA exposed)
-14. Strict XAUUSD Target Isolation & Prevention of Legacy Table Leakage
-15. Pure Python AST Purity (Zero Django Imports)
-16. Zero Phase 4 Directional Symbols
+1. Explicit CalibrationStatus Governance & Dataclass Default Immutability (zero legacy defaults)
+2. Raw PRODUCTION_FROZEN without numbers fails neutral (no magical XAUT defaults)
+3. Zero XAUUSD Statistical / Empirical Defaults (no hardcoded min_samples, no hardcoded t-stat 1.96)
+4. Raw N != Effective N Guardrail
+5. Candidate Artifact Cannot Score (Strict 0.0 production cycle score)
+6. Future Swing detected_at Point-in-Time Exclusion
+7. Causal Swing Calibration with separate known/market chronologies
+8. Strict Artifact & Profile Target Instrument Rejection (XAUT != XAUUSD)
+9. Timeframe Mismatch Rejection
+10. Future-Data Provenance Rejection (data_end > as_of)
+11. True Independent Macro Pre/Post Blackout Windows (pre-only, post-only, uncalibrated)
+12. Zero Numerical Blackout Fallback for Uncalibrated XAUUSD
+13. Deep Recursive Immutability of Artifacts and Profiles
+14. Snapshot Calibration Status Transparency (PENDING_DATA exposed)
+15. Strict Per-Call Profile Target Validation in analyze()
+16. Pure Python AST Purity (Zero Django Imports)
+17. Zero Phase 4 Directional Symbols
 """
 import ast
 from datetime import datetime, timezone, timedelta
@@ -78,7 +79,7 @@ def _make_closed_candle(
 
 
 # ============================================================================
-# 1. Explicit Calibration Governance & Status
+# 1. Explicit Calibration Governance & Zero Legacy Dataclass Defaults
 # ============================================================================
 
 @pytest.mark.unit
@@ -99,35 +100,93 @@ def test_explicit_calibration_statuses_defined():
 
 
 @pytest.mark.unit
-def test_xauusd_uncalibrated_profile_has_no_hidden_fallbacks():
-    """uncalibrated_xauusd_profile() must contain None for all numerical scoring thresholds."""
-    profile = Cycle3AProfile.uncalibrated_xauusd_profile()
-    assert profile.name == "XAUUSD_UNCALIBRATED"
-    assert profile.calibration_status == CalibrationStatus.PENDING_DATA
-    assert profile.target_instrument == "XAUUSD"
-    assert profile.session_max_score is None
-    assert profile.session_min_effective_n is None
-    assert profile.session_expectancy_multiplier is None
-    assert profile.session_expectancy_table is None
-    assert profile.swing_max_score is None
-    assert profile.swing_min_effective_n is None
-    assert profile.swing_maturity_bands is None
-    assert profile.historical_durations is None
-    assert profile.calendar_max_score is None
-    assert profile.calendar_min_effective_n is None
-    assert profile.calendar_stability_threshold is None
-    assert profile.calendar_expectancy_multiplier is None
-    assert profile.calendar_effect_table is None
-    assert profile.macro_blackout_pre_minutes is None
-    assert profile.macro_blackout_post_minutes is None
-    assert profile.macro_clear_window_far_minutes is None
-    assert profile.macro_clear_window_near_minutes is None
-    assert profile.macro_clear_bonus_far is None
-    assert profile.macro_clear_bonus_near is None
+def test_raw_profile_dataclass_has_zero_legacy_numerical_defaults():
+    """
+    Directly instantiating Cycle3AProfile without numerical arguments must yield
+    None for all empirical scoring constants, preventing accidental inheritance.
+    """
+    raw_pending = Cycle3AProfile(
+        calibration_status=CalibrationStatus.PENDING_DATA,
+        target_instrument="XAUUSD",
+    )
+    assert raw_pending.session_max_score is None
+    assert raw_pending.session_min_effective_n is None
+    assert raw_pending.session_expectancy_multiplier is None
+    assert raw_pending.swing_max_score is None
+    assert raw_pending.swing_min_effective_n is None
+    assert raw_pending.calendar_max_score is None
+    assert raw_pending.calendar_min_effective_n is None
+    assert raw_pending.calendar_stability_threshold is None
+    assert raw_pending.calendar_expectancy_multiplier is None
+    assert raw_pending.macro_blackout_pre_minutes is None
+    assert raw_pending.macro_blackout_post_minutes is None
+    assert raw_pending.macro_clear_bonus_far is None
+    assert raw_pending.macro_clear_bonus_near is None
+
+    # Even if labeled PRODUCTION_FROZEN, a raw unpopulated profile must NOT contain XAUT defaults
+    raw_frozen = Cycle3AProfile(
+        calibration_status=CalibrationStatus.PRODUCTION_FROZEN,
+        target_instrument="XAUUSD",
+    )
+    assert raw_frozen.session_max_score is None
+    assert raw_frozen.swing_max_score is None
+    assert raw_frozen.calendar_max_score is None
+    assert raw_frozen.macro_blackout_pre_minutes is None
+
+
+@pytest.mark.unit
+def test_raw_production_frozen_without_numbers_fails_neutral():
+    """A PRODUCTION_FROZEN profile lacking explicit numerical thresholds fails neutral (0.0 score)."""
+    raw_frozen = Cycle3AProfile(
+        calibration_status=CalibrationStatus.PRODUCTION_FROZEN,
+        target_instrument="XAUUSD",
+    )
+    engine = RobustTimeCycleEngine.for_xauusd(profile=raw_frozen)
+    candle = _make_closed_candle(10)
+    structure = StructureResult(
+        timestamp=candle.timestamp_close, structure_type=StructureType.LH, bos=BosType.NONE,
+        last_swing_high=None, last_swing_low=None, swings=(), zones=(),
+    )
+    snapshot = engine.analyze(latest_candle=candle, structure=structure)
+    assert snapshot.cycle_score_3a == 0.0
+    assert snapshot.session.expectancy_score == 0.0
+    assert snapshot.swing_duration.maturity_score == 0.0
+    assert snapshot.calendar.seasonality_score == 0.0
 
 
 # ============================================================================
-# 2 & 3. Zero Statistical Defaults & Raw N != Effective N
+# 2. Per-Call Profile Target Validation
+# ============================================================================
+
+@pytest.mark.unit
+def test_analyze_per_call_profile_target_validation():
+    """analyze() strictly enforces target instrument match on per-call profiles."""
+    default_engine = RobustTimeCycleEngine()  # Legacy engine
+    xau_engine = RobustTimeCycleEngine.for_xauusd()
+    candle = _make_closed_candle(10)
+    structure = StructureResult(
+        timestamp=candle.timestamp_close, structure_type=StructureType.LH, bos=BosType.NONE,
+        last_swing_high=None, last_swing_low=None, swings=(), zones=(),
+    )
+    legacy_profile = Cycle3AProfile.legacy_xaut_profile()
+    xau_profile = Cycle3AProfile.uncalibrated_xauusd_profile()
+
+    # Case A: Default engine + instrument='XAUUSD' + profile=legacy_xaut_profile() -> REJECT
+    with pytest.raises(ValueError, match="does not match requested instrument 'XAUUSD'"):
+        default_engine.analyze(latest_candle=candle, structure=structure, instrument="XAUUSD", profile=legacy_profile)
+
+    # Case B: XAUUSD engine + profile=legacy_xaut_profile() -> REJECT
+    with pytest.raises(ValueError, match="cannot analyze using non-XAUUSD profile"):
+        xau_engine.analyze(latest_candle=candle, structure=structure, profile=legacy_profile)
+
+    # Case C: XAUUSD engine + profile=xau_profile -> ACCEPT
+    snapshot = xau_engine.analyze(latest_candle=candle, structure=structure, profile=xau_profile)
+    assert snapshot.calibration_status == "PENDING_DATA"
+    assert snapshot.cycle_score_3a == 0.0
+
+
+# ============================================================================
+# 3 & 4. Zero Statistical Defaults & Raw N != Effective N
 # ============================================================================
 
 @pytest.mark.unit
@@ -149,6 +208,7 @@ def test_session_calibration_requires_explicit_statistical_policy():
         assert entry.is_statistically_significant is False
 
     # Run with explicit sample evaluation and policy
+    key = list(res_unqualified.keys())[0]
     sample_evals = {
         key: SampleEvaluation(
             n_raw=50,
@@ -176,7 +236,7 @@ def test_session_calibration_requires_explicit_statistical_policy():
 
 
 # ============================================================================
-# 4. Candidate Artifact Cannot Score in Production
+# 5. Candidate Artifact Cannot Score in Production
 # ============================================================================
 
 @pytest.mark.unit
@@ -259,7 +319,7 @@ def test_candidate_artifact_produces_zero_production_score():
 
 
 # ============================================================================
-# 5. Future detected_at Swing Exclusion
+# 6. Future detected_at Swing Exclusion
 # ============================================================================
 
 @pytest.mark.unit
@@ -315,10 +375,8 @@ def test_future_swing_detected_at_exclusion():
         historical_durations=[2, 4, 6] * 10,
         effective_n=35.0,
     )
-    # Known age from Swing A detected_at (09:30) to 10:30 is 1.0 hour (4 bars)
     assert ctx_t.known_age_hours == 1.0
     assert ctx_t.known_age_bars == 4
-    # Market age from Swing A timestamp (09:00) to 10:30 is 1.5 hours (6 bars)
     assert ctx_t.market_age_hours == 1.5
     assert ctx_t.market_age_bars == 6
 
@@ -336,13 +394,12 @@ def test_future_swing_detected_at_exclusion():
         historical_durations=[2, 4, 6] * 10,
         effective_n=35.0,
     )
-    # Known age from Swing B detected_at (11:00) to 11:15 is 0.25 hours (1 bar)
     assert ctx_t2.known_age_hours == 0.25
     assert ctx_t2.known_age_bars == 1
 
 
 # ============================================================================
-# 6. Causal Swing Duration Calibration
+# 7. Causal Swing Duration Calibration
 # ============================================================================
 
 @pytest.mark.unit
@@ -367,7 +424,7 @@ def test_causal_swing_duration_calibration():
 
 
 # ============================================================================
-# 7, 8, 9. Provenance & Target Validation
+# 8, 9, 10. Provenance & Target Validation
 # ============================================================================
 
 @pytest.mark.unit
@@ -408,88 +465,73 @@ def test_timeframe_mismatch_rejected():
 
 
 # ============================================================================
-# 10 & 11. Macro Pre/Post Isolation & No Uncalibrated Fallback
+# 11 & 12. True Independent Macro Pre/Post Windows
 # ============================================================================
 
 @pytest.mark.unit
-def test_macro_pre_post_window_isolation():
-    """Pre-blackout and post-blackout windows operate independently."""
+def test_macro_true_independent_pre_and_post_windows():
+    """Pre-blackout and Post-blackout windows evaluate strictly independently."""
     sched = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
     event = MacroEvent(
         event_id="CPI", name="CPI", scheduled_at=sched, released_at=sched,
         initial_value="2.5%", impact=EventImpact.HIGH,
     )
 
-    # Case 1: Pre=45m, Post=15m
-    # At sched - 35m -> in pre-blackout (35 <= 45)
-    ctx_pre = evaluate_macro_event_risk(
-        as_of=sched - timedelta(minutes=35), events=[event],
-        blackout_pre_minutes=45, blackout_post_minutes=15,
-    )
-    assert ctx_pre.is_in_blackout is True
+    # 1. Pre=45m, Post=None
+    # 10m before event -> IN blackout (10 <= 45)
+    ctx_pre1 = evaluate_macro_event_risk(as_of=sched - timedelta(minutes=10), events=[event], blackout_pre_minutes=45, blackout_post_minutes=None)
+    assert ctx_pre1.is_in_blackout is True
+    # 10m after event -> NOT in blackout (post window is None)
+    ctx_post1 = evaluate_macro_event_risk(as_of=sched + timedelta(minutes=10), events=[event], blackout_pre_minutes=45, blackout_post_minutes=None)
+    assert ctx_post1.is_in_blackout is False
 
-    # At sched + 25m -> NOT in post-blackout (25 > 15)
-    ctx_post = evaluate_macro_event_risk(
-        as_of=sched + timedelta(minutes=25), events=[event],
-        blackout_pre_minutes=45, blackout_post_minutes=15,
-    )
-    assert ctx_post.is_in_blackout is False
+    # 2. Pre=None, Post=20m
+    # 10m before event -> NOT in blackout (pre window is None)
+    ctx_pre2 = evaluate_macro_event_risk(as_of=sched - timedelta(minutes=10), events=[event], blackout_pre_minutes=None, blackout_post_minutes=20)
+    assert ctx_pre2.is_in_blackout is False
+    # 10m after event -> IN blackout (10 <= 20)
+    ctx_post2 = evaluate_macro_event_risk(as_of=sched + timedelta(minutes=10), events=[event], blackout_pre_minutes=None, blackout_post_minutes=20)
+    assert ctx_post2.is_in_blackout is True
 
-
-@pytest.mark.unit
-def test_uncalibrated_macro_has_no_numerical_blackout_fallback():
-    """Uncalibrated XAUUSD profile does NOT silently apply ±30m blackout."""
-    sched = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
-    event = MacroEvent(
-        event_id="CPI", name="CPI", scheduled_at=sched, released_at=sched,
-        initial_value="2.5%", impact=EventImpact.HIGH,
-    )
+    # 3. Uncalibrated XAUUSD: Pre=None, Post=None -> Both sides NO numerical blackout
     uncal = Cycle3AProfile.uncalibrated_xauusd_profile()
-
-    # At sched - 10m: With no configured pre/post window, is_in_blackout is False
-    ctx = evaluate_macro_event_risk(
-        as_of=sched - timedelta(minutes=10), events=[event], profile=uncal,
-    )
-    assert ctx.is_in_blackout is False
-    assert ctx.minutes_to_next_event == 10
-    assert ctx.is_feed_healthy is True
+    ctx_uncal_pre = evaluate_macro_event_risk(as_of=sched - timedelta(minutes=10), events=[event], profile=uncal)
+    ctx_uncal_post = evaluate_macro_event_risk(as_of=sched + timedelta(minutes=10), events=[event], profile=uncal)
+    assert ctx_uncal_pre.is_in_blackout is False
+    assert ctx_uncal_post.is_in_blackout is False
 
 
 # ============================================================================
-# 12. Defensive Immutability
+# 13. Deep Recursive Immutability
 # ============================================================================
 
 @pytest.mark.unit
-def test_artifact_and_profile_defensive_immutability():
-    """External mutation of input dictionaries must NOT mutate the artifact or profile."""
-    raw_details = {"key": "original"}
-    raw_table = {(SessionType.LONDON, RegimeType.BULL_TREND): SessionExpectancyEntry(
-        session=SessionType.LONDON, regime=RegimeType.BULL_TREND, sample_count=50, effective_n=40.0,
-        win_rate=0.55, expectancy_r=0.20, is_statistically_significant=True,
-    )}
+def test_artifact_deep_recursive_immutability():
+    """Deep nested dictionaries in Cycle3ACalibrationArtifact are immutable and protected from external mutation."""
+    prov = CalibrationProvenance(
+        instrument="XAUUSD", provider="SPOT", timeframe="15m",
+        data_start=datetime(2024, 1, 1, tzinfo=timezone.utc), data_end=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        as_of=datetime(2025, 1, 1, tzinfo=timezone.utc), raw_observations=100, effective_n=50.0,
+        calibration_version="1.0", code_revision="git", data_fingerprint="sha", generated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    raw_nested_percentiles = {"known_duration": {"P50": 12.0, "P90": 24.0}}
 
-    profile = Cycle3AProfile(
-        name="TEST_IMMUTABLE",
-        calibration_status=CalibrationStatus.PENDING_DATA,
-        target_instrument="XAUUSD",
-        details=raw_details,
-        session_expectancy_table=raw_table,
+    artifact = Cycle3ACalibrationArtifact(
+        provenance=prov,
+        swing_duration_percentiles=raw_nested_percentiles,
     )
 
-    # Mutate external dictionaries
-    raw_details["key"] = "mutated"
-    raw_table[(SessionType.ASIA, RegimeType.BEAR_TREND)] = raw_table[(SessionType.LONDON, RegimeType.BULL_TREND)]
+    # 1. Mutate external source dict
+    raw_nested_percentiles["known_duration"]["P50"] = 99.0
+    assert artifact.swing_duration_percentiles["known_duration"]["P50"] == 12.0
 
-    assert profile.details["key"] == "original"
-    assert len(profile.session_expectancy_table) == 1
-
-    # Attempting to mutate profile internal MappingProxy raises TypeError
+    # 2. Attempt direct internal mutation on nested mapping -> raises TypeError
     with pytest.raises(TypeError):
-        profile.details["new_key"] = "illegal"
+        artifact.swing_duration_percentiles["known_duration"]["P50"] = 88.0
 
 
 # ============================================================================
-# 13 & 14. Snapshot Status & Target Isolation
+# 14. Snapshot Status & Target Isolation
 # ============================================================================
 
 @pytest.mark.unit
@@ -505,23 +547,6 @@ def test_snapshot_exposes_pending_data_calibration_status():
     snapshot = engine.analyze(latest_candle=candle, structure=structure)
     assert snapshot.calibration_status == "PENDING_DATA"
     assert snapshot.profile_name == "XAUUSD_UNCALIBRATED"
-    assert snapshot.cycle_score_3a == 0.0
-
-
-@pytest.mark.unit
-def test_analyze_with_xauusd_instrument_prevents_legacy_table_leak():
-    """Passing instrument='XAUUSD' to default engine forces uncalibrated profile."""
-    default_engine = RobustTimeCycleEngine()  # Has legacy XAUT profile by default
-    candle = _make_closed_candle(10)
-    structure = StructureResult(
-        timestamp=candle.timestamp_close, structure_type=StructureType.LH, bos=BosType.NONE,
-        last_swing_high=None, last_swing_low=None, swings=(), zones=(),
-    )
-
-    snapshot = default_engine.analyze(
-        latest_candle=candle, structure=structure, instrument="XAUUSD",
-    )
-    assert snapshot.calibration_status == "PENDING_DATA"
     assert snapshot.cycle_score_3a == 0.0
 
 

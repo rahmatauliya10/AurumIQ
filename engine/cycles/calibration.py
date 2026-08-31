@@ -24,7 +24,7 @@ from engine.core.types import (
     SessionType,
     SwingPoint,
 )
-from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile, _deep_freeze
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import timeframe_to_seconds
 
@@ -82,30 +82,30 @@ class Cycle3ACalibrationArtifact:
     status: CalibrationStatus = CalibrationStatus.CANDIDATE_NOT_FROZEN
 
     def __post_init__(self):
-        """Enforce strict defensive immutability across all dictionary fields."""
+        """Enforce strict recursive deep immutability across all dictionary fields."""
         if self.session_expectancy_table is not None:
             object.__setattr__(
                 self,
                 "session_expectancy_table",
-                MappingProxyType(dict(self.session_expectancy_table)),
+                _deep_freeze(self.session_expectancy_table),
             )
         if self.swing_duration_percentiles is not None:
             object.__setattr__(
                 self,
                 "swing_duration_percentiles",
-                MappingProxyType(dict(self.swing_duration_percentiles)),
+                _deep_freeze(self.swing_duration_percentiles),
             )
         if self.calendar_effect_table is not None:
             object.__setattr__(
                 self,
                 "calendar_effect_table",
-                MappingProxyType(dict(self.calendar_effect_table)),
+                _deep_freeze(self.calendar_effect_table),
             )
         if self.macro_timing_config is not None:
             object.__setattr__(
                 self,
                 "macro_timing_config",
-                MappingProxyType(dict(self.macro_timing_config)),
+                _deep_freeze(self.macro_timing_config),
             )
 
 

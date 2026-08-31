@@ -32,6 +32,7 @@ def evaluate_macro_event_risk(
       - If macro timing calibration is absent (pre/post windows are None), descriptive
         metrics (minutes_to_next, minutes_since_last, PIT value) are computed without
         inventing numerical blackout boundaries or awarding clear-market bonuses.
+      - Pre-blackout and Post-blackout windows evaluate independently.
     """
     if as_of.tzinfo is None:
         as_of_utc = as_of.replace(tzinfo=timezone.utc)
@@ -48,21 +49,19 @@ def evaluate_macro_event_risk(
             is_feed_healthy=False,
         )
 
-    # Determine pre and post blackout windows
-    pre_win = blackout_pre_minutes
-    post_win = blackout_post_minutes
-
-    if pre_win is None and post_win is None:
-        if blackout_minutes is not None:
-            pre_win = blackout_minutes
-            post_win = blackout_minutes
-        elif profile is not None:
-            pre_win = profile.macro_blackout_pre_minutes
-            post_win = profile.macro_blackout_post_minutes
-        else:
-            # Unprofiled legacy fallback (only when no profile is supplied)
-            pre_win = 30
-            post_win = 30
+    # Determine pre and post blackout windows independently
+    if profile is not None:
+        pre_win = blackout_pre_minutes if blackout_pre_minutes is not None else profile.macro_blackout_pre_minutes
+        post_win = blackout_post_minutes if blackout_post_minutes is not None else profile.macro_blackout_post_minutes
+    elif blackout_minutes is not None:
+        pre_win = blackout_pre_minutes if blackout_pre_minutes is not None else blackout_minutes
+        post_win = blackout_post_minutes if blackout_post_minutes is not None else blackout_minutes
+    elif blackout_pre_minutes is not None or blackout_post_minutes is not None:
+        pre_win = blackout_pre_minutes
+        post_win = blackout_post_minutes
+    else:
+        pre_win = 30
+        post_win = 30
 
     high_impact_events = [e for e in events if e.impact == EventImpact.HIGH]
 
@@ -81,17 +80,17 @@ def evaluate_macro_event_risk(
         if diff_minutes >= 0:
             if min_to_next is None or diff_minutes < min_to_next:
                 min_to_next = diff_minutes
+            # Independent pre-blackout evaluation
+            if pre_win is not None and diff_minutes <= pre_win:
+                is_in_blackout = True
+                active_event_name = event.name
         # Proximity from past scheduled event (scheduled in past -> diff_minutes < 0)
         else:
             elapsed_minutes = abs(diff_minutes)
             if min_since_last is None or elapsed_minutes < min_since_last:
                 min_since_last = elapsed_minutes
-
-        # Check configured scheduled blackout window [-pre_win, +post_win]
-        # as_of is between [sched - pre_win, sched + post_win]
-        # Equivalent: -post_win <= diff_minutes <= pre_win
-        if pre_win is not None and post_win is not None:
-            if -post_win <= diff_minutes <= pre_win:
+            # Independent post-blackout evaluation
+            if post_win is not None and elapsed_minutes <= post_win:
                 is_in_blackout = True
                 active_event_name = event.name
 

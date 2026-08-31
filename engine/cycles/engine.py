@@ -42,18 +42,37 @@ class RobustTimeCycleEngine:
     ):
         if profile is not None:
             self.profile = profile
+        elif blackout_minutes is not None:
+            legacy = Cycle3AProfile.legacy_xaut_profile()
+            self.profile = Cycle3AProfile(
+                name=legacy.name,
+                calibration_status=legacy.calibration_status,
+                target_instrument=legacy.target_instrument,
+                timeframe=legacy.timeframe,
+                session_max_score=legacy.session_max_score,
+                session_min_effective_n=legacy.session_min_effective_n,
+                session_expectancy_multiplier=legacy.session_expectancy_multiplier,
+                session_expectancy_table=legacy.session_expectancy_table,
+                swing_max_score=legacy.swing_max_score,
+                swing_min_effective_n=legacy.swing_min_effective_n,
+                swing_maturity_bands=legacy.swing_maturity_bands,
+                historical_durations=legacy.historical_durations,
+                swing_duration_percentiles=legacy.swing_duration_percentiles,
+                calendar_max_score=legacy.calendar_max_score,
+                calendar_min_effective_n=legacy.calendar_min_effective_n,
+                calendar_stability_threshold=legacy.calendar_stability_threshold,
+                calendar_expectancy_multiplier=legacy.calendar_expectancy_multiplier,
+                calendar_effect_table=legacy.calendar_effect_table,
+                macro_blackout_pre_minutes=blackout_minutes,
+                macro_blackout_post_minutes=blackout_minutes,
+                macro_clear_window_far_minutes=legacy.macro_clear_window_far_minutes,
+                macro_clear_window_near_minutes=legacy.macro_clear_window_near_minutes,
+                macro_clear_bonus_far=legacy.macro_clear_bonus_far,
+                macro_clear_bonus_near=legacy.macro_clear_bonus_near,
+                details=legacy.details,
+            )
         else:
-            if blackout_minutes is not None:
-                # Historical legacy customization
-                self.profile = Cycle3AProfile(
-                    name="LEGACY_XAUT_REFERENCE",
-                    calibration_status=CalibrationStatus.LEGACY_REFERENCE,
-                    target_instrument="XAUT",
-                    macro_blackout_pre_minutes=blackout_minutes,
-                    macro_blackout_post_minutes=blackout_minutes,
-                )
-            else:
-                self.profile = Cycle3AProfile.legacy_xaut_profile()
+            self.profile = Cycle3AProfile.legacy_xaut_profile()
 
         self.cycle_version = cycle_version
         self.blackout_minutes = blackout_minutes
@@ -116,8 +135,22 @@ class RobustTimeCycleEngine:
         as_of = latest_candle.timestamp_close
 
         # Determine effective profile with strict instrument segregation
-        eff_profile = profile
-        if eff_profile is None:
+        if profile is not None:
+            eff_profile = profile
+            if instrument is not None:
+                norm_inst = instrument.upper().replace("/", "")
+                eff_target = eff_profile.target_instrument.upper().replace("/", "")
+                if norm_inst == "XAUUSD" and eff_target != "XAUUSD":
+                    raise ValueError(
+                        f"Per-call profile target instrument '{eff_profile.target_instrument}' does not match requested instrument 'XAUUSD'."
+                    )
+            if self.profile.target_instrument.upper().replace("/", "") == "XAUUSD":
+                eff_target = eff_profile.target_instrument.upper().replace("/", "")
+                if eff_target != "XAUUSD":
+                    raise ValueError(
+                        f"XAUUSD engine cannot analyze using non-XAUUSD profile '{eff_profile.target_instrument}'."
+                    )
+        else:
             if instrument is not None:
                 norm_inst = instrument.upper().replace("/", "")
                 if norm_inst == "XAUUSD":

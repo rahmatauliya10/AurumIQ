@@ -27,109 +27,96 @@ class CalibrationStatus(str, Enum):
     PRODUCTION_FROZEN = "PRODUCTION_FROZEN"        # Reserved for post-Phase 6 governance (never produced in Phase 3A)
 
 
+def _deep_freeze(val: Any) -> Any:
+    """Recursively convert nested dicts to MappingProxyType and collections to tuples."""
+    if isinstance(val, (dict, MappingProxyType, Mapping)):
+        return MappingProxyType({k: _deep_freeze(v) for k, v in val.items()})
+    elif isinstance(val, (list, tuple, set)):
+        return tuple(_deep_freeze(x) for x in val)
+    return val
+
+
 @dataclass(frozen=True)
 class Cycle3AProfile:
     """
     Immutable specification of numerical thresholds, weights, and empirical tables
     for Phase 3A Robust Time Cycle intelligence.
+    
+    Zero Default Legacy Numbers:
+      All empirical scoring and numerical thresholds strictly default to None.
+      Historical reference numbers are defined exclusively in legacy_xaut_profile().
     """
     name: str = "LEGACY_XAUT_REFERENCE"
     calibration_status: CalibrationStatus = CalibrationStatus.LEGACY_REFERENCE
     target_instrument: str = "XAUT"
     timeframe: Optional[str] = None
 
-    # 1. Session Cycle Parameters (None in uncalibrated / candidate profiles)
-    session_max_score: Optional[float] = 15.0
-    session_min_effective_n: Optional[float] = 30.0
-    session_expectancy_multiplier: Optional[float] = 30.0
+    # 1. Session Cycle Parameters (Strictly None by default)
+    session_max_score: Optional[float] = None
+    session_min_effective_n: Optional[float] = None
+    session_expectancy_multiplier: Optional[float] = None
     session_expectancy_table: Optional[Mapping[Tuple[SessionType, RegimeType], SessionExpectancyEntry]] = None
 
-    # 2. Swing Duration Parameters (None in uncalibrated / candidate profiles)
-    swing_max_score: Optional[float] = 20.0
-    swing_min_effective_n: Optional[float] = 30.0
+    # 2. Swing Duration Parameters (Strictly None by default)
+    swing_max_score: Optional[float] = None
+    swing_min_effective_n: Optional[float] = None
     swing_maturity_bands: Optional[Mapping[str, float]] = None
     historical_durations: Optional[Tuple[int, ...]] = None
-    swing_duration_percentiles: Optional[Mapping[str, float]] = None
+    swing_duration_percentiles: Optional[Mapping[str, Any]] = None
 
-    # 3. Calendar Seasonality Parameters (None in uncalibrated / candidate profiles)
-    calendar_max_score: Optional[float] = 5.0
-    calendar_min_effective_n: Optional[float] = 30.0
-    calendar_stability_threshold: Optional[float] = 0.60
-    calendar_expectancy_multiplier: Optional[float] = 10.0
+    # 3. Calendar Seasonality Parameters (Strictly None by default)
+    calendar_max_score: Optional[float] = None
+    calendar_min_effective_n: Optional[float] = None
+    calendar_stability_threshold: Optional[float] = None
+    calendar_expectancy_multiplier: Optional[float] = None
     calendar_effect_table: Optional[Mapping[str, CalendarEffectEntry]] = None
 
-    # 4. Macroeconomic Event Parameters (None in uncalibrated profiles)
-    macro_blackout_pre_minutes: Optional[int] = 30
-    macro_blackout_post_minutes: Optional[int] = 30
-    macro_clear_window_far_minutes: Optional[int] = 120
-    macro_clear_window_near_minutes: Optional[int] = 60
-    macro_clear_bonus_far: Optional[float] = 5.0
-    macro_clear_bonus_near: Optional[float] = 2.0
+    # 4. Macroeconomic Event Parameters (Strictly None by default)
+    macro_blackout_pre_minutes: Optional[int] = None
+    macro_blackout_post_minutes: Optional[int] = None
+    macro_clear_window_far_minutes: Optional[int] = None
+    macro_clear_window_near_minutes: Optional[int] = None
+    macro_clear_bonus_far: Optional[float] = None
+    macro_clear_bonus_near: Optional[float] = None
 
     # 5. Metadata / Provenance (Strictly immutable mapping)
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Enforce strict defensive immutability across all mapping and sequence attributes."""
-        # Defensive immutable details
-        object.__setattr__(
-            self,
-            "details",
-            MappingProxyType(dict(self.details)) if self.details else MappingProxyType({}),
-        )
+        """Enforce strict recursive deep immutability across all attributes."""
+        object.__setattr__(self, "details", _deep_freeze(dict(self.details)) if self.details else MappingProxyType({}))
 
-        # Defensive immutable session table
         if self.session_expectancy_table is not None:
-            object.__setattr__(
-                self,
-                "session_expectancy_table",
-                MappingProxyType(dict(self.session_expectancy_table)),
-            )
+            object.__setattr__(self, "session_expectancy_table", _deep_freeze(self.session_expectancy_table))
 
-        # Defensive immutable swing maturity bands
         if self.swing_maturity_bands is not None:
-            object.__setattr__(
-                self,
-                "swing_maturity_bands",
-                MappingProxyType(dict(self.swing_maturity_bands)),
-            )
+            object.__setattr__(self, "swing_maturity_bands", _deep_freeze(self.swing_maturity_bands))
 
-        # Defensive immutable historical durations tuple
         if self.historical_durations is not None:
-            object.__setattr__(
-                self,
-                "historical_durations",
-                tuple(self.historical_durations),
-            )
+            object.__setattr__(self, "historical_durations", tuple(self.historical_durations))
 
-        # Defensive immutable swing percentiles
         if self.swing_duration_percentiles is not None:
-            object.__setattr__(
-                self,
-                "swing_duration_percentiles",
-                MappingProxyType(dict(self.swing_duration_percentiles)),
-            )
+            object.__setattr__(self, "swing_duration_percentiles", _deep_freeze(self.swing_duration_percentiles))
 
-        # Defensive immutable calendar table
         if self.calendar_effect_table is not None:
-            object.__setattr__(
-                self,
-                "calendar_effect_table",
-                MappingProxyType(dict(self.calendar_effect_table)),
-            )
+            object.__setattr__(self, "calendar_effect_table", _deep_freeze(self.calendar_effect_table))
 
     @property
     def is_calibrated(self) -> bool:
         """
-        Legacy compatibility property.
-        In Phase 3A, only LEGACY_REFERENCE has historical empirical scoring active.
-        CANDIDATE_NOT_FROZEN and PENDING_DATA are strictly not production-enabled.
+        Calibrated state indicator. True when calibration evidence has been constructed
+        (LEGACY_REFERENCE, CANDIDATE_NOT_FROZEN, or PRODUCTION_FROZEN).
+        Note: Production scoring authority is governed separately by is_production_scoring_enabled.
         """
-        return self.calibration_status == CalibrationStatus.LEGACY_REFERENCE
+        return self.calibration_status in (
+            CalibrationStatus.LEGACY_REFERENCE,
+            CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            CalibrationStatus.PRODUCTION_FROZEN,
+        )
 
     @property
     def is_production_scoring_enabled(self) -> bool:
-        """Production scoring is ONLY enabled for historical reference or frozen production profiles."""
+        """Production scoring is ONLY enabled for authorized historical reference or frozen production profiles."""
         return self.calibration_status in (
             CalibrationStatus.LEGACY_REFERENCE,
             CalibrationStatus.PRODUCTION_FROZEN,
@@ -139,7 +126,7 @@ class Cycle3AProfile:
     def legacy_xaut_profile(cls) -> "Cycle3AProfile":
         """
         Historical XAUT frozen reference profile.
-        Preserves historical Phase 3A behavior byte-for-byte.
+        Preserves historical Phase 3A behavior byte-for-byte with explicit constants.
         """
         return cls(
             name="LEGACY_XAUT_REFERENCE",
