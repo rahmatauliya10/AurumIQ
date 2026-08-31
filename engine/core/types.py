@@ -68,6 +68,8 @@ class PromotionStatus(str, Enum):
     """Promotion eligibility status for Phase 3B experimental spectral features."""
     NOT_EVALUATED = "NOT_EVALUATED"
     BASELINE_NOT_EMPIRICAL = "BASELINE_NOT_EMPIRICAL"
+    POLICY_NOT_CONFIGURED = "POLICY_NOT_CONFIGURED"
+    BLOCKED_BY_PHASE6 = "BLOCKED_BY_PHASE6"
     INSUFFICIENT_TRADES = "INSUFFICIENT_TRADES"
     FAILED = "FAILED"
     PROMOTABLE = "PROMOTABLE"
@@ -410,6 +412,14 @@ class BaselineBenchmark:
     base_trade_count: int
     recorded_at: datetime
     is_empirical: bool = False
+    instrument: Optional[str] = None
+    timeframe: Optional[str] = None
+    source: Optional[str] = None
+    data_start: Optional[datetime] = None
+    data_end: Optional[datetime] = None
+    as_of: Optional[datetime] = None
+    pit_safe: bool = False
+    phase6_validated: bool = False
 
 
 # --- Phase 3B: Experimental Spectral & Cycle Research Data Contracts ---
@@ -518,6 +528,9 @@ class Cycle3BExperimentalSnapshot:
     experimental_version: str = "3.1.0-3B"
     production_weight: float = field(default=0.0, init=False)  # HARD LOCKED TO 0.0
     promotion_status: PromotionStatus = PromotionStatus.BASELINE_NOT_EMPIRICAL
+    profile_name: Optional[str] = None
+    calibration_status: Optional[str] = None
+    instrument: str = "XAUT"
 
 
 # --- Phase 4: Direction Score, Timing Score & State Machine Contracts ---

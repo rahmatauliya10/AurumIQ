@@ -4,6 +4,10 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from engine.core.types import FftResult
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def calculate_causal_fft(
@@ -12,6 +16,7 @@ def calculate_causal_fft(
     max_period: Optional[float] = None,
     window_type: str = "hann",
     min_lookback: int = 32,
+    profile: Optional[Cycle3BResearchProfile] = None,
 ) -> FftResult:
     """
     Calculate causal Discrete Fourier Transform on a trailing window of observations up to T.
@@ -23,6 +28,11 @@ def calculate_causal_fft(
     Missing Observation Safety (P3B-21):
       - If series contains None, NaN, or non-finite values, fails closed
         rather than dropping items (which would compress time spacing).
+
+    Profile & Detection Governance:
+      - If profile policy is incomplete (fft_min_power_ratio is None):
+        computes descriptive dominant period, frequency, and PSD entropy,
+        but is_cycle_detected is strictly False.
     """
     if not series or any(x is None or math.isnan(float(x)) or math.isinf(float(x)) for x in series):
         return FftResult(
@@ -37,7 +47,12 @@ def calculate_causal_fft(
     clean_series = [float(x) for x in series]
     n = len(clean_series)
 
-    if n < min_lookback:
+    eval_min_lookback = profile.min_lookback if profile is not None else min_lookback
+    eval_min_period = profile.min_period if (profile is not None and min_period == 4.0) else min_period
+    eval_max_period = profile.max_period if (profile is not None and max_period is None) else max_period
+    eval_window_type = profile.window_type if (profile is not None and window_type == "hann") else window_type
+
+    if n < eval_min_lookback:
         return FftResult(
             dominant_period=None,
             dominant_frequency=None,
@@ -66,9 +81,9 @@ def calculate_causal_fft(
     detrended = detrended - np.mean(detrended)
 
     # 2. Windowing function
-    if window_type.lower() == "hann":
+    if eval_window_type.lower() == "hann":
         window = np.hanning(n)
-    elif window_type.lower() == "hamming":
+    elif eval_window_type.lower() == "hamming":
         window = np.hamming(n)
     else:
         window = np.ones(n, dtype=np.float64)
@@ -84,9 +99,9 @@ def calculate_causal_fft(
     # DC component (index 0) is zeroed out
     psd[0] = 0.0
 
-    max_p = max_period if max_period is not None else float(n // 2)
-    min_f = 1.0 / max(max_p, min_period + 1.0)
-    max_f = 1.0 / max(min_period, 2.0)
+    max_p = eval_max_period if eval_max_period is not None else float(n // 2)
+    min_f = 1.0 / max(max_p, eval_min_period + 1.0)
+    max_f = 1.0 / max(eval_min_period, 2.0)
 
     # Valid mask for search
     valid_mask = (freqs >= min_f) & (freqs <= max_f)
@@ -131,7 +146,15 @@ def calculate_causal_fft(
         if p > 1e-12 and f > 0:
             top_entries.append((float(round(f, 4)), float(round(p / total_power, 4))))
 
-    is_detected = (power_ratio >= 0.15) and (dom_period is not None)
+    # 8. Detection Gate Resolution with strict policy completeness (Zero legacy numerical fallbacks on explicit profiles)
+    if profile is None:
+        is_detected = (power_ratio >= 0.15) and (dom_period is not None)
+    else:
+        if profile.is_fft_policy_configured:
+            threshold = profile.fft_min_power_ratio
+            is_detected = (power_ratio >= threshold) and (dom_period is not None)
+        else:
+            is_detected = False
 
     return FftResult(
         dominant_period=dom_period,

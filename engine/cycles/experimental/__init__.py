@@ -1,11 +1,19 @@
 """Phase 3B Experimental Spectral & Statistical Cycle Research package."""
 from engine.cycles.experimental.acf import calculate_causal_acf
-from engine.cycles.experimental.fft import calculate_causal_fft
-from engine.cycles.experimental.wavelet import calculate_causal_wavelet
-from engine.cycles.experimental.hilbert import calculate_causal_hilbert
-from engine.cycles.experimental.reliability import evaluate_cycle_reliability
-from engine.cycles.experimental.promotion import evaluate_promotion_eligibility
+from engine.cycles.experimental.artifact import (
+    Cycle3BResearchArtifact,
+    Cycle3BResearchProvenance,
+)
 from engine.cycles.experimental.engine import ExperimentalTimeCycleEngine
+from engine.cycles.experimental.fft import calculate_causal_fft
+from engine.cycles.experimental.hilbert import calculate_causal_hilbert
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
+from engine.cycles.experimental.promotion import evaluate_promotion_eligibility
+from engine.cycles.experimental.reliability import evaluate_cycle_reliability
+from engine.cycles.experimental.wavelet import calculate_causal_wavelet
 
 __all__ = [
     "calculate_causal_acf",
@@ -15,4 +23,8 @@ __all__ = [
     "evaluate_cycle_reliability",
     "evaluate_promotion_eligibility",
     "ExperimentalTimeCycleEngine",
+    "ResearchCalibrationStatus",
+    "Cycle3BResearchProfile",
+    "Cycle3BResearchProvenance",
+    "Cycle3BResearchArtifact",
 ]
