@@ -7,28 +7,32 @@ Acceptance & Governance Tests for Phase 3B XAUUSD Experimental Spectral & Cycle 
 5. Subsystem Policy Completeness Properties (ACF, FFT, Wavelet, Hilbert, Reliability, Promotion)
 6. Partial Policy Fail-Neutral Tests (ACF, Wavelet, Hilbert, Reliability, Promotion)
 7. LEGACY_REFERENCE Status Rejects Target Instrument XAUUSD
-8. Symmetric Instrument & Profile Target Mismatch Rejection (All Directions)
-9. ACF Custom Effective-N Threshold (Does not block on historical 30)
-10. ACF No Historical 60/100 Tier Leakage
-11. Descriptive Spectral Computations under Uncalibrated Profile
-12. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
-13. Reliability Custom Agreement Thresholds (Follows profile, not 80/50)
-14. Reliability Does Not Hardcode Wavelet 0.40 (Trusts is_clean_endpoint)
-15. Engine Naive Datetime Candles Safe Normalization
-16. Runtime Timeframe Rigidity (Profile timeframe mismatch raises ValueError)
-17. Strict Phase 6 Baseline Provenance Matrix (Missing dates, source, timeframe mismatch -> BLOCKED_BY_PHASE6)
-18. Deterministic 4-Stage Promotion Precedence Matrix
-19. Insufficient Trade Count on XAUUSD Fails with status=FAILED
-20. Fold Concentration Threshold Uses Explicit Config without Hardcoded 60%
-21. Engine analyze() Zero-Metric-Fabrication (produces NOT_EVALUATED on valid baseline)
-22. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
-23. Future Closed Candle Invariance at Timestamp T
-24. Broken Time-Grid Fails Closed
-25. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
-26. Pure Python AST Purity (Zero Django Imports)
-27. Zero Phase 4 Directional Symbols
-28. Artifact Text Provenance Hardening (Blank instrument/provider/timeframe/revision/fingerprint rejected)
-29. Deep Recursive Immutability of Profiles and Artifacts
+8. Canonical Instrument Normalization Rules (Strict XAUUSD / XAU/USD, No generic GOLD/XAU)
+9. XAU/USD Canonical Match and No Legacy Sample Leakage
+10. Symmetric Instrument & Profile Target Mismatch Rejection (All Directions)
+11. ACF Custom Effective-N Threshold (Does not block on historical 30)
+12. ACF No Historical 60/100 Tier Leakage
+13. XAUUSD Effective-N Only Produces INSUFFICIENT Quality and Zero Reliability (No Invented MEDIUM)
+14. Explicit SampleEvaluation Quality (LOW, MEDIUM, HIGH) Preserved
+15. Descriptive Spectral Computations under Uncalibrated Profile
+16. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
+17. Reliability Custom Agreement Thresholds (Follows profile, not 80/50)
+18. Reliability Does Not Hardcode Wavelet 0.40 (Trusts is_clean_endpoint)
+19. Engine Naive Datetime Candles Safe Normalization
+20. Runtime Timeframe Rigidity (Profile timeframe mismatch raises ValueError)
+21. Strict Phase 6 Baseline Provenance Matrix (Missing dates, source, timeframe mismatch -> BLOCKED_BY_PHASE6)
+22. Deterministic 4-Stage Promotion Precedence Matrix
+23. Insufficient Trade Count on XAUUSD Fails with status=FAILED
+24. Fold Concentration Threshold Uses Explicit Config without Hardcoded 60%
+25. Engine analyze() Zero-Metric-Fabrication (produces NOT_EVALUATED on valid baseline)
+26. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
+27. Future Closed Candle Invariance at Timestamp T
+28. Broken Time-Grid Fails Closed
+29. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
+30. Pure Python AST Purity (Zero Django Imports)
+31. Zero Phase 4 Directional Symbols
+32. Artifact Text Provenance Hardening (Blank instrument/provider/timeframe/revision/fingerprint rejected)
+33. Deep Recursive Immutability of Profiles and Artifacts
 """
 import ast
 from datetime import datetime, timezone, timedelta
@@ -58,6 +62,7 @@ from engine.core.types import (
 from engine.cycles.experimental.profile import (
     Cycle3BResearchProfile,
     ResearchCalibrationStatus,
+    normalize_target_instrument,
 )
 from engine.cycles.experimental.artifact import (
     Cycle3BResearchArtifact,
@@ -269,7 +274,47 @@ def test_configured_xauusd_profile_requires_timeframe():
 
 
 # ============================================================================
-# 3. Partial Policy Fail-Neutral Tests (Zero Legacy Leakage)
+# 3. Canonical Instrument Normalization Rules
+# ============================================================================
+
+@pytest.mark.unit
+def test_canonical_instrument_normalization_rules():
+    """Verify strict canonical normalizations and rejection of generic gold labels."""
+    assert normalize_target_instrument("XAUUSD") == "XAUUSD"
+    assert normalize_target_instrument("XAU/USD") == "XAUUSD"
+    assert normalize_target_instrument("xauusd") == "XAUUSD"
+    assert normalize_target_instrument("xau/usd") == "XAUUSD"
+
+    # Generic labels must NOT normalize to XAUUSD
+    assert normalize_target_instrument("GOLD") != "XAUUSD"
+    assert normalize_target_instrument("XAU") != "XAUUSD"
+    assert normalize_target_instrument("GOLD_REFERENCE") != "XAUUSD"
+
+    # Historical XAUT
+    assert normalize_target_instrument("XAUT") == "XAUT"
+    assert normalize_target_instrument("XAUTUSD") == "XAUT"
+    assert normalize_target_instrument("XAUT/USD") == "XAUT"
+
+
+@pytest.mark.unit
+def test_xau_slash_usd_canonical_routing_and_no_legacy_sample_leakage():
+    """Profile target 'XAU/USD' routes to XAUUSD path and does not inherit legacy sample thresholds."""
+    profile_slash = _make_fully_configured_xauusd_profile(timeframe="15m")
+    object.__setattr__(profile_slash, "target_instrument", "XAU/USD")
+
+    candles = _make_candles(64)
+    engine = ExperimentalTimeCycleEngine(profile=profile_slash)
+
+    # analyze accepts instrument="XAUUSD" with profile="XAU/USD"
+    snapshot = engine.analyze(candles=candles, instrument="XAUUSD", effective_n=50.0)
+    assert snapshot.instrument == "XAU/USD"
+    # Effective-n only -> quality is INSUFFICIENT, reliability score 0.0 (no legacy 30/60/100 tier leakage)
+    assert snapshot.reliability.sample_quality == SampleQuality.INSUFFICIENT
+    assert snapshot.reliability.reliability_score == 0.0
+
+
+# ============================================================================
+# 4. Partial Policy Fail-Neutral Tests (Zero Legacy Leakage)
 # ============================================================================
 
 @pytest.mark.unit
@@ -360,7 +405,7 @@ def test_partial_promotion_policy_fails_neutral():
 
 
 # ============================================================================
-# 4. Symmetric Target Instrument Segregation & Mismatch Rejection
+# 5. Symmetric Target Instrument Segregation & Mismatch Rejection
 # ============================================================================
 
 @pytest.mark.unit
@@ -394,7 +439,7 @@ def test_target_instrument_mismatch_rejection_all_directions():
 
 
 # ============================================================================
-# 5. ACF Custom Threshold & No Sample-Tier Leakage
+# 6. ACF Custom Threshold & Strict Sample Quality Handling
 # ============================================================================
 
 @pytest.mark.unit
@@ -414,22 +459,56 @@ def test_acf_custom_effective_n_threshold():
 
 
 @pytest.mark.unit
-def test_acf_no_historical_60_100_tier_inference():
-    """ACF with explicit profile and raw effective_n does not derive historical LOW/MEDIUM/HIGH tiers."""
-    custom_profile = Cycle3BResearchProfile(
-        target_instrument="XAUUSD",
-        status=ResearchCalibrationStatus.PENDING_DATA,
-        acf_bartlett_z_multiplier=1.96,
-        acf_min_effective_n=20.0,
-    )
-    series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
-    res = calculate_causal_acf(series, profile=custom_profile, effective_n=85.0)
-    # Uses fail-neutral quality without explicit SampleEvaluation
-    assert res.sample_quality == SampleQuality.MEDIUM
+def test_xauusd_effective_n_only_produces_insufficient_quality_and_zero_reliability():
+    """Effective-n only for configured XAUUSD profile produces INSUFFICIENT quality and 0.0 reliability."""
+    configured_profile = _make_fully_configured_xauusd_profile(timeframe="15m")
+    candles = _make_candles(64)
+    engine = ExperimentalTimeCycleEngine(profile=configured_profile)
+
+    # Calling analyze with only effective_n (no SampleEvaluation)
+    snapshot = engine.analyze(candles=candles, effective_n=85.0)
+    assert snapshot.reliability.sample_quality == SampleQuality.INSUFFICIENT
+    assert snapshot.reliability.reliability_score == 0.0
+    assert any("n_eff" in r for r in snapshot.reliability.reasons)
+
+
+@pytest.mark.unit
+def test_explicit_sample_evaluation_quality_preserved():
+    """Explicit SampleEvaluation quality tiers (LOW, MEDIUM, HIGH) are strictly preserved."""
+    configured_profile = _make_fully_configured_xauusd_profile(timeframe="15m")
+    candles = _make_candles(64)
+    engine = ExperimentalTimeCycleEngine(profile=configured_profile)
+
+    def _make_eval(q: SampleQuality) -> SampleEvaluation:
+        return SampleEvaluation(
+            n_raw=100,
+            independent_after_overlap=80,
+            temporal_clusters=10,
+            hhi_norm=0.1,
+            regime_discount=0.9,
+            clustering_discount=0.9,
+            effective_n=50.0,
+            quality=q,
+            weight_multiplier=1.0,
+            is_blocked=False,
+            message="OK",
+        )
+
+    # 1. LOW quality
+    snap_low = engine.analyze(candles=candles, sample_eval=_make_eval(SampleQuality.LOW))
+    assert snap_low.reliability.sample_quality == SampleQuality.LOW
+
+    # 2. MEDIUM quality
+    snap_med = engine.analyze(candles=candles, sample_eval=_make_eval(SampleQuality.MEDIUM))
+    assert snap_med.reliability.sample_quality == SampleQuality.MEDIUM
+
+    # 3. HIGH quality
+    snap_high = engine.analyze(candles=candles, sample_eval=_make_eval(SampleQuality.HIGH))
+    assert snap_high.reliability.sample_quality == SampleQuality.HIGH
 
 
 # ============================================================================
-# 6. Reliability Custom Agreement Thresholds & No Hardcoded Wavelet 0.40
+# 7. Reliability Custom Agreement Thresholds & No Hardcoded Wavelet 0.40
 # ============================================================================
 
 @pytest.mark.unit
@@ -476,7 +555,7 @@ def test_reliability_does_not_hardcode_wavelet_040():
 
 
 # ============================================================================
-# 7. Engine Naive Datetime & Runtime Timeframe Rigidity
+# 8. Engine Naive Datetime & Runtime Timeframe Rigidity
 # ============================================================================
 
 @pytest.mark.unit
@@ -511,7 +590,7 @@ def test_runtime_timeframe_mismatch_rejected():
 
 
 # ============================================================================
-# 8. Strict Baseline Provenance & Deterministic Promotion Precedence Matrix
+# 9. Strict Baseline Provenance & Deterministic Promotion Precedence Matrix
 # ============================================================================
 
 @pytest.mark.unit
@@ -724,7 +803,7 @@ def test_engine_analyze_zero_metric_fabrication():
 
 
 # ============================================================================
-# 9. Closed-Candle Isolation Split & Future Invariance
+# 10. Closed-Candle Isolation Split & Future Invariance
 # ============================================================================
 
 @pytest.mark.unit
@@ -781,7 +860,7 @@ def test_closed_candle_isolation_split():
 
 
 # ============================================================================
-# 10. Broken Time-Grid Fails Closed
+# 11. Broken Time-Grid Fails Closed
 # ============================================================================
 
 @pytest.mark.unit
@@ -804,7 +883,7 @@ def test_broken_time_grid_fails_closed():
 
 
 # ============================================================================
-# 11. Hostile Production Lock & Persistence CheckConstraint Tests
+# 12. Hostile Production Lock & Persistence CheckConstraint Tests
 # ============================================================================
 
 @pytest.mark.unit
@@ -872,7 +951,7 @@ def test_hostile_database_production_weight_constraint():
 
 
 # ============================================================================
-# 12. Pure Python AST & Phase 4 Symbol Protection
+# 13. Pure Python AST & Phase 4 Symbol Protection
 # ============================================================================
 
 @pytest.mark.unit
@@ -920,7 +999,7 @@ def test_no_phase4_directional_symbols_in_experimental():
 
 
 # ============================================================================
-# 13. Deep Immutability of Artifact and Hardened Provenance
+# 14. Deep Immutability of Artifact and Hardened Provenance
 # ============================================================================
 
 @pytest.mark.unit

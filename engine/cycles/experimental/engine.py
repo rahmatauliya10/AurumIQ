@@ -23,22 +23,11 @@ from engine.cycles.experimental.hilbert import calculate_causal_hilbert
 from engine.cycles.experimental.profile import (
     Cycle3BResearchProfile,
     ResearchCalibrationStatus,
+    normalize_target_instrument,
 )
 from engine.cycles.experimental.reliability import evaluate_cycle_reliability
 from engine.cycles.experimental.wavelet import calculate_causal_wavelet
 from engine.cycles.swing_duration import timeframe_to_seconds
-
-
-def normalize_target_instrument(inst: str) -> str:
-    """Canonical repository instrument target normalizer."""
-    if not inst:
-        return ""
-    s = inst.upper().replace("/", "").replace("_", "").strip()
-    if s in ("XAUUSD", "GOLD"):
-        return "XAUUSD"
-    if s in ("XAUT", "XAUTUSD", "XAUTF"):
-        return "XAUT"
-    return s
 
 
 class ExperimentalTimeCycleEngine:
@@ -199,7 +188,7 @@ class ExperimentalTimeCycleEngine:
         sample_is_blocked = True
         sample_quality = SampleQuality.INSUFFICIENT
 
-        is_legacy = (eff_profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE or eff_profile.target_instrument != "XAUUSD")
+        is_legacy = (eff_target == "XAUT")
 
         if sample_eval is not None:
             eff_n = sample_eval.effective_n
@@ -219,13 +208,9 @@ class ExperimentalTimeCycleEngine:
                 else:
                     sample_quality = SampleQuality.HIGH
             else:
-                if eff_profile.is_reliability_policy_configured:
-                    min_eff = eff_profile.min_effective_n
-                    sample_is_blocked = eff_n < min_eff
-                    sample_quality = SampleQuality.MEDIUM if eff_n >= min_eff else SampleQuality.INSUFFICIENT
-                else:
-                    sample_is_blocked = True
-                    sample_quality = SampleQuality.INSUFFICIENT
+                # XAUUSD: Without explicit SampleEvaluation, sample quality is fail-neutral INSUFFICIENT
+                sample_is_blocked = True
+                sample_quality = SampleQuality.INSUFFICIENT
         else:
             eff_n = 0.0
             sample_is_blocked = True

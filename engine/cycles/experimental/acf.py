@@ -7,6 +7,7 @@ from engine.core.types import AcfResult, SampleEvaluation, SampleQuality
 from engine.cycles.experimental.profile import (
     Cycle3BResearchProfile,
     ResearchCalibrationStatus,
+    normalize_target_instrument,
 )
 
 
@@ -78,6 +79,7 @@ def calculate_causal_acf(
             sample_quality = SampleQuality.INSUFFICIENT
     else:
         # Explicit Profile supplied
+        norm_target = normalize_target_instrument(profile.target_instrument)
         if profile.is_acf_policy_configured:
             sig_bound = profile.acf_bartlett_z_multiplier
             min_eff = profile.acf_min_effective_n
@@ -89,7 +91,18 @@ def calculate_causal_acf(
             elif effective_n is not None:
                 eff_n = float(effective_n)
                 sample_is_blocked = eff_n < min_eff
-                sample_quality = SampleQuality.MEDIUM if eff_n >= min_eff else SampleQuality.INSUFFICIENT
+                # For XAUUSD: no invented LOW/MEDIUM/HIGH tiers when only raw effective_n is supplied
+                if norm_target == "XAUT":
+                    if eff_n < min_eff:
+                        sample_quality = SampleQuality.INSUFFICIENT
+                    elif eff_n < 60.0:
+                        sample_quality = SampleQuality.LOW
+                    elif eff_n < 100.0:
+                        sample_quality = SampleQuality.MEDIUM
+                    else:
+                        sample_quality = SampleQuality.HIGH
+                else:
+                    sample_quality = SampleQuality.INSUFFICIENT
             else:
                 eff_n = 0.0
                 sample_is_blocked = True

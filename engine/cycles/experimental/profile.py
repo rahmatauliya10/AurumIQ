@@ -16,6 +16,26 @@ from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
 
+def normalize_target_instrument(inst: Optional[str]) -> str:
+    """
+    Canonical repository instrument target normalizer for Phase 3B.
+    
+    Target Equivalence:
+      - 'XAUUSD' and 'XAU/USD' -> 'XAUUSD'
+      - 'XAUT' and 'XAUTUSD' -> 'XAUT'
+      - Generic labels ('GOLD', 'XAU', 'GOLD_REFERENCE') are NEVER mapped to XAUUSD.
+    """
+    if not inst:
+        return ""
+    s = inst.strip()
+    upper = s.upper()
+    if upper in ("XAUUSD", "XAU/USD"):
+        return "XAUUSD"
+    if upper in ("XAUT", "XAUTUSD", "XAUT/USD"):
+        return "XAUT"
+    return upper.replace("/", "").replace("_", "")
+
+
 class ResearchCalibrationStatus(str, Enum):
     """Lifecycle status for Phase 3B experimental spectral research governance."""
     LEGACY_REFERENCE = "LEGACY_REFERENCE"          # Historical frozen XAUT research reference
@@ -111,10 +131,10 @@ class Cycle3BResearchProfile:
 
     def __post_init__(self):
         """Enforce strict recursive deep immutability across all attributes and target invariants."""
-        norm_target = self.target_instrument.upper().replace("/", "").replace("_", "").strip()
+        norm_target = normalize_target_instrument(self.target_instrument)
 
         if self.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
-            if norm_target not in ("XAUT", "XAUTUSD", "XAUTF"):
+            if norm_target != "XAUT":
                 raise ValueError(
                     f"LEGACY_REFERENCE status requires target instrument 'XAUT', got '{self.target_instrument}'."
                 )
@@ -127,7 +147,7 @@ class Cycle3BResearchProfile:
                     "LEGACY_REFERENCE status requires complete frozen detection, reliability, and promotion policies."
                 )
 
-        if norm_target in ("XAUUSD", "GOLD"):
+        if norm_target == "XAUUSD":
             # If research candidate / revalidated policy or fully configured policy, timeframe is required
             if self.status == ResearchCalibrationStatus.REVALIDATED_RESEARCH or (
                 self.is_detection_policy_configured

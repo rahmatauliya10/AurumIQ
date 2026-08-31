@@ -10,6 +10,7 @@ from engine.core.types import (
 from engine.cycles.experimental.profile import (
     Cycle3BResearchProfile,
     ResearchCalibrationStatus,
+    normalize_target_instrument,
 )
 
 
@@ -49,15 +50,15 @@ def evaluate_promotion_eligibility(
 
     # 1. Derive and validate target instrument
     if profile is not None:
-        eff_target = profile.target_instrument.upper().replace("/", "")
+        eff_target = normalize_target_instrument(profile.target_instrument)
         if target_instrument is not None:
-            norm_target = target_instrument.upper().replace("/", "")
+            norm_target = normalize_target_instrument(target_instrument)
             if norm_target != eff_target:
                 raise ValueError(
                     f"Target instrument mismatch: requested '{target_instrument}' but profile target is '{profile.target_instrument}'."
                 )
     else:
-        eff_target = target_instrument.upper().replace("/", "") if target_instrument is not None else "XAUT"
+        eff_target = normalize_target_instrument(target_instrument) if target_instrument is not None else "XAUT"
 
     base_pf = baseline.base_profit_factor if baseline else 0.0
     base_exp = baseline.base_expectancy_r if baseline else 0.0
@@ -99,7 +100,7 @@ def evaluate_promotion_eligibility(
         if baseline is None or not baseline.is_empirical:
             is_baseline_valid = False
             reasons.append("XAUUSD promotion evaluation blocked: baseline benchmark is non-empirical or missing. Blocked by Phase 6.")
-        elif baseline.instrument is None or baseline.instrument.upper().replace("/", "") != "XAUUSD":
+        elif baseline.instrument is None or normalize_target_instrument(baseline.instrument) != "XAUUSD":
             is_baseline_valid = False
             reasons.append(f"XAUUSD promotion evaluation blocked: baseline instrument '{baseline.instrument}' != XAUUSD. Blocked by Phase 6.")
         elif profile.timeframe is None:
