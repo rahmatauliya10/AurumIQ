@@ -140,16 +140,18 @@ def analyze_closed_candle(
         if is_stale_feed is not None:
             effective_is_stale = is_stale_feed
         else:
-            from apps.market_data.models import DataQualityRecord
-            latest_quality = (
-                DataQualityRecord.objects.filter(
-                    candle__instrument=instrument,
-                    checked_at__lte=candle_ts,
+            from apps.market_data.models import DataQualitySnapshot
+            latest_dq = (
+                DataQualitySnapshot.objects.filter(
+                    instrument=instrument,
+                    timeframe=timeframe,
+                    timestamp__lte=candle_ts,
                 )
-                .order_by("-checked_at")
+                .order_by("-timestamp")
                 .first()
             )
-            effective_is_stale = (latest_quality.overall_status == "FAILED") if latest_quality else False
+            # If no data quality snapshot exists, missing evidence strictly fails closed as stale
+            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
 
         # Construct MacroEventContext
         if macro_context == "BLACKOUT":
