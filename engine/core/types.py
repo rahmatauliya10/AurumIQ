@@ -396,6 +396,9 @@ class Cycle3ASnapshot:
     is_blocked_by_event: bool
     cycle_score_3a: float
     cycle_version: str = "3.0.0-3A"
+    profile_name: str = "LEGACY_XAUT_REFERENCE"
+    calibration_status: str = "LEGACY_REFERENCE"
+    calibration_artifact_version: Optional[str] = None
 
 
 @dataclass(frozen=True)

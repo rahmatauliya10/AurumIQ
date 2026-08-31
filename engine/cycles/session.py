@@ -10,6 +10,7 @@ from engine.core.types import (
     SessionExpectancyEntry,
     SessionType,
 )
+from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 
 
 # Standard financial center timezones
@@ -22,6 +23,7 @@ def classify_session(
     timestamp: datetime,
     regime: Optional[RegimeType] = None,
     expectancy_table: Optional[Mapping[Tuple[SessionType, RegimeType], SessionExpectancyEntry]] = None,
+    profile: Optional[Cycle3AProfile] = None,
 ) -> SessionContext:
     """
     Classify the market trading session for a point-in-time timestamp using local timezones
@@ -33,10 +35,12 @@ def classify_session(
 
     Statistical Expectancy & Significance Rule (P3A-06, P3A-14):
       - Zero hardcoding of expectancy scores.
-      - If no historical table or bucket effective_n < 30 or NOT is_statistically_significant:
+      - If no historical table or bucket effective_n < min_eff_n or NOT is_statistically_significant:
         expectancy_score = 0.0 (INSUFFICIENT).
       - Positive score is only granted when empirical evidence meets minimum sample threshold
-        AND is verified statistically significant.
+        AND is verified statistically significant AND profile production scoring is enabled.
+      - If profile is uncalibrated or candidate (PENDING_DATA / CANDIDATE_NOT_FROZEN),
+        strictly returns expectancy_score = 0.0.
     """
     # Ensure timezone awareness (assume UTC if naive)
     if timestamp.tzinfo is None:
@@ -113,13 +117,52 @@ def classify_session(
     sample_quality = SampleQuality.INSUFFICIENT
     effective_n = 0.0
 
-    if expectancy_table and regime:
+    # Profile governance check: if production scoring is not enabled, strictly return 0.0
+    if profile is not None and not profile.is_production_scoring_enabled:
+        return SessionContext(
+            session=session,
+            progress_pct=progress,
+            is_high_liquidity=is_high_liq,
+            local_times=local_times,
+            expectancy_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
+
+    # Determine effective expectancy table
+    table = expectancy_table
+    if table is None and profile is not None and profile.is_production_scoring_enabled:
+        table = profile.session_expectancy_table
+
+    if profile is not None:
+        min_eff_n = profile.session_min_effective_n
+        max_score = profile.session_max_score
+        exp_multiplier = profile.session_expectancy_multiplier
+    else:
+        # Legacy default parameters (for historical unprofiled calls)
+        min_eff_n = 30.0
+        max_score = 15.0
+        exp_multiplier = 30.0
+
+    # If any required threshold is None, empirical scoring cannot execute
+    if min_eff_n is None or max_score is None or exp_multiplier is None:
+        return SessionContext(
+            session=session,
+            progress_pct=progress,
+            is_high_liquidity=is_high_liq,
+            local_times=local_times,
+            expectancy_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
+
+    if table and regime:
         key = (session, regime)
-        entry = expectancy_table.get(key)
+        entry = table.get(key)
         if entry:
             effective_n = entry.effective_n
-            # P3A-14: Significance Gate - must be statistically significant AND effective_n >= 30
-            if effective_n < 30.0 or not entry.is_statistically_significant:
+            # P3A-14: Significance Gate - must be statistically significant AND effective_n >= min_eff_n
+            if effective_n < min_eff_n or not entry.is_statistically_significant:
                 sample_quality = SampleQuality.INSUFFICIENT
                 weight_mult = 0.0
             elif effective_n < 60.0:
@@ -132,9 +175,9 @@ def classify_session(
                 sample_quality = SampleQuality.HIGH
                 weight_mult = 1.0
 
-            # Scale positive expectancy up to max 15.0 points in Phase 3A
+            # Scale positive expectancy up to max score
             if entry.expectancy_r > 0 and entry.is_statistically_significant and weight_mult > 0:
-                raw_exp_score = min(15.0, entry.expectancy_r * 30.0)
+                raw_exp_score = min(max_score, entry.expectancy_r * exp_multiplier)
                 expectancy_score = float(round(raw_exp_score * weight_mult, 2))
             else:
                 expectancy_score = 0.0

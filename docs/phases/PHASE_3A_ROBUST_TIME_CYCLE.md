@@ -2,19 +2,40 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **EMPIRICAL REBUILD REQUIRED**
+> **Current XAUUSD Target Status:** 🟢 **ARCHITECTURE IMPLEMENTED / CALIBRATION PENDING_DATA**
 
 ---
 
-## XAUUSD Migration Addendum
+## XAUUSD Migration & Calibration Architecture
 
-### 1. Target Scope & Empirical Rebuild Requirements
-While the mathematical architecture (DST-aware `zoneinfo` session tracking, knowable swing age calculation, revision-safe macro blackout gate, and fail-closed effective-N statistical sample guards) is completely retained, the empirical statistical distributions require rebuilding for the target `XAUUSD` instrument:
-1. **Session Expectancy Rebuild:** Empirical session return matrices must be rebuilt using multi-year historical spot XAUUSD data.
-2. **Swing Duration Distributions:** Swing duration percentiles ($P10, P50, P90$) must be recomputed on confirmed XAUUSD swings.
-3. **Calendar Seasonality Tables:** Seasonality stability and directional effect tables require empirical validation.
-4. **Macro Blackout Buffers:** Pre- and post-release blackout windows require revalidation for spot gold volatility spikes.
-5. **Scoring Weights & Thresholds:** All Phase 3A scoring weights for XAUUSD remain **NOT FROZEN / REVALIDATION REQUIRED**.
+### 1. Implementation Status
+- **XAUUSD Phase 3A Architecture:** ✅ **IMPLEMENTED** (`CalibrationStatus`, `Cycle3AProfile`, pure-Python calibration pipeline in `engine/cycles/calibration.py`, engine profile isolation).
+- **XAUUSD Empirical Calibration:** 🟡 **PENDING_DATA** (multi-year historical spot data is not bundled in the repo; zero synthetic or scraped numbers are fabricated).
+- **XAUUSD Candidate Artifact:** 🔒 **NOT PRODUCTION FROZEN** (candidate artifacts strictly produce 0.0 production scores).
+- **XAUUSD Production Weights:** 🔒 **NOT_FROZEN** (weights remain NOT_FROZEN until Phase 6 walk-forward/backtest/ablation validation).
+- **Hidden Legacy Numerical Fallback:** 🚫 **NONE** (zero numerical fallbacks in uncalibrated or candidate XAUUSD execution paths).
+
+### 2. Architectural Components & Isolation
+1. **Explicit Calibration Governance (`engine/cycles/profile.py`):**
+   - `CalibrationStatus` enum: `LEGACY_REFERENCE`, `PENDING_DATA`, `CANDIDATE_NOT_FROZEN`, `PRODUCTION_FROZEN`.
+   - `Cycle3AProfile.legacy_xaut_profile()` preserves frozen historical XAUT reference parameters (15.0 / 20.0 / 5.0 / 5.0 / 2.0 scoring, 30.0 sample threshold, 0.60 stability, 30m pre/post blackout).
+   - `Cycle3AProfile.uncalibrated_xauusd_profile()` contains `None` for all empirical scoring constants, guaranteeing zero hidden fallback to legacy numbers.
+   - All mapping and sequence containers in profiles and artifacts enforce defensive immutability (`MappingProxyType` / tuples).
+2. **Fail-Safe Descriptive Operation:**
+   - Uncalibrated XAUUSD computes deterministic facts (DST-aware session labels via `zoneinfo`, progress, local times, causal swing market_age & known_age, calendar DOW/hour/month/month-end, macro feed health, event proximity).
+   - Empirical scores are strictly `0.0` with `sample_quality = INSUFFICIENT` and status `PENDING_DATA`.
+   - Candidate artifacts (`CANDIDATE_NOT_FROZEN`) expose descriptive candidate statistics for audit while strictly blocking production cycle scores (`0.0`).
+3. **Pure-Python Empirical Calibration Pipeline (`engine/cycles/calibration.py`):**
+   - Implements `CalibrationProvenance` with strict chronological validation (`data_start <= data_end <= as_of`).
+   - Implements `Cycle3ACalibrationArtifact` with defensive immutability.
+   - `calibrate_session_expectancy()` eliminates default sample thresholds or t-statistic cuts; requires explicit sample evaluation mappings (Raw N != Effective N).
+   - `calibrate_swing_durations()` separates `known_duration` (from `detected_at`) and `market_duration` (from `timestamp`), strictly rejecting unconfirmed or future swings.
+   - `build_profile_from_artifact()` generates `CANDIDATE_NOT_FROZEN` profiles with `None` for all production scoring fields.
+   - Point-in-time safe, pure Python, zero Django imports, zero network calls.
+4. **Closed-Candle & Causality Invariants:**
+   - Operational decisions strictly require closed candles (`is_closed=True`); unclosed candles raise `IncompleteCandleError`.
+   - Future candle mutations and revisions cannot modify snapshots at timestamp $T$.
+   - Swing maturity strictly filters `detected_at <= as_of` prior to selection; future swing confirmations at $T$ cannot alter historical calculations.
 
 ---
 
