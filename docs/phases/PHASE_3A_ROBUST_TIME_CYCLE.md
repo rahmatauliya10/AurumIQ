@@ -2,19 +2,31 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **EMPIRICAL REBUILD REQUIRED**
+> **Current XAUUSD Target Status:** 🟢 **ARCHITECTURE IMPLEMENTED / CALIBRATION PENDING_DATA**
 
 ---
 
-## XAUUSD Migration Addendum
+## XAUUSD Migration & Calibration Architecture
 
-### 1. Target Scope & Empirical Rebuild Requirements
-While the mathematical architecture (DST-aware `zoneinfo` session tracking, knowable swing age calculation, revision-safe macro blackout gate, and fail-closed effective-N statistical sample guards) is completely retained, the empirical statistical distributions require rebuilding for the target `XAUUSD` instrument:
-1. **Session Expectancy Rebuild:** Empirical session return matrices must be rebuilt using multi-year historical spot XAUUSD data.
-2. **Swing Duration Distributions:** Swing duration percentiles ($P10, P50, P90$) must be recomputed on confirmed XAUUSD swings.
-3. **Calendar Seasonality Tables:** Seasonality stability and directional effect tables require empirical validation.
-4. **Macro Blackout Buffers:** Pre- and post-release blackout windows require revalidation for spot gold volatility spikes.
-5. **Scoring Weights & Thresholds:** All Phase 3A scoring weights for XAUUSD remain **NOT FROZEN / REVALIDATION REQUIRED**.
+### 1. Implementation Status
+- **XAUUSD Phase 3A Architecture:** ✅ **IMPLEMENTED** (`Cycle3AProfile`, pure-Python calibration pipeline in `engine/cycles/calibration.py`, engine profile isolation).
+- **XAUUSD Empirical Calibration:** 🟡 **PENDING_DATA** (multi-year historical spot data is not bundled in the repo; zero synthetic or scraped numbers are fabricated).
+- **XAUUSD Production Scoring Weights:** 🔒 **NOT FROZEN** (weights remain NOT_FROZEN until Phase 6 walk-forward/backtest/ablation validation).
+
+### 2. Architectural Components & Isolation
+1. **Explicit Profile Segregation (`engine/cycles/profile.py`):**
+   - `Cycle3AProfile.legacy_xaut_profile()` preserves frozen historical XAUT reference parameters (15.0 / 20.0 / 5.0 / 5.0 / 2.0 scoring, 30.0 sample threshold, 0.60 stability, 30m blackout).
+   - `Cycle3AProfile.uncalibrated_xauusd_profile()` contains `None` for all empirical scoring constants, guaranteeing zero hidden fallback to legacy numbers.
+2. **Fail-Safe Descriptive Operation:**
+   - Uncalibrated XAUUSD computes deterministic facts (DST-aware session labels via `zoneinfo`, progress, local times, causal swing market_age & known_age, calendar DOW/hour/month/month-end, macro feed health, event proximity).
+   - Empirical scores are strictly `0.0` with `sample_quality = INSUFFICIENT` and status `CALIBRATION_REQUIRED`.
+3. **Pure-Python Empirical Calibration Pipeline (`engine/cycles/calibration.py`):**
+   - Implements `CalibrationProvenance`, `Cycle3ACalibrationArtifact`, `calibrate_session_expectancy()`, `calibrate_swing_durations()`, and `build_profile_from_artifact()`.
+   - Point-in-time safe, pure Python, zero Django imports, zero network calls.
+4. **Closed-Candle & Causality Invariants:**
+   - Operational decisions strictly require closed candles (`is_closed=True`); unclosed candles raise `IncompleteCandleError`.
+   - Future candle mutations and revisions cannot modify snapshots at timestamp $T$.
+   - Known age is measured strictly from `detected_at` confirmation, never hidden formation timestamp.
 
 ---
 

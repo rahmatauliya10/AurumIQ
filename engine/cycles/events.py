@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 from typing import List, Optional, Sequence
 
 from engine.core.types import EventImpact, MacroEvent, MacroEventContext
+from engine.cycles.profile import Cycle3AProfile
 
 
 def evaluate_macro_event_risk(
     as_of: datetime,
     events: Optional[Sequence[MacroEvent]] = None,
-    blackout_minutes: int = 30,
+    blackout_minutes: Optional[int] = 30,
+    profile: Optional[Cycle3AProfile] = None,
 ) -> MacroEventContext:
     """
     Evaluate macroeconomic event risk at a specific point-in-time timestamp.
@@ -42,6 +44,13 @@ def evaluate_macro_event_risk(
             is_feed_healthy=False,
         )
 
+    # Determine effective blackout window
+    effective_blackout = blackout_minutes
+    if effective_blackout is None and profile is not None:
+        effective_blackout = profile.macro_blackout_minutes
+    if effective_blackout is None:
+        effective_blackout = 30
+
     # Filter events to only high-impact ones for blackout gating
     high_impact_events = [e for e in events if e.impact == EventImpact.HIGH]
 
@@ -67,7 +76,7 @@ def evaluate_macro_event_risk(
                 min_since_last = elapsed_minutes
 
         # Check scheduled blackout window [-blackout_minutes, +blackout_minutes] around scheduled time
-        if abs(diff_minutes) <= blackout_minutes:
+        if abs(diff_minutes) <= effective_blackout:
             is_in_blackout = True
             active_event_name = event.name
 
@@ -77,7 +86,7 @@ def evaluate_macro_event_risk(
             if as_of_utc >= rev_utc:
                 # Revision is known. Apply post-revision blackout window [0, +blackout_minutes]
                 rev_elapsed_min = int((as_of_utc - rev_utc).total_seconds() // 60)
-                if 0 <= rev_elapsed_min <= blackout_minutes:
+                if 0 <= rev_elapsed_min <= effective_blackout:
                     is_in_blackout = True
                     active_event_name = f"{event.name} (Revision)"
 

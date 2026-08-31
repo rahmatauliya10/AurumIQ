@@ -12,6 +12,7 @@ from engine.core.types import (
     SwingDurationContext,
     SwingPoint,
 )
+from engine.cycles.profile import Cycle3AProfile
 
 # Strict whitelist of authorized operational timeframes in AurumIQ
 ALLOWED_TIMEFRAMES = {
@@ -46,6 +47,7 @@ def calculate_swing_duration(
     historical_durations: Optional[Sequence[int]] = None,
     effective_n: Optional[float] = None,
     sample_eval: Optional[SampleEvaluation] = None,
+    profile: Optional[Cycle3AProfile] = None,
 ) -> SwingDurationContext:
     """
     Calculate causal swing duration maturity and age percentiles.
@@ -63,6 +65,7 @@ def calculate_swing_duration(
       - If eff_n < 30.0 or sample_is_blocked: maturity_score = 0.0 (INSUFFICIENT).
       - Percentile may remain descriptive, but confidence score strictly defaults to 0.0.
       - Zero hardcoded fallback distributions allowed.
+      - If profile is provided and is_calibrated=False, returns maturity_score = 0.0.
     """
     tf_sec = timeframe_to_seconds(timeframe)
 
@@ -92,29 +95,50 @@ def calculate_swing_duration(
     known_hours = float(round(known_delta_sec / 3600.0, 2))
     known_bars = max(0, int(known_delta_sec // tf_sec))
 
+    durations_seq = historical_durations
+    if durations_seq is None and profile is not None and profile.is_calibrated:
+        durations_seq = profile.historical_durations
+
+    raw_n = len(durations_seq) if durations_seq else 0
+
+    # Descriptive percentile calculation (available descriptively)
+    percentile: Optional[float] = None
+    if durations_seq and raw_n >= 10:
+        durations = sorted(durations_seq)
+        pos = bisect.bisect_left(durations, known_bars)
+        percentile = float(round(min(100.0, max(0.0, (pos / raw_n) * 100.0)), 2))
+
+    # Uncalibrated profile check: strictly 0.0 maturity score
+    if profile is not None and not profile.is_calibrated:
+        return SwingDurationContext(
+            market_age_bars=market_bars,
+            market_age_hours=market_hours,
+            known_age_bars=known_bars,
+            known_age_hours=known_hours,
+            pullback_age_percentile=percentile,
+            is_mature=False,
+            maturity_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
+
+    min_eff_n = profile.swing_min_effective_n if (profile and profile.swing_min_effective_n is not None) else 30.0
+
     # 3. Determine effective N and sample quality (P3A-18: Fail Closed on Unknown Effective-N)
-    raw_n = len(historical_durations) if historical_durations else 0
     if sample_eval is not None:
         eff_n = sample_eval.effective_n
         sample_is_blocked = sample_eval.is_blocked
     elif effective_n is not None:
         eff_n = float(effective_n)
-        sample_is_blocked = eff_n < 30.0
+        sample_is_blocked = eff_n < min_eff_n
     else:
         # Raw N must NEVER be assumed equal to effective N.
         # Unknown statistical independence forces eff_n = 0.0 and sample_is_blocked = True.
         eff_n = 0.0
         sample_is_blocked = True
 
-    # 4. Descriptive percentile calculation
-    percentile: Optional[float] = None
-    if historical_durations and raw_n >= 10:
-        durations = sorted(historical_durations)
-        pos = bisect.bisect_left(durations, known_bars)
-        percentile = float(round(min(100.0, max(0.0, (pos / raw_n) * 100.0)), 2))
-
     # 5. Statistical Effective Sample Gate (P3A-18)
-    if not historical_durations or raw_n < 30 or eff_n < 30.0 or sample_is_blocked:
+    if not durations_seq or raw_n < 30 or eff_n < min_eff_n or sample_is_blocked:
         return SwingDurationContext(
             market_age_bars=market_bars,
             market_age_hours=market_hours,
@@ -140,18 +164,20 @@ def calculate_swing_duration(
 
     is_mature = (75.0 <= percentile <= 95.0) if percentile is not None else False
 
-    # Compute maturity readiness score (Max 20.0 points in Phase 3A)
+    # Compute maturity readiness score (Max score from profile or default 20.0 in Phase 3A)
+    max_score = profile.swing_max_score if (profile and profile.swing_max_score is not None) else 20.0
+
     if percentile is not None:
         if 75.0 <= percentile <= 90.0:
-            raw_score = 20.0
+            raw_score = max_score
         elif 50.0 <= percentile < 75.0:
-            raw_score = 15.0
+            raw_score = max_score * 0.75
         elif 25.0 <= percentile < 50.0:
-            raw_score = 10.0
+            raw_score = max_score * 0.50
         elif percentile > 90.0:
-            raw_score = 8.0
+            raw_score = max_score * 0.40
         else:
-            raw_score = 5.0
+            raw_score = max_score * 0.25
     else:
         raw_score = 0.0
 

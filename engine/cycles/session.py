@@ -10,6 +10,7 @@ from engine.core.types import (
     SessionExpectancyEntry,
     SessionType,
 )
+from engine.cycles.profile import Cycle3AProfile
 
 
 # Standard financial center timezones
@@ -22,6 +23,7 @@ def classify_session(
     timestamp: datetime,
     regime: Optional[RegimeType] = None,
     expectancy_table: Optional[Mapping[Tuple[SessionType, RegimeType], SessionExpectancyEntry]] = None,
+    profile: Optional[Cycle3AProfile] = None,
 ) -> SessionContext:
     """
     Classify the market trading session for a point-in-time timestamp using local timezones
@@ -37,6 +39,7 @@ def classify_session(
         expectancy_score = 0.0 (INSUFFICIENT).
       - Positive score is only granted when empirical evidence meets minimum sample threshold
         AND is verified statistically significant.
+      - If profile is provided and is_calibrated=False, returns expectancy_score = 0.0.
     """
     # Ensure timezone awareness (assume UTC if naive)
     if timestamp.tzinfo is None:
@@ -113,13 +116,35 @@ def classify_session(
     sample_quality = SampleQuality.INSUFFICIENT
     effective_n = 0.0
 
-    if expectancy_table and regime:
+    # Profile handling
+    if profile is not None and not profile.is_calibrated:
+        # Uncalibrated profile strictly yields 0.0 expectancy score and INSUFFICIENT
+        return SessionContext(
+            session=session,
+            progress_pct=progress,
+            is_high_liquidity=is_high_liq,
+            local_times=local_times,
+            expectancy_score=0.0,
+            sample_quality=SampleQuality.INSUFFICIENT,
+            effective_n=0.0,
+        )
+
+    # Determine effective expectancy table
+    table = expectancy_table
+    if table is None and profile is not None and profile.is_calibrated:
+        table = profile.session_expectancy_table
+
+    min_eff_n = profile.session_min_effective_n if (profile and profile.session_min_effective_n is not None) else 30.0
+    max_score = profile.session_max_score if (profile and profile.session_max_score is not None) else 15.0
+    exp_multiplier = profile.session_expectancy_multiplier if (profile and profile.session_expectancy_multiplier is not None) else 30.0
+
+    if table and regime:
         key = (session, regime)
-        entry = expectancy_table.get(key)
+        entry = table.get(key)
         if entry:
             effective_n = entry.effective_n
-            # P3A-14: Significance Gate - must be statistically significant AND effective_n >= 30
-            if effective_n < 30.0 or not entry.is_statistically_significant:
+            # P3A-14: Significance Gate - must be statistically significant AND effective_n >= min_eff_n
+            if effective_n < min_eff_n or not entry.is_statistically_significant:
                 sample_quality = SampleQuality.INSUFFICIENT
                 weight_mult = 0.0
             elif effective_n < 60.0:
@@ -132,9 +157,9 @@ def classify_session(
                 sample_quality = SampleQuality.HIGH
                 weight_mult = 1.0
 
-            # Scale positive expectancy up to max 15.0 points in Phase 3A
+            # Scale positive expectancy up to max score
             if entry.expectancy_r > 0 and entry.is_statistically_significant and weight_mult > 0:
-                raw_exp_score = min(15.0, entry.expectancy_r * 30.0)
+                raw_exp_score = min(max_score, entry.expectancy_r * exp_multiplier)
                 expectancy_score = float(round(raw_exp_score * weight_mult, 2))
             else:
                 expectancy_score = 0.0
