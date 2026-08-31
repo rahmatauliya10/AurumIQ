@@ -4,6 +4,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from engine.core.types import AcfResult, SampleEvaluation, SampleQuality
+from engine.cycles.experimental.profile import Cycle3BResearchProfile
 
 
 def calculate_causal_acf(
@@ -12,6 +13,7 @@ def calculate_causal_acf(
     min_lookback: int = 32,
     effective_n: Optional[float] = None,
     sample_eval: Optional[SampleEvaluation] = None,
+    profile: Optional[Cycle3BResearchProfile] = None,
 ) -> AcfResult:
     """
     Calculate causal autocorrelation of a trailing lookback series.
@@ -24,10 +26,11 @@ def calculate_causal_acf(
       - If series contains None, NaN, or non-finite values, it fails closed
         rather than dropping items (which would compress time spacing).
 
-    Effective-N-Aware Significance (P3B-25):
-      - Bartlett bound uses n_sig = min(raw_n, eff_n) to prevent artificial
-        confidence inflation.
-      - If effective_n < 30 or sample_is_blocked -> is_significant is strictly False.
+    Profile & Effective-N-Aware Significance (P3B-25):
+      - If profile is uncalibrated / acf_significance_bound is None:
+        computes descriptive ACF series and candidate dominant lag,
+        but is_significant is strictly False and confidence_bound is 0.0.
+      - If significance bound is configured: uses n_sig = min(raw_n, eff_n).
     """
     # 1. Check for missing/corrupted values (P3B-21)
     if not series or any(x is None or math.isnan(float(x)) or math.isinf(float(x)) for x in series):
@@ -58,7 +61,10 @@ def calculate_causal_acf(
         eff_n = 0.0
         sample_is_blocked = True
 
-    if n < min_lookback:
+    eval_min_lookback = profile.min_lookback if profile is not None else min_lookback
+    eval_max_lag = profile.max_lag if profile is not None else max_lag
+
+    if n < eval_min_lookback:
         return AcfResult(
             dominant_lag=None,
             autocorrelation=0.0,
@@ -78,7 +84,7 @@ def calculate_causal_acf(
             autocorrelation=0.0,
             is_significant=False,
             confidence_bound=0.0,
-            acf_series=tuple([1.0] + [0.0] * min(max_lag, n - 1)),
+            acf_series=tuple([1.0] + [0.0] * min(eval_max_lag, n - 1)),
             effective_n=eff_n,
             sample_quality=SampleQuality.INSUFFICIENT,
         )
@@ -94,7 +100,7 @@ def calculate_causal_acf(
         denom = 1e-12
 
     # 4. Compute causal ACF for lags k in [0, max_eval_lag]
-    max_eval_lag = min(max_lag, n // 2)
+    max_eval_lag = min(eval_max_lag, n // 2)
     acf_list = [1.0]  # Lag 0 is always 1.0
 
     for k in range(1, max_eval_lag + 1):
@@ -104,31 +110,44 @@ def calculate_causal_acf(
 
     acf_tuple = tuple(acf_list)
 
-    # Effective-N-Aware Bartlett Bound (P3B-25 with min(raw_n, eff_n) defensive guard)
-    if eff_n >= 30.0 and not sample_is_blocked:
-        n_sig = min(float(n), float(eff_n))
-        conf_bound = float(round(1.96 / math.sqrt(n_sig), 4))
-    else:
-        conf_bound = float(round(1.96 / math.sqrt(n), 4))
+    # 5. Significance bound resolution
+    is_uncalibrated = (profile is not None and profile.acf_significance_bound is None)
 
-    # 5. Peak detection for dominant cyclical lag (k >= 3)
+    if is_uncalibrated:
+        conf_bound = 0.0
+        min_eff = 30.0
+    else:
+        sig_bound = profile.acf_significance_bound if (profile is not None and profile.acf_significance_bound is not None) else 1.96
+        min_eff = profile.acf_min_effective_n if (profile is not None and profile.acf_min_effective_n is not None) else 30.0
+        if eff_n >= min_eff and not sample_is_blocked:
+            n_sig = min(float(n), float(eff_n))
+            conf_bound = float(round(sig_bound / math.sqrt(n_sig), 4))
+        else:
+            conf_bound = float(round(sig_bound / math.sqrt(n), 4))
+
+    # 6. Peak detection for dominant cyclical lag (k >= 3)
     dominant_lag: Optional[int] = None
     dominant_corr = 0.0
 
     for k in range(3, len(acf_list) - 1):
-        if acf_list[k] > acf_list[k - 1] and acf_list[k] >= acf_list[k + 1] and acf_list[k] > conf_bound:
+        if acf_list[k] > acf_list[k - 1] and acf_list[k] >= acf_list[k + 1]:
+            if not is_uncalibrated and acf_list[k] <= conf_bound:
+                continue
             if acf_list[k] > dominant_corr:
                 dominant_corr = acf_list[k]
                 dominant_lag = k
 
     if dominant_lag is None and len(acf_list) > 3:
         max_idx = int(np.argmax(acf_list[3:])) + 3
-        if acf_list[max_idx] > conf_bound:
+        if is_uncalibrated or acf_list[max_idx] > conf_bound:
             dominant_lag = max_idx
             dominant_corr = acf_list[max_idx]
 
     # Sample Quality & Significance determination
-    if eff_n < 30.0 or sample_is_blocked:
+    if is_uncalibrated:
+        sample_quality = SampleQuality.INSUFFICIENT
+        is_significant = False
+    elif eff_n < min_eff or sample_is_blocked:
         sample_quality = SampleQuality.INSUFFICIENT
         is_significant = False
     elif eff_n < 60.0:

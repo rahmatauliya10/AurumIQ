@@ -1,110 +1,87 @@
 # Phase 3B: Experimental Spectral Cycle Research & Promotion Gate
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
-> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **REVALIDATION REQUIRED (PRODUCTION WEIGHT = 0.0)**
+> **Historical Source Baseline:** `main` @ `823d176b140f3823f1e41d1071b4dc98bf558eab`  
+> **Current XAUUSD Target Status:** 🧪 **REVALIDATED / IMPLEMENTED (RESEARCH ONLY, PRODUCTION WEIGHT = 0.0)**
 
 ---
 
-## XAUUSD Migration Addendum
+## Current Phase 3B Governance Declarations
 
-### 1. Target Scope & Production Lock
-- **Active Production Weight:** Strictly locked to `0.0` for all experimental spectral features (ACF, FFT, Wavelet CWT, Hilbert Phase).
-- **Promotion Gate Status:** No experimental spectral features will be promoted to active production scoring weight without satisfying the frozen 7-criteria promotion gate against empirical XAUUSD backtest benchmarks in Phase 6.
-- **Revalidation Requirement:** All spectral and wavelet algorithms remain pure research-layer modules requiring out-of-sample revalidation against historical spot XAUUSD data.
+| Metric / Governance Area | Formal Status | Operational Interpretation |
+|---|:---:|---|
+| **Phase 3B Architecture** | ✅ `REVALIDATED / IMPLEMENTED` | Mathematical & spectral engines (ACF, FFT, Wavelet, Hilbert) fully operational. |
+| **Spectral Algorithms** | 🔬 `RESEARCH ONLY` | Used exclusively for descriptive frequency/phase diagnostics, not live scoring. |
+| **XAUUSD Empirical Detection Thresholds** | 🟡 `NOT_CONFIGURED / NOT_FROZEN` | No Bartlett bound, FFT power cutoff, Wavelet COI, or Hilbert stability frozen for XAUUSD. |
+| **XAUUSD Empirical Reliability Thresholds** | 🟡 `NOT_CONFIGURED / NOT_FROZEN` | Dispersion and scoring bands strictly `None`; reliability score locks to `0.0` (`UNRELIABLE`). |
+| **XAUUSD Promotion Threshold Policy** | 🟡 `NOT_CONFIGURED / NOT_FROZEN` | No speculative hurdle numbers injected for XAUUSD. |
+| **Current XAUUSD Promotion Evaluation** | 🚫 `POLICY_NOT_CONFIGURED` | Uncalibrated profile evaluations deterministically report `POLICY_NOT_CONFIGURED`. |
+| **Phase 6 Promotion Dependency** | 🔒 `BLOCKED_BY_PHASE6` | Evaluation requires verified empirical XAUUSD backtest baseline from Phase 6. |
+| **Production Weight** | 🔒 `0.0 HARD LOCKED` | Permanently 0.0 across all dataclass, engine, and database check constraints. |
+| **Historical XAUT Phase 3B Evidence** | 🧊 `PRESERVED` | Historical XAUT reference numbers isolated under explicit `legacy_xaut_research_profile()`. |
+| **Phase 4+ Direction / Timing / Execution** | ⏸️ `NOT STARTED` | Zero BUY/SELL directional score, timing score, or execution logic. |
 
 ---
 
-## Historical XAUT Frozen Specification (Verbatim Baseline)
+## 1. XAUUSD Research Governance & Architectural Invariants
 
-> **Status:** 🧪 **IMPLEMENTED, VERIFIED & PENDING HUMAN REVIEW**  
-> **Primary Goal:** Implement advanced spectral and wavelet time-cycle analysis (Causal ACF, Causal FFT, Continuous Wavelet Transform, Causal Hilbert Phase) with strict point-in-time safety, zero default active weight, and a multi-criteria out-of-sample promotion gate.
+1. **Hard-Locked Production Weight = 0.0:**  
+   `Cycle3BExperimentalSnapshot.production_weight` is hard-locked to `0.0` with `init=False` and a database `CheckConstraint` (`phase3b_production_weight_locked_to_zero`). Even `PROMOTABLE` research evaluations produce `0.0` production weight.
+2. **Explicit Profile Segregation (`Cycle3BResearchProfile`):**  
+   Target XAUUSD uses `uncalibrated_xauusd_research_profile()`, where all empirical detection, reliability, and promotion fields are strictly `None`. Historical XAUT constants (1.96 Bartlett, 0.15 FFT, 0.40 COI, 0.60 Hilbert, 15/30% dispersion, 60/35/15 bands) are quarantined exclusively within `legacy_xaut_research_profile()`.
+3. **Causal Descriptive Operation:**  
+   Uncalibrated XAUUSD computes pure descriptive mathematical facts (autocorrelation series, dominant period, PSD top frequencies, wavelet scale energy, instantaneous phase/amplitude) while setting `is_significant = False`, `is_cycle_detected = False`, `is_clean_endpoint = False`, `is_endpoint_reliable = False`, `reliability_score = 0.0`, and `status = UNRELIABLE` (`CALIBRATION_REQUIRED`).
+4. **Deterministic 4-Stage Promotion Precedence (`evaluate_promotion_eligibility`):**  
+   - **Stage A:** Promotion policy not configured $\rightarrow$ `POLICY_NOT_CONFIGURED`.
+   - **Stage B:** Policy configured, but baseline is missing, non-empirical, not XAUUSD, not PIT-safe, not Phase 6 validated, or timeframe mismatch $\rightarrow$ `BLOCKED_BY_PHASE6`.
+   - **Stage C:** Valid XAUUSD Phase 6 empirical baseline exists, but hurdles fail $\rightarrow$ `FAILED`.
+   - **Stage D:** Valid XAUUSD Phase 6 empirical baseline exists and all hurdles pass $\rightarrow$ `PROMOTABLE` (research eligibility only, `production_weight = 0.0`).
+5. **Closed-Candle & Time-Grid Isolation (PIT-Safe):**  
+   - Unclosed candles at or before $T \rightarrow$ `IncompleteCandleError`.
+   - Unclosed candles strictly after $T \rightarrow$ completely ignored; snapshot at $T$ identical to baseline.
+   - Future closed candles after $T \rightarrow$ completely ignored; snapshot at $T$ identical to baseline.
+   - Broken time-grid or irregular spacing $\rightarrow$ fails closed with `0.0` reliability.
 
-### 1. Experimental Philosophy & Safety Principles
+---
 
-1. **Hard-Locked Production Weight = 0.0:** No experimental cycle feature influences production scoring until it earns promotion through empirical walk-forward backtesting against an empirical Phase 3A baseline.
-2. **Strict Causal Trailing Windows (R3, A05, A13):** Every Fourier, autocorrelation, wavelet, or Hilbert transform operates exclusively on a causal historical rolling window $[t - W, t]$. No forward-padding, future boundary reflection, or non-causal filtering is permitted.
-3. **Fail-Closed on Noise & Disagreement:** If dominant periodicity is unstable or spectral methods disagree ($> 30\%$ dispersion), reliability collapses to `0.0` (`UNRELIABLE`).
+## 2. Experimental Subsystems (`engine/cycles/experimental/`)
 
-### 2. Experimental Subsystems (`engine/cycles/experimental/`)
-
-#### A. Causal Autocorrelation (ACF) (`engine/cycles/experimental/acf.py`)
+### A. Causal Autocorrelation (ACF) (`acf.py`)
 - Evaluates linear detrended prices over trailing causal lookback $W \ge 32$ bars.
 - Computes causal sample autocorrelation:
   $$r_k = \frac{\sum_{t=k+1}^N (x_t - \bar{x})(x_{t-k} - \bar{x})}{\sum_{t=1}^N (x_t - \bar{x})^2}$$
-- Tests statistical significance ($95\%$ Bartlett confidence bounds $\pm \frac{1.96}{\sqrt{N}}$).
-- Guarded by Effective Sample Estimator ($n_{eff} \ge 30$).
+- In uncalibrated mode: returns descriptive ACF series and candidate dominant lag, but `is_significant = False` and `confidence_bound = 0.0`.
 
-#### B. Causal Detrended FFT Spectral Analysis (`engine/cycles/experimental/fft.py`)
+### B. Causal Detrended FFT Spectral Analysis (`fft.py`)
 - Trailing window $\rightarrow$ linear detrending $\rightarrow$ zero-mean centering $\rightarrow$ Hann window taper normalization $\rightarrow$ Real FFT power spectrum.
-- Calculates Power Spectral Density (PSD), dominant frequency $f_{\text{dom}}$, dominant period $P_{\text{dom}} = 1 / f_{\text{dom}}$, spectral power ratio $P(f_{\text{dom}}) / \sum P_k$, and normalized spectral entropy.
-- Masked DC component ($f=0$) and search bounded by research-safe limits ($4 \le P \le N/2$).
+- Calculates Power Spectral Density (PSD), dominant frequency, dominant period, power ratio, and normalized spectral entropy.
+- In uncalibrated mode: returns descriptive spectrum and top frequencies, but `is_cycle_detected = False`.
 
-#### C. Continuous Wavelet Transform (CWT) (`engine/cycles/experimental/wavelet.py`)
+### C. Continuous Wavelet Transform (CWT) (`wavelet.py`)
 - Uses analytic Morlet wavelet (`pywt.cwt`) over trailing closed history.
 - Measures time-localized multi-scale energy distribution.
-- **Cone of Influence (COI) & Edge Handling:** Evaluates endpoint boundary contamination. If dominant cycle scale is heavily edge-contaminated at $T$, `is_clean_endpoint` is marked `False`.
+- In uncalibrated mode: returns descriptive scales and energy ratio, but `is_clean_endpoint = False`.
 
-#### D. Hilbert Transform Instantaneous Phase (`engine/cycles/experimental/hilbert.py`)
+### D. Hilbert Transform Instantaneous Phase (`hilbert.py`)
 - Computes analytic signal $z(t) = x(t) + i \mathcal{H}[x](t) = A(t) e^{i \theta(t)}$.
 - Extracts instantaneous phase $\theta(t) \in [-\pi, \pi]$ and instantaneous amplitude $A(t)$.
-- **Endpoint Distortion Guard:** Phase velocity $\frac{d\theta}{dt}$ and unwrapped phase progression over trailing 5 bars evaluate phase stability. If stability $< 0.60$ or $N < 48$, `is_endpoint_reliable` is `False`.
+- Evaluates phase velocity and stability over trailing 5 bars.
+- In uncalibrated mode: returns descriptive phase/amplitude, but `is_endpoint_reliable = False`.
 
-#### E. Cycle Reliability Composite (`engine/cycles/experimental/reliability.py`)
-- Consolidates ACF, FFT, Wavelet, and Hilbert evidence.
-- Calculates cross-method agreement dispersion:
-  - Dispersion $\le 15\% \rightarrow 100\%$ agreement.
-  - Dispersion $\le 30\% \rightarrow 65\%$ agreement.
-  - Dispersion $> 30\% \rightarrow 0\%$ agreement (material spectral disagreement).
-- **Strict Zero-Reliability Gates (A13, P3B-10):**
-  - If $n_{eff} < 30.0$ or methods diverge $> 30\% \rightarrow$ `reliability_score = 0.0`, `status = UNRELIABLE`.
+### E. Cycle Reliability Composite (`reliability.py`)
+- Consolidates ACF, FFT, Wavelet, and Hilbert spectral evidence.
+- In uncalibrated mode: computes descriptive consensus period, but locks `reliability_score = 0.0` and `reliability_status = UNRELIABLE` (`CALIBRATION_REQUIRED`).
 
-### 3. Multi-Criteria Empirical Promotion Gate (`engine/cycles/experimental/promotion.py` & A24)
+---
 
-An experimental feature is **NOT promoted** simply because in-sample Profit Factor rises slightly.
+## 3. Phase 3B Acceptance & Targeted Test Suite
 
-To be promoted to active scoring weight, a feature must satisfy **ALL 7 rigorous empirical criteria**:
+| Test Suite | File | Tests | Assertion Criteria | Status |
+|---|---|:---:|---|:---:|
+| **XAUUSD Acceptance** | `tests/acceptance/test_xauusd_phase3b.py` | 17 | Profile governance, zero defaults, deterministic promotion precedence, closed-candle split, hostile lock | ✅ PASS |
+| **Historical Targeted** | `tests/unit/test_phase3b_targeted.py` | 27 | P3B-01 through P3B-27 historical invariant preservation | ✅ PASS |
+| **A05 Acceptance** | `tests/acceptance/test_a05_causal_spectral_isolation.py` | 1 | Future candle perturbation produces identical spectral outputs at $T$ | ✅ PASS |
+| **A13 Acceptance** | `tests/acceptance/test_a13_cycle_reliability_stability.py` | 3 | High consensus, subthreshold sample zeroing, material disagreement zeroing | ✅ PASS |
+| **A24 Acceptance** | `tests/acceptance/test_a24_experimental_promotion_gate.py` | 3 | Rejection on non-empirical baseline, verified empirical promotion, fold concentration guard | ✅ PASS |
 
-1. `BaselineBenchmark.is_empirical` MUST be `True` (P3B-11).
-2. Experimental backtest must have $\ge 100$ valid trades (P3B-12).
-3. Profit Factor improvement $\ge +5.0\%$ vs baseline (P3B-13).
-4. Expectancy in R must increase ($\text{Exp}_R > \text{Base\_Exp}_R$).
-5. Max Drawdown deterioration must be $\le 10.0\%$ worse than baseline (P3B-14).
-6. At least 4 of 6 walk-forward OOS folds must beat baseline (P3B-15).
-7. Effective sample size $n_{eff} \ge 30.0$.
-
-### 4. Phase 3B Acceptance & Targeted Test Suite
-
-| Test ID | Test Name | Assertion Criteria | Status |
-|---|---|---|:---:|
-| **A05** | Causal Spectral Future Invariance | Mutating price candles at $t > T$ produces 100% identical ACF, FFT, Wavelet, and Hilbert outputs at $T$. | ✅ PASS |
-| **A13** | Cycle Reliability Consensus Gate | High consensus yields high score; material disagreement or $n_{eff} < 30$ strictly zeroes reliability. | ✅ PASS |
-| **A24** | Multi-Criteria Promotion Gate | Rejects promotion on non-empirical baseline, trade count $< 100$, PF diff $< 5\%$, DD worse $> 10\%$, or folds $< 4/6$. | ✅ PASS |
-| **P3B-01** | ACF Future Mutation Invariance | ACF outputs identical under future perturbation. | ✅ PASS |
-| **P3B-02** | FFT Future Mutation Invariance | FFT outputs identical under future perturbation. | ✅ PASS |
-| **P3B-03** | Wavelet Future Mutation Invariance | Wavelet outputs identical under future perturbation. | ✅ PASS |
-| **P3B-04** | Hilbert Future Mutation Invariance | Hilbert outputs identical under future perturbation. | ✅ PASS |
-| **P3B-05** | Synthetic Sine Period Recovery | 16-bar and 32-bar pure sinusoids detected accurately by FFT and ACF. | ✅ PASS |
-| **P3B-06** | Constant / Flat Series Handling | Flat series handled cleanly with zero division protection. | ✅ PASS |
-| **P3B-07** | Insufficient Lookback Handling | Series $< 32$ bars returns safe zero-result dataclasses. | ✅ PASS |
-| **P3B-08** | NaN & Malformed Input Handling | Sanitizes dirty input without unhandled exceptions. | ✅ PASS |
-| **P3B-09** | Spectral Disagreement Gate | Divergent methods ($> 30\%$) collapse reliability score to 0.0. | ✅ PASS |
-| **P3B-10** | Effective N Guard | $n_{eff} < 30$ strictly forces reliability score to 0.0. | ✅ PASS |
-| **P3B-11** | Non-Empirical Baseline Gate | Non-empirical baseline sets `status = BASELINE_NOT_EMPIRICAL`, `production_weight = 0.0`. | ✅ PASS |
-| **P3B-12** | Trades Count Guard | $< 100$ trades cannot promote. | ✅ PASS |
-| **P3B-13** | PF Improvement Hurdle | $< +5.0\%$ PF improvement cannot promote. | ✅ PASS |
-| **P3B-14** | Drawdown Deterioration Hurdle | $> +10.0\%$ drawdown deterioration cannot promote. | ✅ PASS |
-| **P3B-15** | Walk-Forward Consistency | $< 4/6$ folds cannot promote. | ✅ PASS |
-| **P3B-16** | Zero Production Weight Contract | `Cycle3BExperimentalSnapshot.production_weight` is permanently 0.0. | ✅ PASS |
-| **P3B-17** | Engine AST Purity | `engine/cycles/experimental/` contains zero Django imports. | ✅ PASS |
-| **P3B-18** | Experimental Snapshot Persistence | Persists `ExperimentalCycleSnapshotRecord` with `experimental_version` unique composite key. | ✅ PASS |
-
-### 5. Definition of Done Checklist
-
-- [x] Causal ACF, FFT, Wavelet CWT, and Hilbert Phase implemented with zero look-ahead.
-- [x] `CycleReliability` composite metric operational with cross-method agreement.
-- [x] `PromotionGate` module enforces all 7 statistical and empirical criteria.
-- [x] `production_weight` hard-locked to 0.0 while baseline is non-empirical.
-- [x] Django ORM model `ExperimentalCycleSnapshotRecord` created and migrated.
-- [x] Acceptance tests **A05, A13, A24** passing.
-- [x] Full regression suite passing **117/117 tests** in Docker.
+**Total Targeted Tests:** 47/47 passing (0 failures, 0 warnings).
