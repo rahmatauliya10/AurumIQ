@@ -1,4 +1,4 @@
-"""Causal Hilbert Transform Instantaneous Phase and Amplitude module."""
+"""Causal Hilbert Transform instantaneous phase and amplitude tracking module."""
 import math
 from typing import Optional, Sequence
 import numpy as np
@@ -14,18 +14,23 @@ from engine.cycles.experimental.profile import (
 def calculate_causal_hilbert(
     series: Sequence[float | int],
     dominant_period: Optional[float] = None,
-    min_lookback: int = 32,
+    min_lookback: int = 48,
     profile: Optional[Cycle3BResearchProfile] = None,
 ) -> HilbertResult:
     """
-    Calculate causal Hilbert Transform instantaneous phase and amplitude on trailing window.
+    Calculate causal instantaneous phase and amplitude via the analytic signal.
 
-    Strict Causality:
-      - Uses only observations up to timestamp T (series[0..N-1]).
-      - Zero centered future smoothing.
+    Strict Causality & Endpoint Guard:
+      - Uses strictly trailing closed historical series[0..N-1] up to timestamp T.
+      - Never performs centered forward/backward smoothing across the endpoint.
 
     Missing Observation Safety (P3B-21):
-      - If series contains None, NaN, or non-finite values, fails closed.
+      - If series contains None, NaN, or non-finite values, fails closed
+        rather than dropping items (which would compress time spacing).
+
+    Endpoint Reliability Policy:
+      - If profile policy is incomplete, computes descriptive phase and amplitude,
+        but is_endpoint_reliable is strictly False.
     """
     if not series or any(x is None or math.isnan(float(x)) or math.isinf(float(x)) for x in series):
         return HilbertResult(
@@ -41,7 +46,7 @@ def calculate_causal_hilbert(
 
     eval_min_lookback = profile.min_lookback if profile is not None else min_lookback
 
-    if n < eval_min_lookback:
+    if n < max(eval_min_lookback, 16):
         return HilbertResult(
             instantaneous_phase=0.0,
             instantaneous_amplitude=0.0,
@@ -67,42 +72,35 @@ def calculate_causal_hilbert(
     detrended = arr - (coeffs[0] * x + coeffs[1])
     detrended = detrended - np.mean(detrended)
 
-    # 2. Analytic Signal computation via SciPy Hilbert transform
+    # 2. Analytic Signal computation via Hilbert transform
     analytic_signal = hilbert(detrended)
-    amplitudes = np.abs(analytic_signal)
-    phases = np.angle(analytic_signal)  # in [-pi, pi]
+    amplitude_envelope = np.abs(analytic_signal)
+    instantaneous_phase_unwrapped = np.unwrap(np.angle(analytic_signal))
 
-    endpoint_amp = float(round(amplitudes[-1], 4))
-    endpoint_phase = float(round(phases[-1], 4))
+    endpoint_amp = float(amplitude_envelope[-1])
+    endpoint_phase = float(np.angle(analytic_signal[-1]))  # Wrapped in [-pi, pi]
+    endpoint_phase = float(round(endpoint_phase, 4))
+    endpoint_amp = float(round(endpoint_amp, 4))
 
-    # 3. Phase Velocity and Stability Analysis over trailing 5 bars
-    unwrapped_phases = np.unwrap(phases)
-    eval_window = min(5, n - 1)
-    phase_diffs = np.diff(unwrapped_phases[-eval_window - 1:])
-
-    avg_velocity = float(np.mean(phase_diffs)) if len(phase_diffs) > 0 else 0.0
-    positive_steps = sum(1 for d in phase_diffs if d > 0)
-    monotonic_ratio = positive_steps / float(len(phase_diffs)) if len(phase_diffs) > 0 else 0.0
-
-    if len(phase_diffs) > 1 and avg_velocity > 0:
-        var_velocity = float(np.var(phase_diffs))
-        cv = math.sqrt(var_velocity) / (avg_velocity + 1e-6)
+    # 3. Phase velocity and stability over the trailing lookback window (last 5 bars)
+    w_eval = min(5, n - 1)
+    if w_eval >= 2:
+        d_phase = np.diff(instantaneous_phase_unwrapped[-w_eval:])
+        avg_velocity = float(np.mean(d_phase))
+        std_velocity = float(np.std(d_phase))
+        monotonic_ratio = float(np.sum(d_phase > 0) / len(d_phase))
+        cv = std_velocity / (avg_velocity + 1e-6) if avg_velocity > 0 else 1.0
         stability = max(0.0, min(1.0, 1.0 - cv * 0.5)) * monotonic_ratio
     else:
         stability = 0.0
+        avg_velocity = 0.0
 
     stability = float(round(stability, 4))
     avg_velocity = float(round(avg_velocity, 4))
 
-    # 4. Endpoint Reliability Resolution with strict policy completeness
+    # 4. Endpoint Reliability Resolution with strict policy completeness (Zero legacy numerical fallbacks on explicit profiles)
     if profile is None:
         is_reliable = (n >= 48) and (stability >= 0.60) and (avg_velocity > 0.05) and (endpoint_amp > 1e-6)
-    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
-        min_lb = profile.hilbert_min_lookback or 48
-        min_stab = profile.hilbert_min_stability or 0.60
-        min_vel = profile.hilbert_min_velocity or 0.05
-        min_amp = profile.hilbert_min_amplitude or 1e-6
-        is_reliable = (n >= min_lb) and (stability >= min_stab) and (avg_velocity > min_vel) and (endpoint_amp > min_amp)
     else:
         if profile.is_hilbert_policy_configured:
             min_lb = profile.hilbert_min_lookback

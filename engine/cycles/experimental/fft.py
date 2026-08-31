@@ -146,12 +146,9 @@ def calculate_causal_fft(
         if p > 1e-12 and f > 0:
             top_entries.append((float(round(f, 4)), float(round(p / total_power, 4))))
 
-    # 8. Detection Gate Resolution with strict policy completeness
+    # 8. Detection Gate Resolution with strict policy completeness (Zero legacy numerical fallbacks on explicit profiles)
     if profile is None:
         is_detected = (power_ratio >= 0.15) and (dom_period is not None)
-    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
-        threshold = profile.fft_min_power_ratio or 0.15
-        is_detected = (power_ratio >= threshold) and (dom_period is not None)
     else:
         if profile.is_fft_policy_configured:
             threshold = profile.fft_min_power_ratio

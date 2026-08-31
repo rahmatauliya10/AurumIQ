@@ -111,12 +111,31 @@ class Cycle3BResearchProfile:
 
     def __post_init__(self):
         """Enforce strict recursive deep immutability across all attributes and target invariants."""
+        norm_target = self.target_instrument.upper().replace("/", "").replace("_", "").strip()
+
         if self.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
-            norm_target = self.target_instrument.upper().replace("/", "")
-            if norm_target != "XAUT":
+            if norm_target not in ("XAUT", "XAUTUSD", "XAUTF"):
                 raise ValueError(
                     f"LEGACY_REFERENCE status requires target instrument 'XAUT', got '{self.target_instrument}'."
                 )
+            if not (
+                self.is_detection_policy_configured
+                and self.is_reliability_policy_configured
+                and self.is_promotion_policy_configured
+            ):
+                raise ValueError(
+                    "LEGACY_REFERENCE status requires complete frozen detection, reliability, and promotion policies."
+                )
+
+        if norm_target in ("XAUUSD", "GOLD"):
+            # If research candidate / revalidated policy or fully configured policy, timeframe is required
+            if self.status == ResearchCalibrationStatus.REVALIDATED_RESEARCH or (
+                self.is_detection_policy_configured
+                and self.is_reliability_policy_configured
+                and self.is_promotion_policy_configured
+            ):
+                if not self.timeframe or not self.timeframe.strip():
+                    raise ValueError("Configured XAUUSD research policy requires an explicit non-empty timeframe.")
 
         object.__setattr__(self, "details", _deep_freeze(dict(self.details)) if self.details else MappingProxyType({}))
 

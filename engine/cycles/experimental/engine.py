@@ -29,6 +29,18 @@ from engine.cycles.experimental.wavelet import calculate_causal_wavelet
 from engine.cycles.swing_duration import timeframe_to_seconds
 
 
+def normalize_target_instrument(inst: str) -> str:
+    """Canonical repository instrument target normalizer."""
+    if not inst:
+        return ""
+    s = inst.upper().replace("/", "").replace("_", "").strip()
+    if s in ("XAUUSD", "GOLD"):
+        return "XAUUSD"
+    if s in ("XAUT", "XAUTUSD", "XAUTF"):
+        return "XAUT"
+    return s
+
+
 class ExperimentalTimeCycleEngine:
     """
     Pure Python Phase 3B Experimental Spectral & Statistical Cycle Engine.
@@ -45,8 +57,8 @@ class ExperimentalTimeCycleEngine:
            no duplicates, and zero unclosed bars in sequence.
       4. Hard Locked Production Weight (P3B-24):
          - `production_weight` is permanently 0.0 under all lifecycle profiles.
-      5. Strict Target Instrument Segregation:
-         - Separates historical XAUT from target XAUUSD.
+      5. Strict Symmetric Target Instrument Segregation:
+         - Rejects ALL instrument / profile / engine target mismatches symmetrically.
       6. Zero Experiment Metric Fabrication:
          - analyze() does not fabricate backtest performance metrics.
       7. Runtime Timeframe Rigidity:
@@ -77,7 +89,7 @@ class ExperimentalTimeCycleEngine:
         Strictly validates target instrument matches XAUUSD and enforces PENDING_DATA by default.
         """
         if profile is not None:
-            target = profile.target_instrument.upper().replace("/", "")
+            target = normalize_target_instrument(profile.target_instrument)
             if target != "XAUUSD":
                 raise ValueError(
                     f"Invalid profile for XAUUSD engine: target instrument is '{profile.target_instrument}', "
@@ -109,46 +121,32 @@ class ExperimentalTimeCycleEngine:
         if not candles:
             raise ValueError("Experimental cycle analysis requires at least one candle.")
 
-        # Determine effective profile with strict instrument segregation
+        # Symmetric Instrument & Profile Target Validation
+        engine_target = normalize_target_instrument(self.profile.target_instrument)
+
         if profile is not None:
             eff_profile = profile
-            if instrument is not None:
-                norm_inst = instrument.upper().replace("/", "")
-                eff_target = eff_profile.target_instrument.upper().replace("/", "")
-                if norm_inst == "XAUUSD" and eff_target != "XAUUSD":
-                    raise ValueError(
-                        f"Per-call profile target instrument '{eff_profile.target_instrument}' does not match requested instrument 'XAUUSD'."
-                    )
-            if self.profile.target_instrument.upper().replace("/", "") == "XAUUSD":
-                eff_target = eff_profile.target_instrument.upper().replace("/", "")
-                if eff_target != "XAUUSD":
-                    raise ValueError(
-                        f"XAUUSD engine cannot analyze using non-XAUUSD profile '{eff_profile.target_instrument}'."
-                    )
+            eff_target = normalize_target_instrument(eff_profile.target_instrument)
+            if eff_target != engine_target:
+                raise ValueError(
+                    f"Per-call profile target instrument '{eff_profile.target_instrument}' does not match engine profile target '{self.profile.target_instrument}'."
+                )
         else:
-            if instrument is not None:
-                norm_inst = instrument.upper().replace("/", "")
-                if norm_inst == "XAUUSD":
-                    if self.profile.target_instrument.upper().replace("/", "") == "XAUUSD":
-                        eff_profile = self.profile
-                    else:
-                        eff_profile = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile(timeframe=timeframe)
-                elif norm_inst in ("XAUT", "XAUTUSD"):
-                    if self.profile.target_instrument.upper().replace("/", "") == "XAUT":
-                        eff_profile = self.profile
-                    else:
-                        eff_profile = Cycle3BResearchProfile.legacy_xaut_research_profile()
-                else:
-                    eff_profile = self.profile
-            else:
-                eff_profile = self.profile
+            eff_profile = self.profile
+            eff_target = engine_target
+
+        if instrument is not None:
+            req_target = normalize_target_instrument(instrument)
+            if req_target != eff_target:
+                raise ValueError(
+                    f"Explicit requested instrument '{instrument}' does not match effective profile target '{eff_profile.target_instrument}'."
+                )
 
         # Runtime Timeframe Rigidity for Target Instrument
-        if eff_profile.target_instrument.upper().replace("/", "") == "XAUUSD":
-            if eff_profile.timeframe is not None and eff_profile.timeframe != timeframe:
-                raise ValueError(
-                    f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
-                )
+        if eff_profile.timeframe is not None and eff_profile.timeframe != timeframe:
+            raise ValueError(
+                f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
+            )
 
         # 1. Point-in-Time & Closed Candle Isolation (P3B-19 & Closed-Candle Split)
         as_of_utc = None
@@ -314,14 +312,14 @@ class ExperimentalTimeCycleEngine:
         )
 
         # 5. Promotion Status Assessment without fabricating experimental performance metrics
-        if eff_profile.target_instrument.upper().replace("/", "") == "XAUUSD":
+        if eff_target == "XAUUSD":
             if not eff_profile.is_promotion_policy_configured:
                 promotion_status = PromotionStatus.POLICY_NOT_CONFIGURED
             elif baseline_benchmark is None or not baseline_benchmark.is_empirical:
                 promotion_status = PromotionStatus.BLOCKED_BY_PHASE6
             else:
                 # Check baseline provenance completeness
-                inst_norm = baseline_benchmark.instrument.upper().replace("/", "") if baseline_benchmark.instrument else ""
+                inst_norm = normalize_target_instrument(baseline_benchmark.instrument) if baseline_benchmark.instrument else ""
                 tf_match = (eff_profile.timeframe is not None and baseline_benchmark.timeframe == eff_profile.timeframe)
                 source_ok = bool(baseline_benchmark.source and baseline_benchmark.source.strip())
                 dates_ok = bool(

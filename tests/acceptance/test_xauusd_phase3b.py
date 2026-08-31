@@ -1,32 +1,34 @@
 """
 Acceptance & Governance Tests for Phase 3B XAUUSD Experimental Spectral & Cycle Research:
 1. Historical XAUT Research Profile Preserved Verbatim
-2. XAUUSD Uncalibrated Research Profile Has Zero Empirical Defaults (None)
-3. Subsystem Policy Completeness Properties (ACF, FFT, Wavelet, Hilbert, Reliability, Promotion)
-4. Partial Policy Fail-Neutral Tests (ACF, Wavelet, Hilbert, Reliability, Promotion)
-5. LEGACY_REFERENCE Status Rejects Target Instrument XAUUSD
-6. Target Instrument Segregation & Mismatch Rejection
-7. ACF Custom Effective-N Threshold (Does not block on historical 30)
-8. ACF No Historical 60/100 Tier Leakage
-9. Descriptive Spectral Computations under Uncalibrated Profile
-10. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
-11. Reliability Custom Agreement Thresholds (Follows profile, not 80/50)
-12. Reliability Does Not Hardcode Wavelet 0.40 (Trusts is_clean_endpoint)
-13. Engine Naive Datetime Candles Safe Normalization
-14. Runtime Timeframe Rigidity (Profile timeframe mismatch raises ValueError)
-15. Strict Phase 6 Baseline Provenance Matrix (Missing dates, source, timeframe mismatch -> BLOCKED_BY_PHASE6)
-16. Deterministic 4-Stage Promotion Precedence Matrix
-17. Insufficient Trade Count on XAUUSD Fails with status=FAILED
-18. Fold Concentration Threshold Uses Explicit Config without Hardcoded 60%
-19. Engine analyze() Zero-Metric-Fabrication (produces NOT_EVALUATED on valid baseline)
-20. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
-21. Future Closed Candle Invariance at Timestamp T
-22. Broken Time-Grid Fails Closed
-23. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
-24. Pure Python AST Purity (Zero Django Imports)
-25. Zero Phase 4 Directional Symbols
-26. Artifact Text Provenance Hardening (Blank instrument/provider/timeframe/revision/fingerprint rejected)
-27. Deep Recursive Immutability of Profiles and Artifacts
+2. Incomplete Explicit LEGACY_REFERENCE Profile Rejected with ValueError
+3. XAUUSD Uncalibrated Research Profile Has Zero Empirical Defaults (None)
+4. Configured XAUUSD Research Policy Requires Explicit Non-Empty Timeframe
+5. Subsystem Policy Completeness Properties (ACF, FFT, Wavelet, Hilbert, Reliability, Promotion)
+6. Partial Policy Fail-Neutral Tests (ACF, Wavelet, Hilbert, Reliability, Promotion)
+7. LEGACY_REFERENCE Status Rejects Target Instrument XAUUSD
+8. Symmetric Instrument & Profile Target Mismatch Rejection (All Directions)
+9. ACF Custom Effective-N Threshold (Does not block on historical 30)
+10. ACF No Historical 60/100 Tier Leakage
+11. Descriptive Spectral Computations under Uncalibrated Profile
+12. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
+13. Reliability Custom Agreement Thresholds (Follows profile, not 80/50)
+14. Reliability Does Not Hardcode Wavelet 0.40 (Trusts is_clean_endpoint)
+15. Engine Naive Datetime Candles Safe Normalization
+16. Runtime Timeframe Rigidity (Profile timeframe mismatch raises ValueError)
+17. Strict Phase 6 Baseline Provenance Matrix (Missing dates, source, timeframe mismatch -> BLOCKED_BY_PHASE6)
+18. Deterministic 4-Stage Promotion Precedence Matrix
+19. Insufficient Trade Count on XAUUSD Fails with status=FAILED
+20. Fold Concentration Threshold Uses Explicit Config without Hardcoded 60%
+21. Engine analyze() Zero-Metric-Fabrication (produces NOT_EVALUATED on valid baseline)
+22. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
+23. Future Closed Candle Invariance at Timestamp T
+24. Broken Time-Grid Fails Closed
+25. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
+26. Pure Python AST Purity (Zero Django Imports)
+27. Zero Phase 4 Directional Symbols
+28. Artifact Text Provenance Hardening (Blank instrument/provider/timeframe/revision/fingerprint rejected)
+29. Deep Recursive Immutability of Profiles and Artifacts
 """
 import ast
 from datetime import datetime, timezone, timedelta
@@ -207,6 +209,17 @@ def test_historical_xaut_research_profile_preserved():
 
 
 @pytest.mark.unit
+def test_incomplete_explicit_legacy_profile_rejected():
+    """Explicit LEGACY_REFERENCE profile with missing policies is strictly rejected."""
+    with pytest.raises(ValueError, match="LEGACY_REFERENCE status requires complete frozen"):
+        Cycle3BResearchProfile(
+            target_instrument="XAUT",
+            status=ResearchCalibrationStatus.LEGACY_REFERENCE,
+            # Missing detection, reliability, promotion policies
+        )
+
+
+@pytest.mark.unit
 def test_uncalibrated_xauusd_research_profile_has_zero_empirical_defaults():
     """XAUUSD uncalibrated research profile contains None for all empirical policies and reports incomplete."""
     uncal = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile()
@@ -241,6 +254,17 @@ def test_legacy_reference_status_rejects_xauusd():
         Cycle3BResearchProfile(
             status=ResearchCalibrationStatus.LEGACY_REFERENCE,
             target_instrument="XAUUSD",
+        )
+
+
+@pytest.mark.unit
+def test_configured_xauusd_profile_requires_timeframe():
+    """Configured XAUUSD research policy requires explicit non-empty timeframe."""
+    with pytest.raises(ValueError, match="Configured XAUUSD research policy requires an explicit non-empty timeframe"):
+        Cycle3BResearchProfile(
+            status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+            target_instrument="XAUUSD",
+            timeframe=None,  # Forbidden!
         )
 
 
@@ -336,22 +360,37 @@ def test_partial_promotion_policy_fails_neutral():
 
 
 # ============================================================================
-# 4. Target Instrument Segregation & Mismatch Rejection
+# 4. Symmetric Target Instrument Segregation & Mismatch Rejection
 # ============================================================================
 
 @pytest.mark.unit
-def test_target_instrument_mismatch_rejection():
-    """Engine and analyze() reject target instrument mismatches."""
+def test_target_instrument_mismatch_rejection_all_directions():
+    """Engine rejects ALL explicit instrument/profile mismatches symmetrically."""
     xaut_profile = Cycle3BResearchProfile.legacy_xaut_research_profile()
+    xau_profile = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile(timeframe="15m")
+    candles = _make_candles(64)
 
+    # 1. XAUUSD factory rejects XAUT profile
     with pytest.raises(ValueError, match="target instrument is 'XAUT', expected 'XAUUSD'"):
         ExperimentalTimeCycleEngine.for_xauusd(profile=xaut_profile)
 
-    candles = _make_candles(64)
+    # 2. XAUUSD engine rejects analyze with XAUT profile
     xau_engine = ExperimentalTimeCycleEngine.for_xauusd()
-
-    with pytest.raises(ValueError, match="cannot analyze using non-XAUUSD profile"):
+    with pytest.raises(ValueError, match="does not match engine profile target"):
         xau_engine.analyze(candles=candles, profile=xaut_profile)
+
+    # 3. XAUUSD engine rejects analyze with explicit instrument=XAUT
+    with pytest.raises(ValueError, match="Explicit requested instrument 'XAUT' does not match"):
+        xau_engine.analyze(candles=candles, instrument="XAUT")
+
+    # 4. XAUT engine rejects analyze with XAUUSD profile
+    xaut_engine = ExperimentalTimeCycleEngine.for_legacy_xaut()
+    with pytest.raises(ValueError, match="does not match engine profile target"):
+        xaut_engine.analyze(candles=candles, profile=xau_profile)
+
+    # 5. XAUT engine rejects analyze with explicit instrument=XAUUSD
+    with pytest.raises(ValueError, match="Explicit requested instrument 'XAUUSD' does not match"):
+        xaut_engine.analyze(candles=candles, instrument="XAUUSD")
 
 
 # ============================================================================
@@ -363,7 +402,7 @@ def test_acf_custom_effective_n_threshold():
     """ACF with custom acf_min_effective_n=20 does not block effective_n=25 against historical 30."""
     custom_profile = Cycle3BResearchProfile(
         target_instrument="XAUUSD",
-        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+        status=ResearchCalibrationStatus.PENDING_DATA,
         acf_bartlett_z_multiplier=1.96,
         acf_min_effective_n=20.0,  # Custom!
     )
@@ -379,7 +418,7 @@ def test_acf_no_historical_60_100_tier_inference():
     """ACF with explicit profile and raw effective_n does not derive historical LOW/MEDIUM/HIGH tiers."""
     custom_profile = Cycle3BResearchProfile(
         target_instrument="XAUUSD",
-        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+        status=ResearchCalibrationStatus.PENDING_DATA,
         acf_bartlett_z_multiplier=1.96,
         acf_min_effective_n=20.0,
     )
@@ -396,41 +435,10 @@ def test_acf_no_historical_60_100_tier_inference():
 @pytest.mark.unit
 def test_reliability_custom_agreement_thresholds():
     """Reliability classification follows profile agreement thresholds, not hardcoded 80/50."""
-    profile_strict = Cycle3BResearchProfile(
-        name="XAUUSD_STRICT_AGREEMENT",
-        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
-        target_instrument="XAUUSD",
-        # Detection
-        acf_bartlett_z_multiplier=1.96,
-        acf_min_effective_n=30.0,
-        fft_min_power_ratio=0.15,
-        fft_power_score_multiplier=2.5,
-        wavelet_max_coi_contamination=0.40,
-        wavelet_min_interior_support_ratio=3.0,
-        hilbert_min_stability=0.60,
-        hilbert_min_lookback=48,
-        hilbert_min_velocity=0.05,
-        hilbert_min_amplitude=1e-6,
-        # Reliability
-        dispersion_high_threshold=0.15,
-        dispersion_moderate_threshold=0.30,
-        single_method_agreement_pct=35.0,
-        moderate_method_agreement_pct=75.0,
-        cross_window_dispersion_threshold=0.35,
-        reliability_band_high=60.0,
-        reliability_band_moderate=35.0,
-        reliability_band_low=15.0,
-        reliability_weight_acf=30.0,
-        reliability_weight_fft=30.0,
-        reliability_weight_wavelet=20.0,
-        reliability_weight_hilbert=20.0,
-        quality_multiplier_low=0.5,
-        quality_multiplier_medium=0.8,
-        quality_multiplier_high=1.0,
-        min_effective_n=30.0,
-        reliability_high_min_agreement_pct=90.0,      # Strict 90% required for HIGH!
-        reliability_moderate_min_agreement_pct=70.0,  # 70% required for MODERATE!
-    )
+    profile_strict = _make_fully_configured_xauusd_profile(timeframe="15m")
+    object.__setattr__(profile_strict, "reliability_high_min_agreement_pct", 90.0)
+    object.__setattr__(profile_strict, "reliability_moderate_min_agreement_pct", 70.0)
+
     series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
     acf_res = calculate_causal_acf(series, profile=profile_strict, effective_n=50.0)
     fft_res = calculate_causal_fft(series, profile=profile_strict)
@@ -464,7 +472,6 @@ def test_reliability_does_not_hardcode_wavelet_040():
         acf=acf_dummy, fft=fft_dummy, wavelet=wav_clean, hilbert=hil_dummy,
         effective_n=50.0, sample_quality=SampleQuality.HIGH, profile=profile,
     )
-    # Wavelet was accepted because is_clean_endpoint is True
     assert rel_res.reliability_score > 0.0
 
 
@@ -645,7 +652,7 @@ def test_xauusd_fold_concentration_uses_configured_threshold():
     """Fold concentration uses profile.promotion_max_fold_concentration_pct without hardcoded 60%."""
     profile_relaxed = Cycle3BResearchProfile(
         name="XAUUSD_RELAXED",
-        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+        status=ResearchCalibrationStatus.PENDING_DATA,
         target_instrument="XAUUSD",
         timeframe="15m",
         acf_bartlett_z_multiplier=1.96,
