@@ -5,7 +5,12 @@ from engine.signals.timing import (
     calculate_xauusd_dual_timing,
     extract_xauusd_phase3a_score,
 )
-from engine.signals.gate import evaluate_hard_gates, evaluate_selective_gate
+from engine.signals.gate import (
+    evaluate_hard_gates,
+    evaluate_selective_gate,
+    evaluate_xauusd_candidate_gate,
+    evaluate_xauusd_hard_gates,
+)
 from engine.signals.explainer import (
     compute_canonical_fingerprint,
     compute_research_fingerprint,
@@ -32,6 +37,8 @@ __all__ = [
     "extract_xauusd_phase3a_score",
     "evaluate_hard_gates",
     "evaluate_selective_gate",
+    "evaluate_xauusd_hard_gates",
+    "evaluate_xauusd_candidate_gate",
     "compute_canonical_fingerprint",
     "compute_research_fingerprint",
     "explain_signal",
@@ -46,6 +53,7 @@ __all__ = [
     "normalize_xauusd_target",
     "uncalibrated_xauusd_signal_profile",
 ]
+
 
 
 
