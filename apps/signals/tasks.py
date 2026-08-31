@@ -79,80 +79,6 @@ def analyze_closed_candle(
         candles_4h = _get_candles("4h", 64)
         candles_1d = _get_candles("1d", 32)
 
-        # Retrieve historical XAU/USD benchmark candles <= candle_ts
-        xau_qs = (
-            MarketCandle.objects.filter(
-                instrument__base_asset__code="XAU",
-                instrument__quote_asset__code="USD",
-                timestamp_close__lte=candle_ts,
-                is_closed=True,
-            )
-            .order_by("-timestamp_close")[:64]
-        )
-        candles_xau = [
-            CandleData(
-                timestamp_open=c.timestamp_open,
-                timestamp_close=c.timestamp_close,
-                open=c.open,
-                high=c.high,
-                low=c.low,
-                close=c.close,
-                volume=c.volume,
-                is_closed=c.is_closed,
-                source_id=c.source,
-            )
-            for c in reversed(list(xau_qs))
-        ]
-        latest_xau = candles_xau[-1] if candles_xau else None
-        xau_ref_price = float(latest_xau.close) if latest_xau else None
-        xau_ref_bullish = bool(latest_xau.close >= latest_xau.open) if latest_xau else None
-        xau_ref_ts = latest_xau.timestamp_close if latest_xau else None
-
-        # Retrieve latest USDT rate from 15m candle or state
-        latest_15m = candles_15m[-1]
-        usdt_rate = float(latest_15m.quote_rate) if latest_15m.quote_rate else None
-        usdt_rate_ts = latest_15m.timestamp_close if usdt_rate else None
-
-        # Authoritative Provider Health Lookup (Fail closed if missing)
-        if provider_status is not None:
-            effective_provider_status = provider_status
-            effective_is_transition = bool(is_provider_transition)
-        else:
-            from apps.instruments.models import ProviderHealthSnapshot
-            latest_health = (
-                ProviderHealthSnapshot.objects.filter(
-                    listing__instrument=instrument,
-                    checked_at__lte=candle_ts,
-                )
-                .order_by("-checked_at")
-                .first()
-            )
-            if latest_health:
-                effective_provider_status = latest_health.status
-                effective_is_transition = (latest_health.status == "TRANSITION")
-            else:
-                # If health snapshot table has entries for this instrument, missing means UNKNOWN
-                has_any_listing = instrument.listings.exists()
-                effective_provider_status = "UNKNOWN" if has_any_listing else "HEALTHY"
-                effective_is_transition = False
-
-        # Authoritative Data Quality Lookup (Fail closed if hard fail, stale, or missing)
-        if is_stale_feed is not None:
-            effective_is_stale = is_stale_feed
-        else:
-            from apps.market_data.models import DataQualitySnapshot
-            latest_dq = (
-                DataQualitySnapshot.objects.filter(
-                    instrument=instrument,
-                    timeframe=timeframe,
-                    timestamp__lte=candle_ts,
-                )
-                .order_by("-timestamp")
-                .first()
-            )
-            # If no data quality snapshot exists, missing evidence strictly fails closed as stale
-            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
-
         # Construct MacroEventContext
         if macro_context == "BLACKOUT":
             macro_ctx_obj = MacroEventContext(
@@ -208,15 +134,95 @@ def analyze_closed_candle(
             is_xauusd = False
 
         if is_xauusd:
+            from apps.instruments.models import ListingRole, ProviderHealthSnapshot
+            from apps.market_data.models import DataQualitySnapshot
             from engine.core.types import FeedHealthStatus, RuntimeFeedHealth
             from engine.signals.engine import XauUsdSignalEngine
 
+            # Authoritative Data Quality Lookup for Primary (Fail closed if hard fail, stale, or missing)
+            if is_stale_feed is not None:
+                effective_is_stale = is_stale_feed
+            else:
+                latest_dq = (
+                    DataQualitySnapshot.objects.filter(
+                        instrument=instrument,
+                        timeframe=timeframe,
+                        timestamp__lte=candle_ts,
+                    )
+                    .order_by("-timestamp")
+                    .first()
+                )
+                effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
+
+            # Authoritative Primary Provider Health Lookup
+            if provider_status is not None:
+                if is_provider_transition or provider_status == "TRANSITION":
+                    primary_health_status = FeedHealthStatus.TRANSITION
+                elif provider_status == "HEALTHY":
+                    primary_health_status = FeedHealthStatus.HEALTHY
+                elif provider_status in ("UNHEALTHY", "QUARANTINED"):
+                    primary_health_status = FeedHealthStatus.UNHEALTHY
+                else:
+                    primary_health_status = FeedHealthStatus.UNKNOWN
+            else:
+                primary_listing_health = (
+                    ProviderHealthSnapshot.objects.filter(
+                        listing__instrument=instrument,
+                        listing__listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+                        checked_at__lte=candle_ts,
+                    )
+                    .order_by("-checked_at")
+                    .first()
+                )
+                if primary_listing_health:
+                    st = primary_listing_health.status
+                    if st == "HEALTHY":
+                        primary_health_status = FeedHealthStatus.HEALTHY
+                    elif st == "TRANSITION":
+                        primary_health_status = FeedHealthStatus.TRANSITION
+                    elif st in ("UNHEALTHY", "QUARANTINED"):
+                        primary_health_status = FeedHealthStatus.UNHEALTHY
+                    else:
+                        primary_health_status = FeedHealthStatus.UNKNOWN
+                else:
+                    has_primary = instrument.listings.filter(listing_role=ListingRole.PRIMARY_XAUUSD_SPOT).exists()
+                    primary_health_status = FeedHealthStatus.UNKNOWN if has_primary else FeedHealthStatus.HEALTHY
+
+            # Primary 15m combines DQ staleness and provider health
+            if effective_is_stale:
+                primary_15m_status = FeedHealthStatus.STALE
+            else:
+                primary_15m_status = primary_health_status
+
+            # Authoritative Secondary Provider Health Lookup
+            secondary_listing_health = (
+                ProviderHealthSnapshot.objects.filter(
+                    listing__instrument=instrument,
+                    listing__listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+                    checked_at__lte=candle_ts,
+                )
+                .order_by("-checked_at")
+                .first()
+            )
+            if secondary_listing_health:
+                st_sec = secondary_listing_health.status
+                if st_sec == "HEALTHY":
+                    sec_status = FeedHealthStatus.HEALTHY
+                elif st_sec == "TRANSITION":
+                    sec_status = FeedHealthStatus.TRANSITION
+                elif st_sec in ("UNHEALTHY", "QUARANTINED"):
+                    sec_status = FeedHealthStatus.UNHEALTHY
+                else:
+                    sec_status = FeedHealthStatus.UNKNOWN
+            else:
+                sec_status = FeedHealthStatus.MISSING
+
             rfh = RuntimeFeedHealth(
-                primary_15m=FeedHealthStatus.HEALTHY if not effective_is_stale else FeedHealthStatus.STALE,
-                primary_1h=FeedHealthStatus.HEALTHY if candles_1h else FeedHealthStatus.UNKNOWN,
-                primary_4h=FeedHealthStatus.HEALTHY if candles_4h else FeedHealthStatus.UNKNOWN,
-                primary_1d=FeedHealthStatus.HEALTHY if candles_1d else FeedHealthStatus.UNKNOWN,
-                secondary_provider=FeedHealthStatus.HEALTHY if effective_provider_status == "HEALTHY" else FeedHealthStatus.UNKNOWN,
+                primary_15m=primary_15m_status,
+                primary_1h=FeedHealthStatus.HEALTHY if candles_1h else FeedHealthStatus.MISSING,
+                primary_4h=FeedHealthStatus.HEALTHY if candles_4h else FeedHealthStatus.MISSING,
+                primary_1d=FeedHealthStatus.HEALTHY if candles_1d else FeedHealthStatus.MISSING,
+                secondary_provider=sec_status,
                 macro_blackout_feed=FeedHealthStatus.HEALTHY if macro_ctx_obj.is_feed_healthy else FeedHealthStatus.UNKNOWN,
                 is_macro_blackout=macro_ctx_obj.is_in_blackout,
             )
@@ -262,6 +268,77 @@ def analyze_closed_candle(
             }
 
         else:
+            # Historical XAUT pipeline - retrieve historical XAU/USD benchmark candles <= candle_ts
+            xau_qs = (
+                MarketCandle.objects.filter(
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                    timestamp_close__lte=candle_ts,
+                    is_closed=True,
+                )
+                .order_by("-timestamp_close")[:64]
+            )
+            candles_xau = [
+                CandleData(
+                    timestamp_open=c.timestamp_open,
+                    timestamp_close=c.timestamp_close,
+                    open=c.open,
+                    high=c.high,
+                    low=c.low,
+                    close=c.close,
+                    volume=c.volume,
+                    is_closed=c.is_closed,
+                    source_id=c.source,
+                )
+                for c in reversed(list(xau_qs))
+            ]
+            latest_xau = candles_xau[-1] if candles_xau else None
+            xau_ref_price = float(latest_xau.close) if latest_xau else None
+            xau_ref_bullish = bool(latest_xau.close >= latest_xau.open) if latest_xau else None
+            xau_ref_ts = latest_xau.timestamp_close if latest_xau else None
+
+            # Retrieve latest USDT rate from 15m candle or state
+            latest_15m = candles_15m[-1]
+            usdt_rate = float(latest_15m.quote_rate) if latest_15m.quote_rate else None
+            usdt_rate_ts = latest_15m.timestamp_close if usdt_rate else None
+
+            # Authoritative Provider Health Lookup (Fail closed if missing)
+            if provider_status is not None:
+                effective_provider_status = provider_status
+                effective_is_transition = bool(is_provider_transition)
+            else:
+                from apps.instruments.models import ProviderHealthSnapshot
+                latest_health = (
+                    ProviderHealthSnapshot.objects.filter(
+                        listing__instrument=instrument,
+                        checked_at__lte=candle_ts,
+                    )
+                    .order_by("-checked_at")
+                    .first()
+                )
+                if latest_health:
+                    effective_provider_status = latest_health.status
+                    effective_is_transition = (latest_health.status == "TRANSITION")
+                else:
+                    has_any_listing = instrument.listings.exists()
+                    effective_provider_status = "UNKNOWN" if has_any_listing else "HEALTHY"
+                    effective_is_transition = False
+
+            # Authoritative Data Quality Lookup (Fail closed if hard fail, stale, or missing)
+            if is_stale_feed is not None:
+                effective_is_stale = is_stale_feed
+            else:
+                from apps.market_data.models import DataQualitySnapshot
+                latest_dq = (
+                    DataQualitySnapshot.objects.filter(
+                        instrument=instrument,
+                        timeframe=timeframe,
+                        timestamp__lte=candle_ts,
+                    )
+                    .order_by("-timestamp")
+                    .first()
+                )
+                effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
             # Historical XAUT pipeline
             engine_xaut = XautSignalEngine(
                 code_revision=code_revision,

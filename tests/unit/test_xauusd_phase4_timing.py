@@ -181,7 +181,16 @@ def test_phase3a_target_authority_guard():
     )
     assert extract_xauusd_phase3a_score(snap, cand_prof) == 0.0
 
-    # 4. Profile is None -> returns 0.0
+    # 4. Profile timeframe mismatch (e.g. 4h vs decision 15m) -> returns 0.0
+    tf_mismatch_prof = Cycle3AProfile(
+        name="XAUUSD_FROZEN_v1",
+        target_instrument="XAUUSD",
+        timeframe="4h",
+        calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN,
+    )
+    assert extract_xauusd_phase3a_score(snap, tf_mismatch_prof, decision_timeframe="15m") == 0.0
+
+    # 5. Profile is None -> returns 0.0
     assert extract_xauusd_phase3a_score(snap, None) == 0.0
 
 

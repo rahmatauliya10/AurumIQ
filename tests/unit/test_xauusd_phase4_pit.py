@@ -1,6 +1,6 @@
 """
-Point-in-Time (PIT) and Closed-Candle Isolation Suite for Phase 4 XAUUSD.
-Covers Task 10 contracts.
+Hostile Point-in-Time (PIT) and Closed-Candle Isolation Suite for Phase 4 XAUUSD.
+Covers complete Matrix (A through E).
 """
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -23,9 +23,9 @@ from engine.signals.profile import (
 )
 
 
-def _make_candle(ts: datetime, close_val: float, is_closed: bool = True) -> CandleData:
+def _make_candle(ts: datetime, close_val: float, is_closed: bool = True, tf_mins: int = 15) -> CandleData:
     return CandleData(
-        timestamp_open=ts - timedelta(minutes=15),
+        timestamp_open=ts - timedelta(minutes=tf_mins),
         timestamp_close=ts,
         open=Decimal(str(close_val - 2.0)),
         high=Decimal(str(close_val + 5.0)),
@@ -50,60 +50,110 @@ def candidate_profile():
     )
 
 
+@pytest.fixture
+def base_rfh():
+    return RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        primary_1h=FeedHealthStatus.HEALTHY,
+        primary_4h=FeedHealthStatus.HEALTHY,
+        primary_1d=FeedHealthStatus.HEALTHY,
+        macro_blackout_feed=FeedHealthStatus.HEALTHY,
+    )
+
+
 @pytest.mark.unit
-def test_closed_candle_pit_isolation(candidate_profile):
-    """
-    Verify evaluation up to T_close is invariant to future data injection.
-    """
+def test_matrix_a_future_closed_candles_ignored(candidate_profile, base_rfh):
+    """Matrix A: Future closed candles > T are strictly ignored before closure validation."""
+    t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    c1 = _make_candle(t0 - timedelta(minutes=30), 2500.0)
+    c2 = _make_candle(t0 - timedelta(minutes=15), 2505.0)
+    c3 = _make_candle(t0, 2510.0)
+    c_future = _make_candle(t0 + timedelta(minutes=15), 2550.0, is_closed=True)
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
+
+    res_clean = engine.analyze(
+        closed_candles_15m=[c1, c2, c3],
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+    )
+
+    res_with_future = engine.analyze(
+        closed_candles_15m=[c1, c2, c3, c_future],
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+    )
+
+    assert res_clean.analysis_fingerprint == res_with_future.analysis_fingerprint
+    assert res_clean.timestamp == t0
+    assert res_with_future.timestamp == t0
+
+
+@pytest.mark.unit
+def test_matrix_b_future_candle_mutation_invariance(candidate_profile, base_rfh):
+    """Matrix B: Mutating prices/volume of future candles > T does not alter T fingerprint."""
     t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     c1 = _make_candle(t0 - timedelta(minutes=30), 2500.0)
     c2 = _make_candle(t0 - timedelta(minutes=15), 2505.0)
     c3 = _make_candle(t0, 2510.0)
 
-    engine = XauUsdSignalEngine()
-    rfh = RuntimeFeedHealth(
-        primary_15m=FeedHealthStatus.HEALTHY,
-        primary_1h=FeedHealthStatus.HEALTHY,
-        macro_blackout_feed=FeedHealthStatus.HEALTHY,
-    )
+    c_future_v1 = _make_candle(t0 + timedelta(minutes=15), 2550.0)
+    c_future_v2 = _make_candle(t0 + timedelta(minutes=15), 2100.0)
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
 
     res1 = engine.analyze(
-        closed_candles_15m=[c1, c2, c3],
-        runtime_health=rfh,
+        closed_candles_15m=[c1, c2, c3, c_future_v1],
+        runtime_health=base_rfh,
         profile=candidate_profile,
         as_of=t0,
     )
 
-    # Identical evaluation repeated gives same analysis_fingerprint
     res2 = engine.analyze(
-        closed_candles_15m=[c1, c2, c3],
-        runtime_health=rfh,
+        closed_candles_15m=[c1, c2, c3, c_future_v2],
+        runtime_health=base_rfh,
         profile=candidate_profile,
         as_of=t0,
     )
 
     assert res1.analysis_fingerprint == res2.analysis_fingerprint
-    assert res1.timestamp == t0
 
 
 @pytest.mark.unit
-def test_unclosed_candle_fails_closed(candidate_profile):
-    """
-    Verify unclosed latest candle immediately trips hard safety gate to FORCE_WAIT / WAIT.
-    """
+def test_matrix_c_future_unclosed_candle_ignored_no_force_wait(candidate_profile, base_rfh):
+    """Matrix C: Future unclosed candle > T is ignored and MUST NOT trigger FORCE_WAIT."""
+    t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    c1 = _make_candle(t0 - timedelta(minutes=15), 2500.0, is_closed=True)
+    c2 = _make_candle(t0, 2505.0, is_closed=True)
+    c_future_unclosed = _make_candle(t0 + timedelta(minutes=15), 2510.0, is_closed=False)
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
+
+    snapshot = engine.analyze(
+        closed_candles_15m=[c1, c2, c_future_unclosed],
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+    )
+
+    assert snapshot.hard_gate.is_blocked is False
+    assert snapshot.hard_gate.runtime_health.is_unclosed_candle is False
+
+
+@pytest.mark.unit
+def test_matrix_d_unclosed_candle_le_t_causes_force_wait(candidate_profile, base_rfh):
+    """Matrix D: Unclosed decision candle <= T causes immediate FORCE_WAIT."""
     t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     c1 = _make_candle(t0 - timedelta(minutes=15), 2500.0, is_closed=True)
     c2_unclosed = _make_candle(t0, 2505.0, is_closed=False)
 
-    engine = XauUsdSignalEngine()
-    rfh = RuntimeFeedHealth(
-        primary_15m=FeedHealthStatus.HEALTHY,
-        macro_blackout_feed=FeedHealthStatus.HEALTHY,
-    )
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
 
     snapshot = engine.analyze(
         closed_candles_15m=[c1, c2_unclosed],
-        runtime_health=rfh,
+        runtime_health=base_rfh,
         profile=candidate_profile,
         as_of=t0,
     )
@@ -111,4 +161,42 @@ def test_unclosed_candle_fails_closed(candidate_profile):
     assert snapshot.state == SignalState.FORCE_WAIT
     assert snapshot.user_decision == UserDecision.WAIT
     assert snapshot.hard_gate.is_blocked is True
-    assert any("unclosed" in r for r in snapshot.hard_gate.block_reasons)
+    assert snapshot.hard_gate.runtime_health.is_unclosed_candle is True
+
+
+@pytest.mark.unit
+def test_matrix_e_future_higher_timeframes_mutation_invariance(candidate_profile, base_rfh):
+    """Matrix E: Future 1H, 4H, 1D candles > T mutated do not alter T fingerprint."""
+    t0 = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    c15_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=15)
+    c1h_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=60)
+    c4h_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=240)
+    c1d_1 = _make_candle(t0, 2500.0, is_closed=True, tf_mins=1440)
+
+    # Future higher timeframe candles
+    c1h_future_a = _make_candle(t0 + timedelta(hours=1), 2600.0, is_closed=True, tf_mins=60)
+    c1h_future_b = _make_candle(t0 + timedelta(hours=1), 2200.0, is_closed=True, tf_mins=60)
+
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
+
+    res_a = engine.analyze(
+        closed_candles_15m=[c15_1],
+        closed_candles_1h=[c1h_1, c1h_future_a],
+        closed_candles_4h=[c4h_1],
+        closed_candles_1d=[c1d_1],
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+    )
+
+    res_b = engine.analyze(
+        closed_candles_15m=[c15_1],
+        closed_candles_1h=[c1h_1, c1h_future_b],
+        closed_candles_4h=[c4h_1],
+        closed_candles_1d=[c1d_1],
+        runtime_health=base_rfh,
+        profile=candidate_profile,
+        as_of=t0,
+    )
+
+    assert res_a.analysis_fingerprint == res_b.analysis_fingerprint

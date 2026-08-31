@@ -53,7 +53,8 @@ def test_compute_xauusd_fingerprint_deterministic():
         published_user_decision=UserDecision.WAIT,
         candidate_state=SignalState.BUY_WINDOW,
         candidate_user_decision=UserDecision.BUY,
-        resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
         code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
     )
     fp2 = compute_xauusd_fingerprint(
@@ -74,7 +75,8 @@ def test_compute_xauusd_fingerprint_deterministic():
         published_user_decision=UserDecision.WAIT,
         candidate_state=SignalState.BUY_WINDOW,
         candidate_user_decision=UserDecision.BUY,
-        resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
         code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
     )
     assert fp1 == fp2
@@ -99,10 +101,36 @@ def test_compute_xauusd_fingerprint_deterministic():
         published_user_decision=UserDecision.WAIT,
         candidate_state=SignalState.BUY_WINDOW,
         candidate_user_decision=UserDecision.BUY,
-        resolution_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
         code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
     )
     assert fp1 != fp3
+
+    # Mutating candidate_resolution_reason produces different fingerprint
+    fp4 = compute_xauusd_fingerprint(
+        timestamp=now,
+        instrument="XAUUSD",
+        timeframe="15m",
+        phase4_policy_fingerprint="policy_sha256_abc",
+        closed_candle_15m_hash="c15m_hash",
+        closed_candle_1h_hash="c1h_hash",
+        closed_candle_4h_hash="c4h_hash",
+        closed_candle_1d_hash="c1d_hash",
+        long_direction=long_dir,
+        short_direction=short_dir,
+        long_timing=long_tim,
+        short_timing=short_tim,
+        runtime_health=rfh,
+        published_state=SignalState.NO_TRADE,
+        published_user_decision=UserDecision.WAIT,
+        candidate_state=SignalState.BUY_WINDOW,
+        candidate_user_decision=UserDecision.BUY,
+        candidate_resolution_reason="MUTATED_CANDIDATE_REASON",
+        publication_reason="UNAUTHORIZED_PRODUCTION_PROFILE",
+        code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1",
+    )
+    assert fp1 != fp4
 
 
 @pytest.mark.unit
@@ -116,7 +144,7 @@ def test_explain_dual_side_signal():
     hard_gate = XauUsdHardGateEvaluation(False, None, (), rfh)
     cand_gate = CandidateGateResult(SignalState.BUY_WINDOW, UserDecision.BUY, "LONG_QUALIFIED", True)
 
-    l_pos, l_neg, s_pos, s_neg, hg_reasons, res_reason = explain_dual_side_signal(
+    l_pos, l_neg, s_pos, s_neg, hg_reasons, cand_res_reason, pub_reason = explain_dual_side_signal(
         long_direction=long_dir,
         short_direction=short_dir,
         long_timing=long_tim,
@@ -129,7 +157,8 @@ def test_explain_dual_side_signal():
     assert len(l_pos) > 0
     assert "Bull trend confirmed" in l_pos[0]
     assert len(s_neg) > 0
-    assert res_reason == "BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)"
+    assert cand_res_reason == "LONG_QUALIFIED"
+    assert pub_reason == "BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)"
 
 
 @pytest.mark.unit

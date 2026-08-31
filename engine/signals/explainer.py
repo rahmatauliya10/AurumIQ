@@ -222,26 +222,30 @@ def compute_xauusd_fingerprint(
     published_user_decision: UserDecision,
     candidate_state: SignalState,
     candidate_user_decision: UserDecision,
-    resolution_reason: str,
+    candidate_resolution_reason: str,
+    publication_reason: str,
     code_revision: str,
     cycle_3a_identity: Optional[str] = None,
+    resolution_reason: Optional[str] = None,
 ) -> str:
     """
     Generate deterministic SHA-256 analysis fingerprint for Phase 4 XAUUSD signal evaluation.
     Strictly binds policy configuration, multi-timeframe candle hashes (15m, 1H, 4H, 1D),
-    dual-side scores, runtime feed health, and resolution metadata.
+    dual-side scores, runtime feed health, candidate reason, and publication reason.
     """
     def _format_comp(comps):
         return [
             {
                 "name": c.name,
-                "score": str(round(c.score, 4)),
-                "max_score": str(round(c.max_score, 4)),
+                "score": f"{float(c.score):.4f}" if c.score is not None else "NONE",
+                "max_score": f"{float(c.max_score):.4f}" if c.max_score is not None else "NONE",
                 "reason": c.reason,
                 "is_available": c.is_available,
             }
             for c in comps
         ]
+
+    effective_pub_reason = publication_reason or resolution_reason or ""
 
     payload: Dict[str, Any] = {
         "timestamp": timestamp.isoformat(),
@@ -255,25 +259,25 @@ def compute_xauusd_fingerprint(
             "1d": closed_candle_1d_hash,
         },
         "long_direction": {
-            "total_score": str(round(long_direction.total_score, 4)) if long_direction.total_score is not None else "NONE",
+            "total_score": f"{float(long_direction.total_score):.4f}" if long_direction.total_score is not None else "NONE",
             "is_valid": long_direction.is_valid,
             "is_ready": long_direction.is_direction_ready,
             "components": _format_comp(long_direction.components),
         },
         "short_direction": {
-            "total_score": str(round(short_direction.total_score, 4)) if short_direction.total_score is not None else "NONE",
+            "total_score": f"{float(short_direction.total_score):.4f}" if short_direction.total_score is not None else "NONE",
             "is_valid": short_direction.is_valid,
             "is_ready": short_direction.is_direction_ready,
             "components": _format_comp(short_direction.components),
         },
         "long_timing": {
-            "total_score": str(round(long_timing.total_score, 4)) if long_timing.total_score is not None else "NONE",
+            "total_score": f"{float(long_timing.total_score):.4f}" if long_timing.total_score is not None else "NONE",
             "is_valid": long_timing.is_valid,
             "is_ready": long_timing.is_timing_ready,
             "components": _format_comp(long_timing.components),
         },
         "short_timing": {
-            "total_score": str(round(short_timing.total_score, 4)) if short_timing.total_score is not None else "NONE",
+            "total_score": f"{float(short_timing.total_score):.4f}" if short_timing.total_score is not None else "NONE",
             "is_valid": short_timing.is_valid,
             "is_ready": short_timing.is_timing_ready,
             "components": _format_comp(short_timing.components),
@@ -296,7 +300,8 @@ def compute_xauusd_fingerprint(
         "published_user_decision": published_user_decision.value,
         "candidate_state": candidate_state.value,
         "candidate_user_decision": candidate_user_decision.value,
-        "resolution_reason": resolution_reason,
+        "candidate_resolution_reason": candidate_resolution_reason,
+        "publication_reason": effective_pub_reason,
         "code_revision": code_revision,
         "cycle_3a_identity": cycle_3a_identity or "NONE",
     }
@@ -313,9 +318,10 @@ def explain_dual_side_signal(
     hard_gate: XauUsdHardGateEvaluation,
     candidate_result: CandidateGateResult,
     is_production_authorized: bool = False,
-) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], str]:
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], str, str]:
     """
     Format structured positive and negative explanatory reasons for Long and Short setups.
+    Returns (reasons_long_pos, reasons_long_neg, reasons_short_pos, reasons_short_neg, hard_gate_reasons, candidate_resolution_reason, publication_reason).
     """
     reasons_long_pos: List[str] = []
     reasons_long_neg: List[str] = []
@@ -347,13 +353,14 @@ def explain_dual_side_signal(
             reasons_short_neg.append(f"- {comp.name}: {comp.reason} ({comp.score}/{comp.max_score} pts)")
 
     hard_gate_reasons = tuple(hard_gate.block_reasons)
+    candidate_resolution_reason = candidate_result.resolution_reason
 
     if hard_gate.is_blocked:
-        resolution_reason = f"SYSTEM_SAFETY_HOLD: {'; '.join(hard_gate.block_reasons)}"
+        publication_reason = f"SYSTEM_SAFETY_HOLD: {'; '.join(hard_gate.block_reasons)}"
     elif not is_production_authorized:
-        resolution_reason = f"BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: {candidate_result.candidate_state.value} / {candidate_result.candidate_user_decision.value})"
+        publication_reason = f"BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: {candidate_result.candidate_state.value} / {candidate_result.candidate_user_decision.value})"
     else:
-        resolution_reason = candidate_result.resolution_reason
+        publication_reason = candidate_result.resolution_reason
 
     return (
         tuple(reasons_long_pos),
@@ -361,6 +368,7 @@ def explain_dual_side_signal(
         tuple(reasons_short_pos),
         tuple(reasons_short_neg),
         hard_gate_reasons,
-        resolution_reason,
+        candidate_resolution_reason,
+        publication_reason,
     )
 

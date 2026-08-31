@@ -192,7 +192,7 @@ def test_xau_p4_04_macro_blackout_to_force_wait(candidate_profile):
         volume=Decimal("100.0"),
         is_closed=True,
     )
-    engine = XauUsdSignalEngine()
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
     snapshot = engine.analyze(
         closed_candles_15m=[candle],
         runtime_health=rfh,

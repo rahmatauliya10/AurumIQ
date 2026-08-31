@@ -28,7 +28,7 @@ def test_normalize_xauusd_target():
     assert normalize_xauusd_target("xau/usd") == "XAUUSD"
 
     # Hostile rejections
-    for rejected in ("XAUT", "XAUTUSD", "XAUT/USDT", "XAU", "GOLD", "GOLD_REFERENCE", "", None, 123):
+    for rejected in ("XAUUSDSPOT", "XAUT", "XAUTUSD", "XAUT/USDT", "XAU", "GOLD", "GOLD_REFERENCE", "BTCUSD", "", None, 123):
         with pytest.raises(ValueError):
             normalize_xauusd_target(rejected)
 
@@ -224,3 +224,30 @@ def test_compute_phase4_policy_fingerprint():
     )
     with pytest.raises((TypeError, AttributeError)):
         prof.details["key"] = "new_val"  # MappingProxyType prevents mutation
+
+
+@pytest.mark.unit
+def test_lossless_policy_fingerprint_numeric_precision():
+    """Verify policy fingerprint detects minute differences in numeric weights."""
+    prof1 = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(15.00001, 9.99999, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+        short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+    )
+    prof2 = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(15.00002, 9.99998, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+        short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+    )
+    assert compute_phase4_policy_fingerprint(prof1) != compute_phase4_policy_fingerprint(prof2)
+

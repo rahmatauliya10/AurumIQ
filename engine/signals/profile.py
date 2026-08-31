@@ -20,13 +20,13 @@ from engine.core.types import FeedCriticality
 def normalize_xauusd_target(target: Optional[str]) -> str:
     """
     Authoritative canonical instrument normalizer for Phase 4 XAUUSD engine.
-    Strictly accepts 'XAUUSD' or 'XAU/USD' -> 'XAUUSD'.
-    Rejects XAUT, XAUTUSD, XAUT/USDT, XAU, GOLD, GOLD_REFERENCE, and all other aliases.
+    Strictly accepts only 'XAUUSD' or 'XAU/USD' (case-insensitive with whitespace trimmed) -> 'XAUUSD'.
+    Explicitly rejects 'XAUUSDSPOT', 'XAU', 'GOLD', 'GOLD_REFERENCE', 'XAUT', 'XAUTUSD', 'XAUT/USDT', 'BTCUSD', and all other aliases.
     """
     if not target or not isinstance(target, str):
         raise ValueError(f"Invalid target instrument: {target}")
-    cleaned = target.strip().upper().replace("/", "").replace("_", "").replace("-", "")
-    if cleaned in ("XAUUSD", "XAUUSDSPOT"):
+    val = target.strip().upper()
+    if val in ("XAUUSD", "XAU/USD"):
         return "XAUUSD"
     raise ValueError(f"Non-XAUUSD target instrument rejected: {target}")
 
@@ -238,7 +238,7 @@ def compute_phase4_policy_fingerprint(profile: Phase4SignalProfile) -> str:
         if isinstance(v, (int, float)):
             if not math.isfinite(v):
                 raise ValueError(f"Non-finite float in policy fingerprint: {v}")
-            return str(round(float(v), 4))
+            return f"{float(v):.8f}"
         if isinstance(v, Enum):
             return v.value
         if isinstance(v, (dict, MappingProxyType, Mapping)):

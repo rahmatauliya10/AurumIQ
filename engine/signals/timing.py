@@ -268,11 +268,12 @@ def calculate_timing_score(
 def extract_xauusd_phase3a_score(
     cycle_3a: Optional[Cycle3ASnapshot],
     cycle_3a_profile: Optional[Cycle3AProfile],
+    max_points: float = 100.0,
     decision_timeframe: str = "15m",
 ) -> float:
     """
     Extract Phase 3A Timing contribution for XAUUSD with strict profile authority evidence.
-    Returns 0.0 unless explicit XAUUSD PRODUCTION_FROZEN profile authority is proven.
+    Returns 0.0 unless explicit XAUUSD PRODUCTION_FROZEN profile authority is proven AND timeframe matches.
     """
     if cycle_3a is None or cycle_3a_profile is None:
         return 0.0
@@ -287,7 +288,12 @@ def extract_xauusd_phase3a_score(
         return 0.0
     if cycle_3a.calibration_status != cycle_3a_profile.calibration_status.value:
         return 0.0
-    return float(round(cycle_3a.cycle_score_3a, 2))
+    # Timeframe authority check
+    prof_tf = getattr(cycle_3a_profile, "timeframe", None)
+    if prof_tf is not None and prof_tf.strip().lower() != decision_timeframe.strip().lower():
+        return 0.0
+    raw_score = float(cycle_3a.cycle_score_3a) if hasattr(cycle_3a, "cycle_score_3a") else 0.0
+    return float(round(max(0.0, min(max_points, raw_score)), 2))
 
 
 def calculate_xauusd_dual_timing(

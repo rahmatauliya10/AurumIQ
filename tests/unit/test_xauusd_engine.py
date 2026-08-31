@@ -57,7 +57,7 @@ def test_xauusd_engine_production_authority_blocks_publication():
     )
     assert configured_candidate_profile.is_production_authorized is False
 
-    engine = XauUsdSignalEngine()
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
     candle = _make_dummy_candle()
     rfh = RuntimeFeedHealth(
         primary_15m=FeedHealthStatus.HEALTHY,
@@ -85,7 +85,7 @@ def test_xauusd_engine_production_authority_blocks_publication():
 @pytest.mark.unit
 def test_xauusd_engine_uncalibrated_defaults():
     """Verify engine defaults to uncalibrated profile with fail-safe behavior when profile=None."""
-    engine = XauUsdSignalEngine()
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
     candle = _make_dummy_candle()
     rfh = RuntimeFeedHealth(
         primary_15m=FeedHealthStatus.HEALTHY,
@@ -109,8 +109,19 @@ def test_xauusd_engine_uncalibrated_defaults():
 
 
 @pytest.mark.unit
+def test_xauusd_engine_code_revision_validation():
+    """Verify code_revision is strictly required and non-empty."""
+    with pytest.raises(ValueError, match="code_revision"):
+        XauUsdSignalEngine(code_revision="")
+
+    with pytest.raises(ValueError, match="code_revision"):
+        XauUsdSignalEngine(code_revision="   ")
+
+
+@pytest.mark.unit
 def test_historical_xaut_signal_engine_preserved():
     """Verify historical XautSignalEngine remains 100% frozen."""
     engine = XautSignalEngine(code_revision="19015f9a8cc536bb2f33b54d2c071139f26590d1")
     assert hasattr(engine, "analyze")
+
 

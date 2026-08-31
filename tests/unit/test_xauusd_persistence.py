@@ -107,3 +107,50 @@ def test_save_dual_side_snapshot_null_legacy_scores(test_instrument):
     record2, created2 = SignalPersistenceService.save_dual_side_snapshot(test_instrument, snapshot)
     assert created2 is False
     assert record2.id == record.id
+
+
+@pytest.mark.django_db
+def test_candidate_resolution_reason_persistence_roundtrip(test_instrument):
+    """Verify candidate_resolution_reason survives publication override and is persisted in DB."""
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    long_dir = SideDirectionScoreResult(SignalSide.LONG, 85.0, 100.0, (), True, True)
+    short_dir = SideDirectionScoreResult(SignalSide.SHORT, 20.0, 100.0, (), True, False)
+    long_tim = SideTimingScoreResult(SignalSide.LONG, 80.0, 100.0, (), True, True)
+    short_tim = SideTimingScoreResult(SignalSide.SHORT, 10.0, 100.0, (), True, False)
+    rfh = RuntimeFeedHealth(primary_15m=FeedHealthStatus.HEALTHY, macro_blackout_feed=FeedHealthStatus.HEALTHY)
+    hard_gate = XauUsdHardGateEvaluation(False, None, (), rfh)
+
+    snapshot = DualSideSignalSnapshot(
+        timestamp=now,
+        instrument="XAUUSD",
+        timeframe="15m",
+        state=SignalState.NO_TRADE,
+        user_decision=UserDecision.WAIT,
+        candidate_state=SignalState.BUY_WINDOW,
+        candidate_user_decision=UserDecision.BUY,
+        long_direction=long_dir,
+        short_direction=short_dir,
+        long_timing=long_tim,
+        short_timing=short_tim,
+        hard_gate=hard_gate,
+        reasons_long_positive=("Bullish momentum",),
+        reasons_long_negative=(),
+        reasons_short_positive=(),
+        reasons_short_negative=(),
+        hard_gate_reasons=(),
+        resolution_reason="BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)",
+        candidate_resolution_reason="LONG_QUALIFIED",
+        publication_reason="BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)",
+        analysis_fingerprint="test_xauusd_roundtrip_cand_fp_999",
+        phase4_policy_fingerprint="policy_fp_999",
+        code_revision="test-rev-p4",
+        profile_name="XAUUSD_UNCALIBRATED",
+        calibration_status="PENDING_PHASE6",
+    )
+
+    record, created = SignalPersistenceService.save_dual_side_snapshot(test_instrument, snapshot)
+    assert created is True
+    assert record.resolution_reason == "BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)"
+    assert record.provenance["candidate_resolution_reason"] == "LONG_QUALIFIED"
+    assert record.components_breakdown["candidate_resolution_reason"] == "LONG_QUALIFIED"
+

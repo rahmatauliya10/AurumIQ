@@ -6,6 +6,7 @@ import pytest
 
 from engine.core.types import (
     CandidateGateResult,
+    FeedCriticality,
     FeedHealthStatus,
     RuntimeFeedHealth,
     SideDirectionScoreResult,
@@ -23,6 +24,7 @@ from engine.signals.gate import (
 )
 from engine.signals.profile import (
     Phase4CalibrationStatus,
+    Phase4FeedPolicy,
     Phase4SignalProfile,
     SideDirectionPolicy,
     SideGatePolicy,
@@ -95,6 +97,36 @@ def test_hard_gate_generic_feed_health_and_fail_safe_defaults():
     )
     res_opt = evaluate_xauusd_hard_gates(optional_missing_rfh, prof)
     assert res_opt.is_blocked is False
+
+    # 5. Primary feed in TRANSITION -> trips FORCE_WAIT
+    transition_rfh = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.TRANSITION,
+        macro_blackout_feed=FeedHealthStatus.HEALTHY,
+        is_macro_blackout=False,
+    )
+    res_trans = evaluate_xauusd_hard_gates(transition_rfh, prof)
+    assert res_trans.is_blocked is True
+    assert res_trans.override_state == SignalState.FORCE_WAIT
+
+    # 6. Custom policy with primary_1h set to CRITICAL -> missing primary_1h blocks
+    prof_custom_critical = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        feed_policy=Phase4FeedPolicy(
+            primary_15m=FeedCriticality.CRITICAL,
+            primary_1h=FeedCriticality.CRITICAL,
+            macro_blackout=FeedCriticality.CRITICAL,
+        ),
+    )
+    rfh_missing_1h = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        primary_1h=FeedHealthStatus.MISSING,
+        macro_blackout_feed=FeedHealthStatus.HEALTHY,
+        is_macro_blackout=False,
+    )
+    res_crit = evaluate_xauusd_hard_gates(rfh_missing_1h, prof_custom_critical)
+    assert res_crit.is_blocked is True
+    assert any("primary_1h" in r for r in res_crit.block_reasons)
 
 
 @pytest.mark.unit

@@ -104,6 +104,8 @@ class SignalPersistenceService:
             "short_timing": _fmt_comps(snapshot.short_timing.components),
             "candidate_state": snapshot.candidate_state.value,
             "candidate_user_decision": snapshot.candidate_user_decision.value,
+            "candidate_resolution_reason": snapshot.candidate_resolution_reason,
+            "publication_reason": snapshot.publication_reason,
         }
 
         rfh = snapshot.hard_gate.runtime_health
@@ -120,6 +122,8 @@ class SignalPersistenceService:
             "phase3a": rfh.phase3a.value,
             "phase3b": rfh.phase3b.value,
             "is_unclosed_candle": rfh.is_unclosed_candle,
+            "candidate_resolution_reason": snapshot.candidate_resolution_reason,
+            "publication_reason": snapshot.publication_reason,
         }
 
         reasons_pos = list(snapshot.reasons_long_positive) + list(snapshot.reasons_short_positive)
@@ -141,7 +145,7 @@ class SignalPersistenceService:
                 "short_timing_score": snapshot.short_timing.total_score,
                 "profile_name": snapshot.profile_name,
                 "calibration_status": snapshot.calibration_status,
-                "resolution_reason": snapshot.resolution_reason,
+                "resolution_reason": snapshot.publication_reason or snapshot.resolution_reason,
                 "phase4_policy_fingerprint": snapshot.phase4_policy_fingerprint,
                 "reasons_positive": reasons_pos,
                 "reasons_negative": reasons_neg,

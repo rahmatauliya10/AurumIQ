@@ -155,19 +155,37 @@ def evaluate_xauusd_hard_gates(
     if rfh.is_unclosed_candle:
         reasons.append("Analysis candle at evaluation timestamp is unclosed.")
 
-    # 2. Check primary 15m feed criticality
-    p15_crit = getattr(feed_policy, "primary_15m", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL
-    if p15_crit == FeedCriticality.CRITICAL:
-        if rfh.primary_15m != FeedHealthStatus.HEALTHY:
-            reasons.append(f"Critical feed primary_15m is {rfh.primary_15m.value} (must be HEALTHY).")
+    # 2. Check active macro blackout window (absolute FORCE_WAIT)
+    if rfh.is_macro_blackout:
+        reasons.append("Active high-impact macroeconomic event blackout window in progress.")
 
-    # 3. Check macro blackout feed & active blackout state
-    macro_crit = getattr(feed_policy, "macro_blackout", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL
-    if macro_crit == FeedCriticality.CRITICAL:
-        if rfh.macro_blackout_feed != FeedHealthStatus.HEALTHY:
-            reasons.append(f"Critical macro blackout feed is {rfh.macro_blackout_feed.value}.")
-        if rfh.is_macro_blackout:
-            reasons.append("Active high-impact macroeconomic event blackout window in progress.")
+    # 3. Complete Generic Feed Criticality Mapping
+    feeds_to_check = [
+        ("primary_15m", rfh.primary_15m, getattr(feed_policy, "primary_15m", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL),
+        ("primary_1h", rfh.primary_1h, getattr(feed_policy, "primary_1h", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("primary_4h", rfh.primary_4h, getattr(feed_policy, "primary_4h", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("primary_1d", rfh.primary_1d, getattr(feed_policy, "primary_1d", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("secondary_provider", rfh.secondary_provider, getattr(feed_policy, "secondary_provider", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("macro_blackout", rfh.macro_blackout_feed, getattr(feed_policy, "macro_blackout", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL),
+        ("volume", rfh.volume, getattr(feed_policy, "volume", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("phase3a", rfh.phase3a, getattr(feed_policy, "phase3a", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("phase3b", rfh.phase3b, getattr(feed_policy, "phase3b", FeedCriticality.INFORMATIONAL) if feed_policy else FeedCriticality.INFORMATIONAL),
+    ]
+
+    UNHEALTHY_STATUSES = (
+        FeedHealthStatus.UNKNOWN,
+        FeedHealthStatus.MISSING,
+        FeedHealthStatus.UNHEALTHY,
+        FeedHealthStatus.STALE,
+        FeedHealthStatus.TRANSITION,
+    )
+
+    for feed_name, status, criticality in feeds_to_check:
+        if criticality == FeedCriticality.CRITICAL:
+            if status in UNHEALTHY_STATUSES:
+                reasons.append(f"Critical feed '{feed_name}' is in unserviceable state: {status.value} (must be HEALTHY).")
+        # OPTIONAL feeds when unhealthy/missing do not trigger FORCE_WAIT (unavailable only).
+        # INFORMATIONAL feeds never affect production state.
 
     is_blocked = len(reasons) > 0
     override_state = SignalState.FORCE_WAIT if is_blocked else None

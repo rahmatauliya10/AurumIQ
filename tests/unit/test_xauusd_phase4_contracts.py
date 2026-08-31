@@ -189,7 +189,7 @@ def test_contract_xau_p4_04_system_safety_hold_to_wait(candidate_profile):
         volume=Decimal("100.0"),
         is_closed=False,  # Unclosed candle
     )
-    engine = XauUsdSignalEngine()
+    engine = XauUsdSignalEngine(code_revision="test-rev-p4")
     snapshot = engine.analyze(
         closed_candles_15m=[unclosed_candle],
         runtime_health=rfh,
