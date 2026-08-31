@@ -49,6 +49,8 @@ class ExperimentalTimeCycleEngine:
          - Separates historical XAUT from target XAUUSD.
       6. Zero Experiment Metric Fabrication:
          - analyze() does not fabricate backtest performance metrics.
+      7. Runtime Timeframe Rigidity:
+         - Profile timeframe must match execution timeframe.
     """
 
     def __init__(
@@ -141,14 +143,21 @@ class ExperimentalTimeCycleEngine:
             else:
                 eff_profile = self.profile
 
+        # Runtime Timeframe Rigidity for Target Instrument
+        if eff_profile.target_instrument.upper().replace("/", "") == "XAUUSD":
+            if eff_profile.timeframe is not None and eff_profile.timeframe != timeframe:
+                raise ValueError(
+                    f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
+                )
+
         # 1. Point-in-Time & Closed Candle Isolation (P3B-19 & Closed-Candle Split)
         as_of_utc = None
         if as_of is not None:
-            as_of_utc = as_of.astimezone(timezone.utc) if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
+            as_of_utc = as_of.astimezone(timezone.utc) if as_of.tzinfo is not None else as_of.replace(tzinfo=timezone.utc)
 
         valid_candles = []
         for c in candles:
-            c_close = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(timezone.utc)
+            c_close = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo is not None else c.timestamp_close.replace(tzinfo=timezone.utc)
             if as_of_utc is not None and c_close > as_of_utc:
                 # Candle is strictly in the future relative to as_of -> completely ignore
                 continue
@@ -163,7 +172,7 @@ class ExperimentalTimeCycleEngine:
             raise ValueError(f"No closed historical candles available on or before as_of={as_of_utc}.")
 
         latest_candle = valid_candles[-1]
-        analysis_timestamp = latest_candle.timestamp_close
+        analysis_timestamp = latest_candle.timestamp_close.astimezone(timezone.utc) if latest_candle.timestamp_close.tzinfo is not None else latest_candle.timestamp_close.replace(tzinfo=timezone.utc)
 
         # 2. Time-Grid Regularity & Spacing Validation (P3B-20)
         tf_seconds = timeframe_to_seconds(timeframe)
@@ -173,7 +182,9 @@ class ExperimentalTimeCycleEngine:
         for i in range(1, len(valid_candles)):
             prev_ts = valid_candles[i - 1].timestamp_close
             curr_ts = valid_candles[i].timestamp_close
-            delta_sec = (curr_ts - prev_ts).total_seconds()
+            prev_utc = prev_ts.astimezone(timezone.utc) if prev_ts.tzinfo is not None else prev_ts.replace(tzinfo=timezone.utc)
+            curr_utc = curr_ts.astimezone(timezone.utc) if curr_ts.tzinfo is not None else curr_ts.replace(tzinfo=timezone.utc)
+            delta_sec = (curr_utc - prev_utc).total_seconds()
 
             if delta_sec <= 0:
                 is_grid_regular = False
@@ -210,7 +221,6 @@ class ExperimentalTimeCycleEngine:
                 else:
                     sample_quality = SampleQuality.HIGH
             else:
-                # XAUUSD: Do not infer sample tiers without configured policy
                 if eff_profile.is_reliability_policy_configured:
                     min_eff = eff_profile.min_effective_n
                     sample_is_blocked = eff_n < min_eff
@@ -312,7 +322,7 @@ class ExperimentalTimeCycleEngine:
             else:
                 # Check baseline provenance completeness
                 inst_norm = baseline_benchmark.instrument.upper().replace("/", "") if baseline_benchmark.instrument else ""
-                tf_match = (eff_profile.timeframe is None or baseline_benchmark.timeframe == eff_profile.timeframe)
+                tf_match = (eff_profile.timeframe is not None and baseline_benchmark.timeframe == eff_profile.timeframe)
                 source_ok = bool(baseline_benchmark.source and baseline_benchmark.source.strip())
                 dates_ok = bool(
                     baseline_benchmark.data_start

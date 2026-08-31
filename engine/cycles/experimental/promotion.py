@@ -41,7 +41,7 @@ def evaluate_promotion_eligibility(
 
     Deterministic XAUUSD Precedence:
       A. Promotion policy not complete / unconfigured -> POLICY_NOT_CONFIGURED
-      B. Policy complete but baseline invalid/missing/non-XAUUSD/non-PIT/not Phase 6 -> BLOCKED_BY_PHASE6
+      B. Policy complete but baseline invalid/missing/non-XAUUSD/non-PIT/not Phase 6/timeframe mismatch -> BLOCKED_BY_PHASE6
       C. Valid XAUUSD Phase 6 baseline exists but hurdles fail (including trade count) -> FAILED
       D. All research hurdles pass -> PROMOTABLE (production_weight remains 0.0)
     """
@@ -94,7 +94,7 @@ def evaluate_promotion_eligibility(
                 reasons=tuple(reasons),
             )
 
-        # Precedence B: Strict Baseline Provenance Checks
+        # Precedence B: Strict Baseline Provenance & Timeframe Checks
         is_baseline_valid = True
         if baseline is None or not baseline.is_empirical:
             is_baseline_valid = False
@@ -102,9 +102,12 @@ def evaluate_promotion_eligibility(
         elif baseline.instrument is None or baseline.instrument.upper().replace("/", "") != "XAUUSD":
             is_baseline_valid = False
             reasons.append(f"XAUUSD promotion evaluation blocked: baseline instrument '{baseline.instrument}' != XAUUSD. Blocked by Phase 6.")
-        elif baseline.timeframe is None or (profile.timeframe is not None and baseline.timeframe != profile.timeframe):
+        elif profile.timeframe is None:
             is_baseline_valid = False
-            reasons.append("XAUUSD promotion evaluation blocked: baseline timeframe missing or incompatible. Blocked by Phase 6.")
+            reasons.append("XAUUSD promotion evaluation blocked: profile timeframe is missing. Blocked by Phase 6.")
+        elif baseline.timeframe is None or baseline.timeframe != profile.timeframe:
+            is_baseline_valid = False
+            reasons.append(f"XAUUSD promotion evaluation blocked: baseline timeframe '{baseline.timeframe}' != profile timeframe '{profile.timeframe}'. Blocked by Phase 6.")
         elif not baseline.source or not baseline.source.strip():
             is_baseline_valid = False
             reasons.append("XAUUSD promotion evaluation blocked: baseline source/provider is missing. Blocked by Phase 6.")

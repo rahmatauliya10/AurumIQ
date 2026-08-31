@@ -94,6 +94,9 @@ class Cycle3BResearchProfile:
     quality_multiplier_high: Optional[float] = None
     min_effective_n: Optional[float] = None
 
+    reliability_high_min_agreement_pct: Optional[float] = None
+    reliability_moderate_min_agreement_pct: Optional[float] = None
+
     # --- 4. Promotion Gate Policy (Strictly None by default) ---
     promotion_min_trades: Optional[int] = None
     promotion_min_pf_improvement_pct: Optional[float] = None
@@ -107,7 +110,14 @@ class Cycle3BResearchProfile:
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Enforce strict recursive deep immutability across all attributes."""
+        """Enforce strict recursive deep immutability across all attributes and target invariants."""
+        if self.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
+            norm_target = self.target_instrument.upper().replace("/", "")
+            if norm_target != "XAUT":
+                raise ValueError(
+                    f"LEGACY_REFERENCE status requires target instrument 'XAUT', got '{self.target_instrument}'."
+                )
+
         object.__setattr__(self, "details", _deep_freeze(dict(self.details)) if self.details else MappingProxyType({}))
 
     # --- Policy Completeness Properties ---
@@ -174,6 +184,8 @@ class Cycle3BResearchProfile:
             and self.quality_multiplier_medium is not None
             and self.quality_multiplier_high is not None
             and self.min_effective_n is not None
+            and self.reliability_high_min_agreement_pct is not None
+            and self.reliability_moderate_min_agreement_pct is not None
         )
 
     @property
@@ -246,6 +258,8 @@ class Cycle3BResearchProfile:
             quality_multiplier_medium=0.8,
             quality_multiplier_high=1.0,
             min_effective_n=30.0,
+            reliability_high_min_agreement_pct=80.0,
+            reliability_moderate_min_agreement_pct=50.0,
             # Promotion Policies
             promotion_min_trades=100,
             promotion_min_pf_improvement_pct=5.0,
@@ -308,6 +322,8 @@ class Cycle3BResearchProfile:
             quality_multiplier_medium=None,
             quality_multiplier_high=None,
             min_effective_n=None,
+            reliability_high_min_agreement_pct=None,
+            reliability_moderate_min_agreement_pct=None,
             # Promotion Policies (Strictly None)
             promotion_min_trades=None,
             promotion_min_pf_improvement_pct=None,

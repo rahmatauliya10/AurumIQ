@@ -51,18 +51,56 @@ def calculate_causal_acf(
     clean_series = [float(x) for x in series]
     n = len(clean_series)
 
-    # Determine effective sample size
-    eff_n: float = 0.0
-    sample_is_blocked = True
-    if sample_eval is not None:
-        eff_n = sample_eval.effective_n
-        sample_is_blocked = sample_eval.is_blocked
-    elif effective_n is not None:
-        eff_n = float(effective_n)
-        sample_is_blocked = eff_n < 30.0
+    # 2. Determine effective sample size and quality without historical leakage
+    if profile is None:
+        # Legacy historical function-call
+        sig_bound = 1.96
+        min_eff = 30.0
+        is_policy_complete = True
+        if sample_eval is not None:
+            eff_n = sample_eval.effective_n
+            sample_is_blocked = sample_eval.is_blocked
+            sample_quality = sample_eval.quality
+        elif effective_n is not None:
+            eff_n = float(effective_n)
+            sample_is_blocked = eff_n < 30.0
+            if eff_n < 30.0:
+                sample_quality = SampleQuality.INSUFFICIENT
+            elif eff_n < 60.0:
+                sample_quality = SampleQuality.LOW
+            elif eff_n < 100.0:
+                sample_quality = SampleQuality.MEDIUM
+            else:
+                sample_quality = SampleQuality.HIGH
+        else:
+            eff_n = 0.0
+            sample_is_blocked = True
+            sample_quality = SampleQuality.INSUFFICIENT
     else:
-        eff_n = 0.0
-        sample_is_blocked = True
+        # Explicit Profile supplied
+        if profile.is_acf_policy_configured:
+            sig_bound = profile.acf_bartlett_z_multiplier
+            min_eff = profile.acf_min_effective_n
+            is_policy_complete = True
+            if sample_eval is not None:
+                eff_n = sample_eval.effective_n
+                sample_is_blocked = sample_eval.is_blocked
+                sample_quality = sample_eval.quality
+            elif effective_n is not None:
+                eff_n = float(effective_n)
+                sample_is_blocked = eff_n < min_eff
+                sample_quality = SampleQuality.MEDIUM if eff_n >= min_eff else SampleQuality.INSUFFICIENT
+            else:
+                eff_n = 0.0
+                sample_is_blocked = True
+                sample_quality = SampleQuality.INSUFFICIENT
+        else:
+            sig_bound = 0.0
+            min_eff = 0.0
+            is_policy_complete = False
+            eff_n = sample_eval.effective_n if sample_eval else (float(effective_n) if effective_n is not None else 0.0)
+            sample_is_blocked = True
+            sample_quality = sample_eval.quality if sample_eval else SampleQuality.INSUFFICIENT
 
     eval_min_lookback = profile.min_lookback if profile is not None else min_lookback
     eval_max_lag = profile.max_lag if profile is not None else max_lag
@@ -78,7 +116,7 @@ def calculate_causal_acf(
             sample_quality=SampleQuality.INSUFFICIENT,
         )
 
-    # 2. Check for constant/flat series
+    # 3. Check for constant/flat series
     arr = np.array(clean_series, dtype=np.float64)
     variance = float(np.var(arr))
     if variance < 1e-12:
@@ -92,7 +130,7 @@ def calculate_causal_acf(
             sample_quality=SampleQuality.INSUFFICIENT,
         )
 
-    # 3. Detrend series using linear regression to remove macro trend drift
+    # 4. Detrend series using linear regression to remove macro trend drift
     x = np.arange(n, dtype=np.float64)
     coeffs = np.polyfit(x, arr, deg=1)
     detrended = arr - (coeffs[0] * x + coeffs[1])
@@ -102,7 +140,7 @@ def calculate_causal_acf(
     if denom < 1e-12:
         denom = 1e-12
 
-    # 4. Compute causal ACF for lags k in [0, max_eval_lag]
+    # 5. Compute causal ACF for lags k in [0, max_eval_lag]
     max_eval_lag = min(eval_max_lag, n // 2)
     acf_list = [1.0]  # Lag 0 is always 1.0
 
@@ -113,28 +151,7 @@ def calculate_causal_acf(
 
     acf_tuple = tuple(acf_list)
 
-    # 5. Significance bound resolution with strict policy completeness check
-    is_policy_complete = False
-    if profile is None:
-        # Legacy historical call
-        sig_bound = 1.96
-        min_eff = 30.0
-        is_policy_complete = True
-    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
-        sig_bound = profile.acf_bartlett_z_multiplier or 1.96
-        min_eff = profile.acf_min_effective_n or 30.0
-        is_policy_complete = True
-    else:
-        # Target instrument (e.g. XAUUSD) profile
-        if profile.is_acf_policy_configured:
-            sig_bound = profile.acf_bartlett_z_multiplier
-            min_eff = profile.acf_min_effective_n
-            is_policy_complete = True
-        else:
-            sig_bound = 0.0
-            min_eff = 0.0
-            is_policy_complete = False
-
+    # 6. Significance bound resolution
     if not is_policy_complete:
         conf_bound = 0.0
     else:
@@ -144,7 +161,7 @@ def calculate_causal_acf(
         else:
             conf_bound = float(round(sig_bound / math.sqrt(n), 4))
 
-    # 6. Peak detection for dominant cyclical lag (k >= 3)
+    # 7. Peak detection for dominant cyclical lag (k >= 3)
     dominant_lag: Optional[int] = None
     dominant_corr = 0.0
 
@@ -162,21 +179,10 @@ def calculate_causal_acf(
             dominant_lag = max_idx
             dominant_corr = acf_list[max_idx]
 
-    # Sample Quality & Significance determination
-    if not is_policy_complete:
-        sample_quality = SampleQuality.INSUFFICIENT
+    # Significance determination
+    if not is_policy_complete or eff_n < min_eff or sample_is_blocked:
         is_significant = False
-    elif eff_n < min_eff or sample_is_blocked:
-        sample_quality = SampleQuality.INSUFFICIENT
-        is_significant = False
-    elif eff_n < 60.0:
-        sample_quality = SampleQuality.LOW
-        is_significant = dominant_lag is not None and dominant_corr > conf_bound
-    elif eff_n < 100.0:
-        sample_quality = SampleQuality.MEDIUM
-        is_significant = dominant_lag is not None and dominant_corr > conf_bound
     else:
-        sample_quality = SampleQuality.HIGH
         is_significant = dominant_lag is not None and dominant_corr > conf_bound
 
     return AcfResult(

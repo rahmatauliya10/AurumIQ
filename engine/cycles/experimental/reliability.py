@@ -53,13 +53,15 @@ def evaluate_cycle_reliability(
     if fft.dominant_period is not None and fft.is_cycle_detected:
         valid_periods.append(("FFT", float(fft.dominant_period), max(0.1, fft.power_ratio)))
 
-    # Wavelet contributes only if clean interior support is proven (P3B-27)
-    if wavelet.dominant_scale_period is not None and wavelet.is_clean_endpoint and wavelet.coi_contamination_pct <= 0.40:
+    # Wavelet contributes strictly if clean interior support is proven by wavelet module (P3B-27)
+    if wavelet.dominant_scale_period is not None and wavelet.is_clean_endpoint:
         valid_periods.append(("Wavelet", float(wavelet.dominant_scale_period), max(0.1, wavelet.energy_ratio)))
 
     # 2. Check for Policy Completeness
-    is_legacy = (profile is None or profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE)
-    is_complete = is_legacy or profile.is_reliability_policy_configured
+    if profile is None:
+        is_complete = True
+    else:
+        is_complete = profile.is_reliability_policy_configured
 
     if not is_complete:
         consensus_period: Optional[float] = None
@@ -98,24 +100,26 @@ def evaluate_cycle_reliability(
         )
 
     # 3. Resolving Policy Constants
-    if is_legacy:
-        disp_high = (profile.dispersion_high_threshold if profile else None) or 0.15
-        disp_mod = (profile.dispersion_moderate_threshold if profile else None) or 0.30
-        single_agr = (profile.single_method_agreement_pct if profile else None) or 35.0
-        mod_agr = (profile.moderate_method_agreement_pct if profile else None) or 65.0
-        cross_disp = (profile.cross_window_dispersion_threshold if profile else None) or 0.35
-        band_high = (profile.reliability_band_high if profile else None) or 60.0
-        band_mod = (profile.reliability_band_moderate if profile else None) or 35.0
-        band_low = (profile.reliability_band_low if profile else None) or 15.0
-        w_acf = (profile.reliability_weight_acf if profile else None) or 30.0
-        w_fft = (profile.reliability_weight_fft if profile else None) or 30.0
-        w_wav = (profile.reliability_weight_wavelet if profile else None) or 20.0
-        w_hil = (profile.reliability_weight_hilbert if profile else None) or 20.0
-        fft_mult = (profile.fft_power_score_multiplier if profile else None) or 2.5
-        q_low = (profile.quality_multiplier_low if profile else None) or 0.5
-        q_med = (profile.quality_multiplier_medium if profile else None) or 0.8
-        q_high = (profile.quality_multiplier_high if profile else None) or 1.0
-        min_eff = (profile.min_effective_n if profile else None) or 30.0
+    if profile is None:
+        disp_high = 0.15
+        disp_mod = 0.30
+        single_agr = 35.0
+        mod_agr = 65.0
+        cross_disp = 0.35
+        band_high = 60.0
+        band_mod = 35.0
+        band_low = 15.0
+        w_acf = 30.0
+        w_fft = 30.0
+        w_wav = 20.0
+        w_hil = 20.0
+        fft_mult = 2.5
+        q_low = 0.5
+        q_med = 0.8
+        q_high = 1.0
+        min_eff = 30.0
+        high_agr_min = 80.0
+        mod_agr_min = 50.0
     else:
         disp_high = profile.dispersion_high_threshold
         disp_mod = profile.dispersion_moderate_threshold
@@ -134,6 +138,8 @@ def evaluate_cycle_reliability(
         q_med = profile.quality_multiplier_medium
         q_high = profile.quality_multiplier_high
         min_eff = profile.min_effective_n
+        high_agr_min = profile.reliability_high_min_agreement_pct
+        mod_agr_min = profile.reliability_moderate_min_agreement_pct
 
     # 4. Method Agreement Evaluation
     consensus_period = None
@@ -202,6 +208,7 @@ def evaluate_cycle_reliability(
     # 7. Multi-Method Composite Reliability Score
     score_acf = (acf.autocorrelation if acf.is_significant else 0.0) * w_acf
     score_fft = min(1.0, fft.power_ratio * fft_mult) * w_fft
+    # Wavelet contributes strictly if clean interior support is verified (P3B-27)
     score_wavelet = (wavelet.energy_ratio * (1.0 - wavelet.coi_contamination_pct) * w_wav) if wavelet.is_clean_endpoint else 0.0
     score_hilbert = (hilbert.phase_stability if hilbert.is_endpoint_reliable else 0.0) * w_hil
 
@@ -217,9 +224,9 @@ def evaluate_cycle_reliability(
 
     final_score = float(round(raw_score * agreement_mult * quality_mult, 2))
 
-    if final_score >= band_high and agreement_pct >= 80.0:
+    if final_score >= band_high and agreement_pct >= high_agr_min:
         status = ReliabilityStatus.HIGH
-    elif final_score >= band_mod and agreement_pct >= 50.0:
+    elif final_score >= band_mod and agreement_pct >= mod_agr_min:
         status = ReliabilityStatus.MODERATE
     elif final_score >= band_low:
         status = ReliabilityStatus.LOW
