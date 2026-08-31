@@ -7,7 +7,10 @@ from engine.core.types import (
     PromotionStatus,
     WalkForwardFoldResult,
 )
-from engine.cycles.experimental.profile import Cycle3BResearchProfile
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def evaluate_promotion_eligibility(
@@ -37,9 +40,9 @@ def evaluate_promotion_eligibility(
       8. Statistical effective sample size MUST be >= min_effective_n (P3B-26).
 
     Deterministic XAUUSD Precedence:
-      A. Promotion policy not configured -> POLICY_NOT_CONFIGURED
-      B. Policy configured but baseline invalid/missing/non-XAUUSD/non-PIT/not Phase 6 -> BLOCKED_BY_PHASE6
-      C. Valid XAUUSD Phase 6 baseline exists but hurdles fail -> FAILED
+      A. Promotion policy not complete / unconfigured -> POLICY_NOT_CONFIGURED
+      B. Policy complete but baseline invalid/missing/non-XAUUSD/non-PIT/not Phase 6 -> BLOCKED_BY_PHASE6
+      C. Valid XAUUSD Phase 6 baseline exists but hurdles fail (including trade count) -> FAILED
       D. All research hurdles pass -> PROMOTABLE (production_weight remains 0.0)
     """
     reasons: List[str] = []
@@ -66,26 +69,14 @@ def evaluate_promotion_eligibility(
     dd_deterioration = ((exp_max_drawdown - base_dd) / base_dd) * 100.0 if base_dd > 0 else 0.0
     dd_deterioration = float(round(dd_deterioration, 2))
 
-    # Evaluate fold metrics if provided (P3B-23)
     is_single_period_dependent = False
     max_fold_share_pct = 0.0
 
-    if fold_results is not None and len(fold_results) > 0:
-        walk_forward_folds_total = len(fold_results)
-        walk_forward_folds_passed = sum(1 for f in fold_results if f.profit_factor >= base_pf)
-
-        pos_profits = [max(0.0, f.net_profit) for f in fold_results]
-        total_pos_profit = sum(pos_profits)
-        if total_pos_profit > 0:
-            max_fold_share_pct = float(round((max(pos_profits) / total_pos_profit) * 100.0, 2))
-            if max_fold_share_pct > 60.0:
-                is_single_period_dependent = True
-
     # 2. XAUUSD Deterministic Precedence Branch
     if eff_target == "XAUUSD":
-        # Precedence A: Promotion policy not configured
-        if profile is None or profile.promotion_min_trades is None:
-            reasons.append("XAUUSD promotion threshold policy is not configured.")
+        # Precedence A: Full promotion policy completeness check
+        if profile is None or not profile.is_promotion_policy_configured:
+            reasons.append("XAUUSD promotion threshold policy is incomplete or not configured.")
             return PromotionEvaluation(
                 status=PromotionStatus.POLICY_NOT_CONFIGURED,
                 is_promotable=False,
@@ -97,35 +88,40 @@ def evaluate_promotion_eligibility(
                 dd_deterioration_pct=dd_deterioration,
                 walk_forward_folds_passed=walk_forward_folds_passed,
                 walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
+                is_single_period_dependent=False,
+                max_fold_profit_share_pct=0.0,
                 effective_n=effective_n,
                 reasons=tuple(reasons),
             )
 
-        # Precedence B: Baseline validation
+        # Precedence B: Strict Baseline Provenance Checks
+        is_baseline_valid = True
         if baseline is None or not baseline.is_empirical:
+            is_baseline_valid = False
             reasons.append("XAUUSD promotion evaluation blocked: baseline benchmark is non-empirical or missing. Blocked by Phase 6.")
-            return PromotionEvaluation(
-                status=PromotionStatus.BLOCKED_BY_PHASE6,
-                is_promotable=False,
-                baseline_pf=base_pf,
-                experimental_pf=exp_profit_factor,
-                pf_improvement_pct=pf_improvement,
-                trade_count=exp_trade_count,
-                max_drawdown_pct=exp_max_drawdown,
-                dd_deterioration_pct=dd_deterioration,
-                walk_forward_folds_passed=walk_forward_folds_passed,
-                walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
-                effective_n=effective_n,
-                reasons=tuple(reasons),
-            )
-
-        base_inst = baseline.instrument.upper().replace("/", "") if baseline.instrument else ""
-        if base_inst != "XAUUSD":
+        elif baseline.instrument is None or baseline.instrument.upper().replace("/", "") != "XAUUSD":
+            is_baseline_valid = False
             reasons.append(f"XAUUSD promotion evaluation blocked: baseline instrument '{baseline.instrument}' != XAUUSD. Blocked by Phase 6.")
+        elif baseline.timeframe is None or (profile.timeframe is not None and baseline.timeframe != profile.timeframe):
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline timeframe missing or incompatible. Blocked by Phase 6.")
+        elif not baseline.source or not baseline.source.strip():
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline source/provider is missing. Blocked by Phase 6.")
+        elif baseline.data_start is None or baseline.data_end is None or baseline.as_of is None:
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline dates are incomplete. Blocked by Phase 6.")
+        elif not (baseline.data_start <= baseline.data_end <= baseline.as_of):
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline date causality violated. Blocked by Phase 6.")
+        elif not baseline.pit_safe:
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline is not pit_safe. Blocked by Phase 6.")
+        elif not baseline.phase6_validated:
+            is_baseline_valid = False
+            reasons.append("XAUUSD promotion evaluation blocked: baseline is not phase6_validated. Blocked by Phase 6.")
+
+        if not is_baseline_valid:
             return PromotionEvaluation(
                 status=PromotionStatus.BLOCKED_BY_PHASE6,
                 is_promotable=False,
@@ -137,69 +133,11 @@ def evaluate_promotion_eligibility(
                 dd_deterioration_pct=dd_deterioration,
                 walk_forward_folds_passed=walk_forward_folds_passed,
                 walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
+                is_single_period_dependent=False,
+                max_fold_profit_share_pct=0.0,
                 effective_n=effective_n,
                 reasons=tuple(reasons),
             )
-
-        if not baseline.pit_safe or not baseline.phase6_validated:
-            reasons.append("XAUUSD promotion evaluation blocked: baseline is not pit_safe or phase6_validated. Blocked by Phase 6.")
-            return PromotionEvaluation(
-                status=PromotionStatus.BLOCKED_BY_PHASE6,
-                is_promotable=False,
-                baseline_pf=base_pf,
-                experimental_pf=exp_profit_factor,
-                pf_improvement_pct=pf_improvement,
-                trade_count=exp_trade_count,
-                max_drawdown_pct=exp_max_drawdown,
-                dd_deterioration_pct=dd_deterioration,
-                walk_forward_folds_passed=walk_forward_folds_passed,
-                walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
-                effective_n=effective_n,
-                reasons=tuple(reasons),
-            )
-
-        if baseline.timeframe is not None and profile.timeframe is not None and baseline.timeframe != profile.timeframe:
-            reasons.append(f"XAUUSD promotion evaluation blocked: baseline timeframe '{baseline.timeframe}' != profile timeframe '{profile.timeframe}'. Blocked by Phase 6.")
-            return PromotionEvaluation(
-                status=PromotionStatus.BLOCKED_BY_PHASE6,
-                is_promotable=False,
-                baseline_pf=base_pf,
-                experimental_pf=exp_profit_factor,
-                pf_improvement_pct=pf_improvement,
-                trade_count=exp_trade_count,
-                max_drawdown_pct=exp_max_drawdown,
-                dd_deterioration_pct=dd_deterioration,
-                walk_forward_folds_passed=walk_forward_folds_passed,
-                walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
-                effective_n=effective_n,
-                reasons=tuple(reasons),
-            )
-
-        if baseline.data_start is not None and baseline.data_end is not None and baseline.as_of is not None:
-            if not (baseline.data_start <= baseline.data_end <= baseline.as_of):
-                reasons.append("XAUUSD promotion evaluation blocked: baseline date causality violated. Blocked by Phase 6.")
-                return PromotionEvaluation(
-                    status=PromotionStatus.BLOCKED_BY_PHASE6,
-                    is_promotable=False,
-                    baseline_pf=base_pf,
-                    experimental_pf=exp_profit_factor,
-                    pf_improvement_pct=pf_improvement,
-                    trade_count=exp_trade_count,
-                    max_drawdown_pct=exp_max_drawdown,
-                    dd_deterioration_pct=dd_deterioration,
-                    walk_forward_folds_passed=walk_forward_folds_passed,
-                    walk_forward_folds_total=walk_forward_folds_total,
-                    is_single_period_dependent=is_single_period_dependent,
-                    max_fold_profit_share_pct=max_fold_share_pct,
-                    effective_n=effective_n,
-                    reasons=tuple(reasons),
-                )
 
         # Precedence C & D: Evaluate policy hurdles
         min_trades = profile.promotion_min_trades
@@ -210,26 +148,24 @@ def evaluate_promotion_eligibility(
         max_conc = profile.promotion_max_fold_concentration_pct
         min_eff = profile.promotion_min_effective_n
 
-        if exp_trade_count < min_trades:
-            reasons.append(f"Insufficient trade count ({exp_trade_count} < {min_trades} required).")
-            return PromotionEvaluation(
-                status=PromotionStatus.INSUFFICIENT_TRADES,
-                is_promotable=False,
-                baseline_pf=base_pf,
-                experimental_pf=exp_profit_factor,
-                pf_improvement_pct=pf_improvement,
-                trade_count=exp_trade_count,
-                max_drawdown_pct=exp_max_drawdown,
-                dd_deterioration_pct=dd_deterioration,
-                walk_forward_folds_passed=walk_forward_folds_passed,
-                walk_forward_folds_total=walk_forward_folds_total,
-                is_single_period_dependent=is_single_period_dependent,
-                max_fold_profit_share_pct=max_fold_share_pct,
-                effective_n=effective_n,
-                reasons=tuple(reasons),
-            )
+        # Compute fold concentration descriptively without hardcoded 60%
+        if fold_results is not None and len(fold_results) > 0:
+            walk_forward_folds_total = len(fold_results)
+            walk_forward_folds_passed = sum(1 for f in fold_results if f.profit_factor >= base_pf)
+
+            pos_profits = [max(0.0, f.net_profit) for f in fold_results]
+            total_pos_profit = sum(pos_profits)
+            if total_pos_profit > 0:
+                max_fold_share_pct = float(round((max(pos_profits) / total_pos_profit) * 100.0, 2))
+                if max_fold_share_pct > max_conc:
+                    is_single_period_dependent = True
 
         passed_all_hurdles = True
+
+        if exp_trade_count < min_trades:
+            passed_all_hurdles = False
+            reasons.append(f"Insufficient trade count ({exp_trade_count} < {min_trades} required).")
+
         if pf_improvement < min_pf_imp:
             passed_all_hurdles = False
             reasons.append(f"Profit Factor improvement (+{pf_improvement}%) < {min_pf_imp}% minimum threshold.")
@@ -280,6 +216,16 @@ def evaluate_promotion_eligibility(
         )
 
     # 3. Legacy / Historical XAUT Evaluation Branch
+    if fold_results is not None and len(fold_results) > 0:
+        walk_forward_folds_total = len(fold_results)
+        walk_forward_folds_passed = sum(1 for f in fold_results if f.profit_factor >= base_pf)
+        pos_profits = [max(0.0, f.net_profit) for f in fold_results]
+        total_pos_profit = sum(pos_profits)
+        if total_pos_profit > 0:
+            max_fold_share_pct = float(round((max(pos_profits) / total_pos_profit) * 100.0, 2))
+            if max_fold_share_pct > 60.0:
+                is_single_period_dependent = True
+
     if not baseline or not baseline.is_empirical:
         reasons.append("Baseline benchmark is non-empirical (unverified recorder only). Cannot evaluate promotion.")
         return PromotionEvaluation(

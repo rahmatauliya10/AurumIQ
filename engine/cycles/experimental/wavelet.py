@@ -5,7 +5,10 @@ import numpy as np
 import pywt
 
 from engine.core.types import WaveletResult
-from engine.cycles.experimental.profile import Cycle3BResearchProfile
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def calculate_causal_wavelet(
@@ -32,7 +35,7 @@ def calculate_causal_wavelet(
       - Trusted wavelet evidence requires evaluating the latest coefficient outside the right COI:
         trusted_lag_bars = ceil(sqrt(2) * scale).
       - If lookback N is insufficient to provide uncompromised interior support or if
-        profile policy is uncalibrated, is_clean_endpoint is strictly False.
+        profile policy is incomplete/uncalibrated, is_clean_endpoint is strictly False.
     """
     if not series or any(x is None or math.isnan(float(x)) or math.isinf(float(x)) for x in series):
         return WaveletResult(
@@ -123,13 +126,20 @@ def calculate_causal_wavelet(
     contaminated_scales_count = sum(1 for s in scales if (n // 2) < (math.sqrt(2.0) * s))
     coi_contamination_pct = float(round(contaminated_scales_count / len(scales), 4))
 
-    # Clean endpoint resolution
-    if profile is not None and profile.wavelet_max_coi_contamination is None:
-        is_clean = False
-    else:
-        max_coi = profile.wavelet_max_coi_contamination if (profile is not None and profile.wavelet_max_coi_contamination is not None) else 0.40
-        support_ratio = profile.wavelet_min_interior_support_ratio if (profile is not None and profile.wavelet_min_interior_support_ratio is not None) else 3.0
+    # Clean endpoint resolution with strict policy completeness
+    if profile is None:
+        is_clean = (trusted_idx >= 0) and (n >= coi_distance * 3.0) and (coi_contamination_pct <= 0.40)
+    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
+        max_coi = profile.wavelet_max_coi_contamination or 0.40
+        support_ratio = profile.wavelet_min_interior_support_ratio or 3.0
         is_clean = (trusted_idx >= 0) and (n >= coi_distance * support_ratio) and (coi_contamination_pct <= max_coi)
+    else:
+        if profile.is_wavelet_policy_configured:
+            max_coi = profile.wavelet_max_coi_contamination
+            support_ratio = profile.wavelet_min_interior_support_ratio
+            is_clean = (trusted_idx >= 0) and (n >= coi_distance * support_ratio) and (coi_contamination_pct <= max_coi)
+        else:
+            is_clean = False
 
     return WaveletResult(
         dominant_scale_period=dom_period,

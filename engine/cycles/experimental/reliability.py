@@ -12,7 +12,10 @@ from engine.core.types import (
     SampleQuality,
     WaveletResult,
 )
-from engine.cycles.experimental.profile import Cycle3BResearchProfile
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def evaluate_cycle_reliability(
@@ -36,7 +39,7 @@ def evaluate_cycle_reliability(
       - If Wavelet endpoint is not clean (Option A P3B-27), wavelet contribution is 0.0.
 
     Uncalibrated / Zero-Fallback Governance:
-      - If profile is uncalibrated (dispersion_high_threshold is None), descriptive metrics
+      - If profile reliability policy is incomplete, descriptive metrics
         are computed, but reliability_score is strictly 0.0 and status is UNRELIABLE.
     """
     reasons: List[str] = []
@@ -54,10 +57,11 @@ def evaluate_cycle_reliability(
     if wavelet.dominant_scale_period is not None and wavelet.is_clean_endpoint and wavelet.coi_contamination_pct <= 0.40:
         valid_periods.append(("Wavelet", float(wavelet.dominant_scale_period), max(0.1, wavelet.energy_ratio)))
 
-    # 2. Check for Uncalibrated Policy
-    is_uncalibrated = (profile is not None and profile.dispersion_high_threshold is None)
+    # 2. Check for Policy Completeness
+    is_legacy = (profile is None or profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE)
+    is_complete = is_legacy or profile.is_reliability_policy_configured
 
-    if is_uncalibrated:
+    if not is_complete:
         consensus_period: Optional[float] = None
         agreement_pct = 0.0
         # Compute descriptive period if any method detected candidates
@@ -94,23 +98,42 @@ def evaluate_cycle_reliability(
         )
 
     # 3. Resolving Policy Constants
-    disp_high = profile.dispersion_high_threshold if profile is not None else 0.15
-    disp_mod = profile.dispersion_moderate_threshold if profile is not None else 0.30
-    single_agr = profile.single_method_agreement_pct if profile is not None else 35.0
-    mod_agr = profile.moderate_method_agreement_pct if profile is not None else 65.0
-    cross_disp = profile.cross_window_dispersion_threshold if profile is not None else 0.35
-    band_high = profile.reliability_band_high if profile is not None else 60.0
-    band_mod = profile.reliability_band_moderate if profile is not None else 35.0
-    band_low = profile.reliability_band_low if profile is not None else 15.0
-    w_acf = profile.reliability_weight_acf if profile is not None else 30.0
-    w_fft = profile.reliability_weight_fft if profile is not None else 30.0
-    w_wav = profile.reliability_weight_wavelet if profile is not None else 20.0
-    w_hil = profile.reliability_weight_hilbert if profile is not None else 20.0
-    fft_mult = profile.fft_power_score_multiplier if profile is not None else 2.5
-    q_low = profile.quality_multiplier_low if profile is not None else 0.5
-    q_med = profile.quality_multiplier_medium if profile is not None else 0.8
-    q_high = profile.quality_multiplier_high if profile is not None else 1.0
-    min_eff = profile.min_effective_n if profile is not None else 30.0
+    if is_legacy:
+        disp_high = (profile.dispersion_high_threshold if profile else None) or 0.15
+        disp_mod = (profile.dispersion_moderate_threshold if profile else None) or 0.30
+        single_agr = (profile.single_method_agreement_pct if profile else None) or 35.0
+        mod_agr = (profile.moderate_method_agreement_pct if profile else None) or 65.0
+        cross_disp = (profile.cross_window_dispersion_threshold if profile else None) or 0.35
+        band_high = (profile.reliability_band_high if profile else None) or 60.0
+        band_mod = (profile.reliability_band_moderate if profile else None) or 35.0
+        band_low = (profile.reliability_band_low if profile else None) or 15.0
+        w_acf = (profile.reliability_weight_acf if profile else None) or 30.0
+        w_fft = (profile.reliability_weight_fft if profile else None) or 30.0
+        w_wav = (profile.reliability_weight_wavelet if profile else None) or 20.0
+        w_hil = (profile.reliability_weight_hilbert if profile else None) or 20.0
+        fft_mult = (profile.fft_power_score_multiplier if profile else None) or 2.5
+        q_low = (profile.quality_multiplier_low if profile else None) or 0.5
+        q_med = (profile.quality_multiplier_medium if profile else None) or 0.8
+        q_high = (profile.quality_multiplier_high if profile else None) or 1.0
+        min_eff = (profile.min_effective_n if profile else None) or 30.0
+    else:
+        disp_high = profile.dispersion_high_threshold
+        disp_mod = profile.dispersion_moderate_threshold
+        single_agr = profile.single_method_agreement_pct
+        mod_agr = profile.moderate_method_agreement_pct
+        cross_disp = profile.cross_window_dispersion_threshold
+        band_high = profile.reliability_band_high
+        band_mod = profile.reliability_band_moderate
+        band_low = profile.reliability_band_low
+        w_acf = profile.reliability_weight_acf
+        w_fft = profile.reliability_weight_fft
+        w_wav = profile.reliability_weight_wavelet
+        w_hil = profile.reliability_weight_hilbert
+        fft_mult = profile.fft_power_score_multiplier
+        q_low = profile.quality_multiplier_low
+        q_med = profile.quality_multiplier_medium
+        q_high = profile.quality_multiplier_high
+        min_eff = profile.min_effective_n
 
     # 4. Method Agreement Evaluation
     consensus_period = None
@@ -157,7 +180,7 @@ def evaluate_cycle_reliability(
                 window_is_unstable = True
                 reasons.append(f"Cross-window period instability detected (dispersion {round(h_dispersion * 100, 1)}% > {int(cross_disp*100)}%).")
 
-    # 6. Fail-Closed Sample Guard & Zero-Reliability Gates (P3B-10, P3B-22)
+    # 6. Fail-Closed Sample Guard & Zero-Reliability Gates (A13, P3B-10, P3B-22)
     if effective_n < min_eff or sample_is_blocked or sample_quality == SampleQuality.INSUFFICIENT or window_is_unstable or agreement_pct == 0.0:
         if effective_n < min_eff or sample_is_blocked:
             reasons.append(f"Effective sample size (n_eff={round(effective_n, 1)}) < {min_eff}. Reliability locked to 0.0.")
@@ -179,12 +202,10 @@ def evaluate_cycle_reliability(
     # 7. Multi-Method Composite Reliability Score
     score_acf = (acf.autocorrelation if acf.is_significant else 0.0) * w_acf
     score_fft = min(1.0, fft.power_ratio * fft_mult) * w_fft
-    # Wavelet contributes strictly if clean interior support is verified (P3B-27)
     score_wavelet = (wavelet.energy_ratio * (1.0 - wavelet.coi_contamination_pct) * w_wav) if wavelet.is_clean_endpoint else 0.0
     score_hilbert = (hilbert.phase_stability if hilbert.is_endpoint_reliable else 0.0) * w_hil
 
     raw_score = score_acf + score_fft + score_wavelet + score_hilbert
-
     agreement_mult = agreement_pct / 100.0
 
     if sample_quality == SampleQuality.LOW:

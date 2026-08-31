@@ -33,14 +33,14 @@ class Cycle3BResearchProvenance:
     as_of: datetime
     raw_observations: int
     effective_n: float
+    code_revision: str
+    data_fingerprint: str
     algorithm_version: str = "3.1.0-3B"
-    code_revision: str = "git"
-    data_fingerprint: str = ""
     generated_at: Optional[datetime] = None
-    pit_safe: bool = True
+    pit_safe: bool = False
 
     def __post_init__(self):
-        """Strict validation of chronological causality and observation boundaries."""
+        """Strict validation of chronological causality, observation boundaries, and explicit auditability."""
         if self.data_start > self.data_end:
             raise ValueError(
                 f"Provenance data_start ({self.data_start}) cannot be after data_end ({self.data_end})."
@@ -53,6 +53,10 @@ class Cycle3BResearchProvenance:
             raise ValueError("raw_observations cannot be negative.")
         if self.effective_n < 0.0:
             raise ValueError("effective_n cannot be negative.")
+        if not self.code_revision or not self.code_revision.strip():
+            raise ValueError("code_revision must be explicitly provided.")
+        if not self.data_fingerprint or not self.data_fingerprint.strip():
+            raise ValueError("data_fingerprint must be explicitly provided.")
 
 
 @dataclass(frozen=True)

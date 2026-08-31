@@ -59,7 +59,7 @@ class Cycle3BResearchProfile:
     num_scales: int = 32
 
     # --- 2. Empirical Detection Policies (Strictly None by default) ---
-    acf_significance_bound: Optional[float] = None
+    acf_bartlett_z_multiplier: Optional[float] = None
     acf_min_effective_n: Optional[float] = None
 
     fft_min_power_ratio: Optional[float] = None
@@ -110,13 +110,93 @@ class Cycle3BResearchProfile:
         """Enforce strict recursive deep immutability across all attributes."""
         object.__setattr__(self, "details", _deep_freeze(dict(self.details)) if self.details else MappingProxyType({}))
 
+    # --- Policy Completeness Properties ---
+
+    @property
+    def is_acf_policy_configured(self) -> bool:
+        """True when all ACF empirical detection policy thresholds are configured."""
+        return (
+            self.acf_bartlett_z_multiplier is not None
+            and self.acf_min_effective_n is not None
+        )
+
+    @property
+    def is_fft_policy_configured(self) -> bool:
+        """True when all FFT empirical detection policy thresholds are configured."""
+        return self.fft_min_power_ratio is not None
+
+    @property
+    def is_wavelet_policy_configured(self) -> bool:
+        """True when all Wavelet empirical detection policy thresholds are configured."""
+        return (
+            self.wavelet_max_coi_contamination is not None
+            and self.wavelet_min_interior_support_ratio is not None
+        )
+
+    @property
+    def is_hilbert_policy_configured(self) -> bool:
+        """True when all Hilbert empirical detection policy thresholds are configured."""
+        return (
+            self.hilbert_min_stability is not None
+            and self.hilbert_min_lookback is not None
+            and self.hilbert_min_velocity is not None
+            and self.hilbert_min_amplitude is not None
+        )
+
+    @property
+    def is_detection_policy_configured(self) -> bool:
+        """True when all four spectral detection policies (ACF, FFT, Wavelet, Hilbert) are complete."""
+        return (
+            self.is_acf_policy_configured
+            and self.is_fft_policy_configured
+            and self.is_wavelet_policy_configured
+            and self.is_hilbert_policy_configured
+        )
+
+    @property
+    def is_reliability_policy_configured(self) -> bool:
+        """True when ALL required empirical consensus & reliability policy thresholds are configured."""
+        return (
+            self.dispersion_high_threshold is not None
+            and self.dispersion_moderate_threshold is not None
+            and self.single_method_agreement_pct is not None
+            and self.moderate_method_agreement_pct is not None
+            and self.cross_window_dispersion_threshold is not None
+            and self.reliability_band_high is not None
+            and self.reliability_band_moderate is not None
+            and self.reliability_band_low is not None
+            and self.reliability_weight_acf is not None
+            and self.reliability_weight_fft is not None
+            and self.reliability_weight_wavelet is not None
+            and self.reliability_weight_hilbert is not None
+            and self.fft_power_score_multiplier is not None
+            and self.quality_multiplier_low is not None
+            and self.quality_multiplier_medium is not None
+            and self.quality_multiplier_high is not None
+            and self.min_effective_n is not None
+        )
+
+    @property
+    def is_promotion_policy_configured(self) -> bool:
+        """True when ALL empirical promotion gate hurdle thresholds are configured."""
+        return (
+            self.promotion_min_trades is not None
+            and self.promotion_min_pf_improvement_pct is not None
+            and self.promotion_max_dd_deterioration_pct is not None
+            and self.promotion_min_folds_passed is not None
+            and self.promotion_min_folds_total is not None
+            and self.promotion_max_fold_concentration_pct is not None
+            and self.promotion_min_effective_n is not None
+        )
+
     @property
     def is_research_policy_configured(self) -> bool:
-        """True when explicit empirical research policy thresholds are configured."""
+        """True when full detection, reliability, and promotion policies are complete."""
         return (
             self.status in (ResearchCalibrationStatus.LEGACY_REFERENCE, ResearchCalibrationStatus.REVALIDATED_RESEARCH)
-            and self.dispersion_high_threshold is not None
-            and self.fft_min_power_ratio is not None
+            and self.is_detection_policy_configured
+            and self.is_reliability_policy_configured
+            and self.is_promotion_policy_configured
         )
 
     @classmethod
@@ -139,7 +219,7 @@ class Cycle3BResearchProfile:
             wavelet_name="morl",
             num_scales=32,
             # Detection Policies
-            acf_significance_bound=1.96,
+            acf_bartlett_z_multiplier=1.96,
             acf_min_effective_n=30.0,
             fft_min_power_ratio=0.15,
             fft_power_score_multiplier=2.5,
@@ -201,7 +281,7 @@ class Cycle3BResearchProfile:
             wavelet_name="morl",
             num_scales=32,
             # Empirical Detection Policies (Strictly None)
-            acf_significance_bound=None,
+            acf_bartlett_z_multiplier=None,
             acf_min_effective_n=None,
             fft_min_power_ratio=None,
             fft_power_score_multiplier=None,

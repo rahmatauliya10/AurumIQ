@@ -5,7 +5,10 @@ import numpy as np
 from scipy.signal import hilbert
 
 from engine.core.types import HilbertResult
-from engine.cycles.experimental.profile import Cycle3BResearchProfile
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def calculate_causal_hilbert(
@@ -91,15 +94,24 @@ def calculate_causal_hilbert(
     stability = float(round(stability, 4))
     avg_velocity = float(round(avg_velocity, 4))
 
-    # 4. Endpoint Reliability Resolution
-    if profile is not None and profile.hilbert_min_stability is None:
-        is_reliable = False
-    else:
-        min_lb = profile.hilbert_min_lookback if (profile is not None and profile.hilbert_min_lookback is not None) else 48
-        min_stab = profile.hilbert_min_stability if (profile is not None and profile.hilbert_min_stability is not None) else 0.60
-        min_vel = profile.hilbert_min_velocity if (profile is not None and profile.hilbert_min_velocity is not None) else 0.05
-        min_amp = profile.hilbert_min_amplitude if (profile is not None and profile.hilbert_min_amplitude is not None) else 1e-6
+    # 4. Endpoint Reliability Resolution with strict policy completeness
+    if profile is None:
+        is_reliable = (n >= 48) and (stability >= 0.60) and (avg_velocity > 0.05) and (endpoint_amp > 1e-6)
+    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
+        min_lb = profile.hilbert_min_lookback or 48
+        min_stab = profile.hilbert_min_stability or 0.60
+        min_vel = profile.hilbert_min_velocity or 0.05
+        min_amp = profile.hilbert_min_amplitude or 1e-6
         is_reliable = (n >= min_lb) and (stability >= min_stab) and (avg_velocity > min_vel) and (endpoint_amp > min_amp)
+    else:
+        if profile.is_hilbert_policy_configured:
+            min_lb = profile.hilbert_min_lookback
+            min_stab = profile.hilbert_min_stability
+            min_vel = profile.hilbert_min_velocity
+            min_amp = profile.hilbert_min_amplitude
+            is_reliable = (n >= min_lb) and (stability >= min_stab) and (avg_velocity > min_vel) and (endpoint_amp > min_amp)
+        else:
+            is_reliable = False
 
     return HilbertResult(
         instantaneous_phase=endpoint_phase,

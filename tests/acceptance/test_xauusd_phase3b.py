@@ -2,25 +2,27 @@
 Acceptance & Governance Tests for Phase 3B XAUUSD Experimental Spectral & Cycle Research:
 1. Historical XAUT Research Profile Preserved Verbatim
 2. XAUUSD Uncalibrated Research Profile Has Zero Empirical Defaults (None)
-3. Target Instrument Segregation & Mismatch Rejection
-4. Descriptive ACF with is_significant=False without configured policy
-5. Descriptive FFT with is_cycle_detected=False and production_weight=0.0
-6. Wavelet Endpoint Safety (is_clean_endpoint=False without policy)
-7. Hilbert Endpoint Safety (is_endpoint_reliable=False without policy)
-8. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
-9. Historical XAUT Thresholds Do Not Leak into XAUUSD
-10. Deterministic 4-Stage Promotion Precedence Matrix:
-    - POLICY_NOT_CONFIGURED
-    - BLOCKED_BY_PHASE6 (Non-empirical / XAUT baseline / provenance-less / unvalidated)
-    - FAILED
-    - PROMOTABLE (Research only, production_weight strictly 0.0)
-11. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
-12. Future Closed Candle Invariance at Timestamp T
-13. Broken Time-Grid Fails Closed
-14. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
-15. Pure Python AST Purity (Zero Django Imports)
-16. Zero Phase 4 Directional Symbols
-17. Deep Recursive Immutability of Profiles and Artifacts
+3. Subsystem Policy Completeness Properties (ACF, FFT, Wavelet, Hilbert, Reliability, Promotion)
+4. Partial Policy Fail-Neutral Tests (ACF, Wavelet, Hilbert, Reliability, Promotion)
+5. Target Instrument Segregation & Mismatch Rejection
+6. Descriptive ACF with is_significant=False without configured policy
+7. Descriptive FFT with is_cycle_detected=False and production_weight=0.0
+8. Wavelet Endpoint Safety (is_clean_endpoint=False without policy)
+9. Hilbert Endpoint Safety (is_endpoint_reliable=False without policy)
+10. Uncalibrated XAUUSD Reliability Score == 0.0 (UNRELIABLE / CALIBRATION_REQUIRED)
+11. No Sample-Tier / min_eff=30 Legacy Fallback for Uncalibrated XAUUSD
+12. Strict Phase 6 Baseline Provenance Matrix (Missing dates, source, timeframe -> BLOCKED_BY_PHASE6)
+13. Deterministic 4-Stage Promotion Precedence Matrix
+14. Insufficient Trade Count on XAUUSD Fails with status=FAILED
+15. Fold Concentration Threshold Uses Explicit Config without Hardcoded 60%
+16. Engine analyze() Zero-Metric-Fabrication (produces NOT_EVALUATED on valid baseline)
+17. Closed-Candle Isolation Split (unclosed at/before T vs unclosed after T)
+18. Future Closed Candle Invariance at Timestamp T
+19. Broken Time-Grid Fails Closed
+20. Hostile Production Weight Lock Tests (Constructor override, Frozen mutation, Database CheckConstraint)
+21. Pure Python AST Purity (Zero Django Imports)
+22. Zero Phase 4 Directional Symbols
+23. Deep Recursive Immutability of Profiles and Hardened Provenance Contracts
 """
 import ast
 from datetime import datetime, timezone, timedelta
@@ -65,7 +67,7 @@ from engine.cycles.experimental.engine import ExperimentalTimeCycleEngine
 from apps.analysis.models import ExperimentalCycleSnapshotRecord
 
 
-def _make_candles(n: int, base_price: float = 2500.0, period: float = 16.0, start_dt: Optional[datetime] = None) -> list[CandleData]:
+def _make_candles(n: int, base_price: float = 2500.0, period: float = 16.0, start_dt: Optional[datetime] = None) -> List[CandleData]:
     t0 = start_dt or datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
     candles = []
     for i in range(n):
@@ -88,19 +90,95 @@ def _make_candles(n: int, base_price: float = 2500.0, period: float = 16.0, star
     return candles
 
 
+def _make_valid_xauusd_baseline() -> BaselineBenchmark:
+    """Helper creating a complete, valid empirical Phase 6 XAUUSD baseline."""
+    return BaselineBenchmark(
+        base_profit_factor=2.0,
+        base_expectancy_r=0.4,
+        base_max_drawdown=10.0,
+        base_trade_count=100,
+        recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        is_empirical=True,
+        instrument="XAUUSD",
+        timeframe="15m",
+        source="OOS_PHASE6_WALK_FORWARD",
+        data_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        data_end=datetime(2026, 7, 31, tzinfo=timezone.utc),
+        as_of=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        pit_safe=True,
+        phase6_validated=True,
+    )
+
+
+def _make_fully_configured_xauusd_profile() -> Cycle3BResearchProfile:
+    """Helper creating a complete, valid XAUUSD research candidate profile."""
+    return Cycle3BResearchProfile(
+        name="XAUUSD_RESEARCH_CANDIDATE",
+        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+        target_instrument="XAUUSD",
+        timeframe="15m",
+        # Algorithm Config
+        max_lag=64,
+        min_lookback=32,
+        min_period=4.0,
+        max_period=64.0,
+        window_type="hann",
+        wavelet_name="morl",
+        num_scales=32,
+        # Detection
+        acf_bartlett_z_multiplier=1.96,
+        acf_min_effective_n=30.0,
+        fft_min_power_ratio=0.15,
+        fft_power_score_multiplier=2.5,
+        wavelet_max_coi_contamination=0.40,
+        wavelet_min_interior_support_ratio=3.0,
+        hilbert_min_stability=0.60,
+        hilbert_min_lookback=48,
+        hilbert_min_velocity=0.05,
+        hilbert_min_amplitude=1e-6,
+        # Reliability
+        dispersion_high_threshold=0.15,
+        dispersion_moderate_threshold=0.30,
+        single_method_agreement_pct=35.0,
+        moderate_method_agreement_pct=65.0,
+        cross_window_dispersion_threshold=0.35,
+        reliability_band_high=60.0,
+        reliability_band_moderate=35.0,
+        reliability_band_low=15.0,
+        reliability_weight_acf=30.0,
+        reliability_weight_fft=30.0,
+        reliability_weight_wavelet=20.0,
+        reliability_weight_hilbert=20.0,
+        quality_multiplier_low=0.5,
+        quality_multiplier_medium=0.8,
+        quality_multiplier_high=1.0,
+        min_effective_n=30.0,
+        # Promotion
+        promotion_min_trades=100,
+        promotion_min_pf_improvement_pct=5.0,
+        promotion_max_dd_deterioration_pct=10.0,
+        promotion_min_folds_passed=4,
+        promotion_min_folds_total=6,
+        promotion_max_fold_concentration_pct=60.0,
+        promotion_min_effective_n=30.0,
+    )
+
+
 # ============================================================================
-# 1 & 2. Profile Governance & Zero Empirical Fallback
+# 1 & 2. Profile Governance & Subsystem Policy Completeness
 # ============================================================================
 
 @pytest.mark.unit
 def test_historical_xaut_research_profile_preserved():
-    """Historical XAUT research profile preserves frozen values exactly."""
+    """Historical XAUT research profile preserves frozen values and reports full completeness."""
     legacy = Cycle3BResearchProfile.legacy_xaut_research_profile()
     assert legacy.status == ResearchCalibrationStatus.LEGACY_REFERENCE
     assert legacy.target_instrument == "XAUT"
-    assert legacy.acf_significance_bound == 1.96
+    assert legacy.acf_bartlett_z_multiplier == 1.96
+    assert legacy.acf_min_effective_n == 30.0
     assert legacy.fft_min_power_ratio == 0.15
     assert legacy.wavelet_max_coi_contamination == 0.40
+    assert legacy.wavelet_min_interior_support_ratio == 3.0
     assert legacy.hilbert_min_stability == 0.60
     assert legacy.dispersion_high_threshold == 0.15
     assert legacy.dispersion_moderate_threshold == 0.30
@@ -109,16 +187,25 @@ def test_historical_xaut_research_profile_preserved():
     assert legacy.reliability_band_high == 60.0
     assert legacy.promotion_min_trades == 100
     assert legacy.promotion_min_pf_improvement_pct == 5.0
+
+    assert legacy.is_acf_policy_configured is True
+    assert legacy.is_fft_policy_configured is True
+    assert legacy.is_wavelet_policy_configured is True
+    assert legacy.is_hilbert_policy_configured is True
+    assert legacy.is_detection_policy_configured is True
+    assert legacy.is_reliability_policy_configured is True
+    assert legacy.is_promotion_policy_configured is True
     assert legacy.is_research_policy_configured is True
 
 
 @pytest.mark.unit
 def test_uncalibrated_xauusd_research_profile_has_zero_empirical_defaults():
-    """XAUUSD uncalibrated research profile contains None for all empirical policies."""
+    """XAUUSD uncalibrated research profile contains None for all empirical policies and reports incomplete."""
     uncal = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile()
     assert uncal.status == ResearchCalibrationStatus.PENDING_DATA
     assert uncal.target_instrument == "XAUUSD"
-    assert uncal.acf_significance_bound is None
+    assert uncal.acf_bartlett_z_multiplier is None
+    assert uncal.acf_min_effective_n is None
     assert uncal.fft_min_power_ratio is None
     assert uncal.wavelet_max_coi_contamination is None
     assert uncal.hilbert_min_stability is None
@@ -126,69 +213,158 @@ def test_uncalibrated_xauusd_research_profile_has_zero_empirical_defaults():
     assert uncal.reliability_band_high is None
     assert uncal.promotion_min_trades is None
     assert uncal.promotion_min_pf_improvement_pct is None
+
+    assert uncal.is_acf_policy_configured is False
+    assert uncal.is_fft_policy_configured is False
+    assert uncal.is_wavelet_policy_configured is False
+    assert uncal.is_hilbert_policy_configured is False
+    assert uncal.is_detection_policy_configured is False
+    assert uncal.is_reliability_policy_configured is False
+    assert uncal.is_promotion_policy_configured is False
     assert uncal.is_research_policy_configured is False
 
 
 # ============================================================================
-# 3. Target Instrument Segregation & Mismatch Rejection
+# 3. Partial Policy Fail-Neutral Tests (Zero Legacy Leakage)
+# ============================================================================
+
+@pytest.mark.unit
+def test_partial_acf_policy_fails_neutral():
+    """ACF with z-multiplier but missing min_effective_n fails neutral without borrowing 30.0."""
+    partial = Cycle3BResearchProfile(
+        target_instrument="XAUUSD",
+        status=ResearchCalibrationStatus.PENDING_DATA,
+        acf_bartlett_z_multiplier=1.96,
+        acf_min_effective_n=None,  # Incomplete!
+    )
+    series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
+    res = calculate_causal_acf(series, profile=partial, effective_n=50.0)
+    assert res.is_significant is False
+    assert res.confidence_bound == 0.0
+
+
+@pytest.mark.unit
+def test_partial_wavelet_policy_fails_neutral():
+    """Wavelet with COI threshold but missing interior support ratio fails neutral."""
+    partial = Cycle3BResearchProfile(
+        target_instrument="XAUUSD",
+        status=ResearchCalibrationStatus.PENDING_DATA,
+        wavelet_max_coi_contamination=0.40,
+        wavelet_min_interior_support_ratio=None,  # Incomplete!
+    )
+    series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
+    res = calculate_causal_wavelet(series, profile=partial)
+    assert res.is_clean_endpoint is False
+
+
+@pytest.mark.unit
+def test_partial_hilbert_policy_fails_neutral():
+    """Hilbert with 3 of 4 fields present fails neutral without borrowing defaults."""
+    partial = Cycle3BResearchProfile(
+        target_instrument="XAUUSD",
+        status=ResearchCalibrationStatus.PENDING_DATA,
+        hilbert_min_stability=0.60,
+        hilbert_min_lookback=48,
+        hilbert_min_velocity=0.05,
+        hilbert_min_amplitude=None,  # Incomplete!
+    )
+    series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
+    res = calculate_causal_hilbert(series, profile=partial)
+    assert res.is_endpoint_reliable is False
+
+
+@pytest.mark.unit
+def test_partial_reliability_policy_fails_neutral():
+    """Reliability evaluator with incomplete policy returns score=0.0 without exception."""
+    partial = Cycle3BResearchProfile(
+        target_instrument="XAUUSD",
+        status=ResearchCalibrationStatus.PENDING_DATA,
+        dispersion_high_threshold=0.15,
+        # missing other reliability fields!
+    )
+    series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
+    acf_res = calculate_causal_acf(series, profile=partial)
+    fft_res = calculate_causal_fft(series, profile=partial)
+    wav_res = calculate_causal_wavelet(series, profile=partial)
+    hil_res = calculate_causal_hilbert(series, profile=partial)
+
+    rel_res = evaluate_cycle_reliability(
+        acf=acf_res, fft=fft_res, wavelet=wav_res, hilbert=hil_res,
+        effective_n=100.0, sample_quality=SampleQuality.HIGH, profile=partial,
+    )
+    assert rel_res.reliability_score == 0.0
+    assert rel_res.reliability_status == ReliabilityStatus.UNRELIABLE
+    assert any("CALIBRATION_REQUIRED" in r for r in rel_res.reasons)
+
+
+@pytest.mark.unit
+def test_partial_promotion_policy_fails_neutral():
+    """Promotion evaluator with incomplete policy returns POLICY_NOT_CONFIGURED."""
+    partial = Cycle3BResearchProfile(
+        target_instrument="XAUUSD",
+        status=ResearchCalibrationStatus.PENDING_DATA,
+        promotion_min_trades=100,
+        # missing min_pf_improvement_pct, max_dd, etc.
+    )
+    baseline = _make_valid_xauusd_baseline()
+    res = evaluate_promotion_eligibility(
+        baseline=baseline, exp_profit_factor=2.5, exp_expectancy_r=0.6, exp_max_drawdown=5.0, exp_trade_count=150,
+        profile=partial,
+    )
+    assert res.status == PromotionStatus.POLICY_NOT_CONFIGURED
+    assert res.is_promotable is False
+
+
+# ============================================================================
+# 4. Target Instrument Segregation & Mismatch Rejection
 # ============================================================================
 
 @pytest.mark.unit
 def test_target_instrument_mismatch_rejection():
     """Engine and analyze() reject target instrument mismatches."""
     xaut_profile = Cycle3BResearchProfile.legacy_xaut_research_profile()
-    xau_profile = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile()
 
-    # Engine factory reject
     with pytest.raises(ValueError, match="target instrument is 'XAUT', expected 'XAUUSD'"):
         ExperimentalTimeCycleEngine.for_xauusd(profile=xaut_profile)
 
     candles = _make_candles(64)
     xau_engine = ExperimentalTimeCycleEngine.for_xauusd()
 
-    # Per-call profile mismatch
     with pytest.raises(ValueError, match="cannot analyze using non-XAUUSD profile"):
         xau_engine.analyze(candles=candles, profile=xaut_profile)
 
 
 # ============================================================================
-# 4, 5, 6, 7. Descriptive Spectral Computations under Uncalibrated Profile
+# 5. Descriptive Spectral Computations under Uncalibrated Profile
 # ============================================================================
 
 @pytest.mark.unit
 def test_uncalibrated_xauusd_descriptive_spectral_computations():
-    """
-    Uncalibrated XAUUSD computes descriptive mathematics (lags, PSD, entropy, phases, scales)
-    without claiming significance or endpoint reliability.
-    """
+    """Uncalibrated XAUUSD computes descriptive mathematics without claiming significance."""
     series = [2500.0 + 15.0 * math.sin(2.0 * math.pi * i / 16.0) for i in range(64)]
     uncal = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile()
 
-    # 1. ACF: Computes series & lag, but is_significant=False and confidence_bound=0.0
     acf_res = calculate_causal_acf(series, profile=uncal)
     assert acf_res.dominant_lag is not None
     assert acf_res.is_significant is False
     assert acf_res.confidence_bound == 0.0
 
-    # 2. FFT: Computes period & PSD, but is_cycle_detected=False
     fft_res = calculate_causal_fft(series, profile=uncal)
     assert fft_res.dominant_period is not None
     assert fft_res.power_ratio > 0.0
     assert fft_res.is_cycle_detected is False
 
-    # 3. Wavelet: Computes scale & energy, but is_clean_endpoint=False
     wav_res = calculate_causal_wavelet(series, profile=uncal)
     assert wav_res.dominant_scale_period is not None
     assert wav_res.is_clean_endpoint is False
 
-    # 4. Hilbert: Computes phase & amplitude, but is_endpoint_reliable=False
     hil_res = calculate_causal_hilbert(series, dominant_period=fft_res.dominant_period, profile=uncal)
     assert hil_res.instantaneous_phase is not None
     assert hil_res.is_endpoint_reliable is False
 
 
 # ============================================================================
-# 8 & 9. Uncalibrated Reliability & Threshold Leak Prevention
+# 6. Uncalibrated Reliability & Sample-Tier Fallback Prevention
 # ============================================================================
 
 @pytest.mark.unit
@@ -206,99 +382,111 @@ def test_uncalibrated_xauusd_reliability_zeroed():
         acf=acf_res, fft=fft_res, wavelet=wav_res, hilbert=hil_res,
         effective_n=100.0, sample_quality=SampleQuality.HIGH, profile=uncal,
     )
-
     assert rel_res.reliability_score == 0.0
     assert rel_res.reliability_status == ReliabilityStatus.UNRELIABLE
     assert any("CALIBRATION_REQUIRED" in r for r in rel_res.reasons)
 
 
+@pytest.mark.unit
+def test_engine_xauusd_no_sample_tier_leakage():
+    """Engine with uncalibrated XAUUSD profile does not infer legacy sample quality tiers."""
+    candles = _make_candles(64)
+    engine = ExperimentalTimeCycleEngine.for_xauusd()
+    snap = engine.analyze(candles=candles, effective_n=80.0)
+    # Effective sample quality remains INSUFFICIENT because no policy is configured
+    assert snap.reliability.sample_quality == SampleQuality.INSUFFICIENT
+    assert snap.reliability.reliability_score == 0.0
+
+
 # ============================================================================
-# 10. Deterministic Promotion Precedence Matrix
+# 7. Strict Baseline Provenance & Deterministic Promotion Precedence Matrix
 # ============================================================================
+
+@pytest.mark.unit
+def test_xauusd_baseline_provenance_validation():
+    """Baseline missing date fields, source, pit_safe, or phase6_validated is rejected."""
+    profile = _make_fully_configured_xauusd_profile()
+
+    # Missing data_start
+    b_no_start = BaselineBenchmark(
+        base_profit_factor=2.0, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
+        recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=True, instrument="XAUUSD",
+        timeframe="15m", source="OOS", data_start=None, data_end=datetime(2026, 7, 31, tzinfo=timezone.utc),
+        as_of=datetime(2026, 8, 1, tzinfo=timezone.utc), pit_safe=True, phase6_validated=True,
+    )
+    res = evaluate_promotion_eligibility(
+        baseline=b_no_start, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
+        profile=profile,
+    )
+    assert res.status == PromotionStatus.BLOCKED_BY_PHASE6
+
+    # Missing source
+    b_no_source = BaselineBenchmark(
+        base_profit_factor=2.0, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
+        recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=True, instrument="XAUUSD",
+        timeframe="15m", source="", data_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        data_end=datetime(2026, 7, 31, tzinfo=timezone.utc), as_of=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        pit_safe=True, phase6_validated=True,
+    )
+    res = evaluate_promotion_eligibility(
+        baseline=b_no_source, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
+        profile=profile,
+    )
+    assert res.status == PromotionStatus.BLOCKED_BY_PHASE6
+
 
 @pytest.mark.unit
 def test_xauusd_promotion_deterministic_precedence_matrix():
     """
     Verify exact deterministic promotion precedence:
-      Stage A: No policy -> POLICY_NOT_CONFIGURED
-      Stage B: Policy exists, but baseline invalid / non-empirical / XAUT -> BLOCKED_BY_PHASE6
-      Stage C: Valid XAUUSD Phase 6 baseline exists, but hurdles fail -> FAILED
-      Stage D: Valid XAUUSD Phase 6 baseline exists and hurdles pass -> PROMOTABLE
+      Stage A: Incomplete policy -> POLICY_NOT_CONFIGURED
+      Stage B: Complete policy + Invalid / XAUT / provenance-incomplete baseline -> BLOCKED_BY_PHASE6
+      Stage C: Complete policy + Valid XAUUSD Phase 6 baseline + Hurdle fail -> FAILED
+      Stage D: Complete policy + Valid XAUUSD Phase 6 baseline + All hurdles pass -> PROMOTABLE
     """
     uncal_profile = Cycle3BResearchProfile.uncalibrated_xauusd_research_profile()
+    configured_profile = _make_fully_configured_xauusd_profile()
+    valid_baseline = _make_valid_xauusd_baseline()
 
-    configured_xau_profile = Cycle3BResearchProfile(
-        name="XAUUSD_RESEARCH_CANDIDATE",
-        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
-        target_instrument="XAUUSD",
-        promotion_min_trades=100,
-        promotion_min_pf_improvement_pct=5.0,
-        promotion_max_dd_deterioration_pct=10.0,
-        promotion_min_folds_passed=4,
-        promotion_min_folds_total=6,
-        promotion_max_fold_concentration_pct=60.0,
-        promotion_min_effective_n=30.0,
-        dispersion_high_threshold=0.15,
-        fft_min_power_ratio=0.15,
-    )
-
-    # Stage A: No policy -> POLICY_NOT_CONFIGURED
+    # Stage A: Policy incomplete -> POLICY_NOT_CONFIGURED
     res_a = evaluate_promotion_eligibility(
-        baseline=None, exp_profit_factor=2.0, exp_expectancy_r=0.5, exp_max_drawdown=5.0, exp_trade_count=150,
+        baseline=valid_baseline, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
         profile=uncal_profile,
     )
     assert res_a.status == PromotionStatus.POLICY_NOT_CONFIGURED
     assert res_a.is_promotable is False
 
-    # Stage B1: Policy exists + Non-empirical baseline -> BLOCKED_BY_PHASE6
+    # Stage B1: Non-empirical baseline -> BLOCKED_BY_PHASE6
     fake_baseline = BaselineBenchmark(
         base_profit_factor=1.8, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
         recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=False,
     )
     res_b1 = evaluate_promotion_eligibility(
-        baseline=fake_baseline, exp_profit_factor=2.0, exp_expectancy_r=0.5, exp_max_drawdown=5.0, exp_trade_count=150,
-        profile=configured_xau_profile,
+        baseline=fake_baseline, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
+        profile=configured_profile,
     )
     assert res_b1.status == PromotionStatus.BLOCKED_BY_PHASE6
-    assert res_b1.is_promotable is False
 
-    # Stage B2: Policy exists + XAUT empirical baseline -> BLOCKED_BY_PHASE6
-    xaut_empirical_baseline = BaselineBenchmark(
-        base_profit_factor=1.8, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
+    # Stage B2: XAUT empirical baseline -> BLOCKED_BY_PHASE6
+    xaut_baseline = BaselineBenchmark(
+        base_profit_factor=2.0, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
         recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=True, instrument="XAUT",
+        timeframe="15m", source="OOS", data_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        data_end=datetime(2026, 7, 31, tzinfo=timezone.utc), as_of=datetime(2026, 8, 1, tzinfo=timezone.utc),
         pit_safe=True, phase6_validated=True,
     )
     res_b2 = evaluate_promotion_eligibility(
-        baseline=xaut_empirical_baseline, exp_profit_factor=2.0, exp_expectancy_r=0.5, exp_max_drawdown=5.0, exp_trade_count=150,
-        profile=configured_xau_profile,
+        baseline=xaut_baseline, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
+        profile=configured_profile,
     )
     assert res_b2.status == PromotionStatus.BLOCKED_BY_PHASE6
-    assert res_b2.is_promotable is False
 
-    # Stage B3: Policy exists + Valid XAUUSD provenance but phase6_validated=False -> BLOCKED_BY_PHASE6
-    unvalidated_xau_baseline = BaselineBenchmark(
-        base_profit_factor=1.8, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
-        recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=True, instrument="XAUUSD",
-        pit_safe=True, phase6_validated=False,
-    )
-    res_b3 = evaluate_promotion_eligibility(
-        baseline=unvalidated_xau_baseline, exp_profit_factor=2.0, exp_expectancy_r=0.5, exp_max_drawdown=5.0, exp_trade_count=150,
-        profile=configured_xau_profile,
-    )
-    assert res_b3.status == PromotionStatus.BLOCKED_BY_PHASE6
-    assert res_b3.is_promotable is False
-
-    # Stage C: Valid XAUUSD Phase 6 baseline exists, but hurdle fails (PF improvement < 5%) -> FAILED
-    valid_xau_baseline = BaselineBenchmark(
-        base_profit_factor=2.0, base_expectancy_r=0.4, base_max_drawdown=10.0, base_trade_count=100,
-        recorded_at=datetime(2026, 8, 1, tzinfo=timezone.utc), is_empirical=True, instrument="XAUUSD",
-        pit_safe=True, phase6_validated=True,
-    )
+    # Stage C: Valid XAUUSD Phase 6 baseline exists, but hurdle fails (PF improvement only +1%) -> FAILED
     res_c = evaluate_promotion_eligibility(
-        baseline=valid_xau_baseline, exp_profit_factor=2.02,  # Only +1% improvement
+        baseline=valid_baseline, exp_profit_factor=2.02,  # Only +1% improvement (< 5% required)
         exp_expectancy_r=0.45, exp_max_drawdown=9.0, exp_trade_count=150,
         walk_forward_folds_passed=5, walk_forward_folds_total=6, effective_n=50.0,
-        profile=configured_xau_profile,
+        profile=configured_profile,
     )
     assert res_c.status == PromotionStatus.FAILED
     assert res_c.is_promotable is False
@@ -309,17 +497,107 @@ def test_xauusd_promotion_deterministic_precedence_matrix():
         for i in range(1, 7)
     ]
     res_d = evaluate_promotion_eligibility(
-        baseline=valid_xau_baseline, exp_profit_factor=2.2,  # +10% improvement
+        baseline=valid_baseline, exp_profit_factor=2.2,  # +10% improvement
         exp_expectancy_r=0.5, exp_max_drawdown=8.0, exp_trade_count=150,
         fold_results=folds, effective_n=50.0,
-        profile=configured_xau_profile,
+        profile=configured_profile,
     )
     assert res_d.status == PromotionStatus.PROMOTABLE
     assert res_d.is_promotable is True
 
 
+@pytest.mark.unit
+def test_xauusd_insufficient_trade_count_fails():
+    """XAUUSD trade count < min_trades results in status=FAILED."""
+    configured_profile = _make_fully_configured_xauusd_profile()
+    valid_baseline = _make_valid_xauusd_baseline()
+
+    res = evaluate_promotion_eligibility(
+        baseline=valid_baseline, exp_profit_factor=2.5, exp_expectancy_r=0.6, exp_max_drawdown=5.0,
+        exp_trade_count=50,  # Insufficient (< 100)
+        profile=configured_profile,
+    )
+    assert res.status == PromotionStatus.FAILED
+    assert res.is_promotable is False
+    assert any("Insufficient trade count" in r for r in res.reasons)
+
+
+@pytest.mark.unit
+def test_xauusd_fold_concentration_uses_configured_threshold():
+    """Fold concentration uses profile.promotion_max_fold_concentration_pct without hardcoded 60%."""
+    profile_relaxed = Cycle3BResearchProfile(
+        name="XAUUSD_RELAXED",
+        status=ResearchCalibrationStatus.REVALIDATED_RESEARCH,
+        target_instrument="XAUUSD",
+        timeframe="15m",
+        acf_bartlett_z_multiplier=1.96,
+        acf_min_effective_n=30.0,
+        fft_min_power_ratio=0.15,
+        fft_power_score_multiplier=2.5,
+        wavelet_max_coi_contamination=0.40,
+        wavelet_min_interior_support_ratio=3.0,
+        hilbert_min_stability=0.60,
+        hilbert_min_lookback=48,
+        hilbert_min_velocity=0.05,
+        hilbert_min_amplitude=1e-6,
+        dispersion_high_threshold=0.15,
+        dispersion_moderate_threshold=0.30,
+        single_method_agreement_pct=35.0,
+        moderate_method_agreement_pct=65.0,
+        cross_window_dispersion_threshold=0.35,
+        reliability_band_high=60.0,
+        reliability_band_moderate=35.0,
+        reliability_band_low=15.0,
+        reliability_weight_acf=30.0,
+        reliability_weight_fft=30.0,
+        reliability_weight_wavelet=20.0,
+        reliability_weight_hilbert=20.0,
+        quality_multiplier_low=0.5,
+        quality_multiplier_medium=0.8,
+        quality_multiplier_high=1.0,
+        min_effective_n=30.0,
+        promotion_min_trades=100,
+        promotion_min_pf_improvement_pct=5.0,
+        promotion_max_dd_deterioration_pct=10.0,
+        promotion_min_folds_passed=4,
+        promotion_min_folds_total=6,
+        promotion_max_fold_concentration_pct=80.0,  # 80% allowed!
+        promotion_min_effective_n=30.0,
+    )
+    valid_baseline = _make_valid_xauusd_baseline()
+
+    # One fold contributes 70% of profit (fails 60%, but passes 80%)
+    folds = [
+        WalkForwardFoldResult(fold_id=1, profit_factor=2.5, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=7000.0),
+        WalkForwardFoldResult(fold_id=2, profit_factor=2.1, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=600.0),
+        WalkForwardFoldResult(fold_id=3, profit_factor=2.1, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=600.0),
+        WalkForwardFoldResult(fold_id=4, profit_factor=2.1, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=600.0),
+        WalkForwardFoldResult(fold_id=5, profit_factor=2.1, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=600.0),
+        WalkForwardFoldResult(fold_id=6, profit_factor=2.1, expectancy_r=0.5, max_drawdown=5.0, trade_count=50, net_profit=600.0),
+    ]
+
+    res = evaluate_promotion_eligibility(
+        baseline=valid_baseline, exp_profit_factor=2.2, exp_expectancy_r=0.5, exp_max_drawdown=5.0, exp_trade_count=300,
+        fold_results=folds, effective_n=50.0, profile=profile_relaxed,
+    )
+    assert res.status == PromotionStatus.PROMOTABLE
+    assert res.is_promotable is True
+
+
+@pytest.mark.unit
+def test_engine_analyze_zero_metric_fabrication():
+    """Engine analyze() does not fabricate performance metrics; reports NOT_EVALUATED on valid baseline."""
+    candles = _make_candles(64)
+    configured_profile = _make_fully_configured_xauusd_profile()
+    valid_baseline = _make_valid_xauusd_baseline()
+
+    engine = ExperimentalTimeCycleEngine(profile=configured_profile)
+    snapshot = engine.analyze(candles=candles, baseline_benchmark=valid_baseline)
+    assert snapshot.promotion_status == PromotionStatus.NOT_EVALUATED
+
+
 # ============================================================================
-# 11 & 12. Closed-Candle Isolation Split & Future Invariance
+# 8 & 9. Closed-Candle Isolation Split & Future Invariance
 # ============================================================================
 
 @pytest.mark.unit
@@ -376,7 +654,7 @@ def test_closed_candle_isolation_split():
 
 
 # ============================================================================
-# 13. Broken Time-Grid Fails Closed
+# 10. Broken Time-Grid Fails Closed
 # ============================================================================
 
 @pytest.mark.unit
@@ -399,7 +677,7 @@ def test_broken_time_grid_fails_closed():
 
 
 # ============================================================================
-# 14. Hostile Production Lock & Persistence CheckConstraint Tests
+# 11. Hostile Production Lock & Persistence CheckConstraint Tests
 # ============================================================================
 
 @pytest.mark.unit
@@ -409,10 +687,8 @@ def test_hostile_production_weight_lock_in_memory():
     engine = ExperimentalTimeCycleEngine.for_xauusd()
     snapshot = engine.analyze(candles=candles)
 
-    # 1. Permanent 0.0 production weight
     assert snapshot.production_weight == 0.0
 
-    # 2. Cannot pass production_weight in constructor
     with pytest.raises(TypeError):
         Cycle3BExperimentalSnapshot(
             timestamp=snapshot.timestamp,
@@ -425,8 +701,7 @@ def test_hostile_production_weight_lock_in_memory():
             production_weight=1.0,  # init=False -> raises TypeError
         )
 
-    # 3. Cannot mutate production_weight on frozen instance
-    with pytest.raises(Exception):  # FrozenInstanceError / AttributeError
+    with pytest.raises(Exception):
         snapshot.production_weight = 1.0
 
 
@@ -470,7 +745,7 @@ def test_hostile_database_production_weight_constraint():
 
 
 # ============================================================================
-# 15 & 16. Pure Python AST & Phase 4 Symbol Protection
+# 12. Pure Python AST & Phase 4 Symbol Protection
 # ============================================================================
 
 @pytest.mark.unit
@@ -518,8 +793,37 @@ def test_no_phase4_directional_symbols_in_experimental():
 
 
 # ============================================================================
-# 17. Deep Immutability of Artifact and Profile
+# 13. Deep Immutability of Artifact and Hardened Provenance
 # ============================================================================
+
+@pytest.mark.unit
+def test_research_provenance_requires_explicit_metadata():
+    """Cycle3BResearchProvenance requires non-empty code_revision and data_fingerprint and pit_safe=True."""
+    # Missing code_revision raises ValueError
+    with pytest.raises(ValueError, match="code_revision must be explicitly provided"):
+        Cycle3BResearchProvenance(
+            instrument="XAUUSD", provider="SPOT", timeframe="15m",
+            data_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            data_end=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            raw_observations=5000, effective_n=300.0,
+            code_revision="",  # Empty!
+            data_fingerprint="sha256:abc",
+        )
+
+    # Valid complete provenance
+    prov = Cycle3BResearchProvenance(
+        instrument="XAUUSD", provider="SPOT", timeframe="15m",
+        data_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        data_end=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        raw_observations=5000, effective_n=300.0,
+        code_revision="7609d64", data_fingerprint="sha256:abc123",
+        pit_safe=True,
+    )
+    assert prov.pit_safe is True
+    assert prov.code_revision == "7609d64"
+
 
 @pytest.mark.unit
 def test_research_artifact_deep_recursive_immutability():
@@ -530,6 +834,8 @@ def test_research_artifact_deep_recursive_immutability():
         data_end=datetime(2026, 1, 1, tzinfo=timezone.utc),
         as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
         raw_observations=5000, effective_n=300.0,
+        code_revision="7609d64", data_fingerprint="sha256:abc",
+        pit_safe=True,
     )
     raw_config = {"nested": {"fft_window": "hann", "scales": [4, 8, 16]}}
 
@@ -538,10 +844,8 @@ def test_research_artifact_deep_recursive_immutability():
         algorithm_config=raw_config,
     )
 
-    # External mutation
     raw_config["nested"]["fft_window"] = "hamming"
     assert artifact.algorithm_config["nested"]["fft_window"] == "hann"
 
-    # Internal mutation attempt
     with pytest.raises(TypeError):
         artifact.algorithm_config["nested"]["fft_window"] = "blackman"

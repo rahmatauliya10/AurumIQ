@@ -24,7 +24,6 @@ from engine.cycles.experimental.profile import (
     Cycle3BResearchProfile,
     ResearchCalibrationStatus,
 )
-from engine.cycles.experimental.promotion import evaluate_promotion_eligibility
 from engine.cycles.experimental.reliability import evaluate_cycle_reliability
 from engine.cycles.experimental.wavelet import calculate_causal_wavelet
 from engine.cycles.swing_duration import timeframe_to_seconds
@@ -48,6 +47,8 @@ class ExperimentalTimeCycleEngine:
          - `production_weight` is permanently 0.0 under all lifecycle profiles.
       5. Strict Target Instrument Segregation:
          - Separates historical XAUT from target XAUUSD.
+      6. Zero Experiment Metric Fabrication:
+         - analyze() does not fabricate backtest performance metrics.
     """
 
     def __init__(
@@ -147,7 +148,7 @@ class ExperimentalTimeCycleEngine:
 
         valid_candles = []
         for c in candles:
-            c_close = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)
+            c_close = c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(timezone.utc)
             if as_of_utc is not None and c_close > as_of_utc:
                 # Candle is strictly in the future relative to as_of -> completely ignore
                 continue
@@ -185,12 +186,11 @@ class ExperimentalTimeCycleEngine:
 
         # Determine effective sample size and quality
         close_series = [float(c.close) for c in valid_candles]
-        raw_n = len(close_series)
         eff_n: float = 0.0
         sample_is_blocked = True
         sample_quality = SampleQuality.INSUFFICIENT
 
-        min_eff_threshold = eff_profile.min_effective_n if eff_profile.min_effective_n is not None else 30.0
+        is_legacy = (eff_profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE or eff_profile.target_instrument != "XAUUSD")
 
         if sample_eval is not None:
             eff_n = sample_eval.effective_n
@@ -198,15 +198,26 @@ class ExperimentalTimeCycleEngine:
             sample_quality = sample_eval.quality
         elif effective_n is not None:
             eff_n = float(effective_n)
-            sample_is_blocked = eff_n < min_eff_threshold
-            if eff_n < min_eff_threshold:
-                sample_quality = SampleQuality.INSUFFICIENT
-            elif eff_n < 60.0:
-                sample_quality = SampleQuality.LOW
-            elif eff_n < 100.0:
-                sample_quality = SampleQuality.MEDIUM
+            if is_legacy:
+                min_eff = eff_profile.min_effective_n or 30.0
+                sample_is_blocked = eff_n < min_eff
+                if eff_n < min_eff:
+                    sample_quality = SampleQuality.INSUFFICIENT
+                elif eff_n < 60.0:
+                    sample_quality = SampleQuality.LOW
+                elif eff_n < 100.0:
+                    sample_quality = SampleQuality.MEDIUM
+                else:
+                    sample_quality = SampleQuality.HIGH
             else:
-                sample_quality = SampleQuality.HIGH
+                # XAUUSD: Do not infer sample tiers without configured policy
+                if eff_profile.is_reliability_policy_configured:
+                    min_eff = eff_profile.min_effective_n
+                    sample_is_blocked = eff_n < min_eff
+                    sample_quality = SampleQuality.MEDIUM if eff_n >= min_eff else SampleQuality.INSUFFICIENT
+                else:
+                    sample_is_blocked = True
+                    sample_quality = SampleQuality.INSUFFICIENT
         else:
             eff_n = 0.0
             sample_is_blocked = True
@@ -292,24 +303,30 @@ class ExperimentalTimeCycleEngine:
             profile=eff_profile,
         )
 
-        # 5. Promotion Status Assessment (A24, P3B-11)
+        # 5. Promotion Status Assessment without fabricating experimental performance metrics
         if eff_profile.target_instrument.upper().replace("/", "") == "XAUUSD":
-            if eff_profile.promotion_min_trades is None:
+            if not eff_profile.is_promotion_policy_configured:
                 promotion_status = PromotionStatus.POLICY_NOT_CONFIGURED
             elif baseline_benchmark is None or not baseline_benchmark.is_empirical:
                 promotion_status = PromotionStatus.BLOCKED_BY_PHASE6
             else:
-                promo_eval = evaluate_promotion_eligibility(
-                    baseline=baseline_benchmark,
-                    exp_profit_factor=0.0,
-                    exp_expectancy_r=0.0,
-                    exp_max_drawdown=0.0,
-                    exp_trade_count=0,
-                    effective_n=eff_n,
-                    profile=eff_profile,
-                    target_instrument=eff_profile.target_instrument,
+                # Check baseline provenance completeness
+                inst_norm = baseline_benchmark.instrument.upper().replace("/", "") if baseline_benchmark.instrument else ""
+                tf_match = (eff_profile.timeframe is None or baseline_benchmark.timeframe == eff_profile.timeframe)
+                source_ok = bool(baseline_benchmark.source and baseline_benchmark.source.strip())
+                dates_ok = bool(
+                    baseline_benchmark.data_start
+                    and baseline_benchmark.data_end
+                    and baseline_benchmark.as_of
+                    and (baseline_benchmark.data_start <= baseline_benchmark.data_end <= baseline_benchmark.as_of)
                 )
-                promotion_status = promo_eval.status
+                pit_ok = baseline_benchmark.pit_safe
+                phase6_ok = baseline_benchmark.phase6_validated
+
+                if inst_norm == "XAUUSD" and tf_match and source_ok and dates_ok and pit_ok and phase6_ok:
+                    promotion_status = PromotionStatus.NOT_EVALUATED
+                else:
+                    promotion_status = PromotionStatus.BLOCKED_BY_PHASE6
         else:
             if baseline_benchmark is None or not baseline_benchmark.is_empirical:
                 promotion_status = PromotionStatus.BASELINE_NOT_EMPIRICAL

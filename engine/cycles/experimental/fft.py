@@ -4,7 +4,10 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from engine.core.types import FftResult
-from engine.cycles.experimental.profile import Cycle3BResearchProfile
+from engine.cycles.experimental.profile import (
+    Cycle3BResearchProfile,
+    ResearchCalibrationStatus,
+)
 
 
 def calculate_causal_fft(
@@ -27,7 +30,7 @@ def calculate_causal_fft(
         rather than dropping items (which would compress time spacing).
 
     Profile & Detection Governance:
-      - If profile is uncalibrated (fft_min_power_ratio is None):
+      - If profile policy is incomplete (fft_min_power_ratio is None):
         computes descriptive dominant period, frequency, and PSD entropy,
         but is_cycle_detected is strictly False.
     """
@@ -143,12 +146,18 @@ def calculate_causal_fft(
         if p > 1e-12 and f > 0:
             top_entries.append((float(round(f, 4)), float(round(p / total_power, 4))))
 
-    # 8. Detection Gate Resolution
-    if profile is not None and profile.fft_min_power_ratio is None:
-        is_detected = False
-    else:
-        threshold = profile.fft_min_power_ratio if (profile is not None and profile.fft_min_power_ratio is not None) else 0.15
+    # 8. Detection Gate Resolution with strict policy completeness
+    if profile is None:
+        is_detected = (power_ratio >= 0.15) and (dom_period is not None)
+    elif profile.status == ResearchCalibrationStatus.LEGACY_REFERENCE:
+        threshold = profile.fft_min_power_ratio or 0.15
         is_detected = (power_ratio >= threshold) and (dom_period is not None)
+    else:
+        if profile.is_fft_policy_configured:
+            threshold = profile.fft_min_power_ratio
+            is_detected = (power_ratio >= threshold) and (dom_period is not None)
+        else:
+            is_detected = False
 
     return FftResult(
         dominant_period=dom_period,
