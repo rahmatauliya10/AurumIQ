@@ -168,16 +168,13 @@ def test_p7_auth_08_password_change_invalidates_websocket_session():
         async def mock_send_1(m):
             sent_1.append(m)
 
-        async def mock_recv_1():
-            return await recv_q1.get()
-
         scope_1 = {
             "type": "websocket",
             "headers": [(b"cookie", f"sessionid={old_session_key}".encode("latin1"))],
             "path": "/ws/live/",
         }
-        t1 = asyncio.create_task(application(scope_1, mock_recv_1, mock_send_1))
-        await asyncio.sleep(0.1)
+        t1 = asyncio.create_task(application(scope_1, lambda: recv_q1.get(), mock_send_1))
+        await asyncio.sleep(0.05)
         assert any(m.get("type") == "websocket.accept" for m in sent_1)
         await recv_q1.put({"type": "websocket.disconnect"})
         await t1
@@ -226,9 +223,6 @@ def test_p7_bus_01_separate_redis_producer_to_websocket():
         async def mock_send(m):
             sent_frames.append(m)
 
-        async def mock_recv():
-            return await recv_queue.get()
-
         auth_scope = {
             "type": "websocket",
             "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
@@ -236,9 +230,9 @@ def test_p7_bus_01_separate_redis_producer_to_websocket():
         }
 
         consumer_task = asyncio.create_task(
-            application(auth_scope, mock_recv, mock_send)
+            application(auth_scope, lambda: recv_queue.get(), mock_send)
         )
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.05)
 
         # Clear in-memory subscribers to prove delivery occurs exclusively through Redis pub/sub
         LiveEventBroadcaster._subscribers.clear()
@@ -254,7 +248,7 @@ def test_p7_bus_01_separate_redis_producer_to_websocket():
                 "data": {"ask": "2599.90", "bid": "2599.40"},
             }
             r.publish("aurumiq:live_events:XAUT/USDT", json.dumps(payload))
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.05)
 
             frames = [
                 json.loads(m["text"]) for m in sent_frames
