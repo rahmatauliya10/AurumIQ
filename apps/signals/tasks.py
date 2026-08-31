@@ -75,6 +75,7 @@ def analyze_closed_candle(
         if not candles_15m:
             return {"status": "SKIPPED", "reason": "No closed 15m candles found"}
 
+        candles_1h = _get_candles("1h", 64)
         candles_4h = _get_candles("4h", 64)
         candles_1d = _get_candles("1d", 32)
 
@@ -139,41 +140,35 @@ def analyze_closed_candle(
         if is_stale_feed is not None:
             effective_is_stale = is_stale_feed
         else:
-            from apps.market_data.models import DataQualitySnapshot
-            latest_dq = (
-                DataQualitySnapshot.objects.filter(
-                    instrument=instrument,
-                    timeframe=timeframe,
-                    timestamp__lte=candle_ts,
+            from apps.market_data.models import DataQualityRecord
+            latest_quality = (
+                DataQualityRecord.objects.filter(
+                    candle__instrument=instrument,
+                    checked_at__lte=candle_ts,
                 )
-                .order_by("-timestamp")
+                .order_by("-checked_at")
                 .first()
             )
-            # If no data quality snapshot exists, missing evidence strictly fails closed as stale
-            effective_is_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
+            effective_is_stale = (latest_quality.overall_status == "FAILED") if latest_quality else False
 
-        engine = XautSignalEngine(
-            engine_version=engine_version,
-            config_version=config_version,
-            feature_version=feature_version,
-            cycle_version=cycle_version,
-            code_revision=code_revision,
-        )
-
-        # Build MacroEventContext if string passed (preserve missing macro feed semantics)
-        macro_ctx_obj = None
-        if isinstance(macro_context, MacroEventContext):
-            macro_ctx_obj = macro_context
-        elif isinstance(macro_context, str):
-            is_blackout = macro_context.upper() in ("BLACKOUT", "EVENT_BLACKOUT")
+        # Construct MacroEventContext
+        if macro_context == "BLACKOUT":
             macro_ctx_obj = MacroEventContext(
-                is_in_blackout=is_blackout,
-                minutes_to_next_event=None,
-                minutes_since_last_event=None,
-                active_event_name=macro_context if is_blackout else None,
+                is_in_blackout=True,
+                minutes_to_next_event=0,
+                minutes_since_last_event=0,
+                active_event_name="HIGH_IMPACT_EVENT",
                 is_feed_healthy=True,
             )
-        elif macro_context is not None:
+        elif macro_context == "CLEAR":
+            macro_ctx_obj = MacroEventContext(
+                is_in_blackout=False,
+                minutes_to_next_event=180,
+                minutes_since_last_event=180,
+                active_event_name=None,
+                is_feed_healthy=True,
+            )
+        else:
             macro_ctx_obj = MacroEventContext(
                 is_in_blackout=False,
                 minutes_to_next_event=None,
@@ -201,41 +196,114 @@ def analyze_closed_candle(
             else None
         )
 
-        snapshot = engine.analyze(
-            candles_15m=candles_15m,
-            candles_4h=candles_4h if candles_4h else None,
-            candles_1d=candles_1d if candles_1d else None,
-            candles_xau=candles_xau if candles_xau else None,
-            as_of=candle_ts,
-            instrument=instrument.symbol,
-            timeframe=timeframe,
-            xau_reference_price=xau_ref_price,
-            xau_reference_is_bullish=xau_ref_bullish,
-            xau_reference_ts=xau_ref_ts,
-            usdt_rate=usdt_rate,
-            usdt_rate_ts=usdt_rate_ts,
-            provider_status=effective_provider_status,
-            is_feed_stale=effective_is_stale,
-            is_provider_transition=effective_is_transition,
-            macro_context=macro_ctx_obj,
-            cycle_3a=cycle_3a_snapshot,
-        )
+        # Check if instrument is canonical XAUUSD
+        is_xauusd = False
+        try:
+            from engine.signals.profile import normalize_xauusd_target
+            norm_target = normalize_xauusd_target(instrument.symbol)
+            is_xauusd = (norm_target == "XAUUSD")
+        except ValueError:
+            is_xauusd = False
 
-        record, created = SignalPersistenceService.save_signal_snapshot(
-            instrument=instrument,
-            snapshot=snapshot,
-        )
+        if is_xauusd:
+            from engine.core.types import FeedHealthStatus, RuntimeFeedHealth
+            from engine.signals.engine import XauUsdSignalEngine
 
-        return {
-            "status": "SUCCESS",
-            "fingerprint": record.analysis_fingerprint,
-            "created": created,
-            "state": record.state,
-            "user_decision": record.user_decision,
-            "direction_score": record.direction_score,
-            "timing_score": record.timing_score,
-            "config_version": record.config_version,
-        }
+            rfh = RuntimeFeedHealth(
+                primary_15m=FeedHealthStatus.HEALTHY if not effective_is_stale else FeedHealthStatus.STALE,
+                primary_1h=FeedHealthStatus.HEALTHY if candles_1h else FeedHealthStatus.UNKNOWN,
+                primary_4h=FeedHealthStatus.HEALTHY if candles_4h else FeedHealthStatus.UNKNOWN,
+                primary_1d=FeedHealthStatus.HEALTHY if candles_1d else FeedHealthStatus.UNKNOWN,
+                secondary_provider=FeedHealthStatus.HEALTHY if effective_provider_status == "HEALTHY" else FeedHealthStatus.UNKNOWN,
+                macro_blackout_feed=FeedHealthStatus.HEALTHY if macro_ctx_obj.is_feed_healthy else FeedHealthStatus.UNKNOWN,
+                is_macro_blackout=macro_ctx_obj.is_in_blackout,
+            )
+
+            engine_xau = XauUsdSignalEngine(
+                code_revision=code_revision,
+                engine_version=engine_version,
+                feature_version=feature_version,
+                cycle_version=cycle_version,
+            )
+
+            snapshot = engine_xau.analyze(
+                closed_candles_15m=candles_15m,
+                closed_candles_1h=candles_1h if candles_1h else None,
+                closed_candles_4h=candles_4h if candles_4h else None,
+                closed_candles_1d=candles_1d if candles_1d else None,
+                runtime_health=rfh,
+                profile=None,  # Production authority path uses uncalibrated profile
+                instrument="XAUUSD",
+                timeframe=timeframe,
+                as_of=candle_ts,
+                cycle_3a=cycle_3a_snapshot,
+            )
+
+            record, created = SignalPersistenceService.save_dual_side_snapshot(
+                instrument=instrument,
+                snapshot=snapshot,
+            )
+
+            return {
+                "status": "SUCCESS",
+                "fingerprint": record.analysis_fingerprint,
+                "created": created,
+                "state": record.state,
+                "user_decision": record.user_decision,
+                "direction_score": record.direction_score,
+                "timing_score": record.timing_score,
+                "long_direction_score": record.long_direction_score,
+                "short_direction_score": record.short_direction_score,
+                "long_timing_score": record.long_timing_score,
+                "short_timing_score": record.short_timing_score,
+                "config_version": record.config_version,
+            }
+
+        else:
+            # Historical XAUT pipeline
+            engine_xaut = XautSignalEngine(
+                code_revision=code_revision,
+                engine_version=engine_version,
+                config_version=config_version,
+                feature_version=feature_version,
+                cycle_version=cycle_version,
+            )
+
+            snapshot = engine_xaut.analyze(
+                candles_15m=candles_15m,
+                candles_4h=candles_4h if candles_4h else None,
+                candles_1d=candles_1d if candles_1d else None,
+                candles_xau=candles_xau if candles_xau else None,
+                as_of=candle_ts,
+                instrument=instrument.symbol,
+                timeframe=timeframe,
+                xau_reference_price=xau_ref_price,
+                xau_reference_is_bullish=xau_ref_bullish,
+                xau_reference_ts=xau_ref_ts,
+                usdt_rate=usdt_rate,
+                usdt_rate_ts=usdt_rate_ts,
+                provider_status=effective_provider_status,
+                is_feed_stale=effective_is_stale,
+                is_provider_transition=effective_is_transition,
+                macro_context=macro_ctx_obj,
+                cycle_3a=cycle_3a_snapshot,
+            )
+
+            record, created = SignalPersistenceService.save_signal_snapshot(
+                instrument=instrument,
+                snapshot=snapshot,
+            )
+
+            return {
+                "status": "SUCCESS",
+                "fingerprint": record.analysis_fingerprint,
+                "created": created,
+                "state": record.state,
+                "user_decision": record.user_decision,
+                "direction_score": record.direction_score,
+                "timing_score": record.timing_score,
+                "config_version": record.config_version,
+            }
 
     except Exception as exc:
         logger.error("analyze_closed_candle_failed", exc_info=True, instrument_id=instrument_id)

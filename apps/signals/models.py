@@ -26,8 +26,18 @@ class SignalRecord(models.Model):
     timestamp = models.DateTimeField(db_index=True, help_text="Timestamp of closed candle analyzed")
     state = models.CharField(max_length=20, db_index=True)
     user_decision = models.CharField(max_length=10, db_index=True)
-    direction_score = models.FloatField()
-    timing_score = models.FloatField()
+    direction_score = models.FloatField(null=True, blank=True, help_text="Historical XAUT Direction score (0-100), NULL for XAUUSD")
+    timing_score = models.FloatField(null=True, blank=True, help_text="Historical XAUT Timing score (0-100), NULL for XAUUSD")
+
+    # Additive Phase 4 XAUUSD Dual-Side Fields
+    long_direction_score = models.FloatField(null=True, blank=True, help_text="Phase 4 XAUUSD Long Direction score (0-100)")
+    short_direction_score = models.FloatField(null=True, blank=True, help_text="Phase 4 XAUUSD Short Direction score (0-100)")
+    long_timing_score = models.FloatField(null=True, blank=True, help_text="Phase 4 XAUUSD Long Timing score (0-100)")
+    short_timing_score = models.FloatField(null=True, blank=True, help_text="Phase 4 XAUUSD Short Timing score (0-100)")
+    profile_name = models.CharField(max_length=64, null=True, blank=True, default=None)
+    calibration_status = models.CharField(max_length=64, null=True, blank=True, default=None)
+    resolution_reason = models.CharField(max_length=255, null=True, blank=True, default=None)
+    phase4_policy_fingerprint = models.CharField(max_length=64, null=True, blank=True, default=None)
 
     reasons_positive = models.JSONField(default=list)
     reasons_negative = models.JSONField(default=list)
