@@ -8,6 +8,17 @@ from engine.signals.explainer import (
     explain_signal,
 )
 from engine.signals.engine import XautSignalEngine
+from engine.signals.profile import (
+    Phase4CalibrationStatus,
+    Phase4FeedPolicy,
+    Phase4SignalProfile,
+    SideDirectionPolicy,
+    SideGatePolicy,
+    SideTimingPolicy,
+    compute_phase4_policy_fingerprint,
+    normalize_xauusd_target,
+    uncalibrated_xauusd_signal_profile,
+)
 
 __all__ = [
     "calculate_direction_score",
@@ -18,4 +29,14 @@ __all__ = [
     "compute_research_fingerprint",
     "explain_signal",
     "XautSignalEngine",
+    "Phase4CalibrationStatus",
+    "Phase4FeedPolicy",
+    "Phase4SignalProfile",
+    "SideDirectionPolicy",
+    "SideGatePolicy",
+    "SideTimingPolicy",
+    "compute_phase4_policy_fingerprint",
+    "normalize_xauusd_target",
+    "uncalibrated_xauusd_signal_profile",
 ]
+
