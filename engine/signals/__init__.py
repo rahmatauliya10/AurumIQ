@@ -14,6 +14,8 @@ from engine.signals.gate import (
 from engine.signals.explainer import (
     compute_canonical_fingerprint,
     compute_research_fingerprint,
+    compute_xauusd_fingerprint,
+    explain_dual_side_signal,
     explain_signal,
 )
 from engine.signals.engine import XautSignalEngine
@@ -41,7 +43,9 @@ __all__ = [
     "evaluate_xauusd_candidate_gate",
     "compute_canonical_fingerprint",
     "compute_research_fingerprint",
+    "compute_xauusd_fingerprint",
     "explain_signal",
+    "explain_dual_side_signal",
     "XautSignalEngine",
     "Phase4CalibrationStatus",
     "Phase4FeedPolicy",
@@ -53,6 +57,7 @@ __all__ = [
     "normalize_xauusd_target",
     "uncalibrated_xauusd_signal_profile",
 ]
+
 
 
 
