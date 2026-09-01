@@ -2,40 +2,46 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN** (Long Risk Architecture)  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🔴 **LONG / SHORT RISK REDESIGN REQUIRED (NOT IMPLEMENTED)**
+> **Current XAUUSD Target Status:** ✅ **IMPLEMENTED & VERIFIED** (Side-Aware Risk Planning, Causal Execution & Intrabar Resolver)
 
 ---
 
 ## XAUUSD Migration Addendum
 
-### 1. Dual-Direction Risk Planning Specification (Conceptual Target)
-For the target XAUUSD instrument, the risk engine is extended to evaluate both Long and Short candidate signals:
+### 1. Dual-Direction Risk Planning Specification
+For the target XAUUSD instrument, the risk engine evaluates both Long and Short candidate signals via `XauUsdRiskPlanner`:
 
 ```text
 LONG SETUPS (BUY):
-1. Entry Zone: Derived from Support Zone [Support_Low, Support_High]
-2. Structure Stop: Support_Low - Structure_Buffer
-3. ATR Stop: Entry_Mid - (k * ATR14)
-4. Stop Final: min(Stop_Structure, Stop_ATR)
-5. Target: Nearest confirmed structural resistance
-6. RR Gate: Planned Reward / Planned Risk >= Min_RR
+1. Candidate Source Gate: Requires candidate_state == BUY_WINDOW and candidate_user_decision == BUY
+2. Entry Zone: Derived from Support Zone [Support_Low, Support_High] (highest price_high deterministic selection)
+3. Structure Stop: Support_Low - Structure_Buffer
+4. ATR Stop: Entry_Mid - (k * ATR14)
+5. Stop Final: min(Stop_Structure, Stop_ATR) (invariant: Stop_Final < Entry_Min)
+6. Target 1: Nearest confirmed structural resistance (strictly above Entry_Max)
+7. Target 2: Next structural resistance (strictly beyond TP1) or optional synthetic ATR expansion
+8. RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Max)
+9. Production Authority: Layer B effective action is strictly WAIT (is_production_authorized = False)
 
-SHORT SETUPS (SELL - Conceptual Target Spec):
-1. Entry Zone: Derived from Resistance Zone [Resistance_Low, Resistance_High]
-2. Structure Stop: Resistance_High + Structure_Buffer
-3. ATR Stop: Entry_Mid + (k * ATR14)
-4. Stop Final: max(Stop_Structure, Stop_ATR)
-5. Target: Nearest confirmed structural support
-6. RR Gate: Planned Reward / Planned Risk >= Min_RR
+SHORT SETUPS (SELL):
+1. Candidate Source Gate: Requires candidate_state == SELL_WINDOW and candidate_user_decision == SELL
+2. Entry Zone: Derived from Resistance Zone [Resistance_Low, Resistance_High] (lowest price_low deterministic selection)
+3. Structure Stop: Resistance_High + Structure_Buffer
+4. ATR Stop: Entry_Mid + (k * ATR14)
+5. Stop Final: max(Stop_Structure, Stop_ATR) (invariant: Stop_Final > Entry_Max)
+6. Target 1: Nearest confirmed structural support (strictly below Entry_Min)
+7. Target 2: Next structural support (strictly beyond TP1) or optional synthetic ATR contraction
+8. RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Min)
+9. Production Authority: Layer B effective action is strictly WAIT (is_production_authorized = False)
 ```
 
 ### 2. Threshold & Calibration Status
-All numerical risk parameters for XAUUSD (including minimum RR, ATR multiplier $k$, maximum stop distance ATR, and buffer sizes) are **NOT FROZEN / REVALIDATION REQUIRED**. The legacy threshold $RR \ge 1.80$ remains a historical baseline reference only.
+All numerical risk parameters for XAUUSD (including minimum RR, ATR multiplier $k$, maximum stop distance ATR, and buffer sizes) are managed via `XauUsdRiskProfile`. Uncalibrated profiles default all empirical numerics to `None`. Acceptance test fixtures use explicit `TEST_ONLY` configurations.
 
-### 3. Approved Future Test Contracts (Planned)
-- **`XAU-P5-01`**: LONG risk contract (`PLANNED / FUTURE CONTRACT`)
-- **`XAU-P5-02`**: SHORT risk contract (`PLANNED / FUTURE CONTRACT`)
-- **`XAU-P5-03`**: SHORT bid/ask spread and adverse slippage semantics (`PLANNED / FUTURE CONTRACT`)
+### 3. Acceptance Test Contracts (Verified)
+- **`XAU-P5-01`**: LONG side-aware risk planning contract (Support entry, stop below, nearest resistance TP1, conservative RR using `entry_max`, publication `WAIT`)
+- **`XAU-P5-02`**: SHORT side-aware risk planning contract (Resistance entry, stop above, nearest support TP1, conservative RR using `entry_min`, publication `WAIT`)
+- **`XAU-P5-03`**: Side-aware market bid/ask execution contract (LONG uses `ASK`, SHORT uses `BID`, adverse slippage, spread counted once, strict quote integrity)
 
 ---
 
