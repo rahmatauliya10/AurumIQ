@@ -2,7 +2,7 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source Baseline:** `main` @ `823d176b140f3823f1e41d1071b4dc98bf558eab`  
-> **Current XAUUSD Target Status:** 🧪 **REVALIDATED / IMPLEMENTED (RESEARCH ONLY, PRODUCTION WEIGHT = 0.0)**
+> **Current XAUUSD Target Status:** 🧪 **IMPLEMENTED / RESEARCH ONLY (PRODUCTION WEIGHT = 0.0)**
 
 ---
 
@@ -10,7 +10,7 @@
 
 | Metric / Governance Area | Formal Status | Operational Interpretation |
 |---|:---:|---|
-| **Phase 3B Architecture** | ✅ `REVALIDATED / IMPLEMENTED` | Mathematical & spectral engines (ACF, FFT, Wavelet, Hilbert) fully operational. |
+| **Phase 3B Architecture** | ✅ `IMPLEMENTED / OPERATIONAL` | Mathematical & spectral engines (ACF, FFT, Wavelet, Hilbert) fully operational. |
 | **Spectral Algorithms** | 🔬 `RESEARCH ONLY` | Used exclusively for descriptive frequency/phase diagnostics, not live scoring. |
 | **XAUUSD Empirical Detection Thresholds** | 🟡 `NOT_CONFIGURED / NOT_FROZEN` | No Bartlett bound, FFT power cutoff, Wavelet COI, or Hilbert stability frozen for XAUUSD. |
 | **XAUUSD Empirical Reliability Thresholds** | 🟡 `NOT_CONFIGURED / NOT_FROZEN` | Dispersion, agreement, and scoring bands strictly `None`; reliability score locks to `0.0` (`UNRELIABLE`). |
@@ -19,7 +19,7 @@
 | **Phase 6 Promotion Dependency** | 🔒 `BLOCKED_BY_PHASE6` | Evaluation requires verified empirical XAUUSD backtest baseline from Phase 6. |
 | **Production Weight** | 🔒 `0.0 HARD LOCKED` | Permanently 0.0 across all dataclass, engine, and database check constraints. |
 | **Historical XAUT Phase 3B Evidence** | 🧊 `PRESERVED` | Historical XAUT reference numbers isolated under explicit `legacy_xaut_research_profile()`. |
-| **Phase 4+ Direction / Timing / Execution** | ⏸️ `NOT STARTED` | Zero BUY/SELL directional score, timing score, or execution logic. |
+| **Phase 4 & Phase 5 Status** | ✅ `COMPLETED & VERIFIED` | Phase 4 State Machine and Phase 5 Risk Engine are completed & verified; Phase 3B weight remains locked at 0.0. |
 
 ---
 

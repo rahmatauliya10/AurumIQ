@@ -57,7 +57,7 @@ The following account and audit durability hardening was implemented on top of t
 
 #### E. Container & Orchestration (`docker/`)
 - `docker/Dockerfile`: Python 3.13-slim image, non-root user (`appuser:1000`).
-- `docker/docker-compose.yml`: 5 interconnected services (`xaut_postgres`, `xaut_redis`, `xaut_web`, `xaut_celery_worker`, `xaut_celery_beat`).
+- `docker/docker-compose.yml`: 5 interconnected services (`xaut_postgres`, `xaut_redis`, `xaut_web`, `xaut_celery_worker`, `xaut_celery_beat` — *Historical / Legacy service naming preserved for infrastructure stability*).
 
 ### 2. File Manifest
 
