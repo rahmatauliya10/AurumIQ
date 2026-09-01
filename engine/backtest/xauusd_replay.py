@@ -32,8 +32,11 @@ from engine.signals.profile import Phase4SignalProfile
 from engine.structure.engine import CausalStructureEngine
 
 
-def _to_utc(dt: datetime) -> datetime:
-    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+def _require_utc(dt: datetime, param_name: str = "timestamp") -> datetime:
+    """Validate that datetime is explicitly timezone aware and convert to UTC."""
+    if dt is None or dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"{param_name} must be timezone-aware with non-None utcoffset (naive timestamps forbidden).")
+    return dt.astimezone(timezone.utc)
 
 
 class XauUsdPointInTimeReplay:
@@ -45,8 +48,10 @@ class XauUsdPointInTimeReplay:
       2. One Engine Rule (Phase 5): Calls exact XauUsdRiskPlanner instance.
       3. Point-in-Time Causality: Decision evaluation at T has access ONLY to closed data with timestamp_close <= T.
       4. Closed-Candle Contract: Unclosed candle <= T activates Phase 4 safety hold (FORCE_WAIT -> WAIT).
-      5. Outcome Simulation: Reads strictly post-T data chronologically for fill and barrier resolution.
-      6. Zero Django, ORM, or Celery imports in pure calculation engine.
+      5. Bounded Run Window: Replay evidence beyond declared run_end_time is strictly excluded.
+      6. No ATR Fallback: Missing ATR14 fails closed deterministically.
+      7. Hard Layer B Invariant: Published user decision is ALWAYS WAIT (is_production_authorized = False).
+      8. Zero Swallowed Exceptions: Unexpected exceptions propagate immediately.
     """
 
     def __init__(
@@ -60,18 +65,31 @@ class XauUsdPointInTimeReplay:
         regime_engine: Optional[RegimeEngine] = None,
         execution_policy: EntryExecutionPolicy = EntryExecutionPolicy.NEXT_BAR_OPEN,
         intrabar_policy: IntrabarPolicy = IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
+        signal_profile: Optional[Phase4SignalProfile] = None,
         run_fingerprint: str = "",
         fold_id: Optional[int] = None,
         holding_horizon_bars_15m: Optional[int] = None,
         holding_horizon_seconds: Optional[float] = None,
-        signal_profile: Optional[Phase4SignalProfile] = None,
+        max_fill_wait_bars_15m: Optional[int] = None,
+        max_fill_wait_seconds: Optional[float] = None,
+        cost_config: Optional[XauUsdCostConfig] = None,
+        run_end_time: Optional[datetime] = None,
     ):
         self.dataset = dataset
         self.signal_engine = signal_engine
         self.risk_planner = risk_planner
+        self.signal_profile = signal_profile
+        self.cost_config = cost_config or XauUsdCostConfig.idealized()
         self.outcome_engine = outcome_engine or XauUsdOutcomeEngine(
+            cost_config=self.cost_config,
+            entry_execution_model=None,
+            code_revision=self.risk_planner.code_revision,
+            execution_policy_config=self.risk_planner.risk_profile.long_execution_policy,
+            phase5_policy_fingerprint=self.risk_planner.policy_fingerprint,
             holding_horizon_bars_15m=holding_horizon_bars_15m,
             holding_horizon_seconds=holding_horizon_seconds,
+            max_fill_wait_bars_15m=max_fill_wait_bars_15m,
+            max_fill_wait_seconds=max_fill_wait_seconds,
         )
         self.structure_engine = structure_engine or CausalStructureEngine()
         self.feature_engine = feature_engine or FeatureEngine()
@@ -82,37 +100,35 @@ class XauUsdPointInTimeReplay:
         self.fold_id = fold_id
         self.holding_horizon_bars_15m = holding_horizon_bars_15m
         self.holding_horizon_seconds = holding_horizon_seconds
-        self.signal_profile = signal_profile
+        self.max_fill_wait_bars_15m = max_fill_wait_bars_15m
+        self.max_fill_wait_seconds = max_fill_wait_seconds
+        self.run_end_time = _require_utc(run_end_time, "run_end_time") if run_end_time is not None else None
 
     def run(self, clock: ReplayClock) -> Tuple[List[DualSideSignalSnapshot], List[XauUsdSimulatedTrade]]:
         """
-        Iterate over chronological clock timestamps T and execute simulation.
+        Iterate through timeline clock evaluating point-in-time signals and executing outcomes.
         """
         signals: List[DualSideSignalSnapshot] = []
         trades: List[XauUsdSimulatedTrade] = []
         trade_counter = 0
 
-        for t in clock:
-            t_utc = _to_utc(t)
+        for t_step in clock:
+            t_utc = _require_utc(t_step, "clock_step")
 
-            # 1. Query point-in-time closed candles <= T
+            # Respect declared run_end_time boundary
+            if self.run_end_time is not None and t_utc > self.run_end_time:
+                break
+
+            # 1. PIT Closed-Candle Extraction
             closed_15m = self.dataset.get_closed_candles("15m", as_of=t_utc)
-            if not closed_15m:
-                continue
-
             closed_1h = self.dataset.get_closed_candles("1h", as_of=t_utc)
             closed_4h = self.dataset.get_closed_candles("4h", as_of=t_utc)
             closed_1d = self.dataset.get_closed_candles("1d", as_of=t_utc)
 
-            macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
-            cycle_3a = self.dataset.get_cycle_3a(as_of=t_utc, cycle_version=getattr(self.signal_engine, "cycle_version", "3.0.0-3A"))
-            if macro_ctx is None and cycle_3a is not None and getattr(cycle_3a, "macro_event", None):
-                macro_ctx = cycle_3a.macro_event
-
-            # Check unclosed candle safety semantics at <= T
+            # Check unclosed candle safety hold
             raw_15m = getattr(self.dataset, "_candles", {}).get("15m", [])
             has_unclosed_le_t = any(
-                _to_utc(c.timestamp_close) <= t_utc and not c.is_closed
+                _require_utc(c.timestamp_close) <= t_utc and not c.is_closed
                 for c in raw_15m
             )
             rfh = RuntimeFeedHealth(is_unclosed_candle=has_unclosed_le_t)
@@ -127,26 +143,26 @@ class XauUsdPointInTimeReplay:
             feats_1d = self.feature_engine.extract_features(closed_1d) if len(closed_1d) >= 20 else None
 
             # 3. Master Dual-Side Signal Evaluation @ T (Phase 4 Engine)
-            try:
-                signal_snapshot = self.signal_engine.analyze(
-                    closed_candles_15m=closed_15m,
-                    closed_candles_1h=closed_1h if closed_1h else None,
-                    closed_candles_4h=closed_4h if closed_4h else None,
-                    closed_candles_1d=closed_1d if closed_1d else None,
-                    regime_15m=regime_15m,
-                    features_15m=feats_15m,
-                    features_1h=feats_1h,
-                    features_4h=feats_4h,
-                    features_1d=feats_1d,
-                    structure_15m=structure_15m,
-                    cycle_3a=cycle_3a,
-                    runtime_health=rfh,
-                    profile=self.signal_profile,
-                    instrument="XAUUSD",
-                    timeframe="15m",
-                    as_of=t_utc,
-                )
-            except Exception:
+            # Propagate exceptions directly - NO swallowing!
+            signal_snapshot = self.signal_engine.analyze(
+                closed_candles_15m=closed_15m,
+                closed_candles_1h=closed_1h if closed_1h else None,
+                closed_candles_4h=closed_4h if closed_4h else None,
+                closed_candles_1d=closed_1d if closed_1d else None,
+                regime_15m=regime_15m,
+                features_15m=feats_15m,
+                features_1h=feats_1h,
+                features_4h=feats_4h,
+                features_1d=feats_1d,
+                structure_15m=structure_15m,
+                runtime_health=rfh,
+                profile=self.signal_profile,
+                instrument="XAUUSD",
+                timeframe="15m",
+                as_of=t_utc,
+            )
+
+            if signal_snapshot is None:
                 continue
 
             signals.append(signal_snapshot)
@@ -163,25 +179,48 @@ class XauUsdPointInTimeReplay:
                 highs = [c.high for c in closed_15m]
                 lows = [c.low for c in closed_15m]
                 closes = [c.close for c in closed_15m]
-                atr_14 = calculate_atr(highs, lows, closes, 14)
+                atr_14 = calculate_atr(highs, lows, closes, 14) if len(closed_15m) >= 15 else None
 
-                atr_4h = None
-                if closed_4h and len(closed_4h) >= 15:
-                    atr_4h = calculate_atr([c.high for c in closed_4h], [c.low for c in closed_4h], [c.close for c in closed_4h], 14)
-
-                # Execute Phase 5 LONG Risk Planning
-                risk_plan = self.risk_planner.plan_long(
-                    phase4_snapshot=signal_snapshot,
-                    structure_15m=structure_15m,
-                    atr14=atr_14 or Decimal("3.00"),
-                )
+                # Execute Phase 5 LONG Risk Planning (No synthetic ATR fallback!)
+                if atr_14 is None:
+                    risk_plan = self.risk_planner._build_invalid_snapshot(
+                        side=SignalSide.LONG,
+                        source_phase4_fingerprint=signal_snapshot.analysis_fingerprint,
+                        source_candidate_state=cand_state,
+                        source_candidate_decision=cand_decision,
+                        authoritative_t=t_utc,
+                        atr_value=Decimal("0"),
+                        reasons=("ATR14 unavailable from closed 15m candles.",),
+                    )
+                else:
+                    risk_plan = self.risk_planner.plan_long(
+                        phase4_snapshot=signal_snapshot,
+                        structure_15m=structure_15m,
+                        atr14=atr_14,
+                    )
 
                 if risk_plan.is_valid_risk_plan and risk_plan.execution_eligible:
-                    # Query strictly post-T future candles & quotes
-                    future_15m = [c for c in raw_15m if _to_utc(c.timestamp_close) > t_utc]
-                    future_5m = [c for c in getattr(self.dataset, "_candles", {}).get("5m", []) if _to_utc(c.timestamp_close) > t_utc]
-                    future_1m = [c for c in getattr(self.dataset, "_candles", {}).get("1m", []) if _to_utc(c.timestamp_close) > t_utc]
-                    future_quotes = [q for q in getattr(self.dataset, "_quotes", []) if _to_utc(q.timestamp) >= t_utc]
+                    # Query strictly post-T future candles & quotes within declared run_end_time
+                    future_15m = [
+                        c for c in raw_15m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_5m = [
+                        c for c in getattr(self.dataset, "_candles", {}).get("5m", [])
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_1m = [
+                        c for c in getattr(self.dataset, "_candles", {}).get("1m", [])
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_quotes = [
+                        q for q in getattr(self.dataset, "_quotes", [])
+                        if _require_utc(q.timestamp) >= t_utc
+                        and (self.run_end_time is None or _require_utc(q.timestamp) <= self.run_end_time)
+                    ]
 
                     sim_trade = self.outcome_engine.resolve_trade(
                         signal=signal_snapshot,
@@ -197,6 +236,7 @@ class XauUsdPointInTimeReplay:
                         fold_id=self.fold_id,
                         holding_horizon_bars_15m=self.holding_horizon_bars_15m,
                         holding_horizon_seconds=self.holding_horizon_seconds,
+                        run_end_time=self.run_end_time,
                     )
                     trades.append(sim_trade)
                 else:
@@ -215,6 +255,7 @@ class XauUsdPointInTimeReplay:
                             run_fingerprint=self.run_fingerprint,
                             fold_id=self.fold_id,
                             dependency_window=(t_utc, t_utc),
+                            dependency_end_timestamp=t_utc,
                         )
                     )
 
@@ -226,21 +267,48 @@ class XauUsdPointInTimeReplay:
                 highs = [c.high for c in closed_15m]
                 lows = [c.low for c in closed_15m]
                 closes = [c.close for c in closed_15m]
-                atr_14 = calculate_atr(highs, lows, closes, 14)
+                atr_14 = calculate_atr(highs, lows, closes, 14) if len(closed_15m) >= 15 else None
 
-                # Execute Phase 5 SHORT Risk Planning
-                risk_plan = self.risk_planner.plan_short(
-                    phase4_snapshot=signal_snapshot,
-                    structure_15m=structure_15m,
-                    atr14=atr_14 or Decimal("3.00"),
-                )
+                # Execute Phase 5 SHORT Risk Planning (No synthetic ATR fallback!)
+                if atr_14 is None:
+                    risk_plan = self.risk_planner._build_invalid_snapshot(
+                        side=SignalSide.SHORT,
+                        source_phase4_fingerprint=signal_snapshot.analysis_fingerprint,
+                        source_candidate_state=cand_state,
+                        source_candidate_decision=cand_decision,
+                        authoritative_t=t_utc,
+                        atr_value=Decimal("0"),
+                        reasons=("ATR14 unavailable from closed 15m candles.",),
+                    )
+                else:
+                    risk_plan = self.risk_planner.plan_short(
+                        phase4_snapshot=signal_snapshot,
+                        structure_15m=structure_15m,
+                        atr14=atr_14,
+                    )
 
                 if risk_plan.is_valid_risk_plan and risk_plan.execution_eligible:
-                    # Query strictly post-T future candles & quotes
-                    future_15m = [c for c in raw_15m if _to_utc(c.timestamp_close) > t_utc]
-                    future_5m = [c for c in getattr(self.dataset, "_candles", {}).get("5m", []) if _to_utc(c.timestamp_close) > t_utc]
-                    future_1m = [c for c in getattr(self.dataset, "_candles", {}).get("1m", []) if _to_utc(c.timestamp_close) > t_utc]
-                    future_quotes = [q for q in getattr(self.dataset, "_quotes", []) if _to_utc(q.timestamp) >= t_utc]
+                    # Query strictly post-T future candles & quotes within declared run_end_time
+                    future_15m = [
+                        c for c in raw_15m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_5m = [
+                        c for c in getattr(self.dataset, "_candles", {}).get("5m", [])
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_1m = [
+                        c for c in getattr(self.dataset, "_candles", {}).get("1m", [])
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) <= self.run_end_time)
+                    ]
+                    future_quotes = [
+                        q for q in getattr(self.dataset, "_quotes", [])
+                        if _require_utc(q.timestamp) >= t_utc
+                        and (self.run_end_time is None or _require_utc(q.timestamp) <= self.run_end_time)
+                    ]
 
                     sim_trade = self.outcome_engine.resolve_trade(
                         signal=signal_snapshot,
@@ -256,6 +324,7 @@ class XauUsdPointInTimeReplay:
                         fold_id=self.fold_id,
                         holding_horizon_bars_15m=self.holding_horizon_bars_15m,
                         holding_horizon_seconds=self.holding_horizon_seconds,
+                        run_end_time=self.run_end_time,
                     )
                     trades.append(sim_trade)
                 else:
@@ -274,6 +343,7 @@ class XauUsdPointInTimeReplay:
                             run_fingerprint=self.run_fingerprint,
                             fold_id=self.fold_id,
                             dependency_window=(t_utc, t_utc),
+                            dependency_end_timestamp=t_utc,
                         )
                     )
 

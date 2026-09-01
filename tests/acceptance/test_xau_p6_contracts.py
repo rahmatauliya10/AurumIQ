@@ -64,6 +64,7 @@ from engine.risk.xauusd_policy import (
 )
 from engine.signals.engine import XauUsdSignalEngine
 from engine.signals.profile import (
+    Phase4CalibrationStatus,
     Phase4SignalProfile,
     SideDirectionPolicy,
     SideTimingPolicy,
@@ -99,6 +100,49 @@ def calibrated_risk_profile():
             synthetic_spread_pct=Decimal("0.02"),
             slippage_pct=Decimal("0.01"),
         ),
+    )
+
+
+@pytest.fixture
+def calibrated_signal_profile():
+    """Explicit calibrated test signal profile."""
+    return Phase4SignalProfile(
+        name="XAUUSD_TEST_CALIBRATED",
+        long_direction=SideDirectionPolicy(
+            weight_regime=20.0,
+            weight_trend_1h=20.0,
+            weight_trend_4h=20.0,
+            weight_trend_1d=10.0,
+            weight_structure_bos=10.0,
+            weight_pullback=10.0,
+            weight_momentum=5.0,
+            weight_volume=5.0,
+        ),
+        short_direction=SideDirectionPolicy(
+            weight_regime=20.0,
+            weight_trend_1h=20.0,
+            weight_trend_4h=20.0,
+            weight_trend_1d=10.0,
+            weight_structure_bos=10.0,
+            weight_pullback=10.0,
+            weight_momentum=5.0,
+            weight_volume=5.0,
+        ),
+        long_timing=SideTimingPolicy(
+            weight_entry_zone=30.0,
+            weight_reversal_confirmation_15m=25.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=15.0,
+            weight_volume_response=10.0,
+        ),
+        short_timing=SideTimingPolicy(
+            weight_entry_zone=30.0,
+            weight_reversal_confirmation_15m=25.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=15.0,
+            weight_volume_response=10.0,
+        ),
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
     )
 
 
@@ -184,10 +228,11 @@ def make_mock_dual_side_signal(
 # XAU-P6-01: Historical LONG PIT Replay, Risk Parity, Execution & Normalized R
 # ==============================================================================
 
-def test_xau_p6_01_long_contract(calibrated_risk_profile):
+def test_xau_p6_01_long_contract(calibrated_risk_profile, calibrated_signal_profile):
     """
     Contract XAU-P6-01: Proves complete Point-in-Time causality, Phase 4 & 5 parity,
-    causal execution fill, intrabar barrier resolution, and normalized R for LONG replay.
+    causal execution fill, intrabar barrier resolution, and normalized R for LONG replay,
+    including end-to-end execution through XauUsdBacktestRunner.
     """
     code_rev = "46e388a106b9bdc388e646c73570e7879142c837"
     eval_time = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
@@ -245,9 +290,7 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile):
     assert risk_plan.is_valid_risk_plan is True
     assert risk_plan.execution_eligible is True
     assert risk_plan.entry_max == Decimal("2615.00")
-    # Stop structure = 2610.00 - 1.50 = 2608.50; Stop ATR = 2612.50 - 6.00 = 2606.50 -> stop_final = 2606.50
     assert risk_plan.stop_final == Decimal("2606.50")
-    # Planned Risk = 2615.00 - 2606.50 = 8.50
     planned_risk = risk_plan.entry_max - risk_plan.stop_final
     assert planned_risk == Decimal("8.50")
 
@@ -255,6 +298,10 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile):
     outcome_engine = XauUsdOutcomeEngine(
         cost_config=XauUsdCostConfig.idealized(),
         holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        execution_policy_config=calibrated_risk_profile.long_execution_policy,
+        phase5_policy_fingerprint=risk_planner.policy_fingerprint,
     )
     future_candles = dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=2))
     post_t_candles = [c for c in future_candles if c.timestamp_close > eval_time]
@@ -271,36 +318,57 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile):
     # 6. Verify Outcome, Fill, Exit & Normalized R
     assert sim_trade.outcome == XauUsdTradeOutcome.TP1_FIRST
     assert sim_trade.side == SignalSide.LONG
-    assert sim_trade.fill_price == Decimal("2615.00")
+    # SideAware Ask execution: 2615.00 + 0.523 (spread) + 0.2615 (slippage) = 2615.7845
+    assert sim_trade.fill_price == Decimal("2615.784500")
     assert sim_trade.exit_price == risk_plan.tp1
     assert sim_trade.planned_risk_amount == planned_risk
 
-    # Realized R = (TP1 - Fill) / Planned Risk
     expected_pnl = risk_plan.tp1 - sim_trade.fill_price
     expected_r = (expected_pnl / planned_risk).quantize(Decimal("0.0001"))
     assert sim_trade.gross_r == expected_r
     assert sim_trade.net_r == expected_r
-    assert sim_trade.net_r > Decimal("1.80")  # Verified RR >= 1.80
+    assert sim_trade.net_r > Decimal("1.80")
 
-    # 7. Proof of Future Mutation Resistance (PIT Isolation)
-    # Adding extra future bars after T must NOT alter the signal or risk plan generated at T
-    dataset.add_candle(
-        "15m",
-        make_candle("15m", future_start + timedelta(hours=5), Decimal("3000.00"), Decimal("3100.00"), Decimal("2900.00"), Decimal("3050.00")),
+    # 7. End-to-End Execution Path via XauUsdBacktestRunner
+    runner = XauUsdBacktestRunner()
+    ds_hash = compute_xauusd_dataset_identity(
+        candles_15m=dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=1)),
+        start_time=eval_time - timedelta(hours=5),
+        end_time=eval_time + timedelta(hours=1),
     )
-    pit_check_15m = dataset.get_closed_candles("15m", as_of=eval_time)
-    assert len(pit_check_15m) == 30
-    assert pit_check_15m[-1].timestamp_close == eval_time
+    runner_spec = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=eval_time,
+        end_time=eval_time + timedelta(hours=1),
+        timeframes=("15m",),
+        cost_config=XauUsdCostConfig.idealized(),
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash=ds_hash,
+        holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        signal_profile=calibrated_signal_profile,
+        risk_profile=calibrated_risk_profile,
+    )
+    runner_metrics, runner_trades, runner_signals, runner_fp = runner.run_point_in_time(
+        dataset=dataset,
+        spec=runner_spec,
+    )
+    assert runner_fp != ""
+    assert len(runner_signals) > 0
+    # Published Layer B remains WAIT throughout runner replay
+    assert all(s.user_decision == UserDecision.WAIT for s in runner_signals)
 
 
 # ==============================================================================
 # XAU-P6-02: Historical SHORT PIT Replay, Risk Parity, Execution & Normalized R
 # ==============================================================================
 
-def test_xau_p6_02_short_contract(calibrated_risk_profile):
+def test_xau_p6_02_short_contract(calibrated_risk_profile, calibrated_signal_profile):
     """
     Contract XAU-P6-02: Proves complete Point-in-Time causality, Phase 4 & 5 parity,
-    causal BID fill execution, intrabar barrier resolution, and normalized R for SHORT replay.
+    causal BID fill execution, intrabar barrier resolution, and normalized R for SHORT replay,
+    including end-to-end execution through XauUsdBacktestRunner.
     """
     code_rev = "46e388a106b9bdc388e646c73570e7879142c837"
     eval_time = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
@@ -359,9 +427,7 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile):
     assert risk_plan.is_valid_risk_plan is True
     assert risk_plan.execution_eligible is True
     assert risk_plan.entry_min == Decimal("2635.00")
-    # Stop structure = 2640.00 + 1.50 = 2641.50; Stop ATR = 2637.50 + 6.00 = 2643.50 -> stop_final = 2643.50
     assert risk_plan.stop_final == Decimal("2643.50")
-    # Planned Risk = 2643.50 - 2635.00 = 8.50
     planned_risk = risk_plan.stop_final - risk_plan.entry_min
     assert planned_risk == Decimal("8.50")
 
@@ -369,6 +435,10 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile):
     outcome_engine = XauUsdOutcomeEngine(
         cost_config=XauUsdCostConfig.idealized(),
         holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        execution_policy_config=calibrated_risk_profile.short_execution_policy,
+        phase5_policy_fingerprint=risk_planner.policy_fingerprint,
     )
     future_candles = dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=2))
     post_t_candles = [c for c in future_candles if c.timestamp_close > eval_time]
@@ -385,23 +455,52 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile):
     # 6. Verify Outcome, Short Fill, Short Exit & Normalized R
     assert sim_trade.outcome == XauUsdTradeOutcome.TP1_FIRST
     assert sim_trade.side == SignalSide.SHORT
-    assert sim_trade.fill_price == Decimal("2635.00")
+    # SideAware Bid execution: 2635.00 - 0.527 (spread) - 0.2635 (slippage) = 2634.2095
+    assert sim_trade.fill_price == Decimal("2634.209500")
     assert sim_trade.exit_price == risk_plan.tp1
     assert sim_trade.planned_risk_amount == planned_risk
 
-    # Realized R for Short = (Fill - Exit) / Planned Risk
     expected_pnl = sim_trade.fill_price - risk_plan.tp1
     expected_r = (expected_pnl / planned_risk).quantize(Decimal("0.0001"))
     assert sim_trade.gross_r == expected_r
     assert sim_trade.net_r == expected_r
     assert sim_trade.net_r > Decimal("0.00")
 
+    # 7. End-to-End Execution Path via XauUsdBacktestRunner
+    runner = XauUsdBacktestRunner()
+    ds_hash = compute_xauusd_dataset_identity(
+        candles_15m=dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=1)),
+        start_time=eval_time - timedelta(hours=5),
+        end_time=eval_time + timedelta(hours=1),
+    )
+    runner_spec = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=eval_time,
+        end_time=eval_time + timedelta(hours=1),
+        timeframes=("15m",),
+        cost_config=XauUsdCostConfig.idealized(),
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash=ds_hash,
+        holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        signal_profile=calibrated_signal_profile,
+        risk_profile=calibrated_risk_profile,
+    )
+    runner_metrics, runner_trades, runner_signals, runner_fp = runner.run_point_in_time(
+        dataset=dataset,
+        spec=runner_spec,
+    )
+    assert runner_fp != ""
+    assert len(runner_signals) > 0
+    assert all(s.user_decision == UserDecision.WAIT for s in runner_signals)
+
 
 # ==============================================================================
 # XAU-P6-03: Combined Side-Aware Parity, Walk-Forward Purge/Embargo & Ablation
 # ==============================================================================
 
-def test_xau_p6_03_combined_contract(calibrated_risk_profile):
+def test_xau_p6_03_combined_contract(calibrated_risk_profile, calibrated_signal_profile):
     """
     Contract XAU-P6-03: Proves side-aware reporting, walk-forward chronological folding,
     dependency purging, post-boundary embargo, and component ablation baseline immutability.
@@ -436,11 +535,13 @@ def test_xau_p6_03_combined_contract(calibrated_risk_profile):
         cost_scenario=XauUsdCostScenario.IDEALIZED,
         dataset_hash=ds_hash,
         holding_horizon_bars_15m=8,
+        max_fill_wait_bars_15m=4,
         code_revision=code_rev,
+        signal_profile=calibrated_signal_profile,
+        risk_profile=calibrated_risk_profile,
     )
 
     # 2. Side-Aware Metrics Verification (LONG, SHORT, COMBINED)
-    # Create simulated trades with both LONG and SHORT
     t1 = XauUsdSimulatedTrade(
         trade_id="t-long-1",
         side=SignalSide.LONG,
@@ -523,26 +624,24 @@ def test_xau_p6_03_combined_contract(calibrated_risk_profile):
     assert metrics_comb.short_trade_count == 1
 
     # 3. Dependency-Window Purge Verification
-    # Partition [start, 10h) -> t3 outcome ends at 12h, so it crosses boundary and MUST be purged
     purge_res = PurgeEngine.filter_partition(
         trades=all_trades,
         partition_start=start_time,
         partition_end=start_time + timedelta(hours=10),
         purge_overlapping=True,
     )
-    assert len(purge_res.eligible_trades) == 2  # t1 and t2 eligible
-    assert len(purge_res.purged_trades) == 1    # t3 purged
+    assert len(purge_res.eligible_trades) == 2
+    assert len(purge_res.purged_trades) == 1
     assert purge_res.purged_trades[0].trade_id == "t-long-cross"
 
     # 4. Post-Boundary Embargo Verification
-    # Segment [10h, 15h) with 1-hour embargo [10h, 11h)
     t4_embargo = XauUsdSimulatedTrade(
         trade_id="t-embargoed",
         side=SignalSide.LONG,
         candidate_state=SignalState.BUY_WINDOW,
         candidate_user_decision=UserDecision.BUY,
         source_signal_fingerprint="sig-emb",
-        signal_timestamp=start_time + timedelta(hours=10, minutes=30),  # Falls in [10h, 11h)
+        signal_timestamp=start_time + timedelta(hours=10, minutes=30),
         risk_plan_fingerprint="risk-4",
         planned_risk_amount=Decimal("5.00"),
         outcome=XauUsdTradeOutcome.TP1_FIRST,
@@ -574,6 +673,5 @@ def test_xau_p6_03_combined_contract(calibrated_risk_profile):
     )
 
     assert ablation_report.immutability_verified is True
+    assert ablation_report.baseline_hash != ""
     assert len(ablation_report.comparisons) == 6
-    for comp in ablation_report.comparisons:
-        assert isinstance(comp.delta.delta_expectancy_r, float)

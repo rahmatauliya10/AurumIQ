@@ -6,14 +6,25 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from engine.core.types import (
+    EntryExecutionPolicy,
     IntrabarPolicy,
     RegimeType,
+    RiskSide,
     SessionType,
     SignalSide,
     SignalSnapshot,
     SignalState,
     UserDecision,
 )
+from engine.risk.xauusd_policy import XauUsdRiskProfile
+from engine.signals.profile import Phase4SignalProfile
+
+
+def _require_utc(dt: datetime, param_name: str = "timestamp") -> datetime:
+    """Validate that datetime is explicitly timezone aware and convert to UTC."""
+    if dt is None or dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"{param_name} must be timezone-aware with non-None utcoffset (naive timestamps forbidden).")
+    return dt.astimezone(timezone.utc)
 
 
 class XauUsdCostScenario(str, Enum):
@@ -81,7 +92,18 @@ class XauUsdCostConfig:
         entry_slippage_bps: Decimal = Decimal("0.0"),
         exit_slippage_bps: Decimal = Decimal("0.0"),
     ) -> "XauUsdCostConfig":
-        """Explicit caller-supplied empirical friction scenario."""
+        """
+        Explicit caller-supplied empirical friction scenario.
+        Requires explicit non-zero configuration when in empirical mode.
+        """
+        if (
+            entry_fee_bps == Decimal("0.0")
+            and exit_fee_bps == Decimal("0.0")
+            and synthetic_spread_bps == Decimal("0.0")
+            and entry_slippage_bps == Decimal("0.0")
+            and exit_slippage_bps == Decimal("0.0")
+        ):
+            raise ValueError("EMPIRICAL cost configuration requires explicit non-zero friction parameters.")
         return cls(
             entry_fee_bps=entry_fee_bps,
             exit_fee_bps=exit_fee_bps,
@@ -110,6 +132,7 @@ class XauUsdSimulatedTrade:
     fill_price: Optional[Decimal] = None
     exit_timestamp: Optional[datetime] = None
     exit_price: Optional[Decimal] = None
+    dependency_end_timestamp: Optional[datetime] = None
     gross_pnl_per_unit: Optional[Decimal] = None
     net_pnl_per_unit: Optional[Decimal] = None
     gross_r: Optional[Decimal] = None
@@ -128,25 +151,28 @@ class XauUsdSimulatedTrade:
     regime: RegimeType = RegimeType.UNKNOWN
     session: SessionType = SessionType.LONDON
     cycle_phase: Optional[str] = None
-    ambiguity_policy: IntrabarPolicy = IntrabarPolicy.CONSERVATIVE_SL_FIRST
+    ambiguity_policy: IntrabarPolicy = IntrabarPolicy.LOWER_TIMEFRAME_REPLAY
     fold_id: Optional[int] = None
     run_fingerprint: str = ""
     execution_evidence_fingerprint: Optional[str] = None
-    dependency_window: Tuple[datetime, datetime] = field(
-        default_factory=lambda: (datetime.min.replace(tzinfo=timezone.utc), datetime.min.replace(tzinfo=timezone.utc))
-    )
+    dependency_window: Tuple[datetime, datetime] = field(default_factory=lambda: (datetime.min.replace(tzinfo=timezone.utc), datetime.min.replace(tzinfo=timezone.utc)))
     tp2_reached_after_tp1: bool = False
     max_favorable_extension_r: Optional[Decimal] = None
 
-    @property
-    def dependency_end_timestamp(self) -> datetime:
-        """Explicit end of label outcome dependency window."""
-        return self.dependency_window[1] if self.dependency_window else self.signal_timestamp
+    def __post_init__(self):
+        if self.signal_timestamp:
+            _require_utc(self.signal_timestamp, "signal_timestamp")
+        if self.fill_timestamp:
+            _require_utc(self.fill_timestamp, "fill_timestamp")
+        if self.exit_timestamp:
+            _require_utc(self.exit_timestamp, "exit_timestamp")
+        if self.dependency_end_timestamp:
+            _require_utc(self.dependency_end_timestamp, "dependency_end_timestamp")
 
 
 @dataclass(frozen=True)
 class XauUsdSubsystemBreakdown:
-    """Performance metrics partitioned across structural subsystems and sides."""
+    """Performance breakdown across market regimes, trading sessions, and side parity."""
     regime_breakdown: Dict[str, Any] = field(default_factory=dict)
     session_breakdown: Dict[str, Any] = field(default_factory=dict)
     side_breakdown: Dict[str, Any] = field(default_factory=dict)
@@ -241,8 +267,10 @@ class XauUsdBacktestRunSpec:
     dataset_hash: str
     holding_horizon_bars_15m: Optional[int] = None
     holding_horizon_seconds: Optional[float] = None
-    execution_policy: str = "NEXT_BAR_OPEN"
-    intrabar_policy: str = "LOWER_TIMEFRAME_REPLAY"
+    max_fill_wait_bars_15m: Optional[int] = None
+    max_fill_wait_seconds: Optional[float] = None
+    execution_policy: EntryExecutionPolicy = EntryExecutionPolicy.NEXT_BAR_OPEN
+    intrabar_policy: IntrabarPolicy = IntrabarPolicy.LOWER_TIMEFRAME_REPLAY
     engine_version: str = "4.0.0-xauusd"
     config_version: str = "cfg-xauusd-2026-v1"
     feature_version: str = "feat-xauusd-2026-v1"
@@ -252,6 +280,23 @@ class XauUsdBacktestRunSpec:
     backtest_version: str = "6.0.0-xauusd"
     code_revision: str = ""  # REQUIRED caller-injected
     ablation_type: XauUsdAblationType = XauUsdAblationType.BASELINE
+    signal_profile: Optional[Phase4SignalProfile] = None
+    risk_profile: Optional[XauUsdRiskProfile] = None
+    phase4_policy_fingerprint: str = ""
+    phase5_risk_policy_fingerprint: str = ""
+    phase5_execution_policy_fingerprint: str = ""
+
+    def __post_init__(self):
+        _require_utc(self.start_time, "start_time")
+        _require_utc(self.end_time, "end_time")
+        if self.start_time >= self.end_time:
+            raise ValueError(f"start_time ({self.start_time}) must be strictly before end_time ({self.end_time})")
+        if not self.code_revision or not self.code_revision.strip():
+            raise ValueError("Backtest run spec requires an explicit non-empty code_revision.")
+        if self.holding_horizon_bars_15m is None and self.holding_horizon_seconds is None:
+            raise ValueError("Explicit holding horizon (holding_horizon_bars_15m or holding_horizon_seconds) is required.")
+        if self.max_fill_wait_bars_15m is None and self.max_fill_wait_seconds is None:
+            raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is required.")
 
 
 @dataclass(frozen=True)
@@ -266,16 +311,38 @@ class XauUsdFoldSpec:
     oos_end: datetime
     embargo_duration_seconds: float = 0.0
 
+    def __post_init__(self):
+        _require_utc(self.train_start, "train_start")
+        _require_utc(self.train_end, "train_end")
+        _require_utc(self.oos_start, "oos_start")
+        _require_utc(self.oos_end, "oos_end")
+        if self.val_start:
+            _require_utc(self.val_start, "val_start")
+        if self.val_end:
+            _require_utc(self.val_end, "val_end")
+
 
 @dataclass(frozen=True)
 class XauUsdWalkForwardConfig:
-    """Configuration for chronological walk-forward validation."""
-    total_folds: int = 3
-    train_ratio: float = 0.6
-    val_ratio: float = 0.2
-    rolling_window: bool = False
-    purge_overlapping: bool = True
+    """Configuration for chronological walk-forward validation (all ratios and fold counts required)."""
+    total_folds: int
+    train_ratio: float
+    val_ratio: float
+    oos_ratio: float
     embargo_seconds: float = 0.0
+    purge_overlapping: bool = True
+    rolling_window: bool = False
+
+    def __post_init__(self):
+        if self.total_folds is None or self.total_folds < 1:
+            raise ValueError(f"total_folds must be >= 1, got {self.total_folds}")
+        if self.train_ratio is None or self.val_ratio is None or self.oos_ratio is None:
+            raise ValueError("train_ratio, val_ratio, and oos_ratio must be explicitly provided.")
+        if self.train_ratio <= 0.0 or self.val_ratio < 0.0 or self.oos_ratio <= 0.0:
+            raise ValueError(f"Invalid walk-forward ratios: train={self.train_ratio}, val={self.val_ratio}, oos={self.oos_ratio}")
+        total = self.train_ratio + self.val_ratio + self.oos_ratio
+        if abs(total - 1.0) > 1e-4:
+            raise ValueError(f"Walk-forward ratios must sum to exactly 1.0 (got {total})")
 
 
 @dataclass(frozen=True)
@@ -289,6 +356,9 @@ class XauUsdFoldResult:
     train_trade_count: int
     val_trade_count: int
     oos_trade_count: int
+    train_trades: Tuple[XauUsdSimulatedTrade, ...] = ()
+    val_trades: Tuple[XauUsdSimulatedTrade, ...] = ()
+    oos_trades: Tuple[XauUsdSimulatedTrade, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -328,4 +398,4 @@ class XauUsdAblationReport:
     baseline_metrics: XauUsdBacktestMetrics
     comparisons: Tuple[XauUsdAblationComparison, ...]
     baseline_hash: str
-    immutability_verified: bool
+    immutability_verified: bool = True

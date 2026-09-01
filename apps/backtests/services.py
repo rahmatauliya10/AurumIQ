@@ -22,7 +22,7 @@ def _metrics_to_dict(m) -> dict:
     if m is None:
         return {}
     return {
-        "signal_count": getattr(m, "signal_count", 0),
+        "signal_count": getattr(m, "signal_count", getattr(m, "candidate_count", 0)),
         "execution_eligible_count": getattr(m, "execution_eligible_count", 0),
         "trade_count": getattr(m, "trade_count", 0),
         "fill_rate": getattr(m, "fill_rate", 0.0),
@@ -68,7 +68,7 @@ def _walkforward_config_to_dict(cfg) -> dict:
         "val_ratio": getattr(cfg, "val_ratio", 0.0),
         "oos_ratio": getattr(cfg, "oos_ratio", 0.0),
         "embargo_seconds": getattr(cfg, "embargo_seconds", 0.0),
-        "purge_overlapping": getattr(cfg, "purge_overlapping", True),
+        "purge_overlapping": getattr(cfg, "purge_overlapping", getattr(cfg, "purge_overlapping_dependencies", True)),
         "rolling_window": getattr(cfg, "rolling_window", False),
     }
 
@@ -116,7 +116,6 @@ def persist_backtest_run(
             BacktestTrade(
                 backtest_run=run_obj,
                 trade_id=t.trade_id,
-                side=getattr(t, "side", "LONG").value if hasattr(getattr(t, "side", "LONG"), "value") else str(getattr(t, "side", "LONG")),
                 source_signal_fingerprint=t.source_signal_fingerprint,
                 signal_timestamp=t.signal_timestamp,
                 dependency_end_timestamp=t.dependency_end_timestamp,
@@ -156,29 +155,25 @@ def persist_walkforward_run(
     dataset_identity: Optional[str] = None,
 ) -> Tuple[BacktestRun, bool]:
     """
-    Persist a historical WalkForwardResult idempotently.
+    Persist a historical WalkForwardResult idempotently, including all fold OOS trades.
     """
-    fp = getattr(wf_result, "walkforward_fingerprint", None) or getattr(wf_result, "run_fingerprint", "")
+    fp = wf_result.walkforward_fingerprint
     existing = BacktestRun.objects.filter(run_fingerprint=fp).first()
     if existing is not None:
         return existing, False
 
-    stab = getattr(wf_result, "stability_report", None)
-    stab_dict = {}
-    if stab is not None:
-        stab_dict = {
-            "total_folds": stab.total_folds,
-            "positive_expectancy_folds": stab.positive_expectancy_folds,
-            "median_oos_expectancy_r": stab.median_oos_expectancy_r,
-            "worst_oos_expectancy_r": stab.worst_oos_expectancy_r,
-            "best_oos_expectancy_r": stab.best_oos_expectancy_r,
-            "is_stable_positive": stab.is_stable_positive,
-            "oos_expectancies_r": list(stab.oos_expectancies_r),
-            "oos_profit_factors": list(stab.oos_profit_factors),
-            "oos_drawdowns_r": list(stab.oos_drawdowns_r),
-        }
-
-    agg_m = getattr(stab, "aggregate_oos_metrics", None) or getattr(wf_result, "oos_aggregated_metrics", None)
+    stab = wf_result.stability_report
+    stab_dict = {
+        "total_folds": stab.total_folds,
+        "positive_expectancy_folds": stab.positive_expectancy_folds,
+        "oos_expectancies_r": stab.oos_expectancies_r,
+        "oos_profit_factors": stab.oos_profit_factors,
+        "oos_drawdowns_r": stab.oos_drawdowns_r,
+        "median_oos_expectancy_r": stab.median_oos_expectancy_r,
+        "worst_oos_expectancy_r": stab.worst_oos_expectancy_r,
+        "best_oos_expectancy_r": stab.best_oos_expectancy_r,
+        "is_stable_positive": stab.is_stable_positive,
+    }
 
     run_obj = BacktestRun.objects.create(
         run_fingerprint=fp,
@@ -195,12 +190,48 @@ def persist_walkforward_run(
         backtest_version=spec.backtest_version,
         code_revision=spec.code_revision,
         cost_config=_cost_config_to_dict(spec.cost_config),
-        walkforward_config=_walkforward_config_to_dict(getattr(wf_result, "config", None) or getattr(wf_result, "wf_config", None)),
+        walkforward_config=_walkforward_config_to_dict(wf_result.config),
         ablation_id=spec.ablation_type.value if hasattr(spec.ablation_type, "value") else str(spec.ablation_type),
-        aggregate_metrics=_metrics_to_dict(agg_m),
+        aggregate_metrics=_metrics_to_dict(stab.aggregate_oos_metrics),
         temporal_stability=stab_dict,
         status="COMPLETED",
     )
+
+    trade_objs = []
+    for f in wf_result.folds:
+        for t in f.oos_trades:
+            trade_objs.append(
+                BacktestTrade(
+                    backtest_run=run_obj,
+                    trade_id=f"f{f.fold_id}-{t.trade_id}",
+                    source_signal_fingerprint=t.source_signal_fingerprint,
+                    signal_timestamp=t.signal_timestamp,
+                    dependency_end_timestamp=t.dependency_end_timestamp,
+                    fill_timestamp=t.fill_timestamp,
+                    fill_price=t.fill_price,
+                    exit_timestamp=t.exit_timestamp,
+                    exit_price=t.exit_price,
+                    outcome=t.outcome.value if hasattr(t.outcome, "value") else str(t.outcome),
+                    planned_risk_amount=t.planned_risk_amount,
+                    gross_r=t.gross_r,
+                    net_r=t.net_r,
+                    gross_return_pct=t.gross_return_pct,
+                    net_return_pct=t.net_return_pct,
+                    mfe_r=t.mfe_r,
+                    mae_r=t.mae_r,
+                    entry_fee=t.entry_fee,
+                    exit_fee=t.exit_fee,
+                    entry_spread=t.entry_spread,
+                    exit_spread=t.exit_spread,
+                    entry_slippage=t.entry_slippage,
+                    exit_slippage=t.exit_slippage,
+                    fold_id=f.fold_id,
+                    ambiguity_policy=t.ambiguity_policy.value if hasattr(t.ambiguity_policy, "value") else str(t.ambiguity_policy),
+                )
+            )
+
+    if trade_objs:
+        BacktestTrade.objects.bulk_create(trade_objs, batch_size=500)
 
     return run_obj, True
 
@@ -214,7 +245,7 @@ def persist_xauusd_backtest_run(
     dataset_identity: Optional[str] = None,
 ) -> Tuple[BacktestRun, bool]:
     """
-    Persist an XAUUSD backtest execution idempotently.
+    Persist an XAUUSD backtest execution idempotently with full side-aware trade fields.
     """
     existing = BacktestRun.objects.filter(run_fingerprint=run_fingerprint).first()
     if existing is not None:
@@ -292,7 +323,7 @@ def persist_xauusd_walkforward_run(
     dataset_identity: Optional[str] = None,
 ) -> Tuple[BacktestRun, bool]:
     """
-    Persist an XAUUSD WalkForwardResult idempotently.
+    Persist an XAUUSD WalkForwardResult idempotently, including OOS trades from all folds.
     """
     fp = wf_result.run_fingerprint
     existing = BacktestRun.objects.filter(run_fingerprint=fp).first()
@@ -326,5 +357,46 @@ def persist_xauusd_walkforward_run(
         temporal_stability=stab_dict,
         status="COMPLETED",
     )
+
+    trade_objs = []
+    for f in wf_result.folds:
+        for t in f.oos_trades:
+            trade_objs.append(
+                BacktestTrade(
+                    backtest_run=run_obj,
+                    trade_id=f"f{f.fold_id}-{t.trade_id}",
+                    side=t.side.value if hasattr(t.side, "value") else str(t.side),
+                    candidate_state=t.candidate_state.value if hasattr(t.candidate_state, "value") else str(t.candidate_state),
+                    candidate_decision=t.candidate_user_decision.value if hasattr(t.candidate_user_decision, "value") else str(t.candidate_user_decision),
+                    source_signal_fingerprint=t.source_signal_fingerprint,
+                    risk_plan_fingerprint=t.risk_plan_fingerprint,
+                    execution_evidence_fingerprint=t.execution_evidence_fingerprint or "",
+                    signal_timestamp=t.signal_timestamp,
+                    dependency_end_timestamp=t.dependency_end_timestamp,
+                    fill_timestamp=t.fill_timestamp,
+                    fill_price=t.fill_price,
+                    exit_timestamp=t.exit_timestamp,
+                    exit_price=t.exit_price,
+                    outcome=t.outcome.value if hasattr(t.outcome, "value") else str(t.outcome),
+                    planned_risk_amount=t.planned_risk_amount,
+                    gross_r=t.gross_r,
+                    net_r=t.net_r,
+                    gross_return_pct=t.gross_return_pct,
+                    net_return_pct=t.net_return_pct,
+                    mfe_r=t.mfe_r,
+                    mae_r=t.mae_r,
+                    entry_fee=t.entry_fee,
+                    exit_fee=t.exit_fee,
+                    entry_spread=t.entry_spread,
+                    exit_spread=t.exit_spread,
+                    entry_slippage=t.entry_slippage,
+                    exit_slippage=t.exit_slippage,
+                    fold_id=f.fold_id,
+                    ambiguity_policy=t.ambiguity_policy.value if hasattr(t.ambiguity_policy, "value") else str(t.ambiguity_policy),
+                )
+            )
+
+    if trade_objs:
+        BacktestTrade.objects.bulk_create(trade_objs, batch_size=500)
 
     return run_obj, True

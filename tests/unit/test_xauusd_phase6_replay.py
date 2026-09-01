@@ -24,8 +24,10 @@ from engine.risk.xauusd_policy import (
     SideRiskPolicy,
     XauUsdExecutionPolicy,
     XauUsdRiskProfile,
+    uncalibrated_xauusd_risk_profile,
 )
 from engine.signals.engine import XauUsdSignalEngine
+from engine.signals.profile import uncalibrated_xauusd_signal_profile
 
 
 @pytest.fixture
@@ -85,7 +87,14 @@ def test_replay_chronological_pit_ordering(calibrated_test_risk_profile):
 
     sig_engine = XauUsdSignalEngine(code_revision=code_rev)
     risk_planner = XauUsdRiskPlanner(code_revision=code_rev, risk_profile=calibrated_test_risk_profile)
-    outcome_engine = XauUsdOutcomeEngine(cost_config=XauUsdCostConfig.idealized(), holding_horizon_bars_15m=10)
+    outcome_engine = XauUsdOutcomeEngine(
+        cost_config=XauUsdCostConfig.idealized(),
+        holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        execution_policy_config=calibrated_test_risk_profile.long_execution_policy,
+        phase5_policy_fingerprint=risk_planner.policy_fingerprint,
+    )
 
     replay = XauUsdPointInTimeReplay(
         dataset=dataset,
@@ -93,6 +102,7 @@ def test_replay_chronological_pit_ordering(calibrated_test_risk_profile):
         risk_planner=risk_planner,
         outcome_engine=outcome_engine,
         holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
     )
 
     timestamps = [start_t + timedelta(hours=5) + timedelta(minutes=15 * i) for i in range(12)]
@@ -116,7 +126,14 @@ def test_replay_published_decision_is_always_wait(calibrated_test_risk_profile):
 
     sig_engine = XauUsdSignalEngine(code_revision=code_rev)
     risk_planner = XauUsdRiskPlanner(code_revision=code_rev, risk_profile=calibrated_test_risk_profile)
-    outcome_engine = XauUsdOutcomeEngine(cost_config=XauUsdCostConfig.idealized(), holding_horizon_bars_15m=10)
+    outcome_engine = XauUsdOutcomeEngine(
+        cost_config=XauUsdCostConfig.idealized(),
+        holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        execution_policy_config=calibrated_test_risk_profile.long_execution_policy,
+        phase5_policy_fingerprint=risk_planner.policy_fingerprint,
+    )
 
     replay = XauUsdPointInTimeReplay(
         dataset=dataset,
@@ -124,6 +141,7 @@ def test_replay_published_decision_is_always_wait(calibrated_test_risk_profile):
         risk_planner=risk_planner,
         outcome_engine=outcome_engine,
         holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
     )
 
     timestamps = [start_t + timedelta(hours=5) + timedelta(minutes=15 * i) for i in range(12)]
@@ -143,13 +161,19 @@ def test_replay_unclosed_candle_activates_safety_hold(calibrated_test_risk_profi
 
     for i in range(30):
         t_open = start_t + timedelta(minutes=15 * i)
-        # Bar 25 is marked unclosed
         is_closed = (i != 25)
         dataset.add_candle("15m", make_candle(t_open, Decimal("2600.00"), Decimal("2605.00"), Decimal("2595.00"), Decimal("2602.00"), is_closed=is_closed))
 
     sig_engine = XauUsdSignalEngine(code_revision=code_rev)
     risk_planner = XauUsdRiskPlanner(code_revision=code_rev, risk_profile=calibrated_test_risk_profile)
-    outcome_engine = XauUsdOutcomeEngine(cost_config=XauUsdCostConfig.idealized(), holding_horizon_bars_15m=10)
+    outcome_engine = XauUsdOutcomeEngine(
+        cost_config=XauUsdCostConfig.idealized(),
+        holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
+        code_revision=code_rev,
+        execution_policy_config=calibrated_test_risk_profile.long_execution_policy,
+        phase5_policy_fingerprint=risk_planner.policy_fingerprint,
+    )
 
     replay = XauUsdPointInTimeReplay(
         dataset=dataset,
@@ -157,6 +181,7 @@ def test_replay_unclosed_candle_activates_safety_hold(calibrated_test_risk_profi
         risk_planner=risk_planner,
         outcome_engine=outcome_engine,
         holding_horizon_bars_15m=10,
+        max_fill_wait_bars_15m=4,
     )
 
     eval_t = start_t + timedelta(minutes=15 * 26)

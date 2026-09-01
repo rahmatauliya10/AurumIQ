@@ -36,6 +36,8 @@ class XauUsdBacktestRunner:
       1. Pure Python: Decoupled from Django ORM / database calls.
       2. Deterministic: Identical inputs produce identical run fingerprints and trade ledgers.
       3. One Engine Rule: Directly invokes XauUsdSignalEngine and XauUsdRiskPlanner.
+      4. Bounded Window Evidence: Evidence beyond declared spec.end_time is strictly excluded.
+      5. Explicit Provenance: Respects caller-supplied signal_profile and risk_profile without fabrication.
     """
 
     def __init__(
@@ -66,13 +68,24 @@ class XauUsdBacktestRunner:
 
         risk_plan = XauUsdRiskPlanner(
             code_revision=spec.code_revision,
+            risk_profile=spec.risk_profile,
             risk_version=spec.risk_version,
         )
 
         outcome_engine = XauUsdOutcomeEngine(
             cost_config=spec.cost_config,
+            entry_execution_model=None,
+            code_revision=spec.code_revision,
+            execution_policy_config=(
+                spec.risk_profile.long_execution_policy
+                if spec.risk_profile is not None
+                else risk_plan.risk_profile.long_execution_policy
+            ),
+            phase5_policy_fingerprint=risk_plan.policy_fingerprint,
             holding_horizon_bars_15m=spec.holding_horizon_bars_15m,
             holding_horizon_seconds=spec.holding_horizon_seconds,
+            max_fill_wait_bars_15m=spec.max_fill_wait_bars_15m,
+            max_fill_wait_seconds=spec.max_fill_wait_seconds,
         )
 
         full_candles_15m = dataset.get_closed_candles("15m", as_of=spec.end_time)
@@ -92,24 +105,29 @@ class XauUsdBacktestRunner:
             outcome_engine=outcome_engine,
             execution_policy=self.execution_policy,
             intrabar_policy=self.intrabar_policy,
+            signal_profile=spec.signal_profile,
             run_fingerprint=run_fp,
             holding_horizon_bars_15m=spec.holding_horizon_bars_15m,
             holding_horizon_seconds=spec.holding_horizon_seconds,
+            max_fill_wait_bars_15m=spec.max_fill_wait_bars_15m,
+            max_fill_wait_seconds=spec.max_fill_wait_seconds,
+            cost_config=spec.cost_config,
+            run_end_time=spec.end_time,
         )
 
         signals, trades = replay.run(clock)
-        metrics = XauUsdMetricsCalculator.calculate(signals, trades)
+        metrics = XauUsdMetricsCalculator.calculate(signals=signals, trades=trades)
 
         return metrics, trades, signals, run_fp
 
-    def run_walkforward(
+    def run_walk_forward(
         self,
         dataset: PointInTimeDataset,
         spec: XauUsdBacktestRunSpec,
-        wf_config: Optional[XauUsdWalkForwardConfig] = None,
+        wf_config: XauUsdWalkForwardConfig,
     ) -> XauUsdWalkForwardResult:
         """
-        Execute chronological walk-forward validation with label purge, embargo, and strict OOS isolation.
+        Execute chronological walk-forward validation for XAUUSD.
         """
         wf_engine = XauUsdWalkForwardEngine(
             execution_policy=self.execution_policy,
@@ -120,18 +138,14 @@ class XauUsdBacktestRunner:
     def run_ablation(
         self,
         dataset: PointInTimeDataset,
-        baseline_spec: XauUsdBacktestRunSpec,
+        spec: XauUsdBacktestRunSpec,
         ablation_types: Optional[Sequence[XauUsdAblationType]] = None,
     ) -> XauUsdAblationReport:
         """
-        Execute paired component ablation and verify baseline immutability.
+        Execute paired factor ablation study for XAUUSD.
         """
         ab_engine = XauUsdAblationEngine(
             execution_policy=self.execution_policy,
             intrabar_policy=self.intrabar_policy,
         )
-        return ab_engine.run_ablation(
-            dataset=dataset,
-            baseline_spec=baseline_spec,
-            ablation_types=ablation_types,
-        )
+        return ab_engine.run_ablation(dataset=dataset, baseline_spec=spec, ablation_types=ablation_types)
