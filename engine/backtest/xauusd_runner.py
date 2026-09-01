@@ -36,8 +36,9 @@ class XauUsdBacktestRunner:
       1. Pure Python: Decoupled from Django ORM / database calls.
       2. Deterministic: Identical inputs produce identical run fingerprints and trade ledgers.
       3. One Engine Rule: Directly invokes XauUsdSignalEngine and XauUsdRiskPlanner.
-      4. Bounded Window Evidence: Evidence beyond declared spec.end_time is strictly excluded.
-      5. Explicit Provenance: Respects caller-supplied signal_profile and risk_profile without fabrication.
+      4. Bounded Window Evidence: Evidence at or beyond declared spec.end_time is strictly excluded (< end_time).
+      5. Side-Specific Policy Parity: LONG and SHORT execute using their respective Phase 5 policies.
+      6. Explicit Provenance: Respects caller-supplied signal_profile and risk_profile without fabrication.
     """
 
     def __init__(
@@ -74,13 +75,9 @@ class XauUsdBacktestRunner:
 
         outcome_engine = XauUsdOutcomeEngine(
             cost_config=spec.cost_config,
-            entry_execution_model=None,
             code_revision=spec.code_revision,
-            execution_policy_config=(
-                spec.risk_profile.long_execution_policy
-                if spec.risk_profile is not None
-                else risk_plan.risk_profile.long_execution_policy
-            ),
+            long_execution_policy=risk_plan.risk_profile.long_execution_policy,
+            short_execution_policy=risk_plan.risk_profile.short_execution_policy,
             phase5_policy_fingerprint=risk_plan.policy_fingerprint,
             holding_horizon_bars_15m=spec.holding_horizon_bars_15m,
             holding_horizon_seconds=spec.holding_horizon_seconds,
@@ -133,19 +130,23 @@ class XauUsdBacktestRunner:
             execution_policy=self.execution_policy,
             intrabar_policy=self.intrabar_policy,
         )
-        return wf_engine.run_walkforward(dataset=dataset, spec=spec, wf_config=wf_config)
+        return wf_engine.run(dataset=dataset, spec=spec, wf_config=wf_config)
 
     def run_ablation(
         self,
         dataset: PointInTimeDataset,
-        spec: XauUsdBacktestRunSpec,
+        baseline_spec: XauUsdBacktestRunSpec,
         ablation_types: Optional[Sequence[XauUsdAblationType]] = None,
     ) -> XauUsdAblationReport:
         """
-        Execute paired factor ablation study for XAUUSD.
+        Execute paired component ablation study for XAUUSD.
         """
         ab_engine = XauUsdAblationEngine(
             execution_policy=self.execution_policy,
             intrabar_policy=self.intrabar_policy,
         )
-        return ab_engine.run_ablation(dataset=dataset, baseline_spec=spec, ablation_types=ablation_types)
+        return ab_engine.run_ablation(
+            dataset=dataset,
+            baseline_spec=baseline_spec,
+            ablation_types=ablation_types,
+        )

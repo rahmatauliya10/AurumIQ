@@ -21,10 +21,15 @@ from engine.backtest.xauusd_types import (
     XauUsdSimulatedTrade,
 )
 from engine.core.types import (
+    Cycle3ASnapshot,
     DualSideSignalSnapshot,
     EntryExecutionPolicy,
     FeedCriticality,
     IntrabarPolicy,
+    MacroEventContext,
+    SessionContext,
+    SessionType,
+    SwingDurationContext,
 )
 from engine.risk.xauusd_planner import XauUsdRiskPlanner
 from engine.signals.engine import XauUsdSignalEngine
@@ -99,6 +104,7 @@ class XauUsdAblationEngine:
       2. Phase 3B production weight remains hard-locked to 0.0 on baseline.
       3. Hard gate ablations (e.g. NO_MACRO_BLACKOUT) are strictly labeled unsafe research.
       4. Baseline immutability proof: Baseline 1 and Baseline 2 produce identical fingerprints and trade ledgers.
+      5. Side-Specific Policy Parity: Both long and short execution policies are used.
     """
 
     def __init__(
@@ -135,11 +141,6 @@ class XauUsdAblationEngine:
             new_sd = _normalize_direction_weights(base_prof.short_direction, ["weight_trend_4h", "weight_trend_1d"]) if base_prof.short_direction else base_prof.short_direction
             return replace(base_prof, long_direction=new_ld, short_direction=new_sd)
 
-        elif ablation_type == XauUsdAblationType.NO_PHASE3A_SESSION:
-            new_lt = _normalize_timing_weights(base_prof.long_timing, ["weight_reversal_confirmation_15m"]) if base_prof.long_timing else base_prof.long_timing
-            new_st = _normalize_timing_weights(base_prof.short_timing, ["weight_reversal_confirmation_15m"]) if base_prof.short_timing else base_prof.short_timing
-            return replace(base_prof, long_timing=new_lt, short_timing=new_st)
-
         elif ablation_type == XauUsdAblationType.NO_PHASE3A_SWING_MATURITY:
             new_lt = _normalize_timing_weights(base_prof.long_timing, ["weight_phase3a"]) if base_prof.long_timing else base_prof.long_timing
             new_st = _normalize_timing_weights(base_prof.short_timing, ["weight_phase3a"]) if base_prof.short_timing else base_prof.short_timing
@@ -149,19 +150,77 @@ class XauUsdAblationEngine:
             new_fp = replace(base_prof.feed_policy, macro_blackout=FeedCriticality.OPTIONAL) if base_prof.feed_policy else base_prof.feed_policy
             return replace(base_prof, feed_policy=new_fp)
 
-        elif ablation_type == XauUsdAblationType.WITH_PHASE3B_RESEARCH:
-            return base_prof
-
         return base_prof
+
+    def _create_ablated_dataset(
+        self,
+        dataset: PointInTimeDataset,
+        ablation_type: XauUsdAblationType,
+    ) -> PointInTimeDataset:
+        """Create a point-in-time dataset adapter neutralizing specific component evidence."""
+        if ablation_type == XauUsdAblationType.NO_PHASE3A_SESSION:
+            ablated_cycles = [
+                replace(
+                    snap,
+                    session=SessionContext(
+                        session=SessionType.UNKNOWN,
+                        progress_pct=0.0,
+                        is_high_liquidity=False,
+                        local_times={},
+                        expectancy_score=0.0,
+                    ),
+                )
+                for snap in getattr(dataset, "_cycle_3a", [])
+            ]
+            new_ds = PointInTimeDataset(
+                candles_15m=dataset._candles.get("15m"),
+                candles_1h=dataset._candles.get("1h"),
+                candles_4h=dataset._candles.get("4h"),
+                candles_1d=dataset._candles.get("1d"),
+                candles_5m=dataset._candles.get("5m"),
+                candles_1m=dataset._candles.get("1m"),
+                quotes=dataset._quotes,
+                macro_events=dataset._macro_events,
+                cycle_3a=ablated_cycles,
+            )
+            return new_ds
+
+        elif ablation_type == XauUsdAblationType.NO_MACRO_BLACKOUT:
+            ablated_macros = [
+                (
+                    t,
+                    replace(
+                        ctx,
+                        is_in_blackout=False,
+                    )
+                )
+                for t, ctx in getattr(dataset, "_macro_events", [])
+            ]
+            new_ds = PointInTimeDataset(
+                candles_15m=dataset._candles.get("15m"),
+                candles_1h=dataset._candles.get("1h"),
+                candles_4h=dataset._candles.get("4h"),
+                candles_1d=dataset._candles.get("1d"),
+                candles_5m=dataset._candles.get("5m"),
+                candles_1m=dataset._candles.get("1m"),
+                quotes=dataset._quotes,
+                macro_events=ablated_macros,
+                cycle_3a=dataset._cycle_3a,
+            )
+            return new_ds
+
+        return dataset
 
     def _execute_run(
         self,
         dataset: PointInTimeDataset,
         spec: XauUsdBacktestRunSpec,
         profile: Optional[Phase4SignalProfile] = None,
+        ablation_type: XauUsdAblationType = XauUsdAblationType.BASELINE,
     ) -> Tuple[List[DualSideSignalSnapshot], List[XauUsdSimulatedTrade], str]:
         """Execute a single backtest replay run and return signals, trades, and ledger hash."""
         target_profile = profile if profile is not None else spec.signal_profile
+        active_ds = self._create_ablated_dataset(dataset, ablation_type)
 
         sig_engine = XauUsdSignalEngine(
             code_revision=spec.code_revision,
@@ -177,13 +236,9 @@ class XauUsdAblationEngine:
 
         outcome_engine = XauUsdOutcomeEngine(
             cost_config=spec.cost_config,
-            entry_execution_model=None,
             code_revision=spec.code_revision,
-            execution_policy_config=(
-                spec.risk_profile.long_execution_policy
-                if spec.risk_profile is not None
-                else risk_plan.risk_profile.long_execution_policy
-            ),
+            long_execution_policy=risk_plan.risk_profile.long_execution_policy,
+            short_execution_policy=risk_plan.risk_profile.short_execution_policy,
             phase5_policy_fingerprint=risk_plan.policy_fingerprint,
             holding_horizon_bars_15m=spec.holding_horizon_bars_15m,
             holding_horizon_seconds=spec.holding_horizon_seconds,
@@ -191,7 +246,7 @@ class XauUsdAblationEngine:
             max_fill_wait_seconds=spec.max_fill_wait_seconds,
         )
 
-        full_candles_15m = dataset.get_closed_candles("15m", as_of=spec.end_time)
+        full_candles_15m = active_ds.get_closed_candles("15m", as_of=spec.end_time)
         timestamps = [
             c.timestamp_close for c in full_candles_15m
             if spec.start_time <= c.timestamp_close < spec.end_time
@@ -202,7 +257,7 @@ class XauUsdAblationEngine:
 
         clock = ReplayClock(timestamps)
         replay = XauUsdPointInTimeReplay(
-            dataset=dataset,
+            dataset=active_ds,
             signal_engine=sig_engine,
             risk_planner=risk_plan,
             outcome_engine=outcome_engine,
@@ -248,7 +303,11 @@ class XauUsdAblationEngine:
         ]
 
         # 1. Baseline Run 1
-        b1_signals, b1_trades, b1_hash = self._execute_run(dataset=dataset, spec=baseline_spec)
+        b1_signals, b1_trades, b1_hash = self._execute_run(
+            dataset=dataset,
+            spec=baseline_spec,
+            ablation_type=XauUsdAblationType.BASELINE,
+        )
         b1_metrics = XauUsdMetricsCalculator.calculate(signals=b1_signals, trades=b1_trades)
 
         comparisons: List[XauUsdAblationComparison] = []
@@ -260,6 +319,7 @@ class XauUsdAblationEngine:
                 dataset=dataset,
                 spec=baseline_spec,
                 profile=ab_profile,
+                ablation_type=ab_type,
             )
             ab_metrics = XauUsdMetricsCalculator.calculate(signals=ab_signals, trades=ab_trades)
 
@@ -281,7 +341,11 @@ class XauUsdAblationEngine:
             )
 
         # 3. Baseline Run 2 (Immutability Proof)
-        b2_signals, b2_trades, b2_hash = self._execute_run(dataset=dataset, spec=baseline_spec)
+        b2_signals, b2_trades, b2_hash = self._execute_run(
+            dataset=dataset,
+            spec=baseline_spec,
+            ablation_type=XauUsdAblationType.BASELINE,
+        )
         immutability_verified = (b1_hash == b2_hash)
 
         return XauUsdAblationReport(

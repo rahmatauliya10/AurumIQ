@@ -57,7 +57,6 @@ class XauUsdAblationType(str, Enum):
     NO_PHASE3A_SESSION = "NO_PHASE3A_SESSION"
     NO_PHASE3A_SWING_MATURITY = "NO_PHASE3A_SWING_MATURITY"
     NO_MACRO_BLACKOUT = "NO_MACRO_BLACKOUT"
-    WITH_PHASE3B_RESEARCH = "WITH_PHASE3B_RESEARCH"
 
 
 @dataclass(frozen=True)
@@ -74,7 +73,7 @@ class XauUsdCostConfig:
 
     @classmethod
     def idealized(cls) -> "XauUsdCostConfig":
-        """Zero friction baseline scenario."""
+        """Zero friction scenario for baseline strategy signal validation."""
         return cls(
             entry_fee_bps=Decimal("0.0"),
             exit_fee_bps=Decimal("0.0"),
@@ -154,110 +153,109 @@ class XauUsdSimulatedTrade:
     ambiguity_policy: IntrabarPolicy = IntrabarPolicy.LOWER_TIMEFRAME_REPLAY
     fold_id: Optional[int] = None
     run_fingerprint: str = ""
-    execution_evidence_fingerprint: Optional[str] = None
-    dependency_window: Tuple[datetime, datetime] = field(default_factory=lambda: (datetime.min.replace(tzinfo=timezone.utc), datetime.min.replace(tzinfo=timezone.utc)))
+    execution_evidence_fingerprint: str = ""
+    dependency_window: Tuple[datetime, datetime] = field(
+        default_factory=lambda: (datetime.min.replace(tzinfo=timezone.utc), datetime.min.replace(tzinfo=timezone.utc))
+    )
     tp2_reached_after_tp1: bool = False
     max_favorable_extension_r: Optional[Decimal] = None
 
     def __post_init__(self):
-        if self.signal_timestamp:
-            _require_utc(self.signal_timestamp, "signal_timestamp")
-        if self.fill_timestamp:
+        _require_utc(self.signal_timestamp, "signal_timestamp")
+        if self.fill_timestamp is not None:
             _require_utc(self.fill_timestamp, "fill_timestamp")
-        if self.exit_timestamp:
+        if self.exit_timestamp is not None:
             _require_utc(self.exit_timestamp, "exit_timestamp")
-        if self.dependency_end_timestamp:
+        if self.dependency_end_timestamp is not None:
             _require_utc(self.dependency_end_timestamp, "dependency_end_timestamp")
 
 
 @dataclass(frozen=True)
+class XauUsdBacktestMetrics:
+    """Lossless, deterministic metrics for XAUUSD historical backtest run."""
+    candidate_count: int = 0
+    long_candidate_count: int = 0
+    short_candidate_count: int = 0
+    valid_risk_count: int = 0
+    long_valid_risk_count: int = 0
+    short_valid_risk_count: int = 0
+    signal_count: int = 0
+    execution_eligible_count: int = 0
+    fill_count: int = 0
+    no_fill_count: int = 0
+    fill_rate: float = 0.0
+    no_fill_rate: float = 0.0
+    trade_count: int = 0
+    long_trade_count: int = 0
+    short_trade_count: int = 0
+
+    # Payoff Profile
+    win_count: int = 0
+    loss_count: int = 0
+    win_rate: float = 0.0
+    loss_rate: float = 0.0
+    avg_win_r: float = 0.0
+    avg_loss_r: float = 0.0
+    payoff_ratio: float = 0.0
+
+    # Expectancy & Profitability
+    gross_expectancy_r: float = 0.0
+    net_expectancy_r: float = 0.0
+    average_r: float = 0.0
+    median_r: float = 0.0
+    profit_factor: float = 0.0
+    gross_return_pct: float = 0.0
+    net_return_pct: float = 0.0
+
+    # Downside Risk (Normalized Trade Sequence in R)
+    max_drawdown_r: float = 0.0
+    drawdown_duration_trades: int = 0
+    maximum_consecutive_losses: int = 0
+
+    # Execution Quality (Post-Fill MFE & MAE in R)
+    average_mfe_r: float = 0.0
+    median_mfe_r: float = 0.0
+    average_mae_r: float = 0.0
+    median_mae_r: float = 0.0
+    average_holding_duration_seconds: float = 0.0
+    median_holding_duration_seconds: float = 0.0
+
+    # Terminal Outcome Counts
+    tp1_first_count: int = 0
+    sl_first_count: int = 0
+    conservative_sl_first_count: int = 0
+    unresolved_count: int = 0
+    timeout_count: int = 0
+    conservative_resolution_rate: float = 0.0
+
+    # Friction & Drag
+    total_entry_fees: float = 0.0
+    total_exit_fees: float = 0.0
+    total_spread_cost: float = 0.0
+    total_slippage_cost: float = 0.0
+    cost_drag_r: float = 0.0
+    cost_drag_pct: float = 0.0
+    wait_count: int = 0
+    conflict_count: int = 0
+
+    # Subsystems & Distributions
+    subsystems: Optional["XauUsdSubsystemBreakdown"] = None
+    regime_distribution: Dict[str, int] = field(default_factory=dict)
+    session_distribution: Dict[str, int] = field(default_factory=dict)
+    rejection_reasons_distribution: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class XauUsdSubsystemBreakdown:
-    """Performance breakdown across market regimes, trading sessions, and side parity."""
+    """Subsystem performance breakdown by regime, session, and side."""
     regime_breakdown: Dict[str, Any] = field(default_factory=dict)
     session_breakdown: Dict[str, Any] = field(default_factory=dict)
     side_breakdown: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class XauUsdBacktestMetrics:
-    """
-    Comprehensive performance, payoff profile, friction, and robustness metrics for XAUUSD.
-    Drawdown is strictly normalized trade-sequence drawdown in R (zero account sizing).
-    """
-    # Sample Size & Funnel
-    candidate_count: int
-    long_candidate_count: int
-    short_candidate_count: int
-    valid_risk_count: int
-    long_valid_risk_count: int
-    short_valid_risk_count: int
-    execution_eligible_count: int
-    fill_count: int
-    no_fill_count: int
-    fill_rate: float
-    no_fill_rate: float
-    trade_count: int
-    long_trade_count: int
-    short_trade_count: int
-
-    # Payoff Profile
-    win_count: int
-    loss_count: int
-    win_rate: float
-    loss_rate: float
-    avg_win_r: float
-    avg_loss_r: float
-    payoff_ratio: float
-
-    # Expectancy & Profitability
-    gross_expectancy_r: float
-    net_expectancy_r: float
-    average_r: float
-    median_r: float
-    profit_factor: float
-    gross_return_pct: float
-    net_return_pct: float
-
-    # Downside Risk (Normalized Trade Sequence in R)
-    max_drawdown_r: float
-    drawdown_duration_trades: int
-    maximum_consecutive_losses: int
-
-    # Execution Quality (Post-Fill MFE & MAE in R)
-    average_mfe_r: float
-    median_mfe_r: float
-    average_mae_r: float
-    median_mae_r: float
-    average_holding_duration_seconds: float
-    median_holding_duration_seconds: float
-
-    # Terminal Outcome Counts
-    tp1_first_count: int
-    sl_first_count: int
-    conservative_sl_first_count: int
-    unresolved_count: int
-    timeout_count: int
-    conservative_resolution_rate: float
-
-    # Friction & Drag
-    total_entry_fees: float
-    total_exit_fees: float
-    total_spread_cost: float
-    total_slippage_cost: float
-    cost_drag_r: float
-    cost_drag_pct: float
-
-    # Decision Distributions
-    wait_count: int
-    conflict_count: int
-
-    # Subsystem Breakdown
-    subsystems: Optional[XauUsdSubsystemBreakdown] = None
-
-
-@dataclass(frozen=True)
 class XauUsdBacktestRunSpec:
-    """Immutable specification for a deterministic XAUUSD backtest execution."""
+    """Specification and immutable configuration for an XAUUSD backtest execution."""
     instrument: str
     start_time: datetime
     end_time: datetime
@@ -298,6 +296,20 @@ class XauUsdBacktestRunSpec:
         if self.max_fill_wait_bars_15m is None and self.max_fill_wait_seconds is None:
             raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is required.")
 
+        if self.signal_profile is not None:
+            from engine.signals.profile import compute_phase4_policy_fingerprint
+            actual_p4_fp = compute_phase4_policy_fingerprint(self.signal_profile)
+            if self.phase4_policy_fingerprint and self.phase4_policy_fingerprint != actual_p4_fp:
+                raise ValueError(f"phase4_policy_fingerprint mismatch: expected '{self.phase4_policy_fingerprint}', actual '{actual_p4_fp}'")
+            object.__setattr__(self, "phase4_policy_fingerprint", actual_p4_fp)
+
+        if self.risk_profile is not None:
+            from engine.risk.xauusd_fingerprints import compute_phase5_policy_fingerprint
+            actual_p5_fp = compute_phase5_policy_fingerprint(self.risk_profile)
+            if self.phase5_risk_policy_fingerprint and self.phase5_risk_policy_fingerprint != actual_p5_fp:
+                raise ValueError(f"phase5_risk_policy_fingerprint mismatch: expected '{self.phase5_risk_policy_fingerprint}', actual '{actual_p5_fp}'")
+            object.__setattr__(self, "phase5_risk_policy_fingerprint", actual_p5_fp)
+
 
 @dataclass(frozen=True)
 class XauUsdFoldSpec:
@@ -334,20 +346,24 @@ class XauUsdWalkForwardConfig:
     rolling_window: bool = False
 
     def __post_init__(self):
-        if self.total_folds is None or self.total_folds < 1:
+        if self.total_folds < 1:
             raise ValueError(f"total_folds must be >= 1, got {self.total_folds}")
-        if self.train_ratio is None or self.val_ratio is None or self.oos_ratio is None:
-            raise ValueError("train_ratio, val_ratio, and oos_ratio must be explicitly provided.")
-        if self.train_ratio <= 0.0 or self.val_ratio < 0.0 or self.oos_ratio <= 0.0:
-            raise ValueError(f"Invalid walk-forward ratios: train={self.train_ratio}, val={self.val_ratio}, oos={self.oos_ratio}")
-        total = self.train_ratio + self.val_ratio + self.oos_ratio
-        if abs(total - 1.0) > 1e-4:
-            raise ValueError(f"Walk-forward ratios must sum to exactly 1.0 (got {total})")
+        if self.train_ratio <= 0.0:
+            raise ValueError(f"train_ratio must be > 0.0, got {self.train_ratio}")
+        if self.val_ratio < 0.0:
+            raise ValueError(f"val_ratio cannot be negative, got {self.val_ratio}")
+        if self.oos_ratio <= 0.0:
+            raise ValueError(f"oos_ratio must be > 0.0, got {self.oos_ratio}")
+        ratio_sum = round(self.train_ratio + self.val_ratio + self.oos_ratio, 4)
+        if abs(ratio_sum - 1.0) > 1e-4:
+            raise ValueError(f"Sum of train ({self.train_ratio}), val ({self.val_ratio}), and oos ({self.oos_ratio}) ratios must equal 1.0 (got {ratio_sum})")
+        if self.embargo_seconds < 0.0:
+            raise ValueError(f"embargo_seconds cannot be negative, got {self.embargo_seconds}")
 
 
 @dataclass(frozen=True)
 class XauUsdFoldResult:
-    """Results of a single chronological walk-forward fold."""
+    """Evaluation output for a single chronological walk-forward fold."""
     fold_id: int
     spec: XauUsdFoldSpec
     train_metrics: XauUsdBacktestMetrics
@@ -363,7 +379,7 @@ class XauUsdFoldResult:
 
 @dataclass(frozen=True)
 class XauUsdWalkForwardResult:
-    """Aggregated walk-forward validation output."""
+    """Consolidated chronological walk-forward validation report across all folds."""
     wf_config: XauUsdWalkForwardConfig
     run_fingerprint: str
     folds: Tuple[XauUsdFoldResult, ...]
@@ -374,7 +390,7 @@ class XauUsdWalkForwardResult:
 
 @dataclass(frozen=True)
 class XauUsdAblationDelta:
-    """Performance delta between baseline and an ablated engine variant."""
+    """Expectancy, profit factor, and cost differences between ablated variant and baseline."""
     delta_expectancy_r: float
     delta_profit_factor: float
     delta_win_rate: float
@@ -384,7 +400,7 @@ class XauUsdAblationDelta:
 
 @dataclass(frozen=True)
 class XauUsdAblationComparison:
-    """Paired comparison of baseline vs ablated component."""
+    """Paired factor comparison against the production-calibrated baseline."""
     ablation_type: XauUsdAblationType
     baseline_metrics: XauUsdBacktestMetrics
     ablated_metrics: XauUsdBacktestMetrics
@@ -393,9 +409,9 @@ class XauUsdAblationComparison:
 
 @dataclass(frozen=True)
 class XauUsdAblationReport:
-    """Comprehensive component ablation research report."""
+    """Consolidated paired factor ablation report with immutability proof."""
     baseline_run_spec: XauUsdBacktestRunSpec
     baseline_metrics: XauUsdBacktestMetrics
     comparisons: Tuple[XauUsdAblationComparison, ...]
     baseline_hash: str
-    immutability_verified: bool = True
+    immutability_verified: bool

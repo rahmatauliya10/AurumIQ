@@ -11,7 +11,9 @@ from engine.backtest.xauusd_types import (
     XauUsdWalkForwardConfig,
 )
 from engine.core.types import CandleData, QuoteData
-from engine.risk.xauusd_fingerprints import compute_phase5_policy_fingerprint
+from engine.risk.xauusd_fingerprints import (
+    compute_phase5_policy_fingerprint,
+)
 from engine.signals.profile import compute_phase4_policy_fingerprint
 
 
@@ -27,16 +29,18 @@ def compute_xauusd_dataset_identity(
     candles_15m: Sequence[CandleData],
     start_time: datetime,
     end_time: datetime,
+    candles_1h: Sequence[CandleData] = (),
     candles_4h: Sequence[CandleData] = (),
     candles_1d: Sequence[CandleData] = (),
     candles_5m: Sequence[CandleData] = (),
     candles_1m: Sequence[CandleData] = (),
     quotes: Sequence[QuoteData] = (),
     macro_evidence: Sequence[Dict[str, Any]] = (),
+    phase3a_evidence: Sequence[Dict[str, Any]] = (),
 ) -> str:
     """
     Compute canonical SHA-256 hash of all market evidence strictly within [start_time, end_time).
-    Binds all material OHLCV, quote, volume evidence, source ID, and macro fields.
+    Binds all material OHLCV (15m, 1h, 4h, 1d, 5m, 1m), quotes, volume evidence, source ID, macro, and Phase 3A fields.
     """
     if start_time.tzinfo is None or start_time.tzinfo.utcoffset(start_time) is None:
         raise ValueError("start_time must be timezone-aware.")
@@ -71,6 +75,7 @@ def compute_xauusd_dataset_identity(
                 })
 
     _process_candles(candles_15m, "15m")
+    _process_candles(candles_1h, "1h")
     _process_candles(candles_4h, "4h")
     _process_candles(candles_1d, "1d")
     _process_candles(candles_5m, "5m")
@@ -97,10 +102,15 @@ def compute_xauusd_dataset_identity(
     for m in macro_evidence:
         macro_records.append({k: str(v) for k, v in sorted(m.items())})
 
+    p3a_records: List[Dict[str, Any]] = []
+    for p in phase3a_evidence:
+        p3a_records.append({k: str(v) for k, v in sorted(p.items())})
+
     payload = {
         "candles": candle_records,
         "quotes": quote_records,
         "macro": macro_records,
+        "phase3a": p3a_records,
         "window_start": _to_utc_iso(start_utc, "window_start"),
         "window_end": _to_utc_iso(end_utc, "window_end"),
     }
@@ -125,6 +135,11 @@ def compute_xauusd_backtest_fingerprint(spec: XauUsdBacktestRunSpec) -> str:
     if spec.risk_profile is not None:
         if not p5_risk_fp:
             p5_risk_fp = compute_phase5_policy_fingerprint(spec.risk_profile)
+        if not p5_exec_fp:
+            exec_policy = spec.risk_profile.long_execution_policy
+            p5_exec_fp = hashlib.sha256(
+                f"{exec_policy.latency_seconds}:{exec_policy.synthetic_spread_pct}:{exec_policy.slippage_pct}".encode("utf-8")
+            ).hexdigest()
 
     payload = {
         "instrument": "XAUUSD",

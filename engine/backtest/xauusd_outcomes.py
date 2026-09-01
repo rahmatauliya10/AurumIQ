@@ -44,13 +44,16 @@ class XauUsdOutcomeEngine:
       2. Deterministic Intrabar Resolution: Uses Phase 5 SideAwareIntrabarResolver with conservative SL_FIRST fallback.
       3. Denominator Invariance: Planned risk amount (LONG: entry_max - stop_final, SHORT: stop_final - entry_min)
          is frozen at signal generation and NEVER recalculated post-fill.
-      4. Bounded Window Evidence: Evidence beyond declared run_end_time is strictly excluded.
-      5. Zero Speculative Sizing: All PnL and payoff metrics are evaluated in per-unit USD and normalized R.
+      4. Bounded Window Evidence: Evidence at or beyond declared run_end_time [start_time, end_time) is strictly excluded (< end_time).
+      5. Side-Specific Execution Models: Long and Short use their respective pinned execution models.
+      6. Zero Speculative Sizing: All PnL and payoff metrics are evaluated in per-unit USD and normalized R.
     """
 
     def __init__(
         self,
         cost_config: XauUsdCostConfig,
+        long_entry_execution_model: Optional[SideAwareEntryExecutionModel] = None,
+        short_entry_execution_model: Optional[SideAwareEntryExecutionModel] = None,
         entry_execution_model: Optional[SideAwareEntryExecutionModel] = None,
         intrabar_resolver: Optional[SideAwareIntrabarResolver] = None,
         holding_horizon_bars_15m: Optional[int] = None,
@@ -59,6 +62,8 @@ class XauUsdOutcomeEngine:
         max_fill_wait_seconds: Optional[float] = None,
         code_revision: Optional[str] = None,
         execution_policy_config: Optional[XauUsdExecutionPolicy] = None,
+        long_execution_policy: Optional[XauUsdExecutionPolicy] = None,
+        short_execution_policy: Optional[XauUsdExecutionPolicy] = None,
         phase5_policy_fingerprint: Optional[str] = None,
     ):
         self.cost_config = cost_config
@@ -67,16 +72,38 @@ class XauUsdOutcomeEngine:
         self.max_fill_wait_bars_15m = max_fill_wait_bars_15m
         self.max_fill_wait_seconds = max_fill_wait_seconds
 
-        if entry_execution_model is not None:
-            self.entry_execution_model = entry_execution_model
+        if max_fill_wait_bars_15m is None and max_fill_wait_seconds is None:
+            raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is strictly required.")
+
+        if long_entry_execution_model is not None and short_entry_execution_model is not None:
+            self.long_entry_execution_model = long_entry_execution_model
+            self.short_entry_execution_model = short_entry_execution_model
+        elif long_execution_policy is not None and short_execution_policy is not None:
+            if not code_revision or not phase5_policy_fingerprint:
+                raise ValueError("XauUsdOutcomeEngine requires code_revision and phase5_policy_fingerprint for policy construction.")
+            self.long_entry_execution_model = SideAwareEntryExecutionModel(
+                code_revision=code_revision,
+                execution_policy=long_execution_policy,
+                phase5_policy_fingerprint=phase5_policy_fingerprint,
+            )
+            self.short_entry_execution_model = SideAwareEntryExecutionModel(
+                code_revision=code_revision,
+                execution_policy=short_execution_policy,
+                phase5_policy_fingerprint=phase5_policy_fingerprint,
+            )
+        elif entry_execution_model is not None:
+            self.long_entry_execution_model = entry_execution_model
+            self.short_entry_execution_model = entry_execution_model
         else:
             if not code_revision or not execution_policy_config or not phase5_policy_fingerprint:
-                raise ValueError("XauUsdOutcomeEngine requires entry_execution_model or explicit (code_revision, execution_policy_config, phase5_policy_fingerprint).")
-            self.entry_execution_model = SideAwareEntryExecutionModel(
+                raise ValueError("XauUsdOutcomeEngine requires explicit execution models or configuration parameters.")
+            single_model = SideAwareEntryExecutionModel(
                 code_revision=code_revision,
                 execution_policy=execution_policy_config,
                 phase5_policy_fingerprint=phase5_policy_fingerprint,
             )
+            self.long_entry_execution_model = single_model
+            self.short_entry_execution_model = single_model
 
         self.intrabar_resolver = intrabar_resolver or SideAwareIntrabarResolver()
 
@@ -135,40 +162,42 @@ class XauUsdOutcomeEngine:
         if planned_risk is None or planned_risk <= Decimal("0"):
             raise ValueError(f"Invalid planned_risk_amount {planned_risk} for trade {trade_id}")
 
-        # Bound future evidence strictly within [T, run_end_time]
+        # Bound future evidence strictly within [T, run_end_time) - half-open window
         run_end_utc = _require_utc(run_end_time, "run_end_time") if run_end_time is not None else None
 
         valid_candles_15m = [
             c for c in future_candles_15m
             if _require_utc(c.timestamp_close, "candle.timestamp_close") > signal_ts
-            and (run_end_utc is None or _require_utc(c.timestamp_close) <= run_end_utc)
+            and (run_end_utc is None or _require_utc(c.timestamp_close) < run_end_utc)
         ]
         valid_candles_5m = [
             c for c in (future_candles_5m or ())
             if _require_utc(c.timestamp_close, "candle.timestamp_close") > signal_ts
-            and (run_end_utc is None or _require_utc(c.timestamp_close) <= run_end_utc)
+            and (run_end_utc is None or _require_utc(c.timestamp_close) < run_end_utc)
         ]
         valid_candles_1m = [
             c for c in (future_candles_1m or ())
             if _require_utc(c.timestamp_close, "candle.timestamp_close") > signal_ts
-            and (run_end_utc is None or _require_utc(c.timestamp_close) <= run_end_utc)
+            and (run_end_utc is None or _require_utc(c.timestamp_close) < run_end_utc)
         ]
         valid_quotes = [
             q for q in (future_quotes or ())
             if _require_utc(q.timestamp, "quote.timestamp") >= signal_ts
-            and (run_end_utc is None or _require_utc(q.timestamp) <= run_end_utc)
+            and (run_end_utc is None or _require_utc(q.timestamp) < run_end_utc)
         ]
 
-        # 1. Simulate Entry Execution
+        # 1. Resolve Side-Specific Execution Model
+        entry_model = self.long_entry_execution_model if risk_side == RiskSide.LONG else self.short_entry_execution_model
+
         if execution_policy == EntryExecutionPolicy.NEXT_BAR_OPEN:
-            fill_res = self.entry_execution_model.simulate_next_bar_open(
+            fill_res = entry_model.simulate_next_bar_open(
                 side=risk_side,
                 signal_generated_at=signal_ts,
                 candles=valid_candles_15m,
                 source_phase4_fingerprint=signal.analysis_fingerprint,
             )
         elif execution_policy == EntryExecutionPolicy.MARKET_AFTER_SIGNAL:
-            fill_res = self.entry_execution_model.simulate_market_after_signal(
+            fill_res = entry_model.simulate_market_after_signal(
                 side=risk_side,
                 signal_generated_at=signal_ts,
                 quotes=valid_quotes,
@@ -176,7 +205,7 @@ class XauUsdOutcomeEngine:
             )
         elif execution_policy == EntryExecutionPolicy.LIMIT_TOUCH:
             limit_p = risk_plan.entry_max if risk_side == RiskSide.LONG else risk_plan.entry_min
-            fill_res = self.entry_execution_model.simulate_limit_zone(
+            fill_res = entry_model.simulate_limit_zone(
                 side=risk_side,
                 signal_generated_at=signal_ts,
                 limit_price=limit_p,
@@ -188,11 +217,12 @@ class XauUsdOutcomeEngine:
             raise ValueError(f"Unknown execution policy: {execution_policy}")
 
         # Compute explicit fill-search horizon for NO_FILL dependency end
-        fill_search_seconds = 3600.0
         if self.max_fill_wait_seconds is not None:
             fill_search_seconds = float(self.max_fill_wait_seconds)
         elif self.max_fill_wait_bars_15m is not None:
             fill_search_seconds = float(self.max_fill_wait_bars_15m * 900)
+        else:
+            raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is strictly required.")
 
         no_fill_dep_end = signal_ts + timedelta(seconds=fill_search_seconds)
         if run_end_utc is not None and no_fill_dep_end > run_end_utc:
@@ -238,7 +268,7 @@ class XauUsdOutcomeEngine:
 
         post_fill_15m = [
             c for c in valid_candles_15m
-            if _require_utc(c.timestamp_close) >= fill_ts and _require_utc(c.timestamp_open) <= max_search_ts
+            if _require_utc(c.timestamp_close) >= fill_ts and _require_utc(c.timestamp_open) < max_search_ts
         ]
 
         eval_candles = post_fill_15m[:eff_bars] if eff_bars is not None else post_fill_15m
@@ -250,11 +280,13 @@ class XauUsdOutcomeEngine:
         max_favorable_price = fill_price
         max_adverse_price = fill_price
 
-        for idx, candle in enumerate(eval_candles):
-            c_close_ts = _require_utc(candle.timestamp_close)
-            c_open_ts = _require_utc(candle.timestamp_open)
+        dependency_end = max_search_ts
 
-            # Update MFE / MAE tracking
+        for idx, candle in enumerate(eval_candles):
+            c_open = _require_utc(candle.timestamp_open, "candle.timestamp_open")
+            c_close = _require_utc(candle.timestamp_close, "candle.timestamp_close")
+
+            # Track MFE / MAE
             if risk_side == RiskSide.LONG:
                 if candle.high > max_favorable_price:
                     max_favorable_price = candle.high
@@ -266,57 +298,54 @@ class XauUsdOutcomeEngine:
                 if candle.high > max_adverse_price:
                     max_adverse_price = candle.high
 
-            # Find matching lower-TF bars
-            matching_1m = None
-            matching_5m = None
-            if intrabar_policy == IntrabarPolicy.LOWER_TIMEFRAME_REPLAY:
-                if valid_candles_1m:
-                    matching_1m = [
-                        m for m in valid_candles_1m
-                        if c_open_ts <= _require_utc(m.timestamp_open) and _require_utc(m.timestamp_close) <= c_close_ts
-                    ]
-                if valid_candles_5m:
-                    matching_5m = [
-                        m for m in valid_candles_5m
-                        if c_open_ts <= _require_utc(m.timestamp_open) and _require_utc(m.timestamp_close) <= c_close_ts
-                    ]
+            # Obtain lower timeframe candles or quotes for intrabar replay
+            sub_1m = [
+                c for c in valid_candles_1m
+                if _require_utc(c.timestamp_open) >= c_open and _require_utc(c.timestamp_close) <= c_close
+            ]
+            sub_5m = [
+                c for c in valid_candles_5m
+                if _require_utc(c.timestamp_open) >= c_open and _require_utc(c.timestamp_close) <= c_close
+            ]
+            sub_q = [
+                q for q in valid_quotes
+                if _require_utc(q.timestamp) >= c_open and _require_utc(q.timestamp) <= c_close
+            ]
 
-            res = self.intrabar_resolver.resolve(
+            hit_res = self.intrabar_resolver.resolve(
                 side=risk_side,
                 parent_candle=candle,
                 tp_price=tp1_price,
                 sl_price=sl_price,
-                fill_timestamp=fill_ts if idx == 0 else None,
-                lower_tf_candles_1m=matching_1m,
-                lower_tf_candles_5m=matching_5m,
+                fill_timestamp=fill_ts,
+                lower_tf_candles_1m=sub_1m or None,
+                lower_tf_candles_5m=sub_5m or None,
                 policy=intrabar_policy,
             )
 
-            if res.barrier_hit == BarrierHitType.TP_FIRST:
+            if hit_res.barrier_hit == BarrierHitType.TP_FIRST:
                 terminal_outcome = XauUsdTradeOutcome.TP1_FIRST
-                exit_ts = res.exit_timestamp or c_close_ts
-                exit_price = res.exit_price or tp1_price
+                exit_ts = hit_res.exit_timestamp or c_close
+                exit_price = hit_res.exit_price or tp1_price
+                dependency_end = exit_ts
                 hit_bar_index = idx
                 break
-            elif res.barrier_hit == BarrierHitType.SL_FIRST:
+            elif hit_res.barrier_hit == BarrierHitType.SL_FIRST:
                 terminal_outcome = XauUsdTradeOutcome.SL_FIRST
-                exit_ts = res.exit_timestamp or c_close_ts
-                exit_price = res.exit_price or sl_price
+                exit_ts = hit_res.exit_timestamp or c_close
+                exit_price = hit_res.exit_price or sl_price
+                dependency_end = exit_ts
+                hit_bar_index = idx
+                break
+            elif hit_res.barrier_hit == BarrierHitType.SKIPPED:
+                terminal_outcome = XauUsdTradeOutcome.SKIPPED
+                exit_ts = hit_res.exit_timestamp or c_close
+                exit_price = fill_price
+                dependency_end = exit_ts
                 hit_bar_index = idx
                 break
 
-        # Check timeout horizon
-        if terminal_outcome == XauUsdTradeOutcome.UNRESOLVED and len(eval_candles) > 0:
-            if eff_bars is not None and len(post_fill_15m) >= eff_bars:
-                terminal_outcome = XauUsdTradeOutcome.TIMEOUT
-                last_bar = eval_candles[-1]
-                exit_ts = _require_utc(last_bar.timestamp_close)
-                exit_price = last_bar.close
-                hit_bar_index = len(eval_candles) - 1
-
-        dependency_end = exit_ts if exit_ts is not None else max_search_ts
-
-        # Observational TP2 Extension Check
+        # Check for TP2 reach if TP1 was reached
         tp2_hit = False
         if terminal_outcome == XauUsdTradeOutcome.TP1_FIRST and tp2_price is not None and hit_bar_index >= 0:
             remaining_candles = eval_candles[hit_bar_index:]
@@ -378,7 +407,8 @@ class XauUsdOutcomeEngine:
         exit_slippage = exit_price * (self.cost_config.exit_slippage_bps * Decimal("0.0001"))
 
         total_exit_friction = exit_fee + exit_spread + exit_slippage
-        net_pnl = gross_pnl - total_exit_friction
+        # Deduct entry_fee once from gross_pnl (entry spread/slippage is already reflected in fill_price)
+        net_pnl = gross_pnl - entry_fee - total_exit_friction
         net_r = net_pnl / planned_risk
 
         gross_ret_pct = (gross_pnl / fill_price) * Decimal("100.0")

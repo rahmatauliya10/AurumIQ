@@ -40,6 +40,29 @@ class XauUsdChronologicalFoldGenerator:
     """
     Chronological fold generator strictly adhering to XAUUSD walk-forward ratios and boundaries.
     All intervals are half-open: [start, end). Zero random shuffling.
+
+    Deterministic Partitioning Algorithm:
+      Given total duration D = end_time - start_time and ratios (r_train, r_val, r_oos) summing to 1.0:
+      1. Base allocation:
+         W_train = D * r_train
+         W_val = D * r_val
+         Delta_oos = (D * r_oos) / total_folds
+      2. For each fold k in [1, total_folds] (0-indexed i = k - 1):
+         shift_i = i * Delta_oos
+         - If rolling_window=False (Expanding Window):
+             train_start = start_time
+             train_end = start_time + W_train + shift_i
+         - If rolling_window=True (Rolling Window):
+             train_start = start_time + shift_i
+             train_end = train_start + W_train
+         - If r_val > 0:
+             val_start = train_end
+             val_end = val_start + W_val
+             oos_start = val_end + embargo
+         - If r_val == 0:
+             val_start = None, val_end = None
+             oos_start = train_end + embargo
+         oos_end = min(oos_start + Delta_oos, end_time)
     """
 
     @classmethod
@@ -59,53 +82,31 @@ class XauUsdChronologicalFoldGenerator:
         k = config.total_folds
         folds: List[XauUsdFoldSpec] = []
 
-        if k == 1:
-            train_dur = total_duration * config.train_ratio
-            val_dur = total_duration * config.val_ratio
-            oos_dur = total_duration * config.oos_ratio
-
-            t_end = start_utc + train_dur
-            v_start = t_end
-            v_end = v_start + val_dur if config.val_ratio > 0.0 else None
-            o_start = (v_end if v_end is not None else t_end) + timedelta(seconds=config.embargo_seconds)
-            o_end = end_utc
-
-            folds.append(
-                XauUsdFoldSpec(
-                    fold_id=1,
-                    train_start=start_utc,
-                    train_end=t_end,
-                    val_start=v_start if config.val_ratio > 0.0 else None,
-                    val_end=v_end if config.val_ratio > 0.0 else None,
-                    oos_start=o_start,
-                    oos_end=o_end,
-                    embargo_duration_seconds=config.embargo_seconds,
-                )
-            )
-            return folds
-
-        # Multi-fold chronological walk-forward
-        # Each fold advances the test segment chronologically
-        oos_step = total_duration / (k + 2)  # Segment-based chunking
-        train_window = oos_step * 2
+        w_train = total_duration * config.train_ratio
+        w_val = total_duration * config.val_ratio
+        delta_oos = (total_duration * config.oos_ratio) / k
 
         for fold_idx in range(1, k + 1):
+            i = fold_idx - 1
+            shift_i = delta_oos * i
+
             if config.rolling_window:
-                f_train_start = start_utc + (oos_step * (fold_idx - 1))
+                f_train_start = start_utc + shift_i
+                f_train_end = f_train_start + w_train
             else:
                 f_train_start = start_utc
+                f_train_end = start_utc + w_train + shift_i
 
-            f_train_end = f_train_start + train_window
             if config.val_ratio > 0.0:
                 f_val_start = f_train_end
-                f_val_end = f_val_start + (oos_step * 0.5)
+                f_val_end = f_val_start + w_val
                 f_oos_start = f_val_end + timedelta(seconds=config.embargo_seconds)
             else:
                 f_val_start = None
                 f_val_end = None
                 f_oos_start = f_train_end + timedelta(seconds=config.embargo_seconds)
 
-            f_oos_end = min(f_oos_start + oos_step, end_utc)
+            f_oos_end = min(f_oos_start + delta_oos, end_utc)
 
             folds.append(
                 XauUsdFoldSpec(
@@ -150,15 +151,14 @@ def select_parameters_on_train_val(
 
 class XauUsdWalkForwardEngine:
     """
-    Executes chronological walk-forward analysis with label purging, embargo, and strict OOS isolation for XAUUSD.
+    Executes chronological multi-fold walk-forward validation for XAUUSD.
 
     Strict Invariants:
-      1. Chronological order strictly enforced across all folds (no random shuffle).
+      1. Chronological Non-Overlapping Folds: Folds progress strictly forward in time.
       2. Half-open intervals: [start, end).
-      3. Exact dependency windows are purged across partition boundaries.
-      4. Post-boundary embargo excluded from subsequent partition evaluation.
-      5. OOS Isolation: candidate selection API cannot accept OOS data.
-      6. Generates descriptive temporal stability report without arbitrary pass/fail filters.
+      3. OOS Isolation: OOS partition data never leaks into train/validation evaluation.
+      4. Purge & Embargo: Dependency window purges and post-boundary embargos are strictly applied.
+      5. Side-Specific Policy Parity: LONG and SHORT execute using their respective Phase 5 policies.
     """
 
     def __init__(
@@ -175,18 +175,17 @@ class XauUsdWalkForwardEngine:
         self.execution_policy = execution_policy
         self.intrabar_policy = intrabar_policy
 
-    def run_walkforward(
+    def run(
         self,
         dataset: PointInTimeDataset,
         spec: XauUsdBacktestRunSpec,
-        wf_config: Optional[XauUsdWalkForwardConfig] = None,
+        wf_config: XauUsdWalkForwardConfig,
     ) -> XauUsdWalkForwardResult:
         """
-        Execute chronological walk-forward validation across all folds.
-        Requires explicit caller-supplied wf_config.
+        Execute chronological walk-forward validation on XAUUSD dataset.
         """
-        if wf_config is None:
-            raise ValueError("wf_config must be explicitly provided (legacy defaults removed).")
+        _require_utc(spec.start_time, "spec.start_time")
+        _require_utc(spec.end_time, "spec.end_time")
 
         fold_specs = XauUsdChronologicalFoldGenerator.generate_folds(
             start_time=spec.start_time,
@@ -207,13 +206,25 @@ class XauUsdWalkForwardEngine:
             risk_version=spec.risk_version,
         )
 
+        outcome_eng = self.outcome_engine or XauUsdOutcomeEngine(
+            cost_config=spec.cost_config,
+            holding_horizon_bars_15m=spec.holding_horizon_bars_15m,
+            holding_horizon_seconds=spec.holding_horizon_seconds,
+            max_fill_wait_bars_15m=spec.max_fill_wait_bars_15m,
+            max_fill_wait_seconds=spec.max_fill_wait_seconds,
+            code_revision=spec.code_revision,
+            long_execution_policy=risk_plan.risk_profile.long_execution_policy,
+            short_execution_policy=risk_plan.risk_profile.short_execution_policy,
+            phase5_policy_fingerprint=risk_plan.policy_fingerprint,
+        )
+
         run_fp = compute_xauusd_walkforward_fingerprint(
             spec=spec,
             wf_config=wf_config,
             fold_specs=fold_specs,
         )
 
-        # Run Replay across entire dataset window
+        # Run Replay across entire dataset window [start_time, end_time)
         full_candles_15m = dataset.get_closed_candles("15m", as_of=spec.end_time)
         if not full_candles_15m:
             raise ValueError(f"No 15m closed candles available in dataset for {spec.instrument}.")
@@ -227,7 +238,7 @@ class XauUsdWalkForwardEngine:
             dataset=dataset,
             signal_engine=sig_engine,
             risk_planner=risk_plan,
-            outcome_engine=self.outcome_engine,
+            outcome_engine=outcome_eng,
             execution_policy=self.execution_policy,
             intrabar_policy=self.intrabar_policy,
             signal_profile=spec.signal_profile,
@@ -259,12 +270,12 @@ class XauUsdWalkForwardEngine:
             )
             train_metrics = XauUsdMetricsCalculator.calculate(
                 signals=[s for s in all_signals if f_spec.train_start <= s.timestamp < f_spec.train_end],
-                trades=train_purged.eligible_trades,
+                trades=train_purged,
             )
 
-            # 2. Validation Partition Evaluation (if configured)
-            val_metrics: Optional[XauUsdBacktestMetrics] = None
-            val_trades_list: Tuple[XauUsdSimulatedTrade, ...] = ()
+            # 2. Validation Partition Evaluation
+            val_purged: List[XauUsdSimulatedTrade] = []
+            val_metrics = None
             if f_spec.val_start and f_spec.val_end:
                 val_trades_raw = [
                     t for t in all_trades
@@ -276,13 +287,12 @@ class XauUsdWalkForwardEngine:
                     partition_end=f_spec.val_end,
                     purge_overlapping=wf_config.purge_overlapping,
                 )
-                val_trades_list = tuple(val_purged.eligible_trades)
                 val_metrics = XauUsdMetricsCalculator.calculate(
                     signals=[s for s in all_signals if f_spec.val_start <= s.timestamp < f_spec.val_end],
-                    trades=val_purged.eligible_trades,
+                    trades=val_purged,
                 )
 
-            # 3. OOS Partition Evaluation (with Embargo applied)
+            # 3. OOS Partition Evaluation (with post-boundary embargo)
             oos_trades_raw = [
                 t for t in all_trades
                 if f_spec.oos_start <= t.signal_timestamp < f_spec.oos_end
@@ -295,8 +305,55 @@ class XauUsdWalkForwardEngine:
             )
             oos_metrics = XauUsdMetricsCalculator.calculate(
                 signals=[s for s in all_signals if f_spec.oos_start <= s.timestamp < f_spec.oos_end],
-                trades=oos_purged.eligible_trades,
+                trades=oos_purged,
             )
+
+            # Tag OOS trades with fold_id
+            tagged_oos_trades = [
+                XauUsdSimulatedTrade(
+                    trade_id=t.trade_id,
+                    side=t.side,
+                    candidate_state=t.candidate_state,
+                    candidate_user_decision=t.candidate_user_decision,
+                    source_signal_fingerprint=t.source_signal_fingerprint,
+                    signal_timestamp=t.signal_timestamp,
+                    risk_plan_fingerprint=t.risk_plan_fingerprint,
+                    planned_risk_amount=t.planned_risk_amount,
+                    outcome=t.outcome,
+                    fill_timestamp=t.fill_timestamp,
+                    fill_price=t.fill_price,
+                    exit_timestamp=t.exit_timestamp,
+                    exit_price=t.exit_price,
+                    dependency_end_timestamp=t.dependency_end_timestamp,
+                    gross_pnl_per_unit=t.gross_pnl_per_unit,
+                    net_pnl_per_unit=t.net_pnl_per_unit,
+                    gross_r=t.gross_r,
+                    net_r=t.net_r,
+                    gross_return_pct=t.gross_return_pct,
+                    net_return_pct=t.net_return_pct,
+                    mfe_r=t.mfe_r,
+                    mae_r=t.mae_r,
+                    holding_duration_seconds=t.holding_duration_seconds,
+                    entry_fee=t.entry_fee,
+                    exit_fee=t.exit_fee,
+                    entry_spread=t.entry_spread,
+                    exit_spread=t.exit_spread,
+                    entry_slippage=t.entry_slippage,
+                    exit_slippage=t.exit_slippage,
+                    regime=t.regime,
+                    session=t.session,
+                    cycle_phase=t.cycle_phase,
+                    ambiguity_policy=t.ambiguity_policy,
+                    fold_id=f_spec.fold_id,
+                    run_fingerprint=run_fp,
+                    execution_evidence_fingerprint=t.execution_evidence_fingerprint,
+                    dependency_window=t.dependency_window,
+                    tp2_reached_after_tp1=t.tp2_reached_after_tp1,
+                    max_favorable_extension_r=t.max_favorable_extension_r,
+                )
+                for t in oos_purged
+            ]
+            all_oos_trades.extend(tagged_oos_trades)
 
             fold_results.append(
                 XauUsdFoldResult(
@@ -305,34 +362,40 @@ class XauUsdWalkForwardEngine:
                     train_metrics=train_metrics,
                     val_metrics=val_metrics,
                     oos_metrics=oos_metrics,
-                    train_trade_count=len(train_purged.eligible_trades),
-                    val_trade_count=len(val_trades_list),
-                    oos_trade_count=len(oos_purged.eligible_trades),
-                    train_trades=tuple(train_purged.eligible_trades),
-                    val_trades=val_trades_list,
-                    oos_trades=tuple(oos_purged.eligible_trades),
+                    train_trade_count=len(train_purged),
+                    val_trade_count=len(val_purged),
+                    oos_trade_count=len(tagged_oos_trades),
+                    train_trades=tuple(train_purged),
+                    val_trades=tuple(val_purged),
+                    oos_trades=tuple(tagged_oos_trades),
                 )
             )
-            all_oos_trades.extend(oos_purged.eligible_trades)
 
-        # Aggregate Out-of-Sample Metrics
-        agg_oos_metrics = XauUsdMetricsCalculator.calculate(
-            signals=[],
+        # 4. Aggregated OOS Metrics
+        all_oos_signals = [
+            s for s in all_signals
+            if any(f.spec.oos_start <= s.timestamp < f.spec.oos_end for f in fold_results)
+        ]
+        oos_aggregated_metrics = XauUsdMetricsCalculator.calculate(
+            signals=all_oos_signals,
             trades=all_oos_trades,
         )
 
         fold_expectancies = tuple(f.oos_metrics.net_expectancy_r for f in fold_results)
-        stability_score = 1.0
+
+        # 5. Temporal Stability Score
         if len(fold_expectancies) > 1:
             mean_exp = statistics.mean(fold_expectancies)
-            std_exp = statistics.stdev(fold_expectancies)
-            stability_score = round(max(0.0, 1.0 - (std_exp / (abs(mean_exp) + 1e-4))), 4)
+            stdev_exp = statistics.stdev(fold_expectancies)
+            stability_score = round(max(0.0, 1.0 - (stdev_exp / (abs(mean_exp) + 1.0))), 4)
+        else:
+            stability_score = 1.0 if fold_expectancies and fold_expectancies[0] > 0 else 0.0
 
         return XauUsdWalkForwardResult(
             wf_config=wf_config,
             run_fingerprint=run_fp,
             folds=tuple(fold_results),
-            oos_aggregated_metrics=agg_oos_metrics,
+            oos_aggregated_metrics=oos_aggregated_metrics,
             temporal_stability_score=stability_score,
             fold_expectancies_r=fold_expectancies,
         )
