@@ -973,8 +973,8 @@ class SideIntrabarResolutionResult:
     """Outcome of side-aware intrabar barrier evaluation."""
     side: RiskSide
     barrier_hit: BarrierHitType
-    exit_price: Decimal
-    exit_timestamp: datetime
+    exit_price: Optional[Decimal]
+    exit_timestamp: Optional[datetime]
     policy_applied: IntrabarPolicy
     replay_bars_count: int
     reasons: Tuple[str, ...] = field(default_factory=tuple)

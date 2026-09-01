@@ -4,7 +4,7 @@ Implements total deterministic target ordering, strictly-beyond TP2 rule, and st
 """
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from engine.core.types import StructureResult, StructureZone
 from engine.risk.xauusd_fingerprints import (
@@ -54,7 +54,6 @@ def calculate_long_targets(
     authoritative_t: datetime,
     policy: SideRiskPolicy,
     structure_4h: Optional[StructureResult] = None,
-    custom_zones: Optional[Sequence[StructureZone]] = None,
 ) -> Tuple[
     Optional[Decimal],
     Optional[Decimal],
@@ -77,7 +76,7 @@ def calculate_long_targets(
       2. No synthetic structural TP1 fabrication allowed.
       3. Total deterministic ordering: price_low ASC, created_at ASC, price_high ASC, zone_fp ASC.
       4. TP2 must be strictly beyond TP1 (candidate.price_low > tp1).
-      5. planned_rr_tp1 >= min_rr_tp1 (equality is valid).
+      5. planned_rr_tp1 >= min_rr_tp1 (unrounded comparison, equality is valid).
     """
     planned_risk = entry_max - stop_final
     if planned_risk <= Decimal("0"):
@@ -86,20 +85,8 @@ def calculate_long_targets(
     if policy.min_rr_tp1 is None:
         return None, None, None, None, None, None, False, "Incomplete LONG risk policy (min_rr_tp1 is None)."
 
-    # Gather candidate zones
-    if custom_zones is not None:
-        raw_candidates = [
-            z for z in custom_zones
-            if z.created_at <= authoritative_t and z.is_active
-        ]
-        unique_by_fp: Dict[str, StructureZone] = {}
-        for zone in raw_candidates:
-            fp = compute_zone_fingerprint(zone)
-            if fp not in unique_by_fp:
-                unique_by_fp[fp] = zone
-        candidates = list(unique_by_fp.values())
-    else:
-        candidates = _collect_pit_zones(structure_15m, structure_4h, authoritative_t)
+    # Gather candidate zones strictly from PIT StructureResults
+    candidates = _collect_pit_zones(structure_15m, structure_4h, authoritative_t)
 
     # Filter to valid resistances above entry_max
     long_candidates = [
@@ -107,7 +94,7 @@ def calculate_long_targets(
         if z.zone_type == "RESISTANCE" and z.price_low > entry_max
     ]
 
-    # Total deterministic sorting
+    # Total deterministic sorting: price_low ASC, created_at ASC, price_high ASC, zone_fp ASC
     long_candidates.sort(key=lambda z: (
         z.price_low,
         canonical_utc_timestamp(z.created_at),
@@ -119,17 +106,17 @@ def calculate_long_targets(
         return None, None, None, None, None, None, False, "Missing confirmed structural resistance target above entry zone."
 
     tp1_zone = long_candidates[0]
-    tp1 = tp1_zone.price_low.quantize(Decimal("0.01"))
+    tp1 = tp1_zone.price_low
     tp1_zone_fp = compute_zone_fingerprint(tp1_zone)
 
-    planned_rr_tp1 = ((tp1 - entry_max) / planned_risk).quantize(Decimal("0.01"))
+    planned_rr_tp1 = (tp1 - entry_max) / planned_risk
 
     # TP2 Resolution: must be strictly beyond TP1
     tp2: Optional[Decimal] = None
     tp2_zone_fp: Optional[str] = None
 
     for candidate in long_candidates[1:]:
-        cand_price = candidate.price_low.quantize(Decimal("0.01"))
+        cand_price = candidate.price_low
         if cand_price > tp1:
             tp2 = cand_price
             tp2_zone_fp = compute_zone_fingerprint(candidate)
@@ -137,16 +124,16 @@ def calculate_long_targets(
 
     # Optional synthetic TP2 fallback if configured and strictly beyond TP1
     if tp2 is None and policy.tp2_atr_multiplier is not None:
-        syn_tp2 = (entry_mid + (policy.tp2_atr_multiplier * atr14)).quantize(Decimal("0.01"))
+        syn_tp2 = entry_mid + (policy.tp2_atr_multiplier * atr14)
         if syn_tp2 > tp1:
             tp2 = syn_tp2
             tp2_zone_fp = None
 
     planned_rr_tp2: Optional[Decimal] = None
     if tp2 is not None:
-        planned_rr_tp2 = ((tp2 - entry_max) / planned_risk).quantize(Decimal("0.01"))
+        planned_rr_tp2 = (tp2 - entry_max) / planned_risk
 
-    # Minimum RR Gate
+    # Minimum RR Gate (unrounded raw comparison)
     if planned_rr_tp1 < policy.min_rr_tp1:
         return (
             tp1,
@@ -156,7 +143,7 @@ def calculate_long_targets(
             tp1_zone_fp,
             tp2_zone_fp,
             False,
-            f"Nearest confirmed resistance at {tp1} yields RR {planned_rr_tp1:.2f} below minimum required threshold {policy.min_rr_tp1:.2f}.",
+            f"Nearest confirmed resistance at {tp1} yields RR {planned_rr_tp1} below minimum required threshold {policy.min_rr_tp1}.",
         )
 
     return tp1, tp2, planned_rr_tp1, planned_rr_tp2, tp1_zone_fp, tp2_zone_fp, True, None
@@ -172,7 +159,6 @@ def calculate_short_targets(
     authoritative_t: datetime,
     policy: SideRiskPolicy,
     structure_4h: Optional[StructureResult] = None,
-    custom_zones: Optional[Sequence[StructureZone]] = None,
 ) -> Tuple[
     Optional[Decimal],
     Optional[Decimal],
@@ -195,7 +181,7 @@ def calculate_short_targets(
       2. No synthetic structural TP1 fabrication allowed.
       3. Total deterministic ordering: price_high DESC, created_at ASC, price_low DESC, zone_fp ASC.
       4. TP2 must be strictly beyond TP1 (candidate.price_high < tp1).
-      5. planned_rr_tp1 >= min_rr_tp1 (equality is valid).
+      5. planned_rr_tp1 >= min_rr_tp1 (unrounded comparison, equality is valid).
     """
     planned_risk = stop_final - entry_min
     if planned_risk <= Decimal("0"):
@@ -204,20 +190,8 @@ def calculate_short_targets(
     if policy.min_rr_tp1 is None:
         return None, None, None, None, None, None, False, "Incomplete SHORT risk policy (min_rr_tp1 is None)."
 
-    # Gather candidate zones
-    if custom_zones is not None:
-        raw_candidates = [
-            z for z in custom_zones
-            if z.created_at <= authoritative_t and z.is_active
-        ]
-        unique_by_fp: Dict[str, StructureZone] = {}
-        for zone in raw_candidates:
-            fp = compute_zone_fingerprint(zone)
-            if fp not in unique_by_fp:
-                unique_by_fp[fp] = zone
-        candidates = list(unique_by_fp.values())
-    else:
-        candidates = _collect_pit_zones(structure_15m, structure_4h, authoritative_t)
+    # Gather candidate zones strictly from PIT StructureResults
+    candidates = _collect_pit_zones(structure_15m, structure_4h, authoritative_t)
 
     # Filter to valid supports below entry_min
     short_candidates = [
@@ -225,7 +199,7 @@ def calculate_short_targets(
         if z.zone_type == "SUPPORT" and z.price_high < entry_min
     ]
 
-    # Total deterministic sorting
+    # Total deterministic sorting: price_high DESC, created_at ASC, price_low DESC, zone_fp ASC
     short_candidates.sort(key=lambda z: (
         -z.price_high,
         canonical_utc_timestamp(z.created_at),
@@ -237,17 +211,17 @@ def calculate_short_targets(
         return None, None, None, None, None, None, False, "Missing confirmed structural support target below entry zone."
 
     tp1_zone = short_candidates[0]
-    tp1 = tp1_zone.price_high.quantize(Decimal("0.01"))
+    tp1 = tp1_zone.price_high
     tp1_zone_fp = compute_zone_fingerprint(tp1_zone)
 
-    planned_rr_tp1 = ((entry_min - tp1) / planned_risk).quantize(Decimal("0.01"))
+    planned_rr_tp1 = (entry_min - tp1) / planned_risk
 
     # TP2 Resolution: must be strictly beyond TP1
     tp2: Optional[Decimal] = None
     tp2_zone_fp: Optional[str] = None
 
     for candidate in short_candidates[1:]:
-        cand_price = candidate.price_high.quantize(Decimal("0.01"))
+        cand_price = candidate.price_high
         if cand_price < tp1:
             tp2 = cand_price
             tp2_zone_fp = compute_zone_fingerprint(candidate)
@@ -255,16 +229,16 @@ def calculate_short_targets(
 
     # Optional synthetic TP2 fallback if configured and strictly beyond TP1
     if tp2 is None and policy.tp2_atr_multiplier is not None:
-        syn_tp2 = (entry_mid - (policy.tp2_atr_multiplier * atr14)).quantize(Decimal("0.01"))
+        syn_tp2 = entry_mid - (policy.tp2_atr_multiplier * atr14)
         if syn_tp2 < tp1:
             tp2 = syn_tp2
             tp2_zone_fp = None
 
     planned_rr_tp2: Optional[Decimal] = None
     if tp2 is not None:
-        planned_rr_tp2 = ((entry_min - tp2) / planned_risk).quantize(Decimal("0.01"))
+        planned_rr_tp2 = (entry_min - tp2) / planned_risk
 
-    # Minimum RR Gate
+    # Minimum RR Gate (unrounded raw comparison)
     if planned_rr_tp1 < policy.min_rr_tp1:
         return (
             tp1,
@@ -274,7 +248,7 @@ def calculate_short_targets(
             tp1_zone_fp,
             tp2_zone_fp,
             False,
-            f"Nearest confirmed support at {tp1} yields RR {planned_rr_tp1:.2f} below minimum required threshold {policy.min_rr_tp1:.2f}.",
+            f"Nearest confirmed support at {tp1} yields RR {planned_rr_tp1} below minimum required threshold {policy.min_rr_tp1}.",
         )
 
     return tp1, tp2, planned_rr_tp1, planned_rr_tp2, tp1_zone_fp, tp2_zone_fp, True, None

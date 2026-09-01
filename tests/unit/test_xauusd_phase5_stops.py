@@ -103,11 +103,11 @@ def test_stop_distance_atr_boundary(valid_policy):
         policy=tight_policy,
     )
     assert ok is True
-    assert dist_atr == Decimal("4.00")
+    assert dist_atr == Decimal("4.0")
 
     # Exceeding threshold by 0.01 ATR fails
     excessive_policy = SideRiskPolicy(
-        structure_buffer=Decimal("15.06"),  # 2500 - 15.06 = 2484.94 -> risk 20.06 -> 4.01 ATR
+        structure_buffer=Decimal("15.06"),  # 2500 - 15.06 = 2484.94 -> risk 20.06 -> 4.012 ATR
         atr_multiplier=Decimal("3.5"),
         max_stop_distance_atr=Decimal("4.0"),
         min_rr_tp1=Decimal("1.80"),
@@ -125,15 +125,71 @@ def test_stop_distance_atr_boundary(valid_policy):
 
 
 @pytest.mark.unit
+def test_near_boundary_unrounded_stop_distance_proof_b_and_d():
+    """
+    Near-boundary regression proof:
+      Proof B: raw stop_distance_atr = 4.004... with max_stop_distance_atr = 4.0 MUST BE INVALID.
+               (Under old round-to-4.00, 4.004 would round to 4.00 and erroneously pass).
+      Proof D: raw stop_distance_atr exactly 4.0 MUST BE VALID.
+    """
+    ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    support = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), ts, 2, True)
+
+    policy = SideRiskPolicy(
+        structure_buffer=Decimal("1.00"),
+        atr_multiplier=Decimal("1.0"),
+        max_stop_distance_atr=Decimal("4.0"),
+        min_rr_tp1=Decimal("1.80"),
+    )
+
+    # Proof B: planned risk = 20.02, atr14 = 5.0 -> raw stop_distance = 20.02 / 5.0 = 4.004
+    # With unrounded comparison: 4.004 > 4.0 -> INVALID.
+    # (Old code rounded 4.004 to 4.00, which equaled 4.00 and passed).
+    entry_max_b = Decimal("2505.02")
+    entry_mid_b = Decimal("2502.51")
+    entry_min_b = Decimal("2500.00")
+    # support.price_low - buffer = 2500.00 - 15.00 = 2485.00
+    policy_b = SideRiskPolicy(
+        structure_buffer=Decimal("15.00"),
+        atr_multiplier=Decimal("1.0"),
+        max_stop_distance_atr=Decimal("4.0"),
+        min_rr_tp1=Decimal("1.80"),
+    )
+    # stop_final = 2485.00, planned_risk = 2505.02 - 2485.00 = 20.02, atr = 5.0 -> 4.004
+    _, _, _, dist_b, ok_b, err_b = calculate_long_stops(
+        support_zone=support,
+        entry_min=entry_min_b,
+        entry_mid=entry_mid_b,
+        entry_max=entry_max_b,
+        atr14=Decimal("5.0"),
+        policy=policy_b,
+    )
+    assert ok_b is False
+    assert dist_b == Decimal("4.004")
+    assert "exceeds maximum allowable threshold" in err_b
+
+    # Proof D: planned risk = 20.00, atr14 = 5.0 -> raw stop_distance = 20.00 / 5.0 = 4.0 exactly -> VALID
+    entry_max_d = Decimal("2505.00")
+    entry_mid_d = Decimal("2502.50")
+    entry_min_d = Decimal("2500.00")
+    _, _, _, dist_d, ok_d, err_d = calculate_long_stops(
+        support_zone=support,
+        entry_min=entry_min_d,
+        entry_mid=entry_mid_d,
+        entry_max=entry_max_d,
+        atr14=Decimal("5.0"),
+        policy=policy_b,
+    )
+    assert ok_d is True
+    assert dist_d == Decimal("4.0")
+    assert err_d is None
+
+
+@pytest.mark.unit
 def test_long_stop_atr_strictly_derives_from_entry_mid_not_entry_min(valid_policy):
     """
     Explicit contract proof: LONG stop_atr is derived strictly from entry_mid,
     and would fail if entry_min or entry_max were substituted.
-    entry_min = 2500.00, entry_max = 2510.00 -> entry_mid = 2505.00 (entry_min != entry_mid)
-    atr14 = 4.00, atr_multiplier = 2.0 -> offset = 8.00
-    expected stop_atr = 2505.00 - 8.00 = 2497.00
-    if entry_min used: 2500.00 - 8.00 = 2492.00 != 2497.00
-    if entry_max used: 2510.00 - 8.00 = 2502.00 != 2497.00
     """
     ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
     support = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2510.00"), ts, 2, True)
@@ -154,8 +210,8 @@ def test_long_stop_atr_strictly_derives_from_entry_mid_not_entry_min(valid_polic
     )
     assert ok is True
     assert stop_atr == Decimal("2497.00")
-    assert stop_atr != (entry_min - valid_policy.atr_multiplier * Decimal("4.00"))
-    assert stop_atr != (entry_max - valid_policy.atr_multiplier * Decimal("4.00"))
+    assert stop_atr != entry_min - (valid_policy.atr_multiplier * Decimal("4.00"))
+    assert stop_atr != entry_max - (valid_policy.atr_multiplier * Decimal("4.00"))
 
 
 @pytest.mark.unit
@@ -163,11 +219,6 @@ def test_short_stop_atr_strictly_derives_from_entry_mid_not_entry_max(valid_poli
     """
     Explicit contract proof: SHORT stop_atr is derived strictly from entry_mid,
     and would fail if entry_max or entry_min were substituted.
-    entry_min = 2500.00, entry_max = 2510.00 -> entry_mid = 2505.00 (entry_max != entry_mid)
-    atr14 = 4.00, atr_multiplier = 2.0 -> offset = 8.00
-    expected stop_atr = 2505.00 + 8.00 = 2513.00
-    if entry_max used: 2510.00 + 8.00 = 2518.00 != 2513.00
-    if entry_min used: 2500.00 + 8.00 = 2508.00 != 2513.00
     """
     ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
     resistance = StructureZone("RESISTANCE", Decimal("2500.00"), Decimal("2510.00"), ts, 2, True)
@@ -188,6 +239,5 @@ def test_short_stop_atr_strictly_derives_from_entry_mid_not_entry_max(valid_poli
     )
     assert ok is True
     assert stop_atr == Decimal("2513.00")
-    assert stop_atr != (entry_max + valid_policy.atr_multiplier * Decimal("4.00"))
-    assert stop_atr != (entry_min + valid_policy.atr_multiplier * Decimal("4.00"))
-
+    assert stop_atr != entry_max + (valid_policy.atr_multiplier * Decimal("4.00"))
+    assert stop_atr != entry_min + (valid_policy.atr_multiplier * Decimal("4.00"))

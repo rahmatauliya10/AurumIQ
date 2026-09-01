@@ -132,7 +132,7 @@ class SideAwareIntrabarResolver:
         lower_tf_candles_15m: Optional[Sequence[CandleData]] = None,
         parent_timeframe: str = "15m",
         policy: IntrabarPolicy = IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-        worst_case_adverse_gap: Decimal = Decimal("5.00"),
+        worst_case_adverse_gap: Optional[Decimal] = None,
     ) -> SideIntrabarResolutionResult:
         """
         Evaluate barrier resolution for a trade within parent_candle.
@@ -142,303 +142,240 @@ class SideAwareIntrabarResolver:
             return SideIntrabarResolutionResult(
                 side=side,
                 barrier_hit=BarrierHitType.UNRESOLVED,
-                exit_price=parent_candle.close if isinstance(parent_candle.close, Decimal) and parent_candle.close.is_finite() else Decimal("0"),
-                exit_timestamp=parent_candle.timestamp_close if parent_candle.timestamp_close is not None else datetime.now(timezone.utc),
+                exit_price=None,
+                exit_timestamp=None,
                 policy_applied=policy,
                 replay_bars_count=0,
-                reasons=("Parent candle failed strict validation checks.",),
+                reasons=("Parent candle failed strict validation (OHLC/timestamps).",),
             )
 
-        # 1. Side-aware barrier touch detection
-        if side == RiskSide.LONG:
-            touches_tp = parent_candle.high >= tp_price
-            touches_sl = parent_candle.low <= sl_price
-        else:
-            touches_tp = parent_candle.low <= tp_price
-            touches_sl = parent_candle.high >= sl_price
+        p_open_ts = parent_candle.timestamp_open.astimezone(timezone.utc)
+        effective_fill_ts = (
+            fill_timestamp.astimezone(timezone.utc)
+            if fill_timestamp is not None
+            else p_open_ts
+        )
 
-        # 2. Non-ambiguous path
-        if not (touches_tp and touches_sl):
-            if touches_tp:
+        if fill_timestamp is not None:
+            if fill_timestamp.tzinfo is None or fill_timestamp.tzinfo.utcoffset(fill_timestamp) is None:
                 return SideIntrabarResolutionResult(
                     side=side,
-                    barrier_hit=BarrierHitType.TP_FIRST,
-                    exit_price=tp_price,
-                    exit_timestamp=parent_candle.timestamp_close,
+                    barrier_hit=BarrierHitType.UNRESOLVED,
+                    exit_price=None,
+                    exit_timestamp=None,
                     policy_applied=policy,
                     replay_bars_count=0,
-                    reasons=(f"Non-ambiguous bar: Only {side.value} TP barrier touched.",),
+                    reasons=("fill_timestamp must be timezone aware with non-None utcoffset.",),
                 )
-            if touches_sl:
-                return SideIntrabarResolutionResult(
-                    side=side,
-                    barrier_hit=BarrierHitType.SL_FIRST,
-                    exit_price=sl_price,
-                    exit_timestamp=parent_candle.timestamp_close,
-                    policy_applied=policy,
-                    replay_bars_count=0,
-                    reasons=(f"Non-ambiguous bar: Only {side.value} SL barrier touched.",),
-                )
+
+        # 1. Determine Barrier Hits on Parent Candle
+        if side == RiskSide.LONG:
+            tp_hit = parent_candle.high >= tp_price
+            sl_hit = parent_candle.low <= sl_price
+        else:
+            tp_hit = parent_candle.low <= tp_price
+            sl_hit = parent_candle.high >= sl_price
+
+        # Case A: Neither hit
+        if not tp_hit and not sl_hit:
             return SideIntrabarResolutionResult(
                 side=side,
-                barrier_hit=BarrierHitType.UNRESOLVED,
-                exit_price=parent_candle.close,
-                exit_timestamp=parent_candle.timestamp_close,
+                barrier_hit=BarrierHitType.NONE,
+                exit_price=None,
+                exit_timestamp=None,
                 policy_applied=policy,
                 replay_bars_count=0,
-                reasons=(f"Neither {side.value} TP nor SL barrier touched during parent candle.",),
+                reasons=("Neither TP nor SL barrier was touched on parent bar.",),
             )
 
-        # 3. Ambiguous Bar (touches both TP and SL)
+        # Case B: Clear Single Hit (Non-ambiguous)
+        if tp_hit and not sl_hit:
+            return SideIntrabarResolutionResult(
+                side=side,
+                barrier_hit=BarrierHitType.TP_FIRST,
+                exit_price=tp_price,
+                exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
+                policy_applied=policy,
+                replay_bars_count=0,
+                reasons=(f"{side.value} TP reached without SL touch.",),
+            )
+
+        if sl_hit and not tp_hit:
+            return SideIntrabarResolutionResult(
+                side=side,
+                barrier_hit=BarrierHitType.SL_FIRST,
+                exit_price=sl_price,
+                exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
+                policy_applied=policy,
+                replay_bars_count=0,
+                reasons=(f"{side.value} SL reached without TP touch.",),
+            )
+
+        # Case C: Ambiguous Collision (Both TP and SL hit)
         if policy == IntrabarPolicy.CONSERVATIVE_SL_FIRST:
             return SideIntrabarResolutionResult(
                 side=side,
                 barrier_hit=BarrierHitType.SL_FIRST,
                 exit_price=sl_price,
-                exit_timestamp=parent_candle.timestamp_close,
-                policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
+                exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
+                policy_applied=policy,
                 replay_bars_count=0,
-                reasons=(f"Conservative policy: {side.value} SL assumed hit first.",),
+                reasons=("Ambiguous collision resolved by CONSERVATIVE_SL_FIRST.",),
             )
 
         if policy == IntrabarPolicy.WORST_CASE:
+            if (
+                worst_case_adverse_gap is None
+                or not isinstance(worst_case_adverse_gap, Decimal)
+                or not worst_case_adverse_gap.is_finite()
+                or worst_case_adverse_gap < Decimal("0")
+            ):
+                raise ValueError("worst_case_adverse_gap must be a non-negative finite Decimal when policy is WORST_CASE.")
+
             if side == RiskSide.LONG:
-                exit_price = (sl_price - worst_case_adverse_gap).quantize(Decimal("0.01"))
+                exit_px = sl_price - worst_case_adverse_gap
             else:
-                exit_price = (sl_price + worst_case_adverse_gap).quantize(Decimal("0.01"))
+                exit_px = sl_price + worst_case_adverse_gap
 
             return SideIntrabarResolutionResult(
                 side=side,
                 barrier_hit=BarrierHitType.SL_FIRST,
-                exit_price=exit_price,
-                exit_timestamp=parent_candle.timestamp_close,
-                policy_applied=IntrabarPolicy.WORST_CASE,
+                exit_price=exit_px,
+                exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
+                policy_applied=policy,
                 replay_bars_count=0,
-                reasons=(f"Worst-case policy: {side.value} SL assumed hit first with adverse penalty gap.",),
+                reasons=(f"Ambiguous collision resolved by WORST_CASE (exit={exit_px}).",),
             )
 
         if policy == IntrabarPolicy.SKIP_AMBIGUOUS:
             return SideIntrabarResolutionResult(
                 side=side,
                 barrier_hit=BarrierHitType.SKIPPED,
-                exit_price=Decimal("0.00"),
-                exit_timestamp=parent_candle.timestamp_close,
-                policy_applied=IntrabarPolicy.SKIP_AMBIGUOUS,
+                exit_price=None,
+                exit_timestamp=None,
+                policy_applied=policy,
                 replay_bars_count=0,
-                reasons=("Ambiguous trade excluded from sample (SKIP_AMBIGUOUS).",),
+                reasons=("Ambiguous collision skipped by SKIP_AMBIGUOUS policy.",),
             )
 
-        # 4. LOWER_TIMEFRAME_REPLAY Policy
-        fill_ts = (
-            fill_timestamp.astimezone(timezone.utc)
-            if fill_timestamp is not None
-            else parent_candle.timestamp_open.astimezone(timezone.utc)
-        )
-
-        # For 4H/1H parent: try 15m first with pre-validation
-        if parent_timeframe in ("4h", "1h"):
+        # Policy == LOWER_TIMEFRAME_REPLAY
+        if parent_timeframe in ("4H", "1H"):
             if lower_tf_candles_15m:
-                ok_15m, err_15m, valid_15m = _validate_sequence(
-                    lower_tf_candles_15m,
-                    expected_step_seconds=900,
-                    parent_candle=parent_candle,
-                    fill_ts=fill_ts,
+                v_ok, v_err, valid_15m = _validate_sequence(
+                    lower_tf_candles_15m, 900, parent_candle, effective_fill_ts
                 )
-                if not ok_15m:
-                    return SideIntrabarResolutionResult(
-                        side=side,
-                        barrier_hit=BarrierHitType.SL_FIRST,
-                        exit_price=sl_price,
-                        exit_timestamp=parent_candle.timestamp_close,
-                        policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
-                        replay_bars_count=0,
-                        reasons=(f"15m parent grid malformed ({err_15m}); fell back to CONSERVATIVE_SL_FIRST.",),
-                    )
+                if v_ok:
+                    res_15m = self._replay_bars(side, valid_15m, tp_price, sl_price)
+                    if res_15m is not None:
+                        if res_15m.barrier_hit != BarrierHitType.SL_FIRST or not any("ambiguous" in r for r in res_15m.reasons):
+                            return res_15m
+                        # If a 15m child bar is ambiguous, try drilling into 1m / 5m
+                        if lower_tf_candles_1m:
+                            v_1m_ok, _, valid_1m = _validate_sequence(
+                                lower_tf_candles_1m, 60, parent_candle, effective_fill_ts
+                            )
+                            if v_1m_ok:
+                                res_1m = self._replay_bars(side, valid_1m, tp_price, sl_price)
+                                if res_1m is not None and not any("ambiguous" in r for r in res_1m.reasons):
+                                    return res_1m
+                        if lower_tf_candles_5m:
+                            v_5m_ok, _, valid_5m = _validate_sequence(
+                                lower_tf_candles_5m, 300, parent_candle, effective_fill_ts
+                            )
+                            if v_5m_ok:
+                                res_5m = self._replay_bars(side, valid_5m, tp_price, sl_price)
+                                if res_5m is not None and not any("ambiguous" in r for r in res_5m.reasons):
+                                    return res_5m
 
-                for bar in valid_15m:
-                    if bar.timestamp_close.astimezone(timezone.utc) <= fill_ts:
-                        continue
-
-                    if side == RiskSide.LONG:
-                        b_tp = bar.high >= tp_price
-                        b_sl = bar.low <= sl_price
-                    else:
-                        b_tp = bar.low <= tp_price
-                        b_sl = bar.high >= sl_price
-
-                    if b_tp and not b_sl:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.TP_FIRST,
-                            exit_price=tp_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_15m),
-                            reasons=(f"Resolved {side.value} TP-first via 15m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_sl and not b_tp:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.SL_FIRST,
-                            exit_price=sl_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_15m),
-                            reasons=(f"Resolved {side.value} SL-first via 15m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_tp and b_sl:
-                        # Ambiguous 15m bar: slice 1m/5m child bars and recurse
-                        b_open = bar.timestamp_open.astimezone(timezone.utc)
-                        b_close = bar.timestamp_close.astimezone(timezone.utc)
-                        c_1m = (
-                            [c for c in lower_tf_candles_1m if c.timestamp_open.astimezone(timezone.utc) >= b_open and c.timestamp_close.astimezone(timezone.utc) <= b_close]
-                            if lower_tf_candles_1m else None
-                        )
-                        c_5m = (
-                            [c for c in lower_tf_candles_5m if c.timestamp_open.astimezone(timezone.utc) >= b_open and c.timestamp_close.astimezone(timezone.utc) <= b_close]
-                            if lower_tf_candles_5m else None
-                        )
-                        return self.resolve(
-                            side=side,
-                            parent_candle=bar,
-                            tp_price=tp_price,
-                            sl_price=sl_price,
-                            fill_timestamp=fill_ts,
-                            lower_tf_candles_1m=c_1m,
-                            lower_tf_candles_5m=c_5m,
-                            parent_timeframe="15m",
-                            policy=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                        )
-
-        # For 15m parent (or drilled 15m bar): 1m preferred -> 5m fallback
-        if lower_tf_candles_1m:
-            ok_1m, err_1m, valid_1m = _validate_sequence(
-                lower_tf_candles_1m,
-                expected_step_seconds=60,
-                parent_candle=parent_candle,
-                fill_ts=fill_ts,
+            # Fallback for parent 4H/1H if lower TF is malformed or unresolved
+            return SideIntrabarResolutionResult(
+                side=side,
+                barrier_hit=BarrierHitType.SL_FIRST,
+                exit_price=sl_price,
+                exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
+                policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
+                replay_bars_count=0,
+                reasons=("15m/1m/5m replay unavailable or unresolved; fallen back to CONSERVATIVE_SL_FIRST.",),
             )
-            if ok_1m:
-                for bar in valid_1m:
-                    if bar.timestamp_close.astimezone(timezone.utc) <= fill_ts:
-                        continue
 
-                    if side == RiskSide.LONG:
-                        b_tp = bar.high >= tp_price
-                        b_sl = bar.low <= sl_price
-                    else:
-                        b_tp = bar.low <= tp_price
-                        b_sl = bar.high >= sl_price
-
-                    if b_tp and not b_sl:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.TP_FIRST,
-                            exit_price=tp_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_1m),
-                            reasons=(f"Resolved {side.value} TP-first via 1m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_sl and not b_tp:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.SL_FIRST,
-                            exit_price=sl_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_1m),
-                            reasons=(f"Resolved {side.value} SL-first via 1m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_tp and b_sl:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.SL_FIRST,
-                            exit_price=sl_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
-                            replay_bars_count=len(valid_1m),
-                            reasons=(f"1m candle remained ambiguous for {side.value}; failed safe to SL_FIRST.",),
-                        )
-            else:
-                if not lower_tf_candles_5m:
-                    return SideIntrabarResolutionResult(
-                        side=side,
-                        barrier_hit=BarrierHitType.SL_FIRST,
-                        exit_price=sl_price,
-                        exit_timestamp=parent_candle.timestamp_close,
-                        policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
-                        replay_bars_count=0,
-                        reasons=(f"1m candle grid incomplete or malformed ({err_1m}); fell back to CONSERVATIVE_SL_FIRST.",),
-                    )
+        # Parent timeframe == 15m
+        if lower_tf_candles_1m:
+            v_ok, v_err, valid_1m = _validate_sequence(
+                lower_tf_candles_1m, 60, parent_candle, effective_fill_ts
+            )
+            if v_ok:
+                res = self._replay_bars(side, valid_1m, tp_price, sl_price)
+                if res is not None and not any("ambiguous" in r for r in res.reasons):
+                    return res
 
         if lower_tf_candles_5m:
-            ok_5m, err_5m, valid_5m = _validate_sequence(
-                lower_tf_candles_5m,
-                expected_step_seconds=300,
-                parent_candle=parent_candle,
-                fill_ts=fill_ts,
+            v_ok, v_err, valid_5m = _validate_sequence(
+                lower_tf_candles_5m, 300, parent_candle, effective_fill_ts
             )
-            if ok_5m:
-                for bar in valid_5m:
-                    if bar.timestamp_close.astimezone(timezone.utc) <= fill_ts:
-                        continue
+            if v_ok:
+                res = self._replay_bars(side, valid_5m, tp_price, sl_price)
+                if res is not None and not any("ambiguous" in r for r in res.reasons):
+                    return res
 
-                    if side == RiskSide.LONG:
-                        b_tp = bar.high >= tp_price
-                        b_sl = bar.low <= sl_price
-                    else:
-                        b_tp = bar.low <= tp_price
-                        b_sl = bar.high >= sl_price
-
-                    if b_tp and not b_sl:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.TP_FIRST,
-                            exit_price=tp_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_5m),
-                            reasons=(f"Resolved {side.value} TP-first via 5m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_sl and not b_tp:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.SL_FIRST,
-                            exit_price=sl_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
-                            replay_bars_count=len(valid_5m),
-                            reasons=(f"Resolved {side.value} SL-first via 5m bar @ {bar.timestamp_close.isoformat()}.",),
-                        )
-                    if b_tp and b_sl:
-                        return SideIntrabarResolutionResult(
-                            side=side,
-                            barrier_hit=BarrierHitType.SL_FIRST,
-                            exit_price=sl_price,
-                            exit_timestamp=bar.timestamp_close,
-                            policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
-                            replay_bars_count=len(valid_5m),
-                            reasons=(f"5m candle remained ambiguous for {side.value}; failed safe to SL_FIRST.",),
-                        )
-            else:
-                return SideIntrabarResolutionResult(
-                    side=side,
-                    barrier_hit=BarrierHitType.SL_FIRST,
-                    exit_price=sl_price,
-                    exit_timestamp=parent_candle.timestamp_close,
-                    policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
-                    replay_bars_count=0,
-                    reasons=(f"5m candle grid incomplete or malformed ({err_5m}); fell back to CONSERVATIVE_SL_FIRST.",),
-                )
-
-        # Fallback if no lower-TF data available
+        # Fallback to CONSERVATIVE_SL_FIRST if sub-bar replay is unavailable or still ambiguous
         return SideIntrabarResolutionResult(
             side=side,
             barrier_hit=BarrierHitType.SL_FIRST,
             exit_price=sl_price,
-            exit_timestamp=parent_candle.timestamp_close,
+            exit_timestamp=parent_candle.timestamp_close.astimezone(timezone.utc),
             policy_applied=IntrabarPolicy.CONSERVATIVE_SL_FIRST,
             replay_bars_count=0,
-            reasons=(f"Lower-TF data unavailable for {side.value}; fallen back to CONSERVATIVE_SL_FIRST.",),
+            reasons=("1m/5m lower TF sequence unavailable or unresolved; fallen back to CONSERVATIVE_SL_FIRST.",),
         )
+
+    def _replay_bars(
+        self,
+        side: RiskSide,
+        bars: Sequence[CandleData],
+        tp_price: Decimal,
+        sl_price: Decimal,
+    ) -> Optional[SideIntrabarResolutionResult]:
+        """
+        Replay lower-timeframe bars in strict chronological order.
+        """
+        for i, bar in enumerate(bars, start=1):
+            if side == RiskSide.LONG:
+                tp = bar.high >= tp_price
+                sl = bar.low <= sl_price
+            else:
+                tp = bar.low <= tp_price
+                sl = bar.high >= sl_price
+
+            if tp and not sl:
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.TP_FIRST,
+                    exit_price=tp_price,
+                    exit_timestamp=bar.timestamp_close.astimezone(timezone.utc),
+                    policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
+                    replay_bars_count=i,
+                    reasons=(f"{side.value} TP hit first on sub-bar @ {bar.timestamp_open.isoformat()}.",),
+                )
+            if sl and not tp:
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.SL_FIRST,
+                    exit_price=sl_price,
+                    exit_timestamp=bar.timestamp_close.astimezone(timezone.utc),
+                    policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
+                    replay_bars_count=i,
+                    reasons=(f"{side.value} SL hit first on sub-bar @ {bar.timestamp_open.isoformat()}.",),
+                )
+            if tp and sl:
+                # Sub-bar is itself ambiguous
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.SL_FIRST,
+                    exit_price=sl_price,
+                    exit_timestamp=bar.timestamp_close.astimezone(timezone.utc),
+                    policy_applied=IntrabarPolicy.LOWER_TIMEFRAME_REPLAY,
+                    replay_bars_count=i,
+                    reasons=(f"Sub-bar itself ambiguous @ {bar.timestamp_open.isoformat()}.",),
+                )
+
+        return None

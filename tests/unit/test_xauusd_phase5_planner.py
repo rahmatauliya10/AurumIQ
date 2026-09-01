@@ -12,6 +12,8 @@ from engine.core.types import (
     SideDirectionScoreResult,
     SideTimingScoreResult,
     SignalState,
+    StructureResult,
+    StructureType,
     StructureZone,
     UserDecision,
     XauUsdHardGateEvaluation,
@@ -104,6 +106,21 @@ def test_planner_rejects_non_xauusd_snapshot(calibrated_test_profile):
 
 
 @pytest.mark.unit
+def test_planner_rejects_naive_timestamp(calibrated_test_profile):
+    """Planner rejects snapshot with naive timestamp (lacks timezone awareness)."""
+    planner = XauUsdRiskPlanner(code_revision="test_rev", risk_profile=calibrated_test_profile)
+    naive_t = datetime(2026, 9, 1, 8, 0, 0)
+    snap_long = make_test_dual_side_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, naive_t)
+    snap_short = make_test_dual_side_snapshot(SignalState.SELL_WINDOW, UserDecision.SELL, naive_t)
+
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        planner.plan_long(snap_long, structure_15m=None, atr14=Decimal("5.0"))
+
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        planner.plan_short(snap_short, structure_15m=None, atr14=Decimal("5.0"))
+
+
+@pytest.mark.unit
 def test_plan_long_valid(calibrated_test_profile):
     """Valid LONG candidate produces valid SideRiskPlanSnapshot with candidate_effective_action=BUY, publication=WAIT."""
     planner = XauUsdRiskPlanner(code_revision="test_rev", risk_profile=calibrated_test_profile)
@@ -112,13 +129,12 @@ def test_plan_long_valid(calibrated_test_profile):
 
     support = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
     res1 = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 2, True)
+    struct_15m = StructureResult(t, StructureType.HH, None, None, None, (), (support, res1))
 
     plan = planner.plan_long(
         phase4_snapshot=snap,
-        structure_15m=None,
+        structure_15m=struct_15m,
         atr14=Decimal("5.00"),
-        custom_support_zone=support,
-        custom_target_zones=[res1],
     )
 
     assert plan.risk_candidate_valid is True
@@ -129,7 +145,7 @@ def test_plan_long_valid(calibrated_test_profile):
     assert plan.entry_min == Decimal("2500.00")
     assert plan.entry_max == Decimal("2505.00")
     assert plan.tp1 == Decimal("2530.00")
-    assert plan.planned_rr_tp1 == Decimal("2.00")  # (2530 - 2505) / 12.50 = 25 / 12.50 = 2.00
+    assert plan.planned_rr_tp1 == Decimal("2.0")  # (2530 - 2505) / 12.50 = 25 / 12.50 = 2.0
     assert plan.source_phase4_fingerprint == snap.analysis_fingerprint
     assert plan.signal_generated_at == t
 
@@ -143,13 +159,12 @@ def test_plan_short_valid(calibrated_test_profile):
 
     resistance = StructureZone("RESISTANCE", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
     sup1 = StructureZone("SUPPORT", Decimal("2470.00"), Decimal("2475.00"), t, 2, True)
+    struct_15m = StructureResult(t, StructureType.LL, None, None, None, (), (resistance, sup1))
 
     plan = planner.plan_short(
         phase4_snapshot=snap,
-        structure_15m=None,
+        structure_15m=struct_15m,
         atr14=Decimal("5.00"),
-        custom_resistance_zone=resistance,
-        custom_target_zones=[sup1],
     )
 
     assert plan.risk_candidate_valid is True
@@ -160,7 +175,7 @@ def test_plan_short_valid(calibrated_test_profile):
     assert plan.entry_min == Decimal("2500.00")
     assert plan.entry_max == Decimal("2505.00")
     assert plan.tp1 == Decimal("2475.00")
-    assert plan.planned_rr_tp1 == Decimal("2.00")  # (2500 - 2475) / 12.50 = 25 / 12.50 = 2.00
+    assert plan.planned_rr_tp1 == Decimal("2.0")  # (2500 - 2475) / 12.50 = 25 / 12.50 = 2.0
 
 
 @pytest.mark.unit
@@ -171,7 +186,8 @@ def test_uncalibrated_profile_demotes_to_wait():
     snap = make_test_dual_side_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t)
 
     support = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
-    plan = planner.plan_long(snap, structure_15m=None, atr14=Decimal("5.00"), custom_support_zone=support)
+    struct_15m = StructureResult(t, StructureType.HH, None, None, None, (), (support,))
+    plan = planner.plan_long(snap, structure_15m=struct_15m, atr14=Decimal("5.00"))
 
     assert plan.risk_candidate_valid is False
     assert plan.candidate_effective_action == UserDecision.WAIT

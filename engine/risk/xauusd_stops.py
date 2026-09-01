@@ -32,7 +32,7 @@ def calculate_long_stops(
       2. policy is fully configured
       3. stop_final < entry_min
       4. planned_risk > 0
-      5. stop_distance_atr <= policy.max_stop_distance_atr
+      5. stop_distance_atr <= policy.max_stop_distance_atr (unrounded raw comparison)
     """
     if not isinstance(atr14, Decimal) or not atr14.is_finite() or atr14 <= Decimal("0"):
         return Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), False, "ATR14 must be strictly positive Decimal."
@@ -47,19 +47,18 @@ def calculate_long_stops(
     ):
         return Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), False, "Incomplete LONG risk policy configuration."
 
-    stop_structure = (support_zone.price_low - policy.structure_buffer).quantize(Decimal("0.01"))
-    stop_atr = (entry_mid - (policy.atr_multiplier * atr14)).quantize(Decimal("0.01"))
+    stop_structure = support_zone.price_low - policy.structure_buffer
+    stop_atr = entry_mid - (policy.atr_multiplier * atr14)
     stop_final = min(stop_structure, stop_atr)
 
     planned_risk = entry_max - stop_final
     if planned_risk <= Decimal("0"):
         return stop_structure, stop_atr, stop_final, Decimal("0"), False, "Stop loss must sit strictly below entry zone."
 
-    if stop_final >= entry_min:
-        stop_distance_atr = (planned_risk / atr14).quantize(Decimal("0.01"))
-        return stop_structure, stop_atr, stop_final, stop_distance_atr, False, "Stop loss must sit strictly below entry_min."
+    stop_distance_atr = planned_risk / atr14
 
-    stop_distance_atr = (planned_risk / atr14).quantize(Decimal("0.01"))
+    if stop_final >= entry_min:
+        return stop_structure, stop_atr, stop_final, stop_distance_atr, False, "Stop loss must sit strictly below entry_min."
 
     if stop_distance_atr > policy.max_stop_distance_atr:
         return (
@@ -97,7 +96,7 @@ def calculate_short_stops(
       2. policy is fully configured
       3. stop_final > entry_max
       4. planned_risk > 0
-      5. stop_distance_atr <= policy.max_stop_distance_atr
+      5. stop_distance_atr <= policy.max_stop_distance_atr (unrounded raw comparison)
     """
     if not isinstance(atr14, Decimal) or not atr14.is_finite() or atr14 <= Decimal("0"):
         return Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), False, "ATR14 must be strictly positive Decimal."
@@ -112,19 +111,18 @@ def calculate_short_stops(
     ):
         return Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), False, "Incomplete SHORT risk policy configuration."
 
-    stop_structure = (resistance_zone.price_high + policy.structure_buffer).quantize(Decimal("0.01"))
-    stop_atr = (entry_mid + (policy.atr_multiplier * atr14)).quantize(Decimal("0.01"))
+    stop_structure = resistance_zone.price_high + policy.structure_buffer
+    stop_atr = entry_mid + (policy.atr_multiplier * atr14)
     stop_final = max(stop_structure, stop_atr)
 
     planned_risk = stop_final - entry_min
     if planned_risk <= Decimal("0"):
         return stop_structure, stop_atr, stop_final, Decimal("0"), False, "Stop loss must sit strictly above entry zone."
 
-    if stop_final <= entry_max:
-        stop_distance_atr = (planned_risk / atr14).quantize(Decimal("0.01"))
-        return stop_structure, stop_atr, stop_final, stop_distance_atr, False, "Stop loss must sit strictly above entry_max."
+    stop_distance_atr = planned_risk / atr14
 
-    stop_distance_atr = (planned_risk / atr14).quantize(Decimal("0.01"))
+    if stop_final <= entry_max:
+        return stop_structure, stop_atr, stop_final, stop_distance_atr, False, "Stop loss must sit strictly above entry_max."
 
     if stop_distance_atr > policy.max_stop_distance_atr:
         return (

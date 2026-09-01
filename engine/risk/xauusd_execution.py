@@ -82,19 +82,31 @@ class SideAwareEntryExecutionModel:
       6. LIMIT SHORT triggers on BID >= limit_price; fill never worse than limit.
       7. All invalid quotes/candles are rejected before execution.
       8. Preserves deterministic execution_fingerprint and lossless evidence provenance.
+      9. Explicit timezone awareness required on signal_generated_at.
+      10. Pinned execution policy fingerprint; no per-call policy override or fallback "NONE".
     """
 
     def __init__(
         self,
         code_revision: str,
-        default_policy: Optional[XauUsdExecutionPolicy] = None,
-        policy_fingerprint: str = "NONE",
+        execution_policy: XauUsdExecutionPolicy,
+        phase5_policy_fingerprint: str,
     ):
         if not code_revision or not isinstance(code_revision, str) or not code_revision.strip():
             raise ValueError("code_revision is required for execution provenance.")
+        if not isinstance(execution_policy, XauUsdExecutionPolicy):
+            raise ValueError("execution_policy must be an instance of XauUsdExecutionPolicy.")
+        if (
+            not phase5_policy_fingerprint
+            or not isinstance(phase5_policy_fingerprint, str)
+            or not phase5_policy_fingerprint.strip()
+            or phase5_policy_fingerprint.strip().upper() == "NONE"
+        ):
+            raise ValueError("phase5_policy_fingerprint is required and cannot be empty or 'NONE'.")
+
         self.code_revision = code_revision.strip()
-        self.default_policy = default_policy if default_policy is not None else XauUsdExecutionPolicy()
-        self.policy_fingerprint = policy_fingerprint
+        self.execution_policy = execution_policy
+        self.policy_fingerprint = phase5_policy_fingerprint.strip()
 
     def simulate_market_after_signal(
         self,
@@ -102,17 +114,18 @@ class SideAwareEntryExecutionModel:
         signal_generated_at: datetime,
         quotes: Sequence[QuoteData],
         source_phase4_fingerprint: str,
-        policy: Optional[XauUsdExecutionPolicy] = None,
     ) -> SideAwareFillResult:
         """
         Simulate market order execution at first available valid quote >= earliest_exec_ts.
         """
-        active_policy = policy if policy is not None else self.default_policy
-        if not active_policy.is_configured_for(EntryExecutionPolicy.MARKET_AFTER_SIGNAL):
+        if signal_generated_at.tzinfo is None or signal_generated_at.tzinfo.utcoffset(signal_generated_at) is None:
+            raise ValueError("signal_generated_at must be timezone aware with non-None utcoffset.")
+
+        if not self.execution_policy.is_configured_for(EntryExecutionPolicy.MARKET_AFTER_SIGNAL):
             raise ValueError("Execution policy is not configured for MARKET_AFTER_SIGNAL.")
 
-        lat = active_policy.latency_seconds if active_policy.latency_seconds is not None else 0.0
-        sl_pct = active_policy.slippage_pct if active_policy.slippage_pct is not None else Decimal("0.00")
+        lat = self.execution_policy.latency_seconds if self.execution_policy.latency_seconds is not None else 0.0
+        sl_pct = self.execution_policy.slippage_pct if self.execution_policy.slippage_pct is not None else Decimal("0.00")
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
@@ -161,17 +174,17 @@ class SideAwareEntryExecutionModel:
             )
 
         first_quote = valid_quotes[0]
-        observed_spread = (first_quote.ask - first_quote.bid).quantize(Decimal("0.01"))
+        observed_spread = first_quote.ask - first_quote.bid
         synthetic_spread = Decimal("0.00")
 
         if side == RiskSide.LONG:
             raw_fill = first_quote.ask
-            adverse_slippage = (raw_fill * (sl_pct / Decimal("100"))).quantize(Decimal("0.01"))
-            final_price = (raw_fill + adverse_slippage).quantize(Decimal("0.01"))
+            adverse_slippage = raw_fill * (sl_pct / Decimal("100"))
+            final_price = raw_fill + adverse_slippage
         else:
             raw_fill = first_quote.bid
-            adverse_slippage = (raw_fill * (sl_pct / Decimal("100"))).quantize(Decimal("0.01"))
-            final_price = (raw_fill - adverse_slippage).quantize(Decimal("0.01"))
+            adverse_slippage = raw_fill * (sl_pct / Decimal("100"))
+            final_price = raw_fill - adverse_slippage
 
         evidence_fp = compute_quote_evidence_fingerprint(first_quote)
         fill_ts = first_quote.timestamp.astimezone(timezone.utc)
@@ -218,18 +231,19 @@ class SideAwareEntryExecutionModel:
         signal_generated_at: datetime,
         candles: Sequence[CandleData],
         source_phase4_fingerprint: str,
-        policy: Optional[XauUsdExecutionPolicy] = None,
     ) -> SideAwareFillResult:
         """
         Simulate fill on the open of the first subsequent bar >= earliest_exec_ts.
         """
-        active_policy = policy if policy is not None else self.default_policy
-        if not active_policy.is_configured_for(EntryExecutionPolicy.NEXT_BAR_OPEN):
+        if signal_generated_at.tzinfo is None or signal_generated_at.tzinfo.utcoffset(signal_generated_at) is None:
+            raise ValueError("signal_generated_at must be timezone aware with non-None utcoffset.")
+
+        if not self.execution_policy.is_configured_for(EntryExecutionPolicy.NEXT_BAR_OPEN):
             raise ValueError("Execution policy is not configured for NEXT_BAR_OPEN.")
 
-        lat = active_policy.latency_seconds if active_policy.latency_seconds is not None else 0.0
-        sp_pct = active_policy.synthetic_spread_pct if active_policy.synthetic_spread_pct is not None else Decimal("0.00")
-        sl_pct = active_policy.slippage_pct if active_policy.slippage_pct is not None else Decimal("0.00")
+        lat = self.execution_policy.latency_seconds if self.execution_policy.latency_seconds is not None else 0.0
+        sp_pct = self.execution_policy.synthetic_spread_pct if self.execution_policy.synthetic_spread_pct is not None else Decimal("0.00")
+        sl_pct = self.execution_policy.slippage_pct if self.execution_policy.slippage_pct is not None else Decimal("0.00")
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
@@ -270,7 +284,7 @@ class SideAwareEntryExecutionModel:
                 synthetic_spread=Decimal("0.00"),
                 adverse_slippage=Decimal("0.00"),
                 is_filled=False,
-                reason="No eligible valid subsequent bar open found on or after earliest_exec_ts.",
+                reason="No eligible valid candle available on or after earliest_exec_ts.",
                 source_evidence_type=None,
                 source_evidence_fingerprint=None,
                 execution_fingerprint=exec_fp,
@@ -278,13 +292,13 @@ class SideAwareEntryExecutionModel:
 
         first_bar = valid_bars[0]
         raw_fill = first_bar.open
-        spread_amount = (raw_fill * (sp_pct / Decimal("100"))).quantize(Decimal("0.01"))
-        slippage_amount = (raw_fill * (sl_pct / Decimal("100"))).quantize(Decimal("0.01"))
+        spread_amount = raw_fill * (sp_pct / Decimal("100"))
+        slippage_amount = raw_fill * (sl_pct / Decimal("100"))
 
         if side == RiskSide.LONG:
-            final_price = (raw_fill + spread_amount + slippage_amount).quantize(Decimal("0.01"))
+            final_price = raw_fill + spread_amount + slippage_amount
         else:
-            final_price = (raw_fill - spread_amount - slippage_amount).quantize(Decimal("0.01"))
+            final_price = raw_fill - spread_amount - slippage_amount
 
         evidence_fp = compute_candle_evidence_fingerprint(first_bar)
         fill_ts = first_bar.timestamp_open.astimezone(timezone.utc)
@@ -333,17 +347,21 @@ class SideAwareEntryExecutionModel:
         source_phase4_fingerprint: str,
         quotes: Optional[Sequence[QuoteData]] = None,
         candles: Optional[Sequence[CandleData]] = None,
-        policy: Optional[XauUsdExecutionPolicy] = None,
     ) -> SideAwareFillResult:
         """
         Simulate limit order fill occurring strictly after post-activation touches.
         """
-        active_policy = policy if policy is not None else self.default_policy
-        if not active_policy.is_configured_for(EntryExecutionPolicy.LIMIT_ZONE):
+        if signal_generated_at.tzinfo is None or signal_generated_at.tzinfo.utcoffset(signal_generated_at) is None:
+            raise ValueError("signal_generated_at must be timezone aware with non-None utcoffset.")
+
+        if not isinstance(limit_price, Decimal) or not limit_price.is_finite() or limit_price <= Decimal("0"):
+            raise ValueError("limit_price must be a positive finite Decimal.")
+
+        if not self.execution_policy.is_configured_for(EntryExecutionPolicy.LIMIT_ZONE):
             raise ValueError("Execution policy is not configured for LIMIT_ZONE.")
 
-        lat = active_policy.latency_seconds if active_policy.latency_seconds is not None else 0.0
-        sl_pct = active_policy.slippage_pct if active_policy.slippage_pct is not None else Decimal("0.00")
+        lat = self.execution_policy.latency_seconds if self.execution_policy.latency_seconds is not None else 0.0
+        sl_pct = self.execution_policy.slippage_pct if self.execution_policy.slippage_pct is not None else Decimal("0.00")
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
@@ -359,11 +377,11 @@ class SideAwareEntryExecutionModel:
             for q in valid_quotes:
                 if side == RiskSide.LONG and q.ask <= limit_price:
                     raw_fill = q.ask
-                    slippage = (raw_fill * (sl_pct / Decimal("100"))).quantize(Decimal("0.01"))
-                    final_price = min(limit_price, raw_fill + slippage).quantize(Decimal("0.01"))
+                    slippage = raw_fill * (sl_pct / Decimal("100"))
+                    final_price = min(limit_price, raw_fill + slippage)
                     evidence_fp = compute_quote_evidence_fingerprint(q)
                     fill_ts = q.timestamp.astimezone(timezone.utc)
-                    observed_spread = (q.ask - q.bid).quantize(Decimal("0.01"))
+                    observed_spread = q.ask - q.bid
 
                     exec_fp = compute_execution_fingerprint(
                         source_phase4_fingerprint=source_phase4_fingerprint,
@@ -402,11 +420,11 @@ class SideAwareEntryExecutionModel:
 
                 elif side == RiskSide.SHORT and q.bid >= limit_price:
                     raw_fill = q.bid
-                    slippage = (raw_fill * (sl_pct / Decimal("100"))).quantize(Decimal("0.01"))
-                    final_price = max(limit_price, raw_fill - slippage).quantize(Decimal("0.01"))
+                    slippage = raw_fill * (sl_pct / Decimal("100"))
+                    final_price = max(limit_price, raw_fill - slippage)
                     evidence_fp = compute_quote_evidence_fingerprint(q)
                     fill_ts = q.timestamp.astimezone(timezone.utc)
-                    observed_spread = (q.ask - q.bid).quantize(Decimal("0.01"))
+                    observed_spread = q.ask - q.bid
 
                     exec_fp = compute_execution_fingerprint(
                         source_phase4_fingerprint=source_phase4_fingerprint,
@@ -530,7 +548,7 @@ class SideAwareEntryExecutionModel:
                     synthetic_spread=Decimal("0.00"),
                     adverse_slippage=Decimal("0.00"),
                     is_filled=False,
-                    reason="Cannot infer limit fill from mid-bar parent candle without intrabar timestamps.",
+                    reason="Mid-bar limit activation requires intrabar sub-candle evidence (fails closed).",
                     source_evidence_type=None,
                     source_evidence_fingerprint=None,
                     execution_fingerprint=exec_fp,
@@ -565,7 +583,7 @@ class SideAwareEntryExecutionModel:
             synthetic_spread=Decimal("0.00"),
             adverse_slippage=Decimal("0.00"),
             is_filled=False,
-            reason="Limit price not touched after activation timestamp.",
+            reason="Limit price was not reached in available post-activation evidence.",
             source_evidence_type=None,
             source_evidence_fingerprint=None,
             execution_fingerprint=exec_fp,

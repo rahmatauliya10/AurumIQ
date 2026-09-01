@@ -109,6 +109,51 @@ def test_ambiguous_worst_case_side_aware(resolver):
 
 
 @pytest.mark.unit
+def test_worst_case_requires_explicit_gap(resolver):
+    """WORST_CASE without explicit non-negative Decimal gap raises ValueError."""
+    t_open = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    t_close = datetime(2026, 9, 1, 8, 15, 0, tzinfo=timezone.utc)
+    ambig_bar = CandleData(
+        t_open, t_close,
+        Decimal("2500.00"), Decimal("2525.00"), Decimal("2485.00"), Decimal("2510.00"),
+        Decimal("100.0"), True
+    )
+
+    with pytest.raises(ValueError, match="worst_case_adverse_gap must be a non-negative finite Decimal"):
+        resolver.resolve(
+            RiskSide.LONG,
+            ambig_bar,
+            tp_price=Decimal("2520.00"),
+            sl_price=Decimal("2490.00"),
+            policy=IntrabarPolicy.WORST_CASE,
+            worst_case_adverse_gap=None,
+        )
+
+
+@pytest.mark.unit
+def test_naive_fill_timestamp_fails_closed(resolver):
+    """Naive fill_timestamp fails closed with UNRESOLVED and informative reason."""
+    t_open = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    t_close = datetime(2026, 9, 1, 8, 15, 0, tzinfo=timezone.utc)
+    ambig_bar = CandleData(
+        t_open, t_close,
+        Decimal("2500.00"), Decimal("2525.00"), Decimal("2485.00"), Decimal("2510.00"),
+        Decimal("100.0"), True
+    )
+    naive_fill = datetime(2026, 9, 1, 8, 5, 0)
+
+    res = resolver.resolve(
+        RiskSide.LONG,
+        ambig_bar,
+        tp_price=Decimal("2520.00"),
+        sl_price=Decimal("2490.00"),
+        fill_timestamp=naive_fill,
+    )
+    assert res.barrier_hit == BarrierHitType.UNRESOLVED
+    assert "must be timezone aware" in res.reasons[0]
+
+
+@pytest.mark.unit
 def test_lower_tf_replay_short_tp_first(resolver):
     """Lower timeframe 1m replay resolves SHORT TP first when early 1m bar touches TP without touching SL."""
     t_open = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)

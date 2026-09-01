@@ -71,8 +71,6 @@ class XauUsdRiskPlanner:
         structure_15m: Optional[StructureResult],
         atr14: Decimal,
         structure_4h: Optional[StructureResult] = None,
-        custom_support_zone: Optional[StructureZone] = None,
-        custom_target_zones: Optional[Sequence[StructureZone]] = None,
     ) -> SideRiskPlanSnapshot:
         """
         Evaluate and create an immutable SideRiskPlanSnapshot for a LONG setup.
@@ -81,8 +79,11 @@ class XauUsdRiskPlanner:
         if phase4_snapshot.instrument != "XAUUSD":
             raise ValueError(f"XauUsdRiskPlanner requires XAUUSD snapshot, got '{phase4_snapshot.instrument}'")
 
-        sig_fp = phase4_snapshot.analysis_fingerprint
         authoritative_t = phase4_snapshot.timestamp
+        if authoritative_t.tzinfo is None or authoritative_t.tzinfo.utcoffset(authoritative_t) is None:
+            raise ValueError("phase4_snapshot.timestamp must be timezone aware with non-None utcoffset.")
+
+        sig_fp = phase4_snapshot.analysis_fingerprint
 
         # 2. Source Candidate Eligibility Gate
         if (
@@ -116,9 +117,9 @@ class XauUsdRiskPlanner:
                 reasons=("LONG risk policy is not configured (uncalibrated profile).",),
             )
 
-        # 4. Active Support Invalidation Zone Resolution (PIT-validated)
-        support_zone = custom_support_zone
-        if support_zone is None and structure_15m is not None and structure_15m.timestamp <= authoritative_t:
+        # 4. Active Support Invalidation Zone Resolution (PIT-validated strictly from StructureResult)
+        support_zone: Optional[StructureZone] = None
+        if structure_15m is not None and structure_15m.timestamp <= authoritative_t:
             candidates = [
                 z for z in structure_15m.zones
                 if z.zone_type == "SUPPORT" and z.is_active and z.created_at <= authoritative_t
@@ -147,9 +148,9 @@ class XauUsdRiskPlanner:
         entry_zone_fp = compute_zone_fingerprint(support_zone)
 
         # 5. Entry Zone Planning
-        entry_min = support_zone.price_low.quantize(Decimal("0.01"))
-        entry_max = support_zone.price_high.quantize(Decimal("0.01"))
-        entry_mid = ((entry_min + entry_max) / Decimal("2")).quantize(Decimal("0.01"))
+        entry_min = support_zone.price_low
+        entry_max = support_zone.price_high
+        entry_mid = (entry_min + entry_max) / Decimal("2")
 
         # 6. Stop Loss & ATR Guard Calculation
         stop_struct, stop_atr, stop_final, stop_dist_atr, stops_ok, stops_err = calculate_long_stops(
@@ -191,7 +192,6 @@ class XauUsdRiskPlanner:
             authoritative_t=authoritative_t,
             policy=policy,
             structure_4h=structure_4h,
-            custom_zones=custom_target_zones,
         )
 
         if not targets_ok:
@@ -268,7 +268,9 @@ class XauUsdRiskPlanner:
             simulation_eligible=True,
             candidate_effective_action=UserDecision.BUY,
             publication_effective_action=UserDecision.WAIT,
-            reasons=(f"Valid LONG Risk Plan confirmed. RR {rr_tp1:.2f} >= {policy.min_rr_tp1:.2f}.",),
+            reasons=(
+                f"Valid LONG risk plan established (Stop: {stop_final}, TP1: {tp1}, Planned RR: {rr_tp1}).",
+            ),
             entry_zone_fingerprint=entry_zone_fp,
             tp1_zone_fingerprint=tp1_fp,
             tp2_zone_fingerprint=tp2_fp,
@@ -284,8 +286,6 @@ class XauUsdRiskPlanner:
         structure_15m: Optional[StructureResult],
         atr14: Decimal,
         structure_4h: Optional[StructureResult] = None,
-        custom_resistance_zone: Optional[StructureZone] = None,
-        custom_target_zones: Optional[Sequence[StructureZone]] = None,
     ) -> SideRiskPlanSnapshot:
         """
         Evaluate and create an immutable SideRiskPlanSnapshot for a SHORT setup.
@@ -294,8 +294,11 @@ class XauUsdRiskPlanner:
         if phase4_snapshot.instrument != "XAUUSD":
             raise ValueError(f"XauUsdRiskPlanner requires XAUUSD snapshot, got '{phase4_snapshot.instrument}'")
 
-        sig_fp = phase4_snapshot.analysis_fingerprint
         authoritative_t = phase4_snapshot.timestamp
+        if authoritative_t.tzinfo is None or authoritative_t.tzinfo.utcoffset(authoritative_t) is None:
+            raise ValueError("phase4_snapshot.timestamp must be timezone aware with non-None utcoffset.")
+
+        sig_fp = phase4_snapshot.analysis_fingerprint
 
         # 2. Source Candidate Eligibility Gate
         if (
@@ -329,9 +332,9 @@ class XauUsdRiskPlanner:
                 reasons=("SHORT risk policy is not configured (uncalibrated profile).",),
             )
 
-        # 4. Active Resistance Invalidation Zone Resolution (PIT-validated)
-        resistance_zone = custom_resistance_zone
-        if resistance_zone is None and structure_15m is not None and structure_15m.timestamp <= authoritative_t:
+        # 4. Active Resistance Invalidation Zone Resolution (PIT-validated strictly from StructureResult)
+        resistance_zone: Optional[StructureZone] = None
+        if structure_15m is not None and structure_15m.timestamp <= authoritative_t:
             candidates = [
                 z for z in structure_15m.zones
                 if z.zone_type == "RESISTANCE" and z.is_active and z.created_at <= authoritative_t
@@ -360,9 +363,9 @@ class XauUsdRiskPlanner:
         entry_zone_fp = compute_zone_fingerprint(resistance_zone)
 
         # 5. Entry Zone Planning
-        entry_min = resistance_zone.price_low.quantize(Decimal("0.01"))
-        entry_max = resistance_zone.price_high.quantize(Decimal("0.01"))
-        entry_mid = ((entry_min + entry_max) / Decimal("2")).quantize(Decimal("0.01"))
+        entry_min = resistance_zone.price_low
+        entry_max = resistance_zone.price_high
+        entry_mid = (entry_min + entry_max) / Decimal("2")
 
         # 6. Stop Loss & ATR Guard Calculation
         stop_struct, stop_atr, stop_final, stop_dist_atr, stops_ok, stops_err = calculate_short_stops(
@@ -404,7 +407,6 @@ class XauUsdRiskPlanner:
             authoritative_t=authoritative_t,
             policy=policy,
             structure_4h=structure_4h,
-            custom_zones=custom_target_zones,
         )
 
         if not targets_ok:
@@ -481,7 +483,9 @@ class XauUsdRiskPlanner:
             simulation_eligible=True,
             candidate_effective_action=UserDecision.SELL,
             publication_effective_action=UserDecision.WAIT,
-            reasons=(f"Valid SHORT Risk Plan confirmed. RR {rr_tp1:.2f} >= {policy.min_rr_tp1:.2f}.",),
+            reasons=(
+                f"Valid SHORT risk plan established (Stop: {stop_final}, TP1: {tp1}, Planned RR: {rr_tp1}).",
+            ),
             entry_zone_fingerprint=entry_zone_fp,
             tp1_zone_fingerprint=tp1_fp,
             tp2_zone_fingerprint=tp2_fp,
@@ -515,7 +519,9 @@ class XauUsdRiskPlanner:
         tp2_zone_fingerprint: Optional[str] = None,
         reasons: Sequence[str] = (),
     ) -> SideRiskPlanSnapshot:
-        """Helper to build an auditable invalid SideRiskPlanSnapshot with optional fields."""
+        """
+        Helper constructing a strictly demoted invalid SideRiskPlanSnapshot.
+        """
         risk_plan_fp = compute_risk_plan_fingerprint(
             source_phase4_fingerprint=source_phase4_fingerprint,
             source_candidate_state=source_candidate_state,
@@ -564,7 +570,7 @@ class XauUsdRiskPlanner:
             simulation_eligible=False,
             candidate_effective_action=UserDecision.WAIT,
             publication_effective_action=UserDecision.WAIT,
-            reasons=tuple(reasons),
+            reasons=tuple(reasons) if reasons else ("Invalid risk candidate.",),
             entry_zone_fingerprint=entry_zone_fingerprint,
             tp1_zone_fingerprint=tp1_zone_fingerprint,
             tp2_zone_fingerprint=tp2_zone_fingerprint,

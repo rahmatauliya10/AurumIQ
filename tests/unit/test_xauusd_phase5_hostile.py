@@ -150,9 +150,7 @@ def test_h02_long_uses_support_short_uses_resistance(test_profile):
     planner = XauUsdRiskPlanner("rev", test_profile)
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     res_zone = StructureZone("RESISTANCE", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
-    sup_zone = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
 
-    # Passing RESISTANCE zone as custom_support_zone in plan_long or structure_15m with only RESISTANCE fails to find support
     snap_l = _make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t)
     struct_only_res = StructureResult(t, StructureType.HH, None, None, None, (), (res_zone,))
     plan_l = planner.plan_long(snap_l, struct_only_res, Decimal("5.00"))
@@ -165,11 +163,12 @@ def test_h03_long_tp_resistance_short_tp_support(test_profile):
     """H3: LONG TP1 requires RESISTANCE above entry; SHORT TP1 requires SUPPORT below entry."""
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     sup = StructureZone("SUPPORT", Decimal("2480.00"), Decimal("2485.00"), t, 2, True)
+    struct_sup = StructureResult(t, StructureType.HH, None, None, None, (), (sup,))
 
     # LONG target evaluation with only SUPPORT zone fails
     tp1, _, _, _, _, _, ok, err = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[sup]
+        struct_sup, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok is False
     assert tp1 is None
@@ -181,10 +180,11 @@ def test_h04_h05_future_zones_rejected(test_profile):
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     future_t = t + timedelta(minutes=5)
     future_res = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), future_t, 2, True)
+    struct_future = StructureResult(t, StructureType.HH, None, None, None, (), (future_res,))
 
     tp1, _, _, _, _, _, ok, _ = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[future_res]
+        struct_future, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok is False
     assert tp1 is None
@@ -194,9 +194,10 @@ def test_h04_h05_future_zones_rejected(test_profile):
 def test_h06_h07_no_fabricated_tp1(test_profile):
     """H6 & H7: Missing structural TP1 returns INVALID_RISK_CANDIDATE; no RR fabrication."""
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+    empty_struct = StructureResult(t, StructureType.HH, None, None, None, (), ())
     tp1, tp2, rr1, _, _, _, ok, err = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[]
+        empty_struct, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok is False
     assert tp1 is None
@@ -208,22 +209,24 @@ def test_h08_h09_conservative_rr_worst_entry(test_profile):
     """H8 & H9: LONG RR uses entry_max (2505); SHORT RR uses entry_min (2500)."""
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     res = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2530.00"), t, 2, True)
-    # LONG: risk = 2505 - 2495 = 10. reward = 2525 - 2505 = 20 -> RR = 2.00
+    struct_res = StructureResult(t, StructureType.HH, None, None, None, (), (res,))
+    # LONG: risk = 2505 - 2495 = 10. reward = 2525 - 2505 = 20 -> RR = 2.0
     _, _, rr_l, _, _, _, ok_l, _ = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[res]
+        struct_res, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok_l is True
-    assert rr_l == Decimal("2.00")
+    assert rr_l == Decimal("2.0")
 
     sup = StructureZone("SUPPORT", Decimal("2475.00"), Decimal("2480.00"), t, 2, True)
-    # SHORT: risk = 2510 - 2500 = 10. reward = 2500 - 2480 = 20 -> RR = 2.00
+    struct_sup = StructureResult(t, StructureType.LL, None, None, None, (), (sup,))
+    # SHORT: risk = 2510 - 2500 = 10. reward = 2500 - 2480 = 20 -> RR = 2.0
     _, _, rr_s, _, _, _, ok_s, _ = calculate_short_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2510.00"),
-        None, Decimal("5.00"), t, test_profile.short_risk_policy, custom_zones=[sup]
+        struct_sup, Decimal("5.00"), t, test_profile.short_risk_policy
     )
     assert ok_s is True
-    assert rr_s == Decimal("2.00")
+    assert rr_s == Decimal("2.0")
 
 
 @pytest.mark.unit
@@ -261,9 +264,10 @@ def test_h14_rr_denominator_non_positive_rejected(test_profile):
     """H14: Stop >= entry_max for LONG produces planned_risk <= 0 and is rejected."""
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     res = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 2, True)
+    struct_res = StructureResult(t, StructureType.HH, None, None, None, (), (res,))
     _, _, _, _, _, _, ok, err = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2506.00"),  # stop 2506 > entry_max 2505
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[res]
+        struct_res, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok is False
     assert "Invalid risk distance" in err
@@ -279,7 +283,8 @@ def test_h15_h16_h17_phase4_immutability_and_no_promotion(test_profile):
 
     sup = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
     res = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 2, True)
-    plan = planner.plan_long(snap, None, Decimal("5.00"), custom_support_zone=sup, custom_target_zones=[res])
+    struct = StructureResult(t, StructureType.HH, None, None, None, (), (sup, res))
+    plan = planner.plan_long(snap, struct, Decimal("5.00"))
 
     assert snap.analysis_fingerprint == orig_fp
     assert plan.source_phase4_fingerprint == orig_fp
@@ -289,13 +294,13 @@ def test_h15_h16_h17_phase4_immutability_and_no_promotion(test_profile):
 @pytest.mark.unit
 def test_h18_h19_h20_h21_market_slippage_and_spread(test_profile):
     """H18, H19, H20, H21: LONG uses ASK (+slip), SHORT uses BID (-slip), spread counted once."""
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
     q = QuoteData(t + timedelta(seconds=2), Decimal("2500.00"), Decimal("2500.50"))
 
     res_l = exec_m.simulate_market_after_signal(RiskSide.LONG, t, [q], "fp")
     assert res_l.raw_executable_price == Decimal("2500.50")
-    assert res_l.fill_price == Decimal("2500.75")  # 2500.50 + 0.25
+    assert res_l.fill_price == Decimal("2500.50") + (Decimal("2500.50") * Decimal("0.0001"))
     assert res_l.observed_spread == Decimal("0.50")
     assert res_l.synthetic_spread == Decimal("0.00")
 
@@ -308,7 +313,7 @@ def test_h18_h19_h20_h21_market_slippage_and_spread(test_profile):
 @pytest.mark.unit
 def test_h22_h23_h24_h25_h26_limit_execution(test_profile):
     """H22-H26: Limit trigger logic, fill bounding, pre-activation ignore, mid-bar closed."""
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
     limit = Decimal("2500.00")
 
@@ -385,14 +390,13 @@ def test_h36_h37_deterministic_zone_sorting_and_shuffle(test_profile):
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     z1 = StructureZone("SUPPORT", Decimal("2490.00"), Decimal("2495.00"), t, 2, True)
     z2 = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)  # highest price_high 2505
-
-    struct_order1 = StructureResult(t, StructureType.HH, None, None, None, (), (z1, z2))
-    struct_order2 = StructureResult(t, StructureType.HH, None, None, None, (), (z2, z1))
-
     res = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 2, True)
 
-    p1 = planner.plan_long(_make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t), struct_order1, Decimal("5.00"), custom_target_zones=[res])
-    p2 = planner.plan_long(_make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t), struct_order2, Decimal("5.00"), custom_target_zones=[res])
+    struct_order1 = StructureResult(t, StructureType.HH, None, None, None, (), (z1, z2, res))
+    struct_order2 = StructureResult(t, StructureType.HH, None, None, None, (), (z2, z1, res))
+
+    p1 = planner.plan_long(_make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t), struct_order1, Decimal("5.00"))
+    p2 = planner.plan_long(_make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t), struct_order2, Decimal("5.00"))
 
     assert p1.entry_max == Decimal("2505.00")
     assert p2.entry_max == Decimal("2505.00")
@@ -411,9 +415,10 @@ def test_h38_tp2_none_does_not_invalidate_tp1(test_profile):
     )
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     res = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2530.00"), t, 2, True)
+    struct = StructureResult(t, StructureType.HH, None, None, None, (), (res,))
     tp1, tp2, rr1, rr2, _, _, ok, _ = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, policy_no_tp2, custom_zones=[res]
+        struct, Decimal("5.00"), t, policy_no_tp2
     )
     assert ok is True
     assert tp1 == Decimal("2525.00")
@@ -434,9 +439,10 @@ def test_h39_tp2_atr_not_beyond_tp1_is_omitted(test_profile):
     )
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     res = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2530.00"), t, 2, True)
+    struct = StructureResult(t, StructureType.HH, None, None, None, (), (res,))
     tp1, tp2, rr1, rr2, tp1_fp, tp2_fp, ok, _ = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, policy_low_tp2, custom_zones=[res]
+        struct, Decimal("5.00"), t, policy_low_tp2
     )
     assert ok is True
     assert tp1 == Decimal("2525.00")
@@ -448,7 +454,7 @@ def test_h39_tp2_atr_not_beyond_tp1_is_omitted(test_profile):
 @pytest.mark.unit
 def test_h40_h41_invalid_quotes_and_chronological_sort(test_profile):
     """H40 & H41: Invalid quotes ignored; unordered quotes sorted chronologically."""
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
 
     q_invalid = QuoteData(t + timedelta(seconds=2), Decimal("2500.50"), Decimal("2500.10"))  # crossed bid > ask
@@ -465,7 +471,7 @@ def test_h40_h41_invalid_quotes_and_chronological_sort(test_profile):
 @pytest.mark.unit
 def test_h42_short_candle_limit_uses_high(test_profile):
     """H42: SHORT candle limit uses HIGH >= limit, not low."""
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
     limit = Decimal("2510.00")
 
@@ -596,11 +602,14 @@ def test_h48_h49_equal_price_target_zones_deterministic_after_shuffle(test_profi
     z1 = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2530.00"), t1, 1, True)
     z2 = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2535.00"), t2, 1, True)
 
+    struct_a = StructureResult(t2, StructureType.HH, None, None, None, (), (z1, z2))
+    struct_b = StructureResult(t2, StructureType.HH, None, None, None, (), (z2, z1))
+
     tp1_a, _, _, _, tp1_fp_a, _, _, _ = calculate_long_targets(
-        Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), None, Decimal("5.0"), t2, test_profile.long_risk_policy, custom_zones=[z1, z2]
+        Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), struct_a, Decimal("5.0"), t2, test_profile.long_risk_policy
     )
     tp1_b, _, _, _, tp1_fp_b, _, _, _ = calculate_long_targets(
-        Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), None, Decimal("5.0"), t2, test_profile.long_risk_policy, custom_zones=[z2, z1]
+        Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), struct_b, Decimal("5.0"), t2, test_profile.long_risk_policy
     )
     assert tp1_fp_a == tp1_fp_b == compute_zone_fingerprint(z1)  # z1 is earlier created_at
 
@@ -624,8 +633,11 @@ def test_h52_h53_planned_rr_tp1_gate(test_profile):
     z_valid = StructureZone("RESISTANCE", Decimal("2523.00"), Decimal("2530.00"), t, 1, True)
     z_invalid = StructureZone("RESISTANCE", Decimal("2522.90"), Decimal("2530.00"), t, 1, True)
 
-    _, _, _, _, _, _, ok_val, _ = calculate_long_targets(Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), None, Decimal("5.0"), t, test_profile.long_risk_policy, custom_zones=[z_valid])
-    _, _, _, _, _, _, ok_inval, _ = calculate_long_targets(Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), None, Decimal("5.0"), t, test_profile.long_risk_policy, custom_zones=[z_invalid])
+    struct_val = StructureResult(t, StructureType.HH, None, None, None, (), (z_valid,))
+    struct_inval = StructureResult(t, StructureType.HH, None, None, None, (), (z_invalid,))
+
+    _, _, _, _, _, _, ok_val, _ = calculate_long_targets(Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), struct_val, Decimal("5.0"), t, test_profile.long_risk_policy)
+    _, _, _, _, _, _, ok_inval, _ = calculate_long_targets(Decimal("2500"), Decimal("2502.5"), Decimal("2505"), Decimal("2495"), struct_inval, Decimal("5.0"), t, test_profile.long_risk_policy)
 
     assert ok_val is True
     assert ok_inval is False
@@ -663,7 +675,7 @@ def test_h56_h57_h58_ohlc_validation():
 @pytest.mark.unit
 def test_h59_h60_h61_h62_slippage_and_spread_exact(test_profile):
     """H59-H62: Slippage and synthetic spread exact percentages."""
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
     bar = CandleData(t + timedelta(minutes=15), t + timedelta(minutes=30), Decimal("2500.00"), Decimal("2510.00"), Decimal("2495.00"), Decimal("2505.00"), Decimal("100"), True)
 
@@ -696,7 +708,7 @@ def test_h63_h64_h65_h66_h67_invalid_and_dedup(test_profile):
     assert plan_l.entry_max is None
 
     # H66: NO_FILL execution result
-    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
+    exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy, phase5_policy_fingerprint="exec_fp")
     fill_res = exec_m.simulate_market_after_signal(RiskSide.LONG, t, [], "fp")
     assert fill_res.is_filled is False
     assert fill_res.source_evidence_type is None
@@ -753,10 +765,11 @@ def test_h70_equal_price_tp_zones_cannot_produce_tp2_equals_tp1(test_profile):
     res1 = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 1, True)
     res2 = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2540.00"), t, 2, True)
     res3 = StructureZone("RESISTANCE", Decimal("2545.00"), Decimal("2550.00"), t, 1, True)
+    struct = StructureResult(t, StructureType.HH, None, None, None, (), (res1, res2, res3))
 
     tp1, tp2, _, _, _, _, ok, _ = calculate_long_targets(
         Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
-        None, Decimal("5.00"), t, test_profile.long_risk_policy, custom_zones=[res1, res2, res3]
+        struct, Decimal("5.00"), t, test_profile.long_risk_policy
     )
     assert ok is True
     assert tp1 == Decimal("2530.00")

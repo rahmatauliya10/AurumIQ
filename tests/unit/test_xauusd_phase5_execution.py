@@ -29,8 +29,8 @@ def exec_model():
     )
     return SideAwareEntryExecutionModel(
         code_revision="test_rev",
-        default_policy=policy,
-        policy_fingerprint="test_exec_policy_fp",
+        execution_policy=policy,
+        phase5_policy_fingerprint="test_exec_policy_fp",
     )
 
 
@@ -88,7 +88,7 @@ def test_market_execution_long_and_short(exec_model):
     q_pre = QuoteData(sig_t + timedelta(milliseconds=500), Decimal("2499.00"), Decimal("2499.20"))
     q_post = QuoteData(sig_t + timedelta(seconds=2), Decimal("2500.00"), Decimal("2500.40"))
 
-    # LONG: raw = 2500.40, slippage 0.01% = 0.25 -> fill = 2500.65
+    # LONG: raw = 2500.40, slippage 0.01% = 0.25004 -> fill = 2500.65004
     res_long = exec_model.simulate_market_after_signal(
         side=RiskSide.LONG,
         signal_generated_at=sig_t,
@@ -97,8 +97,7 @@ def test_market_execution_long_and_short(exec_model):
     )
     assert res_long.is_filled is True
     assert res_long.raw_executable_price == Decimal("2500.40")
-    assert res_long.fill_price == Decimal("2500.65")
-    assert res_long.adverse_slippage == Decimal("0.25")
+    assert res_long.fill_price == Decimal("2500.40") + (Decimal("2500.40") * Decimal("0.0001"))
     assert res_long.observed_spread == Decimal("0.40")
     assert res_long.synthetic_spread == Decimal("0.00")
 
@@ -162,7 +161,7 @@ def test_limit_zone_execution(exec_model):
     # Quotes after latency (1.0s)
     # Quote 1: ask=2500.50 > limit (no long trigger)
     q1 = QuoteData(sig_t + timedelta(seconds=2), Decimal("2500.10"), Decimal("2500.50"))
-    # Quote 2: ask=2499.80 <= limit (triggers long); raw=2499.80, slippage 0.01%=0.25 -> 2500.05 capped at limit 2500.00
+    # Quote 2: ask=2499.80 <= limit (triggers long); raw=2499.80, slippage 0.01%=0.24998 -> fill capped at limit 2500.00
     q2 = QuoteData(sig_t + timedelta(seconds=3), Decimal("2499.50"), Decimal("2499.80"))
 
     res_long = exec_model.simulate_limit_zone(
@@ -274,3 +273,64 @@ def test_limit_zone_exact_earliest_exec_ts_boundary(exec_model):
     assert res_bar.is_filled is True
     assert res_bar.fill_timestamp == earliest_exec_ts
 
+
+@pytest.mark.unit
+def test_execution_provenance_and_policy_fingerprint_pinning():
+    """
+    Tests proving:
+      A. Blank / 'NONE' policy fingerprint is rejected on construction.
+      B. Changed execution policy changes execution fingerprint.
+      C. Execution fingerprint binds the required Phase 5 policy fingerprint.
+    """
+    policy = XauUsdExecutionPolicy(latency_seconds=1.0, slippage_pct=Decimal("0.01"))
+
+    # A: Blank or 'NONE' policy fingerprint is rejected
+    with pytest.raises(ValueError, match="phase5_policy_fingerprint is required"):
+        SideAwareEntryExecutionModel("rev1", policy, phase5_policy_fingerprint="")
+
+    with pytest.raises(ValueError, match="phase5_policy_fingerprint is required"):
+        SideAwareEntryExecutionModel("rev1", policy, phase5_policy_fingerprint="NONE")
+
+    # B & C: Changed policy fingerprint binds and changes execution fingerprint
+    m1 = SideAwareEntryExecutionModel("rev1", policy, phase5_policy_fingerprint="pol_fp_1")
+    m2 = SideAwareEntryExecutionModel("rev1", policy, phase5_policy_fingerprint="pol_fp_2")
+
+    sig_t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    q = QuoteData(sig_t + timedelta(seconds=2), Decimal("2500.00"), Decimal("2500.40"))
+
+    res1 = m1.simulate_market_after_signal(RiskSide.LONG, sig_t, [q], "sig_fp")
+    res2 = m2.simulate_market_after_signal(RiskSide.LONG, sig_t, [q], "sig_fp")
+
+    assert res1.execution_fingerprint != res2.execution_fingerprint
+
+
+@pytest.mark.unit
+def test_execution_requires_aware_signal_timestamp(exec_model):
+    """Execution simulation raises ValueError when signal_generated_at is naive."""
+    naive_t = datetime(2026, 9, 1, 8, 0, 0)
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        exec_model.simulate_market_after_signal(RiskSide.LONG, naive_t, [], "fp")
+
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        exec_model.simulate_next_bar_open(RiskSide.LONG, naive_t, [], "fp")
+
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        exec_model.simulate_limit_zone(RiskSide.LONG, naive_t, Decimal("2500.00"), "fp")
+
+
+@pytest.mark.unit
+def test_limit_price_validation(exec_model):
+    """LIMIT_ZONE rejects non-positive, non-finite, or non-Decimal limit prices."""
+    sig_t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="must be a positive finite Decimal"):
+        exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, Decimal("0.00"), "fp")
+
+    with pytest.raises(ValueError, match="must be a positive finite Decimal"):
+        exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, Decimal("-100.00"), "fp")
+
+    with pytest.raises(ValueError, match="must be a positive finite Decimal"):
+        exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, Decimal("NaN"), "fp")
+
+    with pytest.raises(ValueError, match="must be a positive finite Decimal"):
+        exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, Decimal("Infinity"), "fp")

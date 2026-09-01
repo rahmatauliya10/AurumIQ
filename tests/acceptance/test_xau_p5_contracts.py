@@ -262,8 +262,8 @@ def test_xau_p5_03_side_aware_market_execution_contract(calibrated_xauusd_test_p
     """
     exec_model = SideAwareEntryExecutionModel(
         code_revision="p5_ci_rev",
-        default_policy=calibrated_xauusd_test_profile.long_execution_policy,
-        policy_fingerprint="exec_pol_fp_test_123",
+        execution_policy=calibrated_xauusd_test_profile.long_execution_policy,
+        phase5_policy_fingerprint="exec_pol_fp_test_123",
     )
 
     sig_ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
@@ -277,7 +277,7 @@ def test_xau_p5_03_side_aware_market_execution_contract(calibrated_xauusd_test_p
     )
 
     # 1. LONG Execution (ASK)
-    # raw = 2500.40, slippage 0.01% of 2500.40 = 0.25 -> fill = 2500.65
+    # raw = 2500.40, slippage 0.01% of 2500.40 = 0.25004 -> fill = 2500.65004
     res_long = exec_model.simulate_market_after_signal(
         side=RiskSide.LONG,
         signal_generated_at=sig_ts,
@@ -286,8 +286,8 @@ def test_xau_p5_03_side_aware_market_execution_contract(calibrated_xauusd_test_p
     )
     assert res_long.is_filled is True
     assert res_long.raw_executable_price == Decimal("2500.40")
-    assert res_long.fill_price == Decimal("2500.65")
-    assert res_long.adverse_slippage == Decimal("0.25")
+    assert res_long.fill_price == Decimal("2500.40") + (Decimal("2500.40") * Decimal("0.0001"))
+    assert res_long.adverse_slippage == Decimal("2500.40") * Decimal("0.0001")
     assert res_long.observed_spread == Decimal("0.40")
     assert res_long.synthetic_spread == Decimal("0.00")
     assert res_long.source_evidence_type == "QUOTE"
