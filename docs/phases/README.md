@@ -43,10 +43,10 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 | **R10** | **Governance** | **Immutable Snapshots:** Signals and risk plans are persisted append-only in PostgreSQL; historical records are never updated. |
 | **R11** | **Validation** | **Walk-Forward Splitting:** Backtest evaluation utilizes chronological folds with dependency purging and post-boundary embargo. |
 | **R12** | **Risk** | **Side-Aware Risk Planning:** Long and Short setups enforce structural invalidation stops, ATR guards, and minimum unrounded RR boundaries. |
-| **R13** | **Execution** | **Causal Execution Timestamp:** Simulated order fills occur at $t \ge t_{\text{signal}} + \text{latency}$; fill on signal close is impossible. |
+| **R13** | **Execution** | **Causal Execution Timestamp:** Simulated order fills occur at $t \ge t_{\text{signal}} + \text{latency}$; evidence before earliest execution timestamp is strictly forbidden. |
 | **R14** | **Intrabar** | **Conservative Ambiguity Resolution:** Ambiguous intrabar candles resolve via chronological lower-TF replay or fall back to SL-first. |
 | **R15** | **Costs** | **Deduplicated Friction Accounting:** Bid-ask spreads are never double-counted when actual executable quotes are available. |
-| **R16** | **Statistics** | **Minimum Sample Guard:** Features or patterns with effective sample size $n_{eff} < 30$ receive zero active weight. |
+| **R16** | **Statistics** | **Minimum Sample Guard:** Features or patterns with insufficient effective sample size receive zero active weight (configuration-driven sample threshold). |
 | **R17** | **Cycles** | **Phase 3B Production Lock:** Experimental spectral features have an active production scoring weight locked to `0.0`. |
 | **R18** | **Policy** | **TradingView Scraping Ban:** Scraping TradingView or using it as a calculation engine data source is strictly forbidden. |
 | **R19** | **ML Protocol** | **Secondary Meta-Filtering Only:** ML models act purely as secondary probability filters on deterministic candidate setups. |
@@ -65,7 +65,7 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 - **Phase 5 Contracts:** `XAU-P5-01` (LONG side-aware risk planning), `XAU-P5-02` (SHORT side-aware risk planning), `XAU-P5-03` (side-aware market bid/ask causal execution). Hostile matrix `H1`–`H74` fully verified. Merge SHA: `9011764958d31c5e96860488da7c54568def1352`.
 
 ### B. Planned Future XAUUSD Contracts
-- **Phase 6 Planned Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined dual-side portfolio parity & ablation).
+- **Phase 6 Planned Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation).
 - **Phase 7 Planned Contracts:** `XAU-P7-01` (BUY / WAIT / SELL presentation and dual-side alerting).
 - **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit).
 - **Phase 9 Planned Contracts:** `XAU-P9-01` (point-in-time machine learning meta-labeling filter).

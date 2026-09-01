@@ -3,13 +3,13 @@
 > **Document Status:** 🧊 **SUPERSEDED / HISTORICAL REFERENCE ONLY**  
 > **Canonical Governing Specification:** [`PHASE_6_BACKTEST_VALIDATION.md`](./PHASE_6_BACKTEST_VALIDATION.md)  
 > **Historical Baseline Commit:** `f22483addd7cc5095c46e4f1c928a8b6651d83eb`  
-> **Notice:** This document is retained strictly for historical architecture reference and audit continuity. All active XAUUSD Point-in-Time backtesting, walk-forward validation (Phase 6A), and component ablation (Phase 6B) specifications are consolidated in [`PHASE_6_BACKTEST_VALIDATION.md`](./PHASE_6_BACKTEST_VALIDATION.md).
+> **Notice:** This document is preserved for historical architecture and audit reference only and is not an active XAUUSD implementation authority. All active XAUUSD Point-in-Time backtesting, walk-forward validation (Phase 6A), and component ablation (Phase 6B) specifications are consolidated in [`PHASE_6_BACKTEST_VALIDATION.md`](./PHASE_6_BACKTEST_VALIDATION.md).
 
 ---
 
 ## Historical XAUT Frozen Specification (Verbatim Baseline)
 
-> **Status:** ✅ **APPROVED (HISTORICAL XAUT REFERENCE)**  
+> **Status:** ✅ **APPROVED**  
 > **Primary Goal:** Implement point-in-time historical backtesting, walk-forward time-series splitting with label purging and embargo, realistic trade friction simulation, and automated component ablation testing.
 
 ### 1. Non-Negotiable Core Principle (R2 & A09)
@@ -82,17 +82,19 @@ BASELINE: Direction & Structure Only                → PF = 1.62, Expectancy = 
 - Model: `BacktestTrade` (stores individual simulated trade entries, exits, MFE, MAE, realized $R$).
 - Celery Task: `run_backtest` executed on the dedicated `backtest` Celery queue.
 
-### 7. Historical Acceptance Tests
+### 7. Phase 6 Acceptance Test Suite
 
 | Test ID | Test Name | Assertion Criteria |
 |---|---|---|
 | **A09** | One Engine Parity | Live engine and backtester resolve identical `XautSignalEngine` class, version, and config. |
-| **A10** | Component Ablation | Automated paired fold ablation evaluates incremental PF and expectancy. |
-| **A14** | Intrabar Ambiguity | Resolves ambiguous candles via lower-TF sequence or conservative SL-first. |
-| **A19** | Execution Latency | Fill timestamp strictly occurs at $t \ge t_{\text{signal}} + \text{latency}$. |
-| **A27** | Conservative Execution | Unfavorable price gaps and adverse slippage applied to execution fills. |
-| **A31** | Point-in-Time Isolation | Evaluates historical state at $T$ without future candle leakage. |
-| **A32** | Spread Deduplication | Spread accounted for exactly once across actual quotes and synthetic candles. |
-| **A34** | Walk-Forward Purging | Purges overlapping triple-barrier outcome horizon at fold boundaries. |
-| **A35** | Walk-Forward Embargo | Enforces post-test embargo buffer to prevent serial correlation leakage. |
-| **A37** | Ablation Isolation | Ablation runs execute without mutating baseline candidate dataset. |
+| **A10** | Cycle Ablation Reporting | Backtest harness generates side-by-side metrics with cycle features on vs off. |
+
+### 8. Definition of Done Checklist
+
+- [x] Backtest harness imports pure `XautSignalEngine` without code divergence.
+- [x] Walk-forward split generator applies strict purging and embargo.
+- [x] Trade simulator enforces spreads, fees, slippage, and 1m/5m intrabar replay.
+- [x] Full metric suite calculated with regime/session/phase breakdowns.
+- [x] Automated ablation report runs via Celery task.
+- [x] Acceptance tests **A09, A10** passing.
+- [x] Targeted tests **P6-01 through P6-33** passing.

@@ -25,7 +25,7 @@ AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative ma
 │                                                          ▼              │
 │  LIVE MONITOR (WebSocket / Redis TTL) ◄───────── RISK PLANNING GATE     │
 │  - Real-Time Presentation Only                  - Side-Aware Long/Short │
-│  - Stale Feed Guard (<30s)                      - Structural + ATR Stop │
+│  - Stale Feed Guard (Configurable)              - Structural + ATR Stop │
 │  - Zone Proximity Alerts                        - Unrounded RR Gate     │
 │  - Zero Execution Code                          - Intrabar 1m/5m Replay │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -34,7 +34,7 @@ AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative ma
 ### Core Operating Invariants
 1. **Zero Real-Order Execution Policy (R1):** The platform contains zero exchange trading keys, broker execution bindings, order dispatch endpoints, or testnet trading capabilities. All outputs are strictly decision support.
 2. **Decoupled Two-Path Architecture:**
-   - **Path A (Live Streaming Quotes):** Low-latency WebSockets and Redis TTL ($30\text{s}$) updating presentation metrics and live zone proximity monitoring (`livequote:XAUUSD`).
+   - **Path A (Live Streaming Quotes):** Low-latency WebSockets and Redis TTL updating presentation metrics and live zone proximity monitoring (`livequote:XAUUSD`).
    - **Path B (Closed Candles Decision Pipeline):** Strict closed-bar signal evaluation, immutable fingerprint generation, and PostgreSQL persistence on completed 15m, 1H, 4H, and 1D candles.
 3. **Intrabar Replay Segregation:** 1m and 5m streams are strictly isolated for causal fill simulation, execution latency, and intrabar barrier collision resolution during backtesting and forward paper observation.
 4. **TradingView Policy (R18 & A18):** TradingView is permitted exclusively for external visual reference or rendering via Lightweight Charts. The calculation engine contains zero scraping dependencies or network calls to TradingView.
@@ -74,7 +74,7 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
 - **Phase 5 Contracts:** `XAU-P5-01` (LONG side-aware risk planning), `XAU-P5-02` (SHORT side-aware risk planning), `XAU-P5-03` (side-aware market bid/ask causal execution). Hostile matrix `H1`–`H74` fully verified. Merge SHA: `9011764958d31c5e96860488da7c54568def1352`.
 
 ### B. Planned Future XAUUSD Contracts
-- **Phase 6 Planned Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined dual-side portfolio parity & ablation).
+- **Phase 6 Planned Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation).
 - **Phase 7 Planned Contracts:** `XAU-P7-01` (BUY / WAIT / SELL presentation and dual-side alerting).
 - **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit).
 - **Phase 9 Planned Contracts:** `XAU-P9-01` (point-in-time machine learning meta-labeling filter).

@@ -12,12 +12,12 @@
 - **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD).
 - **User Decision Display:** `BUY / WAIT / SELL` across 15m, 1H, 4H, and 1D closed intervals.
 - **Dual-Side Metric Dashboard:**
-  - **Live Feed & Health:** Live XAUUSD price, feed freshness (<30s), provider health status (`HEALTHY`, `DEGRADED`, `UNHEALTHY`, `NOT_CONFIGURED`).
+  - **Live Feed & Health:** Live XAUUSD price, feed freshness (configuration-driven), provider health status (`HEALTHY`, `DEGRADED`, `UNHEALTHY`, `NOT_CONFIGURED`).
   - **Direction & Timing Scores:** Long Direction Score, Short Direction Score, Long Timing Score, Short Timing Score.
   - **Dual-Layer State Presentation:** Candidate State (`candidate_state`), Candidate Decision (`candidate_user_decision`), Published State (`state`), Published Decision (`user_decision` — held at `WAIT` pending Phase 6 validation).
   - **Risk Planning Geometry:** Selected Entry Zone ($[\text{Min}, \text{Max}]$), Invalidation Stop (`Stop_Final`), Structural $\text{TP1}$, $\text{TP2}$, and unrounded Reward-to-Risk ratio.
   - **Diagnostics & Governance:** Risk candidate status, calibration profile status (`PENDING_DATA` / `CALIBRATION_REQUIRED`), hard-gate reasons, and Phase 3B research status (`production_weight = 0.0`).
-- **Live Cache Architecture:** Active quote streaming and monitoring utilize Redis cache key `livequote:XAUUSD` with 30s TTL. (Historical `livequote:XAUTUSDT` is superseded).
+- **Live Cache Architecture:** Active quote streaming and monitoring utilize Redis cache key `livequote:XAUUSD` with configuration-driven Redis TTL. (Historical `livequote:XAUTUSDT` is superseded).
 - **Elimination of Deprecated Active Dependencies:** Removed active dependencies on XAUT/USDT basis z-score, USDT/USD peg deviation monitor, and "XAU confirms XAUT" cross-asset validation.
 
 ### 2. Dual-Side Informational Alerting Matrix

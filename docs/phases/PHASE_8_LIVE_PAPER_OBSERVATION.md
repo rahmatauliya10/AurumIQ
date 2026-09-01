@@ -52,7 +52,7 @@ SHORT SETUP (SELL):
 The system will calculate discrepancy metrics comparing live paper observations against point-in-time backtest replay over the identical date window across **three dedicated reporting dimensions**:
 1. **BUY Parity Report:** Compares live long setups against backtest long replay.
 2. **SELL Parity Report:** Compares live short setups against backtest short replay.
-3. **Combined Parity Report:** Consolidated portfolio-level execution and expectancy comparison (`XAU-P6-03`).
+3. **Combined Parity Report:** Consolidated side-aware execution and expectancy comparison (`XAU-P6-03`).
 
 ### Key Parity Dimensions
 - $\Delta_{\text{Fill}} = |\text{Live\_Simulated\_Fill} - \text{Backtest\_Replay\_Fill}|$
