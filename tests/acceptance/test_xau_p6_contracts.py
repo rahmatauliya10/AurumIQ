@@ -106,44 +106,8 @@ def calibrated_risk_profile():
 @pytest.fixture
 def calibrated_signal_profile():
     """Explicit calibrated test signal profile."""
-    return Phase4SignalProfile(
-        name="XAUUSD_TEST_CALIBRATED",
-        long_direction=SideDirectionPolicy(
-            weight_regime=20.0,
-            weight_trend_1h=20.0,
-            weight_trend_4h=20.0,
-            weight_trend_1d=10.0,
-            weight_structure_bos=10.0,
-            weight_pullback=10.0,
-            weight_momentum=5.0,
-            weight_volume=5.0,
-        ),
-        short_direction=SideDirectionPolicy(
-            weight_regime=20.0,
-            weight_trend_1h=20.0,
-            weight_trend_4h=20.0,
-            weight_trend_1d=10.0,
-            weight_structure_bos=10.0,
-            weight_pullback=10.0,
-            weight_momentum=5.0,
-            weight_volume=5.0,
-        ),
-        long_timing=SideTimingPolicy(
-            weight_entry_zone=30.0,
-            weight_reversal_confirmation_15m=25.0,
-            weight_momentum_turn_15m_1h=20.0,
-            weight_phase3a=15.0,
-            weight_volume_response=10.0,
-        ),
-        short_timing=SideTimingPolicy(
-            weight_entry_zone=30.0,
-            weight_reversal_confirmation_15m=25.0,
-            weight_momentum_turn_15m_1h=20.0,
-            weight_phase3a=15.0,
-            weight_volume_response=10.0,
-        ),
-        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
-    )
+    from engine.signals.profile import calibrated_xauusd_signal_profile
+    return calibrated_xauusd_signal_profile()
 
 
 def make_candle(
@@ -237,14 +201,19 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile, calibrated_signal_prof
     code_rev = "46e388a106b9bdc388e646c73570e7879142c837"
     eval_time = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
 
-    # 1. Build PIT Candle History <= T (Bullish Structure)
+    # 1. Build PIT Candle History <= T (Bullish Structure with swing pivots)
     dataset = PointInTimeDataset()
     for i in range(30):
         t_open = eval_time - timedelta(minutes=15 * (30 - i))
-        base_p = Decimal("2600.00") + Decimal(str(i * 0.5))
+        if i < 10:
+            p = Decimal("2620.00") - Decimal(str(i * 1.5))
+        elif i < 20:
+            p = Decimal("2605.00") + Decimal(str((i - 10) * 1.2))
+        else:
+            p = Decimal("2617.00") - Decimal(str((i - 20) * 0.2))
         dataset.add_candle(
             "15m",
-            make_candle("15m", t_open, base_p, base_p + Decimal("2.00"), base_p - Decimal("1.00"), base_p + Decimal("1.00")),
+            make_candle("15m", t_open, p, p + Decimal("2.00"), p - Decimal("1.00"), p + Decimal("0.50")),
         )
 
     # 2. Add Future Post-T Candles (for fill and outcome replay)
@@ -330,20 +299,31 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile, calibrated_signal_prof
     assert sim_trade.net_r > Decimal("1.80")
 
     # 7. End-to-End Execution Path via XauUsdBacktestRunner
+    for i in range(30):
+        t_open_1h = eval_time - timedelta(hours=(30 - i))
+        base_1h = Decimal("2550.00") + Decimal(str(i * 2.5))
+        dataset.add_candle("1h", make_candle("1h", t_open_1h, base_1h, base_1h + Decimal("4.0"), base_1h - Decimal("1.0"), base_1h + Decimal("3.0")))
+
+    for i in range(25):
+        t_open_4h = eval_time - timedelta(hours=4 * (25 - i))
+        base_4h = Decimal("2500.00") + Decimal(str(i * 8.0))
+        dataset.add_candle("4h", make_candle("4h", t_open_4h, base_4h, base_4h + Decimal("10.0"), base_4h - Decimal("2.0"), base_4h + Decimal("8.0")))
+
+    for i in range(25):
+        t_open_1d = eval_time - timedelta(days=(25 - i))
+        base_1d = Decimal("2400.00") + Decimal(str(i * 15.0))
+        dataset.add_candle("1d", make_candle("1d", t_open_1d, base_1d, base_1d + Decimal("20.0"), base_1d - Decimal("3.0"), base_1d + Decimal("15.0")))
+
     runner = XauUsdBacktestRunner()
-    ds_hash = compute_xauusd_dataset_identity(
-        candles_15m=dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=1)),
-        start_time=eval_time - timedelta(hours=5),
-        end_time=eval_time + timedelta(hours=1),
-    )
+    from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
     runner_spec = XauUsdBacktestRunSpec(
         instrument="XAUUSD",
         start_time=eval_time,
-        end_time=eval_time + timedelta(hours=1),
-        timeframes=("15m",),
+        end_time=eval_time + timedelta(hours=2),
+        timeframes=("15m", "1h", "4h", "1d"),
         cost_config=XauUsdCostConfig.idealized(),
         cost_scenario=XauUsdCostScenario.IDEALIZED,
-        dataset_hash=ds_hash,
+        dataset_hash="",
         holding_horizon_bars_15m=10,
         max_fill_wait_bars_15m=4,
         code_revision=code_rev,
@@ -355,8 +335,18 @@ def test_xau_p6_01_long_contract(calibrated_risk_profile, calibrated_signal_prof
         spec=runner_spec,
     )
     assert runner_fp != ""
-    assert len(runner_signals) > 0
-    # Published Layer B remains WAIT throughout runner replay
+    assert any(s.candidate_state == SignalState.BUY_WINDOW and s.candidate_user_decision == UserDecision.BUY for s in runner_signals)
+    assert runner_metrics.long_candidate_count >= 1
+    assert runner_metrics.long_valid_risk_count >= 1
+    long_trades = [t for t in runner_trades if t.side == SignalSide.LONG]
+    assert len(long_trades) >= 1
+    t0 = long_trades[0]
+    assert t0.risk_plan_fingerprint != ""
+    assert t0.execution_evidence_fingerprint != ""
+    assert t0.fill_price is not None
+    assert t0.planned_risk_amount > Decimal("0.0")
+    assert t0.outcome == XauUsdTradeOutcome.TP1_FIRST
+    assert t0.net_r > Decimal("0.0")
     assert all(s.user_decision == UserDecision.WAIT for s in runner_signals)
 
 
@@ -373,14 +363,19 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile, calibrated_signal_pro
     code_rev = "46e388a106b9bdc388e646c73570e7879142c837"
     eval_time = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
 
-    # 1. Build PIT Candle History <= T (Bearish Structure)
+    # 1. Build PIT Candle History <= T (Bearish Structure with swing pivots)
     dataset = PointInTimeDataset()
     for i in range(30):
         t_open = eval_time - timedelta(minutes=15 * (30 - i))
-        base_p = Decimal("2650.00") - Decimal(str(i * 0.5))
+        if i < 10:
+            p = Decimal("2630.00") + Decimal(str(i * 1.5))
+        elif i < 20:
+            p = Decimal("2645.00") - Decimal(str((i - 10) * 1.2))
+        else:
+            p = Decimal("2633.00") + Decimal(str((i - 20) * 0.2))
         dataset.add_candle(
             "15m",
-            make_candle("15m", t_open, base_p, base_p + Decimal("1.00"), base_p - Decimal("2.00"), base_p - Decimal("1.00")),
+            make_candle("15m", t_open, p, p + Decimal("1.00"), p - Decimal("2.00"), p - Decimal("0.50")),
         )
 
     # 2. Add Future Post-T Candles (for fill and outcome replay)
@@ -467,20 +462,31 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile, calibrated_signal_pro
     assert sim_trade.net_r > Decimal("0.00")
 
     # 7. End-to-End Execution Path via XauUsdBacktestRunner
+    for i in range(30):
+        t_open_1h = eval_time - timedelta(hours=(30 - i))
+        base_1h = Decimal("2700.00") - Decimal(str(i * 2.5))
+        dataset.add_candle("1h", make_candle("1h", t_open_1h, base_1h, base_1h + Decimal("1.0"), base_1h - Decimal("4.0"), base_1h - Decimal("3.0")))
+
+    for i in range(25):
+        t_open_4h = eval_time - timedelta(hours=4 * (25 - i))
+        base_4h = Decimal("2750.00") - Decimal(str(i * 8.0))
+        dataset.add_candle("4h", make_candle("4h", t_open_4h, base_4h, base_4h + Decimal("2.0"), base_4h - Decimal("10.0"), base_4h - Decimal("8.0")))
+
+    for i in range(25):
+        t_open_1d = eval_time - timedelta(days=(25 - i))
+        base_1d = Decimal("2800.00") - Decimal(str(i * 15.0))
+        dataset.add_candle("1d", make_candle("1d", t_open_1d, base_1d, base_1d + Decimal("3.0"), base_1d - Decimal("20.0"), base_1d - Decimal("15.0")))
+
     runner = XauUsdBacktestRunner()
-    ds_hash = compute_xauusd_dataset_identity(
-        candles_15m=dataset.get_closed_candles("15m", as_of=eval_time + timedelta(hours=1)),
-        start_time=eval_time - timedelta(hours=5),
-        end_time=eval_time + timedelta(hours=1),
-    )
+    from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
     runner_spec = XauUsdBacktestRunSpec(
         instrument="XAUUSD",
         start_time=eval_time,
-        end_time=eval_time + timedelta(hours=1),
-        timeframes=("15m",),
+        end_time=eval_time + timedelta(hours=2),
+        timeframes=("15m", "1h", "4h", "1d"),
         cost_config=XauUsdCostConfig.idealized(),
         cost_scenario=XauUsdCostScenario.IDEALIZED,
-        dataset_hash=ds_hash,
+        dataset_hash="",
         holding_horizon_bars_15m=10,
         max_fill_wait_bars_15m=4,
         code_revision=code_rev,
@@ -492,7 +498,18 @@ def test_xau_p6_02_short_contract(calibrated_risk_profile, calibrated_signal_pro
         spec=runner_spec,
     )
     assert runner_fp != ""
-    assert len(runner_signals) > 0
+    assert any(s.candidate_state == SignalState.SELL_WINDOW and s.candidate_user_decision == UserDecision.SELL for s in runner_signals)
+    assert runner_metrics.short_candidate_count >= 1
+    assert runner_metrics.short_valid_risk_count >= 1
+    short_trades = [t for t in runner_trades if t.side == SignalSide.SHORT]
+    assert len(short_trades) >= 1
+    t0 = short_trades[0]
+    assert t0.risk_plan_fingerprint != ""
+    assert t0.execution_evidence_fingerprint != ""
+    assert t0.fill_price is not None
+    assert t0.planned_risk_amount > Decimal("0.0")
+    assert t0.outcome == XauUsdTradeOutcome.TP1_FIRST
+    assert t0.net_r > Decimal("0.0")
     assert all(s.user_decision == UserDecision.WAIT for s in runner_signals)
 
 

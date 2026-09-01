@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from engine.backtest.clock import ReplayClock
 from engine.backtest.repository import PointInTimeDataset
-from engine.backtest.xauusd_fingerprint import compute_xauusd_backtest_fingerprint
+from engine.backtest.xauusd_fingerprint import (
+    compute_xauusd_backtest_fingerprint,
+    compute_xauusd_dataset_identity_from_dataset,
+)
 from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
 from engine.backtest.xauusd_outcomes import XauUsdOutcomeEngine
 from engine.backtest.xauusd_replay import XauUsdPointInTimeReplay
@@ -101,7 +104,7 @@ class XauUsdAblationEngine:
 
     Strict Invariants:
       1. Zero mutation of baseline XauUsdSignalEngine production defaults.
-      2. Phase 3B production weight remains hard-locked to 0.0 on baseline.
+      2. Genuine Component Isolation: Every active ablation cleanly removes its target without collateral damage.
       3. Hard gate ablations (e.g. NO_MACRO_BLACKOUT) are strictly labeled unsafe research.
       4. Baseline immutability proof: Baseline 1 and Baseline 2 produce identical fingerprints and trade ledgers.
       5. Side-Specific Policy Parity: Both long and short execution policies are used.
@@ -141,15 +144,11 @@ class XauUsdAblationEngine:
             new_sd = _normalize_direction_weights(base_prof.short_direction, ["weight_trend_4h", "weight_trend_1d"]) if base_prof.short_direction else base_prof.short_direction
             return replace(base_prof, long_direction=new_ld, short_direction=new_sd)
 
-        elif ablation_type == XauUsdAblationType.NO_PHASE3A_SWING_MATURITY:
-            new_lt = _normalize_timing_weights(base_prof.long_timing, ["weight_phase3a"]) if base_prof.long_timing else base_prof.long_timing
-            new_st = _normalize_timing_weights(base_prof.short_timing, ["weight_phase3a"]) if base_prof.short_timing else base_prof.short_timing
-            return replace(base_prof, long_timing=new_lt, short_timing=new_st)
-
         elif ablation_type == XauUsdAblationType.NO_MACRO_BLACKOUT:
             new_fp = replace(base_prof.feed_policy, macro_blackout=FeedCriticality.OPTIONAL) if base_prof.feed_policy else base_prof.feed_policy
             return replace(base_prof, feed_policy=new_fp)
 
+        # For NO_PHASE3A_SESSION and NO_PHASE3A_SWING_MATURITY, profile remains intact while dataset evidence is ablated
         return base_prof
 
     def _create_ablated_dataset(
@@ -159,20 +158,25 @@ class XauUsdAblationEngine:
     ) -> PointInTimeDataset:
         """Create a point-in-time dataset adapter neutralizing specific component evidence."""
         if ablation_type == XauUsdAblationType.NO_PHASE3A_SESSION:
-            ablated_cycles = [
-                replace(
-                    snap,
-                    session=SessionContext(
-                        session=SessionType.UNKNOWN,
-                        progress_pct=0.0,
-                        is_high_liquidity=False,
-                        local_times={},
-                        expectancy_score=0.0,
-                    ),
+            ablated_cycles = []
+            for snap in getattr(dataset, "_cycle_3a", []):
+                new_session = replace(
+                    snap.session,
+                    progress_pct=0.0,
+                    is_high_liquidity=False,
+                    expectancy_score=0.0,
+                ) if snap.session else None
+                sess_exp = snap.session.expectancy_score if snap.session else 0.0
+                new_score = max(0.0, float(round(snap.cycle_score_3a - sess_exp, 2)))
+                ablated_cycles.append(
+                    replace(
+                        snap,
+                        session=new_session,
+                        cycle_score_3a=new_score,
+                    )
                 )
-                for snap in getattr(dataset, "_cycle_3a", [])
-            ]
-            new_ds = PointInTimeDataset(
+
+            return PointInTimeDataset(
                 candles_15m=dataset._candles.get("15m"),
                 candles_1h=dataset._candles.get("1h"),
                 candles_4h=dataset._candles.get("4h"),
@@ -183,9 +187,52 @@ class XauUsdAblationEngine:
                 macro_events=dataset._macro_events,
                 cycle_3a=ablated_cycles,
             )
-            return new_ds
+
+        elif ablation_type == XauUsdAblationType.NO_PHASE3A_SWING_MATURITY:
+            ablated_cycles = []
+            for snap in getattr(dataset, "_cycle_3a", []):
+                new_swing = replace(
+                    snap.swing_duration,
+                    is_mature=False,
+                    maturity_score=0.0,
+                ) if snap.swing_duration else None
+                swing_mat = snap.swing_duration.maturity_score if snap.swing_duration else 0.0
+                new_score = max(0.0, float(round(snap.cycle_score_3a - swing_mat, 2)))
+                ablated_cycles.append(
+                    replace(
+                        snap,
+                        swing_duration=new_swing,
+                        cycle_score_3a=new_score,
+                    )
+                )
+
+            return PointInTimeDataset(
+                candles_15m=dataset._candles.get("15m"),
+                candles_1h=dataset._candles.get("1h"),
+                candles_4h=dataset._candles.get("4h"),
+                candles_1d=dataset._candles.get("1d"),
+                candles_5m=dataset._candles.get("5m"),
+                candles_1m=dataset._candles.get("1m"),
+                quotes=dataset._quotes,
+                macro_events=dataset._macro_events,
+                cycle_3a=ablated_cycles,
+            )
 
         elif ablation_type == XauUsdAblationType.NO_MACRO_BLACKOUT:
+            ablated_cycles = []
+            for snap in getattr(dataset, "_cycle_3a", []):
+                new_macro = replace(
+                    snap.macro_event,
+                    is_in_blackout=False,
+                ) if snap.macro_event else None
+                ablated_cycles.append(
+                    replace(
+                        snap,
+                        macro_event=new_macro,
+                        is_blocked_by_event=False,
+                    )
+                )
+
             ablated_macros = [
                 (
                     t,
@@ -196,7 +243,7 @@ class XauUsdAblationEngine:
                 )
                 for t, ctx in getattr(dataset, "_macro_events", [])
             ]
-            new_ds = PointInTimeDataset(
+            return PointInTimeDataset(
                 candles_15m=dataset._candles.get("15m"),
                 candles_1h=dataset._candles.get("1h"),
                 candles_4h=dataset._candles.get("4h"),
@@ -205,9 +252,8 @@ class XauUsdAblationEngine:
                 candles_1m=dataset._candles.get("1m"),
                 quotes=dataset._quotes,
                 macro_events=ablated_macros,
-                cycle_3a=dataset._cycle_3a,
+                cycle_3a=ablated_cycles,
             )
-            return new_ds
 
         return dataset
 

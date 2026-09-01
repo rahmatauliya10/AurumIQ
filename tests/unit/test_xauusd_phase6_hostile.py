@@ -523,8 +523,8 @@ def test_hostile_celery_calibration_required_without_profiles():
         cost_scenario="IDEALIZED",
         holding_horizon_bars_15m=5,
         max_fill_wait_bars_15m=2,
-        signal_profile=None,
-        risk_profile=None,
+        signal_profile_id=None,
+        risk_profile_id=None,
     )
     assert res["status"] == "CALIBRATION_REQUIRED"
 
@@ -585,4 +585,342 @@ def test_hostile_4h_structure_target_parity(calibrated_risk_profile, calibrated_
     assert plan_without_4h.is_valid_risk_plan is True
     # 4H resistance target zone establishes higher TP2 target when available
     assert plan_with_4h.tp2 == Decimal("2645.00")
+
+
+def test_hostile_ablation_no_phase3a_swing_maturity_isolates_swing_duration(calibrated_signal_profile):
+    """NO_PHASE3A_SWING_MATURITY must strictly isolate swing duration without zeroing weight_phase3a."""
+    from engine.backtest.xauusd_ablation import XauUsdAblationEngine, XauUsdAblationType
+
+    eval_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    dataset = PointInTimeDataset()
+
+    snap = Cycle3ASnapshot(
+        timestamp=eval_t,
+        session=SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0),
+        swing_duration=SwingDurationContext(10, 2.5, 10, 2.5, 60.0, True, 15.0),
+        macro_event=MacroEventContext(is_in_blackout=False),
+        calendar=None,
+        is_blocked_by_event=False,
+        cycle_score_3a=35.0,
+    )
+    dataset.add_cycle_3a(snap)
+
+    engine = XauUsdAblationEngine()
+    abl_profile = engine.create_ablated_profile(
+        XauUsdAblationType.NO_PHASE3A_SWING_MATURITY,
+        calibrated_signal_profile,
+    )
+    abl_dataset = engine._create_ablated_dataset(
+        dataset,
+        XauUsdAblationType.NO_PHASE3A_SWING_MATURITY,
+    )
+
+    # Invariant 1: weight_phase3a is NOT zeroed
+    assert abl_profile.long_timing.weight_phase3a == calibrated_signal_profile.long_timing.weight_phase3a
+    assert abl_profile.short_timing.weight_phase3a == calibrated_signal_profile.short_timing.weight_phase3a
+
+    # Invariant 2: swing maturity is neutralized
+    abl_snap = abl_dataset.get_cycle_3a(as_of=eval_t)
+    assert abl_snap is not None
+    assert abl_snap.swing_duration.is_mature is False
+    assert abl_snap.swing_duration.maturity_score == 0.0
+
+    # Invariant 3: session context is preserved intact
+    assert abl_snap.session.expectancy_score == 20.0
+
+    # Invariant 4: cycle score reduced only by maturity score
+    assert abl_snap.cycle_score_3a == 20.0
+
+
+def test_hostile_ablation_no_macro_blackout_neutralizes_all_macro_evidence(calibrated_signal_profile):
+    """NO_MACRO_BLACKOUT must neutralize macro evidence in Cycle3A and dataset without zeroing Phase 3A."""
+    from engine.backtest.xauusd_ablation import XauUsdAblationEngine, XauUsdAblationType
+    from engine.core.types import FeedCriticality
+
+    eval_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    dataset = PointInTimeDataset()
+
+    snap = Cycle3ASnapshot(
+        timestamp=eval_t,
+        session=SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0),
+        swing_duration=SwingDurationContext(10, 2.5, 10, 2.5, 60.0, True, 15.0),
+        macro_event=MacroEventContext(is_in_blackout=True, active_event_name="FOMC"),
+        calendar=None,
+        is_blocked_by_event=True,
+        cycle_score_3a=35.0,
+    )
+    dataset.add_cycle_3a(snap)
+    dataset.add_macro_context(eval_t, MacroEventContext(is_in_blackout=True, active_event_name="FOMC"))
+
+    engine = XauUsdAblationEngine()
+    abl_profile = engine.create_ablated_profile(
+        XauUsdAblationType.NO_MACRO_BLACKOUT,
+        calibrated_signal_profile,
+    )
+    abl_dataset = engine._create_ablated_dataset(
+        dataset,
+        XauUsdAblationType.NO_MACRO_BLACKOUT,
+    )
+
+    # Invariant 1: profile feed policy macro_blackout is OPTIONAL
+    assert abl_profile.feed_policy.macro_blackout == FeedCriticality.OPTIONAL
+
+    # Invariant 2: Cycle3ASnapshot blackout neutralized
+    abl_snap = abl_dataset.get_cycle_3a(as_of=eval_t)
+    assert abl_snap is not None
+    assert abl_snap.macro_event.is_in_blackout is False
+    assert abl_snap.is_blocked_by_event is False
+    assert abl_snap.session.expectancy_score == 20.0
+
+    # Invariant 3: Macro event context in dataset neutralized
+    macro_ctx = abl_dataset.get_macro_context(as_of=eval_t)
+    assert macro_ctx.is_in_blackout is False
+
+
+def test_hostile_all_named_ablations_produce_distinct_fingerprints(calibrated_signal_profile):
+    """Every active ablation type must alter either the profile or dataset identity fingerprint."""
+    from engine.backtest.xauusd_ablation import XauUsdAblationEngine, XauUsdAblationType
+    from engine.backtest.xauusd_fingerprint import (
+        compute_phase4_policy_fingerprint,
+        compute_xauusd_dataset_identity_from_dataset,
+    )
+
+    eval_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    start_t = eval_t - timedelta(hours=2)
+    end_t = eval_t + timedelta(hours=2)
+
+    dataset = PointInTimeDataset()
+    for i in range(10):
+        t_c = start_t + timedelta(minutes=15 * i)
+        dataset.add_candle("15m", make_candle(t_c, Decimal("2600.00"), Decimal("2605.00"), Decimal("2595.00"), Decimal("2602.00")))
+        dataset.add_candle("1h", make_candle(t_c, Decimal("2600.00"), Decimal("2610.00"), Decimal("2590.00"), Decimal("2605.00"), tf_min=60))
+
+    dataset.add_cycle_3a(
+        Cycle3ASnapshot(
+            timestamp=eval_t,
+            session=SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0),
+            swing_duration=SwingDurationContext(10, 2.5, 10, 2.5, 60.0, True, 15.0),
+            macro_event=MacroEventContext(is_in_blackout=True),
+            calendar=None,
+            is_blocked_by_event=True,
+            cycle_score_3a=35.0,
+        )
+    )
+
+    engine = XauUsdAblationEngine()
+    base_prof_fp = compute_phase4_policy_fingerprint(calibrated_signal_profile)
+    base_ds_fp = compute_xauusd_dataset_identity_from_dataset(dataset, start_t, end_t)
+
+    for abl_type in XauUsdAblationType:
+        abl_prof = engine.create_ablated_profile(abl_type, calibrated_signal_profile)
+        abl_ds = engine._create_ablated_dataset(dataset, abl_type)
+        abl_prof_fp = compute_phase4_policy_fingerprint(abl_prof)
+        abl_ds_fp = compute_xauusd_dataset_identity_from_dataset(abl_ds, start_t, end_t)
+
+        if abl_type == XauUsdAblationType.BASELINE:
+            assert abl_prof_fp == base_prof_fp
+            assert abl_ds_fp == base_ds_fp
+        else:
+            # Active ablation must change profile fingerprint OR dataset fingerprint
+            assert (abl_prof_fp != base_prof_fp) or (abl_ds_fp != base_ds_fp), f"Ablation {abl_type.value} produced identical fingerprints to BASELINE!"
+
+
+def test_hostile_dataset_identity_window_isolation_cycle3a_and_macro():
+    """Mutating Cycle3ASnapshot or MacroEventContext outside [start_time, end_time) must have zero effect on hash."""
+    from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
+
+    start_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    end_t = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+
+    ds1 = PointInTimeDataset()
+    c = make_candle(start_t, Decimal("2600.00"), Decimal("2605.00"), Decimal("2595.00"), Decimal("2600.00"))
+    ds1.add_candle("15m", c)
+
+    # In-window Cycle 3A
+    ds1.add_cycle_3a(Cycle3ASnapshot(start_t + timedelta(hours=1), SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0), SwingDurationContext(5, 1.0, 5, 1.0, 50.0, False, 10.0), None, None, False, 30.0))
+
+    hash1 = compute_xauusd_dataset_identity_from_dataset(ds1, start_t, end_t)
+
+    # Add Cycle3A before start_time (< start_t)
+    ds1.add_cycle_3a(Cycle3ASnapshot(start_t - timedelta(hours=5), SessionContext(SessionType.ASIA, 0.5, True, {}, 10.0), SwingDurationContext(5, 1.0, 5, 1.0, 50.0, False, 10.0), None, None, False, 20.0))
+
+    # Add Macro event at or after end_time (>= end_t)
+    ds1.add_macro_context(end_t + timedelta(hours=1), MacroEventContext(is_in_blackout=True, active_event_name="FOMC"))
+
+    hash2 = compute_xauusd_dataset_identity_from_dataset(ds1, start_t, end_t)
+    assert hash1 == hash2
+
+
+def test_hostile_dataset_identity_naive_timestamp_rejection():
+    """Any naive timestamp on candle, quote, cycle_3a, or macro must raise ValueError."""
+    from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
+
+    start_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    end_t = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+
+    # 1. Naive candle
+    ds = PointInTimeDataset()
+    c_naive = CandleData(
+        timestamp_open=datetime(2026, 9, 1, 10, 0),  # Naive
+        timestamp_close=datetime(2026, 9, 1, 10, 15, tzinfo=timezone.utc),
+        open=Decimal("2600"), high=Decimal("2605"), low=Decimal("2595"), close=Decimal("2600"),
+        volume=Decimal("10"), is_closed=True,
+    )
+    ds.add_candle("15m", c_naive)
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        compute_xauusd_dataset_identity_from_dataset(ds, start_t, end_t)
+
+    # 2. Naive Cycle3ASnapshot
+    ds2 = PointInTimeDataset()
+    snap_naive = Cycle3ASnapshot(
+        timestamp=datetime(2026, 9, 1, 11, 0),  # Naive
+        session=SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0),
+        swing_duration=SwingDurationContext(5, 1.0, 5, 1.0, 50.0, False, 10.0),
+        macro_event=None,
+        calendar=None,
+        is_blocked_by_event=False,
+        cycle_score_3a=30.0,
+    )
+    ds2.add_cycle_3a(snap_naive)
+    with pytest.raises(ValueError, match="must be timezone aware"):
+        compute_xauusd_dataset_identity_from_dataset(ds2, start_t, end_t)
+
+
+def test_hostile_execution_policy_fingerprint_sensitivity(calibrated_signal_profile, calibrated_risk_profile):
+    """Mutating LONG or SHORT execution policy must alter compute_xauusd_backtest_fingerprint."""
+    spec_base = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+        end_time=datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc),
+        timeframes=("15m",),
+        cost_config=XauUsdCostConfig.idealized(),
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash="hash_base",
+        holding_horizon_bars_15m=5,
+        max_fill_wait_bars_15m=2,
+        code_revision="rev",
+        signal_profile=calibrated_signal_profile,
+        risk_profile=calibrated_risk_profile,
+    )
+    fp_base = compute_xauusd_backtest_fingerprint(spec_base)
+
+    # Mutate only Long Execution Policy (latency 1.0 -> 2.5)
+    mutated_long_profile = XauUsdRiskProfile(
+        name=calibrated_risk_profile.name,
+        long_risk_policy=calibrated_risk_profile.long_risk_policy,
+        short_risk_policy=calibrated_risk_profile.short_risk_policy,
+        long_execution_policy=XauUsdExecutionPolicy(latency_seconds=2.5, synthetic_spread_pct=Decimal("0.02"), slippage_pct=Decimal("0.01")),
+        short_execution_policy=calibrated_risk_profile.short_execution_policy,
+    )
+    spec_mut_long = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+        end_time=datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc),
+        timeframes=("15m",),
+        cost_config=XauUsdCostConfig.idealized(),
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash="hash_base",
+        holding_horizon_bars_15m=5,
+        max_fill_wait_bars_15m=2,
+        code_revision="rev",
+        signal_profile=calibrated_signal_profile,
+        risk_profile=mutated_long_profile,
+    )
+    fp_mut_long = compute_xauusd_backtest_fingerprint(spec_mut_long)
+    assert fp_base != fp_mut_long
+
+
+@pytest.mark.django_db
+def test_hostile_celery_json_serialization_safety():
+    """Celery task parameters and payload must be 100% JSON-safe without Decimal or dataclass objects."""
+    import json
+    from apps.backtests.tasks import run_xauusd_backtest_task
+    from apps.instruments.models import Asset, Instrument
+    from apps.market_data.models import MarketCandle
+    from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
+
+    base_asset, _ = Asset.objects.get_or_create(code="XAU", defaults={"name": "Gold", "asset_type": "COMMODITY"})
+    quote_asset, _ = Asset.objects.get_or_create(code="USD", defaults={"name": "US Dollar", "asset_type": "FIAT"})
+    inst, _ = Instrument.objects.get_or_create(
+        base_asset=base_asset,
+        quote_asset=quote_asset,
+        instrument_type="SPOT",
+        defaults={"role": "EXECUTION", "is_active": True},
+    )
+
+    start_dt = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    end_dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+
+    ds = PointInTimeDataset()
+    for i in range(15):
+        t_open = start_dt + timedelta(minutes=15 * i)
+        t_close = t_open + timedelta(minutes=15)
+        c_obj = MarketCandle.objects.create(
+            instrument=inst,
+            source="test_feed",
+            timeframe="15m",
+            timestamp_open=t_open,
+            timestamp_close=t_close,
+            open=Decimal("2600.00"),
+            high=Decimal("2605.00"),
+            low=Decimal("2595.00"),
+            close=Decimal("2600.00"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+    ds = PointInTimeDataset()
+    for c in MarketCandle.objects.filter(timeframe="15m", timestamp_close__gte=start_dt, timestamp_close__lt=end_dt, instrument=inst).order_by("timestamp_close"):
+        ds.add_candle(
+            "15m",
+            CandleData(
+                timestamp_open=c.timestamp_open,
+                timestamp_close=c.timestamp_close,
+                open=c.open,
+                high=c.high,
+                low=c.low,
+                close=c.close,
+                volume=c.volume,
+                is_closed=c.is_closed,
+                source_id=c.source,
+            ),
+        )
+
+    computed_ds_hash = compute_xauusd_dataset_identity_from_dataset(ds, start_dt, end_dt)
+
+    payload = {
+        "start_time_iso": "2026-09-01T10:00:00+00:00",
+        "end_time_iso": "2026-09-01T14:00:00+00:00",
+        "dataset_hash": computed_ds_hash,
+        "code_revision": "rev_abc",
+        "cost_scenario": "IDEALIZED",
+        "holding_horizon_bars_15m": 5,
+        "max_fill_wait_bars_15m": 2,
+        "signal_profile_dict": {
+            "name": "TEST",
+            "long_direction": {"weight_regime": 20.0, "weight_trend_1h": 20.0, "weight_trend_4h": 20.0, "weight_trend_1d": 10.0, "weight_structure_bos": 10.0, "weight_pullback": 10.0, "weight_momentum": 5.0, "weight_volume": 5.0},
+            "short_direction": {"weight_regime": 20.0, "weight_trend_1h": 20.0, "weight_trend_4h": 20.0, "weight_trend_1d": 10.0, "weight_structure_bos": 10.0, "weight_pullback": 10.0, "weight_momentum": 5.0, "weight_volume": 5.0},
+            "long_timing": {"weight_entry_zone": 30.0, "weight_reversal_confirmation_15m": 25.0, "weight_momentum_turn_15m_1h": 20.0, "weight_phase3a": 15.0, "weight_volume_response": 10.0},
+            "short_timing": {"weight_entry_zone": 30.0, "weight_reversal_confirmation_15m": 25.0, "weight_momentum_turn_15m_1h": 20.0, "weight_phase3a": 15.0, "weight_volume_response": 10.0},
+            "long_gate": {"threshold_watch_direction": 5.0, "threshold_ready_direction": 8.0, "threshold_ready_timing": 8.0, "threshold_window_direction": 10.0, "threshold_window_timing": 10.0},
+            "short_gate": {"threshold_watch_direction": 5.0, "threshold_ready_direction": 8.0, "threshold_ready_timing": 8.0, "threshold_window_direction": 10.0, "threshold_window_timing": 10.0},
+        },
+        "risk_profile_dict": {
+            "name": "TEST",
+            "long_risk_policy": {"structure_buffer": 1.5, "atr_multiplier": 2.0, "max_stop_distance_atr": 4.0, "min_rr_tp1": 1.8, "tp2_atr_multiplier": 2.5},
+            "short_risk_policy": {"structure_buffer": 1.5, "atr_multiplier": 2.0, "max_stop_distance_atr": 4.0, "min_rr_tp1": 1.8, "tp2_atr_multiplier": 2.5},
+            "long_execution_policy": {"latency_seconds": 1.0, "synthetic_spread_pct": 0.02, "slippage_pct": 0.01},
+            "short_execution_policy": {"latency_seconds": 1.0, "synthetic_spread_pct": 0.02, "slippage_pct": 0.01},
+        },
+    }
+
+    # Must serialize without error
+    serialized = json.dumps(payload)
+    deserialized = json.loads(serialized)
+
+    res = run_xauusd_backtest_task(**deserialized)
+    # Result must serialize without error
+    res_serialized = json.dumps(res)
+    assert res_serialized is not None
+    assert res["status"] in ("COMPLETED", "SUCCESS")
+
 

@@ -283,6 +283,8 @@ class XauUsdBacktestRunSpec:
     phase4_policy_fingerprint: str = ""
     phase5_risk_policy_fingerprint: str = ""
     phase5_execution_policy_fingerprint: str = ""
+    phase5_long_execution_policy_fingerprint: str = ""
+    phase5_short_execution_policy_fingerprint: str = ""
 
     def __post_init__(self):
         _require_utc(self.start_time, "start_time")
@@ -304,11 +306,29 @@ class XauUsdBacktestRunSpec:
             object.__setattr__(self, "phase4_policy_fingerprint", actual_p4_fp)
 
         if self.risk_profile is not None:
+            import hashlib
             from engine.risk.xauusd_fingerprints import compute_phase5_policy_fingerprint
             actual_p5_fp = compute_phase5_policy_fingerprint(self.risk_profile)
             if self.phase5_risk_policy_fingerprint and self.phase5_risk_policy_fingerprint != actual_p5_fp:
                 raise ValueError(f"phase5_risk_policy_fingerprint mismatch: expected '{self.phase5_risk_policy_fingerprint}', actual '{actual_p5_fp}'")
             object.__setattr__(self, "phase5_risk_policy_fingerprint", actual_p5_fp)
+
+            l_exec = self.risk_profile.long_execution_policy
+            s_exec = self.risk_profile.short_execution_policy
+            l_exec_fp = hashlib.sha256(f"LONG:{l_exec.latency_seconds}:{l_exec.synthetic_spread_pct}:{l_exec.slippage_pct}".encode("utf-8")).hexdigest()
+            s_exec_fp = hashlib.sha256(f"SHORT:{s_exec.latency_seconds}:{s_exec.synthetic_spread_pct}:{s_exec.slippage_pct}".encode("utf-8")).hexdigest()
+            combined_exec_fp = hashlib.sha256(f"{l_exec_fp}:{s_exec_fp}".encode("utf-8")).hexdigest()
+
+            if self.phase5_long_execution_policy_fingerprint and self.phase5_long_execution_policy_fingerprint != l_exec_fp:
+                raise ValueError(f"phase5_long_execution_policy_fingerprint mismatch: expected '{self.phase5_long_execution_policy_fingerprint}', actual '{l_exec_fp}'")
+            if self.phase5_short_execution_policy_fingerprint and self.phase5_short_execution_policy_fingerprint != s_exec_fp:
+                raise ValueError(f"phase5_short_execution_policy_fingerprint mismatch: expected '{self.phase5_short_execution_policy_fingerprint}', actual '{s_exec_fp}'")
+            if self.phase5_execution_policy_fingerprint and self.phase5_execution_policy_fingerprint != combined_exec_fp:
+                raise ValueError(f"phase5_execution_policy_fingerprint mismatch: expected '{self.phase5_execution_policy_fingerprint}', actual '{combined_exec_fp}'")
+
+            object.__setattr__(self, "phase5_execution_policy_fingerprint", combined_exec_fp)
+            object.__setattr__(self, "phase5_long_execution_policy_fingerprint", l_exec_fp)
+            object.__setattr__(self, "phase5_short_execution_policy_fingerprint", s_exec_fp)
 
 
 @dataclass(frozen=True)

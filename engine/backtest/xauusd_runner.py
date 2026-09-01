@@ -54,10 +54,14 @@ class XauUsdBacktestRunner:
         dataset: PointInTimeDataset,
         spec: XauUsdBacktestRunSpec,
     ) -> Tuple[XauUsdBacktestMetrics, List[XauUsdSimulatedTrade], List[DualSideSignalSnapshot], str]:
-        """
-        Execute deterministic point-in-time historical backtest for XAUUSD.
-        Returns: (metrics, trades, signals, run_fingerprint).
-        """
+        # 1. Enforce strict dataset identity verification
+        from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
+        computed_ds_hash = compute_xauusd_dataset_identity_from_dataset(dataset, spec.start_time, spec.end_time)
+        if spec.dataset_hash and spec.dataset_hash != computed_ds_hash:
+            raise ValueError(f"dataset_hash mismatch: expected '{spec.dataset_hash}', computed '{computed_ds_hash}'")
+        elif not spec.dataset_hash:
+            object.__setattr__(spec, "dataset_hash", computed_ds_hash)
+
         run_fp = compute_xauusd_backtest_fingerprint(spec)
 
         sig_engine = XauUsdSignalEngine(

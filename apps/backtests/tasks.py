@@ -1,7 +1,7 @@
 """Celery asynchronous tasks for historical backtesting and validation."""
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from celery import shared_task
 
@@ -157,6 +157,78 @@ def run_backtest_task(
         raise exc
 
 
+def resolve_xauusd_research_profiles(
+    signal_profile_id: Optional[str] = None,
+    risk_profile_id: Optional[str] = None,
+    calibration_artifact_id: Optional[str] = None,
+    signal_profile_dict: Optional[Dict[str, Any]] = None,
+    risk_profile_dict: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Phase4SignalProfile], Optional[XauUsdRiskProfile]]:
+    """
+    Resolve immutable research profiles server-side from identifier or validated JSON-safe dictionary.
+    """
+    sig_prof: Optional[Phase4SignalProfile] = None
+    risk_prof: Optional[XauUsdRiskProfile] = None
+
+    if signal_profile_id in ("CALIBRATED", "XAUUSD_CALIBRATED_DEFAULT", "CALIB-2026-V1") or calibration_artifact_id == "CALIB-2026-V1":
+        # Calibrated default research profile
+        from engine.signals.profile import calibrated_xauusd_signal_profile
+        sig_prof = calibrated_xauusd_signal_profile()
+    elif signal_profile_dict:
+        # Reconstruct from validated dictionary
+        from engine.signals.profile import (
+            Phase4CalibrationStatus,
+            Phase4FeedPolicy,
+            Phase4SignalProfile,
+            SideDirectionPolicy,
+            SideGatePolicy,
+            SideTimingPolicy,
+        )
+        ld = SideDirectionPolicy(**signal_profile_dict["long_direction"]) if "long_direction" in signal_profile_dict and isinstance(signal_profile_dict["long_direction"], dict) else signal_profile_dict.get("long_direction", SideDirectionPolicy())
+        sd = SideDirectionPolicy(**signal_profile_dict["short_direction"]) if "short_direction" in signal_profile_dict and isinstance(signal_profile_dict["short_direction"], dict) else signal_profile_dict.get("short_direction", SideDirectionPolicy())
+        lt = SideTimingPolicy(**signal_profile_dict["long_timing"]) if "long_timing" in signal_profile_dict and isinstance(signal_profile_dict["long_timing"], dict) else signal_profile_dict.get("long_timing", SideTimingPolicy())
+        st = SideTimingPolicy(**signal_profile_dict["short_timing"]) if "short_timing" in signal_profile_dict and isinstance(signal_profile_dict["short_timing"], dict) else signal_profile_dict.get("short_timing", SideTimingPolicy())
+        lg = SideGatePolicy(**signal_profile_dict["long_gate"]) if "long_gate" in signal_profile_dict and isinstance(signal_profile_dict["long_gate"], dict) else signal_profile_dict.get("long_gate", SideGatePolicy())
+        sg = SideGatePolicy(**signal_profile_dict["short_gate"]) if "short_gate" in signal_profile_dict and isinstance(signal_profile_dict["short_gate"], dict) else signal_profile_dict.get("short_gate", SideGatePolicy())
+        fp = Phase4FeedPolicy(**signal_profile_dict["feed_policy"]) if "feed_policy" in signal_profile_dict and isinstance(signal_profile_dict["feed_policy"], dict) else signal_profile_dict.get("feed_policy", Phase4FeedPolicy())
+        cal_status = Phase4CalibrationStatus(signal_profile_dict.get("calibration_status", "CANDIDATE_NOT_FROZEN"))
+        sig_prof = Phase4SignalProfile(
+            name=signal_profile_dict.get("name", "XAUUSD_RESEARCH"),
+            long_direction=ld,
+            short_direction=sd,
+            long_timing=lt,
+            short_timing=st,
+            long_gate=lg,
+            short_gate=sg,
+            feed_policy=fp,
+            calibration_status=cal_status,
+            details=signal_profile_dict.get("details", {}),
+        )
+
+    if risk_profile_id in ("CALIBRATED", "XAUUSD_CALIBRATED_DEFAULT", "CALIB-2026-V1") or calibration_artifact_id == "CALIB-2026-V1":
+        from engine.risk.xauusd_policy import default_xauusd_risk_profile
+        risk_prof = default_xauusd_risk_profile()
+    elif risk_profile_dict:
+        from engine.risk.xauusd_policy import (
+            SideRiskPolicy,
+            XauUsdExecutionPolicy,
+            XauUsdRiskProfile,
+        )
+        lr = SideRiskPolicy(**{k: Decimal(str(v)) if isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["long_risk_policy"].items()}) if "long_risk_policy" in risk_profile_dict and isinstance(risk_profile_dict["long_risk_policy"], dict) else risk_profile_dict.get("long_risk_policy", SideRiskPolicy())
+        sr = SideRiskPolicy(**{k: Decimal(str(v)) if isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["short_risk_policy"].items()}) if "short_risk_policy" in risk_profile_dict and isinstance(risk_profile_dict["short_risk_policy"], dict) else risk_profile_dict.get("short_risk_policy", SideRiskPolicy())
+        le = XauUsdExecutionPolicy(**{k: Decimal(str(v)) if k != "latency_seconds" and isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["long_execution_policy"].items()}) if "long_execution_policy" in risk_profile_dict and isinstance(risk_profile_dict["long_execution_policy"], dict) else risk_profile_dict.get("long_execution_policy", XauUsdExecutionPolicy())
+        se = XauUsdExecutionPolicy(**{k: Decimal(str(v)) if k != "latency_seconds" and isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["short_execution_policy"].items()}) if "short_execution_policy" in risk_profile_dict and isinstance(risk_profile_dict["short_execution_policy"], dict) else risk_profile_dict.get("short_execution_policy", XauUsdExecutionPolicy())
+        risk_prof = XauUsdRiskProfile(
+            name=risk_profile_dict.get("name", "XAUUSD_RESEARCH"),
+            long_risk_policy=lr,
+            short_risk_policy=sr,
+            long_execution_policy=le,
+            short_execution_policy=se,
+        )
+
+    return sig_prof, risk_prof
+
+
 @shared_task(queue="backtest", bind=True, max_retries=1)
 def run_xauusd_backtest_task(
     self,
@@ -167,8 +239,11 @@ def run_xauusd_backtest_task(
     cost_scenario: str,  # REQUIRED: No silent default
     holding_horizon_bars_15m: int,  # REQUIRED: Explicit horizon
     max_fill_wait_bars_15m: int,  # REQUIRED: Explicit fill-search horizon
-    signal_profile: Optional[Phase4SignalProfile] = None,
-    risk_profile: Optional[XauUsdRiskProfile] = None,
+    signal_profile_id: Optional[str] = None,
+    risk_profile_id: Optional[str] = None,
+    calibration_artifact_id: Optional[str] = None,
+    signal_profile_dict: Optional[Dict[str, Any]] = None,
+    risk_profile_dict: Optional[Dict[str, Any]] = None,
     entry_fee_bps: Optional[str] = None,
     exit_fee_bps: Optional[str] = None,
     synthetic_spread_bps: Optional[str] = None,
@@ -177,6 +252,8 @@ def run_xauusd_backtest_task(
     ablation_type: str = "BASELINE",
     holding_horizon_seconds: Optional[float] = None,
     max_fill_wait_seconds: Optional[float] = None,
+    execution_policy: str = "NEXT_BAR_OPEN",
+    intrabar_policy: str = "LOWER_TIMEFRAME_REPLAY",
     engine_version: str = "4.0.0-xauusd",
     config_version: str = "cfg-xauusd-2026-v1",
     feature_version: str = "feat-xauusd-2026-v1",
@@ -187,6 +264,7 @@ def run_xauusd_backtest_task(
 ) -> dict:
     """
     Asynchronous Celery task for running a point-in-time backtest for canonical XAUUSD.
+    Payload arguments must be native JSON-serializable primitives (strings, ints, dicts).
     """
     if not code_revision or not code_revision.strip():
         raise ValueError("Explicit code_revision is strictly required for XAUUSD backtest provenance.")
@@ -199,12 +277,24 @@ def run_xauusd_backtest_task(
     if end_dt.tzinfo is None or end_dt.tzinfo.utcoffset(end_dt) is None:
         raise ValueError("end_time_iso must include an explicit timezone offset (naive timestamps forbidden).")
 
+    # Resolve research profiles server-side
+    signal_profile, risk_profile = resolve_xauusd_research_profiles(
+        signal_profile_id=signal_profile_id,
+        risk_profile_id=risk_profile_id,
+        calibration_artifact_id=calibration_artifact_id,
+        signal_profile_dict=signal_profile_dict,
+        risk_profile_dict=risk_profile_dict,
+    )
+
     # If caller has not supplied configured profiles, return CALIBRATION_REQUIRED without fake completion
     if signal_profile is None or risk_profile is None:
         return {
             "status": "CALIBRATION_REQUIRED",
             "message": "Explicit calibrated signal_profile and risk_profile are required before executing empirical backtest.",
         }
+
+    exec_policy_enum = EntryExecutionPolicy(execution_policy)
+    intrabar_policy_enum = IntrabarPolicy(intrabar_policy)
 
     if cost_scenario == "EMPIRICAL":
         cost_cfg = XauUsdCostConfig.empirical(
@@ -231,6 +321,8 @@ def run_xauusd_backtest_task(
         holding_horizon_seconds=holding_horizon_seconds,
         max_fill_wait_bars_15m=max_fill_wait_bars_15m,
         max_fill_wait_seconds=max_fill_wait_seconds,
+        execution_policy=exec_policy_enum,
+        intrabar_policy=intrabar_policy_enum,
         engine_version=engine_version,
         config_version=config_version,
         feature_version=feature_version,
@@ -275,21 +367,23 @@ def run_xauusd_backtest_task(
                     ),
                 )
 
-        computed_dataset_hash = compute_xauusd_dataset_identity(
-            candles_15m=dataset.get_closed_candles("15m", as_of=end_dt),
-            start_time=start_dt,
-            end_time=end_dt,
-            candles_1h=dataset.get_closed_candles("1h", as_of=end_dt),
-            candles_4h=dataset.get_closed_candles("4h", as_of=end_dt),
-            candles_1d=dataset.get_closed_candles("1d", as_of=end_dt),
-            candles_5m=getattr(dataset, "_candles", {}).get("5m", []),
-            candles_1m=getattr(dataset, "_candles", {}).get("1m", []),
-        )
-
-        if dataset_hash and dataset_hash != computed_dataset_hash:
+        from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
+        computed_dataset_hash = compute_xauusd_dataset_identity_from_dataset(dataset, start_dt, end_dt)
+        if dataset_hash != computed_dataset_hash:
             raise ValueError(f"dataset_hash mismatch: expected '{dataset_hash}', computed '{computed_dataset_hash}'")
 
-        runner = XauUsdBacktestRunner()
+        if exec_policy_enum == EntryExecutionPolicy.MARKET_AFTER_SIGNAL:
+            quotes = dataset.get_quotes(start_dt, end_dt)
+            if not quotes:
+                return {
+                    "status": "EVIDENCE_NOT_CONFIGURED",
+                    "message": "Quotes evidence required for MARKET_AFTER_SIGNAL execution policy is not configured or persisted.",
+                }
+
+        runner = XauUsdBacktestRunner(
+            execution_policy=exec_policy_enum,
+            intrabar_policy=intrabar_policy_enum,
+        )
         metrics, trades, signals, run_fp = runner.run_point_in_time(dataset=dataset, spec=spec)
         run_obj, created = persist_xauusd_backtest_run(
             spec=spec,

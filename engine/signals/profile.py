@@ -228,6 +228,66 @@ def uncalibrated_xauusd_signal_profile() -> Phase4SignalProfile:
     )
 
 
+def calibrated_xauusd_signal_profile() -> Phase4SignalProfile:
+    """Factory for candidate calibrated XAUUSD profile for Phase 6 backtest validation."""
+    return Phase4SignalProfile(
+        name="XAUUSD_CALIBRATED_CANDIDATE",
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        timeframe="15m",
+        long_direction=SideDirectionPolicy(
+            weight_regime=20.0,
+            weight_trend_1h=20.0,
+            weight_trend_4h=20.0,
+            weight_trend_1d=10.0,
+            weight_structure_bos=10.0,
+            weight_pullback=10.0,
+            weight_momentum=5.0,
+            weight_volume=5.0,
+        ),
+        short_direction=SideDirectionPolicy(
+            weight_regime=20.0,
+            weight_trend_1h=20.0,
+            weight_trend_4h=20.0,
+            weight_trend_1d=10.0,
+            weight_structure_bos=10.0,
+            weight_pullback=10.0,
+            weight_momentum=5.0,
+            weight_volume=5.0,
+        ),
+        long_timing=SideTimingPolicy(
+            weight_entry_zone=30.0,
+            weight_reversal_confirmation_15m=25.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=15.0,
+            weight_volume_response=10.0,
+        ),
+        short_timing=SideTimingPolicy(
+            weight_entry_zone=30.0,
+            weight_reversal_confirmation_15m=25.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=15.0,
+            weight_volume_response=10.0,
+        ),
+        long_gate=SideGatePolicy(
+            threshold_watch_direction=5.0,
+            threshold_ready_direction=8.0,
+            threshold_ready_timing=8.0,
+            threshold_window_direction=10.0,
+            threshold_window_timing=10.0,
+        ),
+        short_gate=SideGatePolicy(
+            threshold_watch_direction=5.0,
+            threshold_ready_direction=8.0,
+            threshold_ready_timing=8.0,
+            threshold_window_direction=10.0,
+            threshold_window_timing=10.0,
+        ),
+        feed_policy=Phase4FeedPolicy(),
+        details={"status": "CANDIDATE", "calibration_version": "CALIB-2026-V1"},
+    )
+
+
 def compute_phase4_policy_fingerprint(profile: Phase4SignalProfile) -> str:
     """
     Generate deterministic SHA-256 fingerprint derived strictly from immutable policy inputs.

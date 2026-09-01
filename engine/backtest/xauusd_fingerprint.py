@@ -5,12 +5,18 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from engine.backtest.repository import PointInTimeDataset
 from engine.backtest.xauusd_types import (
     XauUsdBacktestRunSpec,
     XauUsdFoldSpec,
     XauUsdWalkForwardConfig,
 )
-from engine.core.types import CandleData, QuoteData
+from engine.core.types import (
+    CandleData,
+    Cycle3ASnapshot,
+    MacroEventContext,
+    QuoteData,
+)
 from engine.risk.xauusd_fingerprints import (
     compute_phase5_policy_fingerprint,
 )
@@ -35,12 +41,14 @@ def compute_xauusd_dataset_identity(
     candles_5m: Sequence[CandleData] = (),
     candles_1m: Sequence[CandleData] = (),
     quotes: Sequence[QuoteData] = (),
-    macro_evidence: Sequence[Dict[str, Any]] = (),
-    phase3a_evidence: Sequence[Dict[str, Any]] = (),
+    macro_evidence: Sequence[Any] = (),
+    phase3a_evidence: Sequence[Any] = (),
+    cycle_3a: Sequence[Cycle3ASnapshot] = (),
 ) -> str:
     """
     Compute canonical SHA-256 hash of all market evidence strictly within [start_time, end_time).
     Binds all material OHLCV (15m, 1h, 4h, 1d, 5m, 1m), quotes, volume evidence, source ID, macro, and Phase 3A fields.
+    Strictly validates timezone awareness on every evidence record.
     """
     if start_time.tzinfo is None or start_time.tzinfo.utcoffset(start_time) is None:
         raise ValueError("start_time must be timezone-aware.")
@@ -54,8 +62,10 @@ def compute_xauusd_dataset_identity(
 
     def _process_candles(series: Sequence[CandleData], tf_label: str) -> None:
         for c in series:
+            if c.timestamp_open.tzinfo is None or c.timestamp_open.tzinfo.utcoffset(c.timestamp_open) is None:
+                raise ValueError(f"Candle open at {c.timestamp_open} must be timezone aware.")
             if c.timestamp_close.tzinfo is None or c.timestamp_close.tzinfo.utcoffset(c.timestamp_close) is None:
-                raise ValueError(f"Candle at {c.timestamp_close} must be timezone aware.")
+                raise ValueError(f"Candle close at {c.timestamp_close} must be timezone aware.")
             c_close = c.timestamp_close.astimezone(timezone.utc)
             if start_utc <= c_close < end_utc:
                 candle_records.append({
@@ -100,11 +110,105 @@ def compute_xauusd_dataset_identity(
 
     macro_records: List[Dict[str, Any]] = []
     for m in macro_evidence:
-        macro_records.append({k: str(v) for k, v in sorted(m.items())})
+        if isinstance(m, tuple) and len(m) == 2 and isinstance(m[0], datetime) and isinstance(m[1], MacroEventContext):
+            t, ctx = m
+            if t.tzinfo is None or t.tzinfo.utcoffset(t) is None:
+                raise ValueError(f"Macro event timestamp at {t} must be timezone aware.")
+            t_utc = t.astimezone(timezone.utc)
+            if start_utc <= t_utc < end_utc:
+                macro_records.append({
+                    "ts": _to_utc_iso(t, "macro_event.timestamp"),
+                    "is_in_blackout": bool(ctx.is_in_blackout),
+                    "minutes_to_next_event": ctx.minutes_to_next_event,
+                    "minutes_since_last_event": ctx.minutes_since_last_event,
+                    "active_event_name": str(ctx.active_event_name or ""),
+                    "point_in_time_value": str(ctx.point_in_time_value or ""),
+                    "is_feed_healthy": bool(ctx.is_feed_healthy),
+                })
+        elif isinstance(m, dict):
+            # Dict representation: check for timestamp filtering if timestamp is present
+            ts_val = m.get("timestamp") or m.get("ts")
+            if ts_val:
+                if isinstance(ts_val, str):
+                    dt_val = datetime.fromisoformat(ts_val)
+                else:
+                    dt_val = ts_val
+                if dt_val.tzinfo is None or dt_val.tzinfo.utcoffset(dt_val) is None:
+                    raise ValueError(f"Macro evidence timestamp at {dt_val} must be timezone aware.")
+                dt_utc = dt_val.astimezone(timezone.utc)
+                if start_utc <= dt_utc < end_utc:
+                    macro_records.append({k: str(v) for k, v in sorted(m.items())})
+            else:
+                macro_records.append({k: str(v) for k, v in sorted(m.items())})
+
+    macro_records.sort(key=lambda r: json.dumps(r, sort_keys=True))
 
     p3a_records: List[Dict[str, Any]] = []
+    # Process Cycle3ASnapshot objects
+    for s in cycle_3a:
+        if s.timestamp.tzinfo is None or s.timestamp.tzinfo.utcoffset(s.timestamp) is None:
+            raise ValueError(f"Cycle3A timestamp at {s.timestamp} must be timezone aware.")
+        s_ts = s.timestamp.astimezone(timezone.utc)
+        if start_utc <= s_ts < end_utc:
+            p3a_records.append({
+                "timestamp": _to_utc_iso(s.timestamp, "cycle_3a.timestamp"),
+                "session": {
+                    "session": s.session.session.value if hasattr(s.session.session, "value") else str(s.session.session),
+                    "progress_pct": float(s.session.progress_pct),
+                    "is_high_liquidity": bool(s.session.is_high_liquidity),
+                    "expectancy_score": float(s.session.expectancy_score),
+                } if s.session else None,
+                "swing_duration": {
+                    "market_age_bars": s.swing_duration.market_age_bars,
+                    "market_age_hours": float(s.swing_duration.market_age_hours),
+                    "known_age_bars": s.swing_duration.known_age_bars,
+                    "known_age_hours": float(s.swing_duration.known_age_hours),
+                    "pullback_age_percentile": float(s.swing_duration.pullback_age_percentile) if s.swing_duration.pullback_age_percentile is not None else None,
+                    "is_mature": bool(s.swing_duration.is_mature),
+                    "maturity_score": float(s.swing_duration.maturity_score),
+                } if s.swing_duration else None,
+                "macro_event": {
+                    "is_in_blackout": bool(s.macro_event.is_in_blackout),
+                    "minutes_to_next_event": s.macro_event.minutes_to_next_event,
+                    "minutes_since_last_event": s.macro_event.minutes_since_last_event,
+                    "active_event_name": str(s.macro_event.active_event_name or ""),
+                    "point_in_time_value": str(s.macro_event.point_in_time_value or ""),
+                    "is_feed_healthy": bool(s.macro_event.is_feed_healthy),
+                } if s.macro_event else None,
+                "calendar": {
+                    "day_of_week": s.calendar.day_of_week,
+                    "day_name": s.calendar.day_name,
+                    "hour_utc": s.calendar.hour_utc,
+                    "month": s.calendar.month,
+                    "is_month_end_flow": bool(s.calendar.is_month_end_flow),
+                    "stability_score": float(s.calendar.stability_score),
+                    "seasonality_score": float(s.calendar.seasonality_score),
+                } if s.calendar else None,
+                "is_blocked_by_event": bool(s.is_blocked_by_event),
+                "cycle_score_3a": float(s.cycle_score_3a),
+                "cycle_version": str(s.cycle_version or ""),
+                "profile_name": str(s.profile_name or ""),
+                "calibration_status": str(s.calibration_status or ""),
+                "calibration_artifact_version": str(s.calibration_artifact_version or ""),
+            })
+
     for p in phase3a_evidence:
-        p3a_records.append({k: str(v) for k, v in sorted(p.items())})
+        if isinstance(p, dict):
+            ts_val = p.get("timestamp") or p.get("ts")
+            if ts_val:
+                if isinstance(ts_val, str):
+                    dt_val = datetime.fromisoformat(ts_val)
+                else:
+                    dt_val = ts_val
+                if dt_val.tzinfo is None or dt_val.tzinfo.utcoffset(dt_val) is None:
+                    raise ValueError(f"Phase3A evidence timestamp at {dt_val} must be timezone aware.")
+                dt_utc = dt_val.astimezone(timezone.utc)
+                if start_utc <= dt_utc < end_utc:
+                    p3a_records.append({k: str(v) for k, v in sorted(p.items())})
+            else:
+                p3a_records.append({k: str(v) for k, v in sorted(p.items())})
+
+    p3a_records.sort(key=lambda r: json.dumps(r, sort_keys=True))
 
     payload = {
         "candles": candle_records,
@@ -117,6 +221,30 @@ def compute_xauusd_dataset_identity(
 
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def compute_xauusd_dataset_identity_from_dataset(
+    dataset: PointInTimeDataset,
+    start_time: datetime,
+    end_time: datetime,
+) -> str:
+    """
+    Canonical helper computing dataset identity directly from a PointInTimeDataset repository instance.
+    Extracts closed candles (15m, 1h, 4h, 1d, 5m, 1m), quotes, Cycle3A snapshots, and macro events within [start_time, end_time).
+    """
+    return compute_xauusd_dataset_identity(
+        candles_15m=getattr(dataset, "_candles", {}).get("15m", []),
+        start_time=start_time,
+        end_time=end_time,
+        candles_1h=getattr(dataset, "_candles", {}).get("1h", []),
+        candles_4h=getattr(dataset, "_candles", {}).get("4h", []),
+        candles_1d=getattr(dataset, "_candles", {}).get("1d", []),
+        candles_5m=getattr(dataset, "_candles", {}).get("5m", []),
+        candles_1m=getattr(dataset, "_candles", {}).get("1m", []),
+        quotes=getattr(dataset, "_quotes", []),
+        macro_evidence=getattr(dataset, "_macro_events", []),
+        cycle_3a=getattr(dataset, "_cycle_3a", []),
+    )
 
 
 def compute_xauusd_backtest_fingerprint(spec: XauUsdBacktestRunSpec) -> str:
@@ -132,14 +260,24 @@ def compute_xauusd_backtest_fingerprint(spec: XauUsdBacktestRunSpec) -> str:
 
     p5_risk_fp = spec.phase5_risk_policy_fingerprint
     p5_exec_fp = spec.phase5_execution_policy_fingerprint
+    p5_long_exec_fp = spec.phase5_long_execution_policy_fingerprint
+    p5_short_exec_fp = spec.phase5_short_execution_policy_fingerprint
+
     if spec.risk_profile is not None:
         if not p5_risk_fp:
             p5_risk_fp = compute_phase5_policy_fingerprint(spec.risk_profile)
-        if not p5_exec_fp:
-            exec_policy = spec.risk_profile.long_execution_policy
-            p5_exec_fp = hashlib.sha256(
-                f"{exec_policy.latency_seconds}:{exec_policy.synthetic_spread_pct}:{exec_policy.slippage_pct}".encode("utf-8")
+        l_exec = spec.risk_profile.long_execution_policy
+        s_exec = spec.risk_profile.short_execution_policy
+        if not p5_long_exec_fp:
+            p5_long_exec_fp = hashlib.sha256(
+                f"LONG:{l_exec.latency_seconds}:{l_exec.synthetic_spread_pct}:{l_exec.slippage_pct}".encode("utf-8")
             ).hexdigest()
+        if not p5_short_exec_fp:
+            p5_short_exec_fp = hashlib.sha256(
+                f"SHORT:{s_exec.latency_seconds}:{s_exec.synthetic_spread_pct}:{s_exec.slippage_pct}".encode("utf-8")
+            ).hexdigest()
+        if not p5_exec_fp:
+            p5_exec_fp = hashlib.sha256(f"{p5_long_exec_fp}:{p5_short_exec_fp}".encode("utf-8")).hexdigest()
 
     payload = {
         "instrument": "XAUUSD",
@@ -165,6 +303,8 @@ def compute_xauusd_backtest_fingerprint(spec: XauUsdBacktestRunSpec) -> str:
         "phase4_policy_fingerprint": p4_fp,
         "phase5_risk_policy_fingerprint": p5_risk_fp,
         "phase5_execution_policy_fingerprint": p5_exec_fp,
+        "phase5_long_execution_policy_fingerprint": p5_long_exec_fp,
+        "phase5_short_execution_policy_fingerprint": p5_short_exec_fp,
         "engine_version": str(spec.engine_version),
         "config_version": str(spec.config_version),
         "feature_version": str(spec.feature_version),
