@@ -89,17 +89,67 @@ class UserDecision(str, Enum):
     """User-facing deterministic trading recommendation."""
     BUY = "BUY"
     WAIT = "WAIT"
-    AVOID = "AVOID"
+    AVOID = "AVOID"  # Historical XAUT only
+    SELL = "SELL"    # Additive for XAUUSD
 
 
 class SignalState(str, Enum):
     """Internal finite state machine resolution states."""
+    # Historical XAUT states
     NO_TRADE = "NO_TRADE"
     AVOID = "AVOID"
     WATCH = "WATCH"
     READY = "READY"
     BUY_WINDOW = "BUY_WINDOW"
     FORCE_WAIT = "FORCE_WAIT"
+    # Additive XAUUSD dual-side states
+    WATCH_LONG = "WATCH_LONG"
+    READY_LONG = "READY_LONG"
+    WATCH_SHORT = "WATCH_SHORT"
+    READY_SHORT = "READY_SHORT"
+    SELL_WINDOW = "SELL_WINDOW"
+    CONFLICT = "CONFLICT"
+
+
+class SignalSide(str, Enum):
+    """Trading signal side classification."""
+    LONG = "LONG"
+    SHORT = "SHORT"
+    NEUTRAL = "NEUTRAL"
+
+
+class FeedCriticality(str, Enum):
+    """Feed requirement criticality for signal evaluation."""
+    CRITICAL = "CRITICAL"
+    OPTIONAL = "OPTIONAL"
+    INFORMATIONAL = "INFORMATIONAL"
+
+
+class FeedHealthStatus(str, Enum):
+    """Runtime feed health and availability state."""
+    HEALTHY = "HEALTHY"
+    UNHEALTHY = "UNHEALTHY"
+    STALE = "STALE"
+    TRANSITION = "TRANSITION"
+    MISSING = "MISSING"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class RuntimeFeedHealth:
+    """Explicit point-in-time runtime feed availability and health states."""
+    primary_15m: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    primary_1h: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    primary_4h: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    primary_1d: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    secondary_provider: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    secondary_provider_disagreement: bool = False
+    macro_blackout_feed: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    is_macro_blackout: bool = False
+    volume: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    phase3a: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    phase3b: FeedHealthStatus = FeedHealthStatus.UNKNOWN
+    is_unclosed_candle: bool = False
 
 
 class VolumeEvidenceType(str, Enum):
@@ -596,6 +646,102 @@ class SignalSnapshot:
     hard_gate_reasons: Tuple[str, ...]
     analysis_fingerprint: str
     code_revision: str
+    research_fingerprint: Optional[str] = None
+    engine_version: str = "4.0.0"
+    config_version: str = "cfg-2026-v1"
+    feature_version: str = "feat-2026-v1"
+    cycle_version: str = "3.0.0-3A"
+    cycle_3b_informational: Optional[Cycle3BExperimentalSnapshot] = None
+
+
+# --- Phase 4 XAUUSD: Dual-Side Direction, Timing & State Machine Contracts ---
+
+@dataclass(frozen=True)
+class SideDirectionScoreResult:
+    """Consolidated Direction Score for a specific side (LONG or SHORT)."""
+    side: SignalSide
+    total_score: Optional[float]
+    max_score: float
+    components: Tuple[ComponentScore, ...]
+    is_valid: bool
+    is_direction_ready: bool
+    config_version: str = "cfg-2026-v1"
+
+
+@dataclass(frozen=True)
+class DualSideDirectionResult:
+    """Consolidated dual-side Direction Score result."""
+    long_direction: SideDirectionScoreResult
+    short_direction: SideDirectionScoreResult
+    is_calibrated: bool
+
+
+@dataclass(frozen=True)
+class SideTimingScoreResult:
+    """Consolidated Timing Score for a specific side (LONG or SHORT)."""
+    side: SignalSide
+    total_score: Optional[float]
+    max_score: float
+    components: Tuple[ComponentScore, ...]
+    is_valid: bool
+    is_timing_ready: bool
+    config_version: str = "cfg-2026-v1"
+
+
+@dataclass(frozen=True)
+class DualSideTimingResult:
+    """Consolidated dual-side Timing Score result."""
+    long_timing: SideTimingScoreResult
+    short_timing: SideTimingScoreResult
+    is_calibrated: bool
+
+
+@dataclass(frozen=True)
+class XauUsdHardGateEvaluation:
+    """Independent hard safety blockers evaluation for XAUUSD."""
+    is_blocked: bool
+    override_state: Optional[SignalState]
+    block_reasons: Tuple[str, ...]
+    runtime_health: RuntimeFeedHealth
+
+
+@dataclass(frozen=True)
+class CandidateGateResult:
+    """Layer A deterministic candidate resolution outcome."""
+    candidate_state: SignalState
+    candidate_user_decision: UserDecision
+    resolution_reason: str
+    is_candidate_valid: bool
+
+
+@dataclass(frozen=True)
+class DualSideSignalSnapshot:
+    """Immutable master dual-side signal decision snapshot for XAUUSD."""
+    timestamp: datetime
+    instrument: str
+    timeframe: str
+    state: SignalState                         # Published state (Layer B: NO_TRADE if unauthorized)
+    user_decision: UserDecision                 # Published decision (Layer B: WAIT if unauthorized)
+    candidate_state: SignalState               # Layer A raw candidate state
+    candidate_user_decision: UserDecision       # Layer A raw candidate decision
+    long_direction: SideDirectionScoreResult
+    short_direction: SideDirectionScoreResult
+    long_timing: SideTimingScoreResult
+    short_timing: SideTimingScoreResult
+    hard_gate: XauUsdHardGateEvaluation
+    reasons_long_positive: Tuple[str, ...]
+    reasons_long_negative: Tuple[str, ...]
+    reasons_short_positive: Tuple[str, ...]
+    reasons_short_negative: Tuple[str, ...]
+    hard_gate_reasons: Tuple[str, ...]
+    resolution_reason: str
+    candidate_resolution_reason: str           # Layer A raw candidate resolution reason
+    publication_reason: str                    # Layer B published publication reason
+    analysis_fingerprint: str
+    phase4_policy_fingerprint: str
+    code_revision: str
+    profile_name: str
+    calibration_status: str
     research_fingerprint: Optional[str] = None
     engine_version: str = "4.0.0"
     config_version: str = "cfg-2026-v1"

@@ -1,18 +1,26 @@
 """Selective Gate state machine and deterministic user-decision mapping (Phase 4)."""
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from engine.core.types import (
+    CandidateGateResult,
     CandleData,
     DirectionScoreResult,
+    FeedCriticality,
+    FeedHealthStatus,
     HardGateEvaluation,
     MacroEventContext,
     RegimeResult,
     RegimeType,
+    RuntimeFeedHealth,
+    SideDirectionScoreResult,
+    SideTimingScoreResult,
+    SignalSide,
     SignalState,
     StructureResult,
     StructureType,
     TimingScoreResult,
     UserDecision,
+    XauUsdHardGateEvaluation,
 )
 
 
@@ -126,3 +134,173 @@ def evaluate_selective_gate(
 
     # Level D: Sub-threshold baseline
     return SignalState.NO_TRADE, UserDecision.WAIT
+
+
+# --- Phase 4 XAUUSD Safety Gate & Layer A Candidate Mechanics ---
+
+def evaluate_xauusd_hard_gates(
+    runtime_health: Optional[RuntimeFeedHealth],
+    profile: Optional[Any] = None,
+) -> XauUsdHardGateEvaluation:
+    """
+    Evaluate independent hard blockers overriding numerical scores for XAUUSD.
+    Enforces generic policy-driven feed criticality with fail-safe defaults (not assumed healthy).
+    """
+    rfh = runtime_health if runtime_health is not None else RuntimeFeedHealth()
+    feed_policy = getattr(profile, "feed_policy", None)
+
+    reasons: List[str] = []
+
+    # 1. Check unclosed candle
+    if rfh.is_unclosed_candle:
+        reasons.append("Analysis candle at evaluation timestamp is unclosed.")
+
+    # 2. Check active macro blackout window (absolute FORCE_WAIT)
+    if rfh.is_macro_blackout:
+        reasons.append("Active high-impact macroeconomic event blackout window in progress.")
+
+    # 3. Complete Generic Feed Criticality Mapping
+    feeds_to_check = [
+        ("primary_15m", rfh.primary_15m, getattr(feed_policy, "primary_15m", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL),
+        ("primary_1h", rfh.primary_1h, getattr(feed_policy, "primary_1h", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("primary_4h", rfh.primary_4h, getattr(feed_policy, "primary_4h", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("primary_1d", rfh.primary_1d, getattr(feed_policy, "primary_1d", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("secondary_provider", rfh.secondary_provider, getattr(feed_policy, "secondary_provider", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("macro_blackout", rfh.macro_blackout_feed, getattr(feed_policy, "macro_blackout", FeedCriticality.CRITICAL) if feed_policy else FeedCriticality.CRITICAL),
+        ("volume", rfh.volume, getattr(feed_policy, "volume", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("phase3a", rfh.phase3a, getattr(feed_policy, "phase3a", FeedCriticality.OPTIONAL) if feed_policy else FeedCriticality.OPTIONAL),
+        ("phase3b", rfh.phase3b, getattr(feed_policy, "phase3b", FeedCriticality.INFORMATIONAL) if feed_policy else FeedCriticality.INFORMATIONAL),
+    ]
+
+    UNHEALTHY_STATUSES = (
+        FeedHealthStatus.UNKNOWN,
+        FeedHealthStatus.MISSING,
+        FeedHealthStatus.UNHEALTHY,
+        FeedHealthStatus.STALE,
+        FeedHealthStatus.TRANSITION,
+    )
+
+    for feed_name, status, criticality in feeds_to_check:
+        if criticality == FeedCriticality.CRITICAL:
+            if status in UNHEALTHY_STATUSES:
+                reasons.append(f"Critical feed '{feed_name}' is in unserviceable state: {status.value} (must be HEALTHY).")
+        # OPTIONAL feeds when unhealthy/missing do not trigger FORCE_WAIT (unavailable only).
+        # INFORMATIONAL feeds never affect production state.
+
+    is_blocked = len(reasons) > 0
+    override_state = SignalState.FORCE_WAIT if is_blocked else None
+
+    return XauUsdHardGateEvaluation(
+        is_blocked=is_blocked,
+        override_state=override_state,
+        block_reasons=tuple(reasons),
+        runtime_health=rfh,
+    )
+
+
+def evaluate_xauusd_candidate_gate(
+    long_direction: SideDirectionScoreResult,
+    short_direction: SideDirectionScoreResult,
+    long_timing: SideTimingScoreResult,
+    short_timing: SideTimingScoreResult,
+    hard_gate: XauUsdHardGateEvaluation,
+    profile: Optional[Any] = None,
+) -> CandidateGateResult:
+    """
+    Pure Layer A deterministic candidate mechanics for XAUUSD.
+    Evaluates Long candidate tier, Short candidate tier, and symmetric conflict matrix.
+    """
+    if hard_gate.is_blocked:
+        reason = "; ".join(hard_gate.block_reasons) if hard_gate.block_reasons else "HARD_GATE_BLOCKED"
+        return CandidateGateResult(
+            candidate_state=SignalState.FORCE_WAIT,
+            candidate_user_decision=UserDecision.WAIT,
+            resolution_reason=reason,
+            is_candidate_valid=True,
+        )
+
+    if (
+        profile is None
+        or not hasattr(profile, "is_fully_configured")
+        or not profile.is_fully_configured
+        or not long_direction.is_valid
+        or not short_direction.is_valid
+        or not long_timing.is_valid
+        or not short_timing.is_valid
+    ):
+        return CandidateGateResult(
+            candidate_state=SignalState.NO_TRADE,
+            candidate_user_decision=UserDecision.WAIT,
+            resolution_reason="PROFILE_OR_SCORES_NOT_CONFIGURED",
+            is_candidate_valid=False,
+        )
+
+    l_gate = profile.long_gate
+    s_gate = profile.short_gate
+
+    l_dir_score = long_direction.total_score or 0.0
+    l_tim_score = long_timing.total_score or 0.0
+    s_dir_score = short_direction.total_score or 0.0
+    s_tim_score = short_timing.total_score or 0.0
+
+    # Step 1: Classify Long Candidate Tier
+    if l_dir_score >= l_gate.threshold_window_direction and l_tim_score >= l_gate.threshold_window_timing:
+        long_tier = SignalState.BUY_WINDOW
+    elif l_dir_score >= l_gate.threshold_ready_direction and l_tim_score >= l_gate.threshold_ready_timing:
+        long_tier = SignalState.READY_LONG
+    elif l_dir_score >= l_gate.threshold_watch_direction:
+        long_tier = SignalState.WATCH_LONG
+    else:
+        long_tier = SignalState.NO_TRADE
+
+    # Step 2: Classify Short Candidate Tier
+    if s_dir_score >= s_gate.threshold_window_direction and s_tim_score >= s_gate.threshold_window_timing:
+        short_tier = SignalState.SELL_WINDOW
+    elif s_dir_score >= s_gate.threshold_ready_direction and s_tim_score >= s_gate.threshold_ready_timing:
+        short_tier = SignalState.READY_SHORT
+    elif s_dir_score >= s_gate.threshold_watch_direction:
+        short_tier = SignalState.WATCH_SHORT
+    else:
+        short_tier = SignalState.NO_TRADE
+
+    # Step 3: Symmetric Conflict Resolution Matrix (16 combinations)
+    if long_tier == SignalState.BUY_WINDOW:
+        if short_tier == SignalState.SELL_WINDOW:
+            return CandidateGateResult(SignalState.CONFLICT, UserDecision.WAIT, "SAME_TIER_WINDOW_CONFLICT", True)
+        elif short_tier == SignalState.READY_SHORT:
+            return CandidateGateResult(SignalState.CONFLICT, UserDecision.WAIT, "WINDOW_VS_READY_CONFLICT", True)
+        elif short_tier == SignalState.WATCH_SHORT:
+            return CandidateGateResult(SignalState.BUY_WINDOW, UserDecision.BUY, "LONG_WINDOW_OVER_SHORT_WATCH", True)
+        else:  # NO_TRADE
+            return CandidateGateResult(SignalState.BUY_WINDOW, UserDecision.BUY, "LONG_QUALIFIED", True)
+
+    elif long_tier == SignalState.READY_LONG:
+        if short_tier == SignalState.SELL_WINDOW:
+            return CandidateGateResult(SignalState.CONFLICT, UserDecision.WAIT, "READY_VS_WINDOW_CONFLICT", True)
+        elif short_tier == SignalState.READY_SHORT:
+            return CandidateGateResult(SignalState.CONFLICT, UserDecision.WAIT, "SAME_TIER_READY_CONFLICT", True)
+        elif short_tier == SignalState.WATCH_SHORT:
+            return CandidateGateResult(SignalState.READY_LONG, UserDecision.WAIT, "LONG_READY_OVER_SHORT_WATCH", True)
+        else:  # NO_TRADE
+            return CandidateGateResult(SignalState.READY_LONG, UserDecision.WAIT, "LONG_SETUP_DEVELOPING", True)
+
+    elif long_tier == SignalState.WATCH_LONG:
+        if short_tier == SignalState.SELL_WINDOW:
+            return CandidateGateResult(SignalState.SELL_WINDOW, UserDecision.SELL, "SHORT_WINDOW_OVER_LONG_WATCH", True)
+        elif short_tier == SignalState.READY_SHORT:
+            return CandidateGateResult(SignalState.READY_SHORT, UserDecision.WAIT, "SHORT_READY_OVER_LONG_WATCH", True)
+        elif short_tier == SignalState.WATCH_SHORT:
+            return CandidateGateResult(SignalState.CONFLICT, UserDecision.WAIT, "SAME_TIER_WATCH_CONFLICT", True)
+        else:  # NO_TRADE
+            return CandidateGateResult(SignalState.WATCH_LONG, UserDecision.WAIT, "LONG_BIAS_DETECTED", True)
+
+    else:  # long_tier == NO_TRADE
+        if short_tier == SignalState.SELL_WINDOW:
+            return CandidateGateResult(SignalState.SELL_WINDOW, UserDecision.SELL, "SHORT_QUALIFIED", True)
+        elif short_tier == SignalState.READY_SHORT:
+            return CandidateGateResult(SignalState.READY_SHORT, UserDecision.WAIT, "SHORT_SETUP_DEVELOPING", True)
+        elif short_tier == SignalState.WATCH_SHORT:
+            return CandidateGateResult(SignalState.WATCH_SHORT, UserDecision.WAIT, "SHORT_BIAS_DETECTED", True)
+        else:  # NO_TRADE
+            return CandidateGateResult(SignalState.NO_TRADE, UserDecision.WAIT, "NO_SETUP_ACTIVE", True)
+

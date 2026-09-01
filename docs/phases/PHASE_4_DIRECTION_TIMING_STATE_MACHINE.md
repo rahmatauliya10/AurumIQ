@@ -2,54 +2,43 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN** (Long Direction Baseline)  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🔴 **DUAL-SIDE REDESIGN REQUIRED (NOT IMPLEMENTED)**
+> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED (SEALED PHASE 4 BASELINE)**
 
 ---
 
-## XAUUSD Migration Addendum
+## XAUUSD Dual-Side Signal Engine Architecture
 
-### 1. Dual-Side Scoring Architecture (Conceptual Target)
-For the target XAUUSD instrument, scoring is generalized into side-aware evaluators:
+### 1. Dual-Side Scoring Architecture
+For the target XAUUSD instrument, scoring is evaluated across independent side-aware pipelines without timeframe substitution:
 $$\text{LongDirectionScore} = \sum w_i \cdot \text{LongEvidence}_i$$
 $$\text{ShortDirectionScore} = \sum w_i \cdot \text{ShortEvidence}_i$$
+$$\text{LongTimingScore} = \sum w_j \cdot \text{LongTimingEvidence}_j$$
+$$\text{ShortTimingScore} = \sum w_j \cdot \text{ShortTimingEvidence}_j$$
 
-### 2. Target State Machine & User Decision Mapping
-```text
-TARGET DUAL-SIDE STATE MACHINE SPECIFICATION (CONCEPTUAL)
+Multi-timeframe closed-candle evidence spans 15m (primary), 1H (momentum turn & trend confirmation), 4H (macro trend), and 1D (daily trend). Missing 1H feed strictly scores 0.0 pts (no 15m fallback substitution). Macro safety is strictly excluded from timing scoring and enforced via Hard Gate.
 
-                   ┌────────────────────────┐
-                   │        NO_TRADE        │
-                   └───────────┬────────────┘
-                               │
-               ┌───────────────┴───────────────┐
-               ▼                               ▼
-       [BULLISH BIAS]                  [BEARISH BIAS]
-┌─────────────────────────────┐ ┌─────────────────────────────┐
-│         WATCH_LONG          │ │         WATCH_SHORT         │
-└──────────────┬──────────────┘ └──────────────┬──────────────┘
-               ▼                               ▼
-┌─────────────────────────────┐ ┌─────────────────────────────┐
-│         READY_LONG          │ │         READY_SHORT         │
-└──────────────┬──────────────┘ └──────────────┬──────────────┘
-               ▼                               ▼
-┌─────────────────────────────┐ ┌─────────────────────────────┐
-│         BUY_WINDOW          │ │         SELL_WINDOW         │
-└──────────────┬──────────────┘ └──────────────┬──────────────┘
-               │                               │
-               ▼                               ▼
-      User Action: BUY                User Action: SELL
+### 2. Two-Layer State Machine & Publication Authority Guard
+The state machine is cleanly divided into two explicit layers:
 
-All other states (NO_TRADE, WATCH, READY, FORCE_WAIT) ──► User Action: WAIT
-```
+#### Layer A — Pure Candidate Mechanics (`evaluate_xauusd_candidate_gate`)
+Pure deterministic resolver evaluating:
+- LONG candidate tier (`NO_TRADE` $\rightarrow$ `WATCH_LONG` $\rightarrow$ `READY_LONG` $\rightarrow$ `BUY_WINDOW`)
+- SHORT candidate tier (`NO_TRADE` $\rightarrow$ `WATCH_SHORT` $\rightarrow$ `READY_SHORT` $\rightarrow$ `SELL_WINDOW`)
+- Conflict resolution matrix (same-tier or cross-tier active candidates resolve deterministically to `CONFLICT` $\rightarrow$ `WAIT`)
+- Hard Safety Gate evaluation (`FORCE_WAIT` $\rightarrow$ `WAIT`)
 
-### 3. XAUUSD Scoring Weights & Thresholds Status
-All feature weights, scoring component distributions, and selective gate thresholds (such as 70, 75, 80) for XAUUSD are **NOT FROZEN / REVALIDATION REQUIRED**. Exact numerical parameters will be calibrated empirically during Phase 6 walk-forward backtesting. Macro components (DXY, 10Y Yields, Gold Futures) are candidate components only and carry no frozen weights.
+#### Layer B — Production Publication Authority Guard (`XauUsdSignalEngine`)
+Checks `profile.is_production_authorized`. In Phase 4, all candidate profiles have `is_production_authorized == False`.
+- Published `state` is held at `NO_TRADE` and published `user_decision` is held at `WAIT`.
+- Candidate states (`candidate_state`, `candidate_user_decision`) are preserved in full inside `DualSideSignalSnapshot` for complete auditability.
+- Blocks publication of live trades until Phase 6 empirical calibration freeze without test mode bypass flags.
 
-### 4. Approved Future Test Contracts (Planned)
-- **`XAU-P4-01`**: BUY candidate contract (`PLANNED / FUTURE CONTRACT`)
-- **`XAU-P4-02`**: SELL candidate contract (`PLANNED / FUTURE CONTRACT`)
-- **`XAU-P4-03`**: Long/Short conflict resolves to `WAIT` (`PLANNED / FUTURE CONTRACT`)
-- **`XAU-P4-04`**: Macro blackout blocks both BUY and SELL (`PLANNED / FUTURE CONTRACT`)
+### 3. Verified Official Test Contracts
+- **`XAU-P4-01`**: `BUY_WINDOW` $\rightarrow$ `BUY` (Candidate mechanics qualified on bullish setup)
+- **`XAU-P4-02`**: `SELL_WINDOW` $\rightarrow$ `SELL` (Candidate mechanics qualified on bearish setup)
+- **`XAU-P4-03`**: `CONFLICT` $\rightarrow$ `WAIT` (Simultaneous qualification resolves safely to CONFLICT)
+- **`XAU-P4-04`**: `SYSTEM_SAFETY_HOLD` $\rightarrow$ `WAIT` (Macro blackout or unclosed candle trips hard gate to FORCE_WAIT)
+
 
 ---
 
