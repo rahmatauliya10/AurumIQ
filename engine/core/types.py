@@ -868,3 +868,115 @@ class RiskPlanSnapshot:
         """Backward-compatible alias for rr_tp1."""
         return self.rr_tp1
 
+
+# --- Phase 5 XAUUSD: Side-Aware Risk Engine & Causal Execution Contracts ---
+
+class RiskSide(str, Enum):
+    """Trading signal risk evaluation side classification."""
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class RiskCandidateStatus(str, Enum):
+    """Candidate risk evaluation status for XAUUSD."""
+    VALID_LONG_RISK_CANDIDATE = "VALID_LONG_RISK_CANDIDATE"
+    VALID_SHORT_RISK_CANDIDATE = "VALID_SHORT_RISK_CANDIDATE"
+    INVALID_RISK_CANDIDATE = "INVALID_RISK_CANDIDATE"
+
+
+class Phase5CalibrationStatus(str, Enum):
+    """Authoritative lifecycle status for Phase 5 risk calibration governance."""
+    PENDING_PHASE6 = "PENDING_PHASE6"
+    CANDIDATE_NOT_FROZEN = "CANDIDATE_NOT_FROZEN"
+    REVALIDATED_RESEARCH = "REVALIDATED_RESEARCH"
+
+
+@dataclass(frozen=True)
+class SideRiskPlanSnapshot:
+    """
+    Immutable, side-aware risk plan snapshot for XAUUSD (Phase 5).
+    Evaluated from Phase 4 candidate layer without modifying Phase 4 signals.
+    Evidence-dependent fields are Optional to represent invalid plans without fake prices.
+    """
+    side: RiskSide
+    source_phase4_fingerprint: str
+    source_candidate_state: SignalState
+    source_candidate_decision: UserDecision
+    signal_generated_at: datetime                     # Authoritative T == phase4_snapshot.timestamp
+
+    # Entry Zone (Optional for invalid plan without entry zone)
+    entry_min: Optional[Decimal]
+    entry_mid: Optional[Decimal]
+    entry_max: Optional[Decimal]
+
+    # Stop Loss & ATR Guard
+    stop_structure: Optional[Decimal]
+    stop_atr: Optional[Decimal]
+    stop_final: Optional[Decimal]
+    stop_distance_atr: Optional[Decimal]
+
+    # Targets & RR
+    tp1: Optional[Decimal]
+    tp2: Optional[Decimal]
+    planned_rr_tp1: Optional[Decimal]
+    planned_rr_tp2: Optional[Decimal]
+
+    # Status & Authority
+    risk_candidate_valid: bool
+    risk_candidate_status: RiskCandidateStatus
+    simulation_eligible: bool
+    candidate_effective_action: UserDecision         # Layer A (BUY, SELL, or WAIT)
+    publication_effective_action: UserDecision        # Layer B (always WAIT in Phase 5)
+
+    reasons: Tuple[str, ...]
+
+    # Lossless Zone Provenance Fingerprints
+    entry_zone_fingerprint: Optional[str]
+    tp1_zone_fingerprint: Optional[str]
+    tp2_zone_fingerprint: Optional[str]
+
+    # Deterministic Cryptographic Fingerprints
+    phase5_policy_fingerprint: str
+    risk_plan_fingerprint: str
+
+    # Version Tracking
+    risk_version: str
+    code_revision: str
+
+
+@dataclass(frozen=True)
+class SideAwareFillResult:
+    """
+    Deterministic fill simulation output for XAUUSD (Phase 5).
+    Preserves full execution provenance and deterministic execution fingerprint.
+    """
+    side: RiskSide
+    fill_policy: EntryExecutionPolicy
+    raw_executable_price: Optional[Decimal]
+    fill_price: Optional[Decimal]
+    fill_timestamp: Optional[datetime]
+    latency_seconds: float
+    observed_spread: Decimal
+    synthetic_spread: Decimal
+    adverse_slippage: Decimal
+    is_filled: bool
+    reason: str
+
+    # Provenance
+    source_evidence_type: Optional[str]              # "QUOTE" | "CANDLE" | None
+    source_evidence_fingerprint: Optional[str]       # None if is_filled=False
+    execution_fingerprint: str                        # Deterministic SHA-256
+
+
+@dataclass(frozen=True)
+class SideIntrabarResolutionResult:
+    """Outcome of side-aware intrabar barrier evaluation."""
+    side: RiskSide
+    barrier_hit: BarrierHitType
+    exit_price: Optional[Decimal]
+    exit_timestamp: Optional[datetime]
+    policy_applied: IntrabarPolicy
+    replay_bars_count: int
+    reasons: Tuple[str, ...] = field(default_factory=tuple)
+
+
