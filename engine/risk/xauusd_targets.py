@@ -21,17 +21,38 @@ def _collect_pit_zones(
 ) -> List[StructureZone]:
     """
     Collect, PIT-validate, and deduplicate zones from 15m and 4H structures.
+    Strictly requires timezone-aware timestamps on structures and zones.
     """
     eligible_zones: List[StructureZone] = []
 
-    if structure_15m is not None and structure_15m.timestamp <= authoritative_t:
+    if (
+        structure_15m is not None
+        and structure_15m.timestamp.tzinfo is not None
+        and structure_15m.timestamp.tzinfo.utcoffset(structure_15m.timestamp) is not None
+        and structure_15m.timestamp <= authoritative_t
+    ):
         for z in structure_15m.zones:
-            if z.created_at <= authoritative_t and z.is_active:
+            if (
+                z.created_at.tzinfo is not None
+                and z.created_at.tzinfo.utcoffset(z.created_at) is not None
+                and z.created_at <= authoritative_t
+                and z.is_active
+            ):
                 eligible_zones.append(z)
 
-    if structure_4h is not None and structure_4h.timestamp <= authoritative_t:
+    if (
+        structure_4h is not None
+        and structure_4h.timestamp.tzinfo is not None
+        and structure_4h.timestamp.tzinfo.utcoffset(structure_4h.timestamp) is not None
+        and structure_4h.timestamp <= authoritative_t
+    ):
         for z in structure_4h.zones:
-            if z.created_at <= authoritative_t and z.is_active:
+            if (
+                z.created_at.tzinfo is not None
+                and z.created_at.tzinfo.utcoffset(z.created_at) is not None
+                and z.created_at <= authoritative_t
+                and z.is_active
+            ):
                 eligible_zones.append(z)
 
     # Deduplicate deterministically by zone_fingerprint

@@ -194,3 +194,35 @@ def test_uncalibrated_profile_demotes_to_wait():
     assert plan.publication_effective_action == UserDecision.WAIT
     assert plan.entry_min is None
     assert "not configured" in plan.reasons[0]
+
+
+@pytest.mark.unit
+def test_naive_structure_result_or_zone_created_at_rejected(calibrated_test_profile):
+    """Naive StructureResult timestamp or naive zone created_at cannot contribute entry evidence."""
+    planner = XauUsdRiskPlanner(code_revision="test_rev", risk_profile=calibrated_test_profile)
+    t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    t_naive = datetime(2026, 9, 1, 8, 0, 0)
+    snap = make_test_dual_side_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t)
+    snap_short = make_test_dual_side_snapshot(SignalState.SELL_WINDOW, UserDecision.SELL, t)
+
+    # 1. Naive StructureResult timestamp for LONG
+    support_aware = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t, 2, True)
+    struct_naive_ts = StructureResult(t_naive, StructureType.HH, None, None, None, (), (support_aware,))
+    plan1 = planner.plan_long(snap, structure_15m=struct_naive_ts, atr14=Decimal("5.00"))
+    assert plan1.risk_candidate_valid is False
+    assert "Missing confirmed active support zone" in plan1.reasons[0]
+
+    # 2. Naive zone created_at for LONG
+    support_naive = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t_naive, 2, True)
+    struct_naive_zone = StructureResult(t, StructureType.HH, None, None, None, (), (support_naive,))
+    plan2 = planner.plan_long(snap, structure_15m=struct_naive_zone, atr14=Decimal("5.00"))
+    assert plan2.risk_candidate_valid is False
+    assert "Missing confirmed active support zone" in plan2.reasons[0]
+
+    # 3. Naive zone created_at for SHORT
+    res_naive = StructureZone("RESISTANCE", Decimal("2500.00"), Decimal("2505.00"), t_naive, 2, True)
+    struct_short_naive_zone = StructureResult(t, StructureType.LL, None, None, None, (), (res_naive,))
+    plan3 = planner.plan_short(snap_short, structure_15m=struct_short_naive_zone, atr14=Decimal("5.00"))
+    assert plan3.risk_candidate_valid is False
+    assert "Missing confirmed active resistance zone" in plan3.reasons[0]
+

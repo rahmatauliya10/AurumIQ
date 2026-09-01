@@ -2,7 +2,7 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN** (Long Risk Architecture)  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** ✅ **IMPLEMENTED & VERIFIED** (Side-Aware Risk Planning, Causal Execution & Intrabar Resolver)
+> **Current XAUUSD Target Status:** 🟡 **IMPLEMENTED ON FEATURE BRANCH — PENDING FINAL MERGE VERIFICATION** (Side-Aware Risk Planning, Causal Execution & Intrabar Resolver)
 
 ---
 

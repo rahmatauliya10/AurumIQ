@@ -149,15 +149,11 @@ class SideAwareIntrabarResolver:
                 reasons=("Parent candle failed strict validation (OHLC/timestamps).",),
             )
 
-        p_open_ts = parent_candle.timestamp_open.astimezone(timezone.utc)
-        effective_fill_ts = (
-            fill_timestamp.astimezone(timezone.utc)
-            if fill_timestamp is not None
-            else p_open_ts
-        )
-
         if fill_timestamp is not None:
-            if fill_timestamp.tzinfo is None or fill_timestamp.tzinfo.utcoffset(fill_timestamp) is None:
+            if (
+                fill_timestamp.tzinfo is None
+                or fill_timestamp.tzinfo.utcoffset(fill_timestamp) is None
+            ):
                 return SideIntrabarResolutionResult(
                     side=side,
                     barrier_hit=BarrierHitType.UNRESOLVED,
@@ -167,6 +163,9 @@ class SideAwareIntrabarResolver:
                     replay_bars_count=0,
                     reasons=("fill_timestamp must be timezone aware with non-None utcoffset.",),
                 )
+            effective_fill_ts = fill_timestamp.astimezone(timezone.utc)
+        else:
+            effective_fill_ts = parent_candle.timestamp_open.astimezone(timezone.utc)
 
         # 1. Determine Barrier Hits on Parent Candle
         if side == RiskSide.LONG:
@@ -180,12 +179,12 @@ class SideAwareIntrabarResolver:
         if not tp_hit and not sl_hit:
             return SideIntrabarResolutionResult(
                 side=side,
-                barrier_hit=BarrierHitType.NONE,
+                barrier_hit=BarrierHitType.UNRESOLVED,
                 exit_price=None,
                 exit_timestamp=None,
                 policy_applied=policy,
                 replay_bars_count=0,
-                reasons=("Neither TP nor SL barrier was touched on parent bar.",),
+                reasons=("Neither TP nor SL barrier was touched on parent candle.",),
             )
 
         # Case B: Clear Single Hit (Non-ambiguous)

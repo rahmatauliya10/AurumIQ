@@ -192,3 +192,30 @@ def test_lower_tf_replay_short_tp_first(resolver):
     assert res.barrier_hit == BarrierHitType.TP_FIRST
     assert res.exit_price == Decimal("2490.00")
     assert res.exit_timestamp == bars_1m[0].timestamp_close
+
+
+@pytest.mark.unit
+def test_neither_barrier_long_and_short(resolver):
+    """Parent candle touching neither TP nor SL resolves to UNRESOLVED with None exit coordinates."""
+    t_open = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    t_close = datetime(2026, 9, 1, 8, 15, 0, tzinfo=timezone.utc)
+
+    # Bar within range [2495, 2505]. TP=2520, SL=2490 (LONG)
+    bar_long_none = CandleData(
+        t_open, t_close,
+        Decimal("2500.00"), Decimal("2505.00"), Decimal("2495.00"), Decimal("2502.00"),
+        Decimal("100.0"), True
+    )
+    res_l = resolver.resolve(RiskSide.LONG, bar_long_none, tp_price=Decimal("2520.00"), sl_price=Decimal("2490.00"))
+    assert res_l.barrier_hit == BarrierHitType.UNRESOLVED
+    assert res_l.exit_price is None
+    assert res_l.exit_timestamp is None
+    assert "Neither TP nor SL barrier was touched on parent candle." in res_l.reasons[0]
+
+    # SHORT: TP=2480, SL=2515. Bar is in [2495, 2505]
+    res_s = resolver.resolve(RiskSide.SHORT, bar_long_none, tp_price=Decimal("2480.00"), sl_price=Decimal("2515.00"))
+    assert res_s.barrier_hit == BarrierHitType.UNRESOLVED
+    assert res_s.exit_price is None
+    assert res_s.exit_timestamp is None
+    assert "Neither TP nor SL barrier was touched on parent candle." in res_s.reasons[0]
+

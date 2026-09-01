@@ -150,3 +150,33 @@ def test_near_boundary_unrounded_rr_proof_a_and_c(target_policy):
     assert ok_c is True
     assert rr_c == Decimal("1.8")
     assert err_c is None
+
+
+@pytest.mark.unit
+def test_naive_target_structure_or_zone_created_at_rejected(target_policy):
+    """Naive target StructureResult timestamp or naive zone created_at cannot contribute target evidence."""
+    t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    t_naive = datetime(2026, 9, 1, 8, 0, 0)
+
+    # 1. Naive StructureResult timestamp contributes 0 zones
+    res_aware = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 2, True)
+    struct_naive_ts = StructureResult(t_naive, StructureType.HH, None, None, None, (), (res_aware,))
+    tp1, _, _, _, _, _, ok, err = calculate_long_targets(
+        Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
+        struct_naive_ts, Decimal("5.00"), t, target_policy
+    )
+    assert ok is False
+    assert tp1 is None
+    assert "Missing confirmed structural resistance target" in err
+
+    # 2. Naive target zone created_at is ignored
+    res_naive = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t_naive, 2, True)
+    struct_naive_zone = StructureResult(t, StructureType.HH, None, None, None, (), (res_naive,))
+    tp1_z, _, _, _, _, _, ok_z, err_z = calculate_long_targets(
+        Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
+        struct_naive_zone, Decimal("5.00"), t, target_policy
+    )
+    assert ok_z is False
+    assert tp1_z is None
+    assert "Missing confirmed structural resistance target" in err_z
+

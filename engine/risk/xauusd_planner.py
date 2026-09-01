@@ -119,10 +119,21 @@ class XauUsdRiskPlanner:
 
         # 4. Active Support Invalidation Zone Resolution (PIT-validated strictly from StructureResult)
         support_zone: Optional[StructureZone] = None
-        if structure_15m is not None and structure_15m.timestamp <= authoritative_t:
+        if (
+            structure_15m is not None
+            and structure_15m.timestamp.tzinfo is not None
+            and structure_15m.timestamp.tzinfo.utcoffset(structure_15m.timestamp) is not None
+            and structure_15m.timestamp <= authoritative_t
+        ):
             candidates = [
                 z for z in structure_15m.zones
-                if z.zone_type == "SUPPORT" and z.is_active and z.created_at <= authoritative_t
+                if (
+                    z.zone_type == "SUPPORT"
+                    and z.is_active
+                    and z.created_at.tzinfo is not None
+                    and z.created_at.tzinfo.utcoffset(z.created_at) is not None
+                    and z.created_at <= authoritative_t
+                )
             ]
             if candidates:
                 # Total deterministic sorting: highest price_high, created_at ASC, price_low ASC, zone_fp ASC
@@ -334,10 +345,21 @@ class XauUsdRiskPlanner:
 
         # 4. Active Resistance Invalidation Zone Resolution (PIT-validated strictly from StructureResult)
         resistance_zone: Optional[StructureZone] = None
-        if structure_15m is not None and structure_15m.timestamp <= authoritative_t:
+        if (
+            structure_15m is not None
+            and structure_15m.timestamp.tzinfo is not None
+            and structure_15m.timestamp.tzinfo.utcoffset(structure_15m.timestamp) is not None
+            and structure_15m.timestamp <= authoritative_t
+        ):
             candidates = [
                 z for z in structure_15m.zones
-                if z.zone_type == "RESISTANCE" and z.is_active and z.created_at <= authoritative_t
+                if (
+                    z.zone_type == "RESISTANCE"
+                    and z.is_active
+                    and z.created_at.tzinfo is not None
+                    and z.created_at.tzinfo.utcoffset(z.created_at) is not None
+                    and z.created_at <= authoritative_t
+                )
             ]
             if candidates:
                 # Total deterministic sorting: lowest price_low, created_at ASC, price_high DESC, zone_fp ASC
