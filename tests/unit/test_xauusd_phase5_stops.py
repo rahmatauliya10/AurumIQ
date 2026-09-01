@@ -122,3 +122,72 @@ def test_stop_distance_atr_boundary(valid_policy):
     )
     assert ok is False
     assert "exceeds maximum allowable threshold" in err
+
+
+@pytest.mark.unit
+def test_long_stop_atr_strictly_derives_from_entry_mid_not_entry_min(valid_policy):
+    """
+    Explicit contract proof: LONG stop_atr is derived strictly from entry_mid,
+    and would fail if entry_min or entry_max were substituted.
+    entry_min = 2500.00, entry_max = 2510.00 -> entry_mid = 2505.00 (entry_min != entry_mid)
+    atr14 = 4.00, atr_multiplier = 2.0 -> offset = 8.00
+    expected stop_atr = 2505.00 - 8.00 = 2497.00
+    if entry_min used: 2500.00 - 8.00 = 2492.00 != 2497.00
+    if entry_max used: 2510.00 - 8.00 = 2502.00 != 2497.00
+    """
+    ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    support = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2510.00"), ts, 2, True)
+
+    entry_min = Decimal("2500.00")
+    entry_max = Decimal("2510.00")
+    entry_mid = Decimal("2505.00")
+    assert entry_min != entry_mid
+    assert entry_max != entry_mid
+
+    _, stop_atr, _, _, ok, _ = calculate_long_stops(
+        support_zone=support,
+        entry_min=entry_min,
+        entry_mid=entry_mid,
+        entry_max=entry_max,
+        atr14=Decimal("4.00"),
+        policy=valid_policy,
+    )
+    assert ok is True
+    assert stop_atr == Decimal("2497.00")
+    assert stop_atr != (entry_min - valid_policy.atr_multiplier * Decimal("4.00"))
+    assert stop_atr != (entry_max - valid_policy.atr_multiplier * Decimal("4.00"))
+
+
+@pytest.mark.unit
+def test_short_stop_atr_strictly_derives_from_entry_mid_not_entry_max(valid_policy):
+    """
+    Explicit contract proof: SHORT stop_atr is derived strictly from entry_mid,
+    and would fail if entry_max or entry_min were substituted.
+    entry_min = 2500.00, entry_max = 2510.00 -> entry_mid = 2505.00 (entry_max != entry_mid)
+    atr14 = 4.00, atr_multiplier = 2.0 -> offset = 8.00
+    expected stop_atr = 2505.00 + 8.00 = 2513.00
+    if entry_max used: 2510.00 + 8.00 = 2518.00 != 2513.00
+    if entry_min used: 2500.00 + 8.00 = 2508.00 != 2513.00
+    """
+    ts = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    resistance = StructureZone("RESISTANCE", Decimal("2500.00"), Decimal("2510.00"), ts, 2, True)
+
+    entry_min = Decimal("2500.00")
+    entry_max = Decimal("2510.00")
+    entry_mid = Decimal("2505.00")
+    assert entry_min != entry_mid
+    assert entry_max != entry_mid
+
+    _, stop_atr, _, _, ok, _ = calculate_short_stops(
+        resistance_zone=resistance,
+        entry_min=entry_min,
+        entry_mid=entry_mid,
+        entry_max=entry_max,
+        atr14=Decimal("4.00"),
+        policy=valid_policy,
+    )
+    assert ok is True
+    assert stop_atr == Decimal("2513.00")
+    assert stop_atr != (entry_max + valid_policy.atr_multiplier * Decimal("4.00"))
+    assert stop_atr != (entry_min + valid_policy.atr_multiplier * Decimal("4.00"))
+

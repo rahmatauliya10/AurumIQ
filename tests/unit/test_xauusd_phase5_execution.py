@@ -187,3 +187,90 @@ def test_limit_zone_execution(exec_model):
     )
     assert res_short.is_filled is True
     assert res_short.fill_price >= limit
+
+
+@pytest.mark.unit
+def test_market_execution_exact_earliest_exec_ts_boundary(exec_model):
+    """
+    Explicit contract proof: MARKET_AFTER_SIGNAL accepts quote with timestamp == earliest_exec_ts,
+    while rejecting any quote strictly before earliest_exec_ts.
+    """
+    sig_t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    earliest_exec_ts = sig_t + timedelta(seconds=1)  # latency = 1.0s
+
+    # 1. Quote strictly before earliest_exec_ts (8:00:00.999999) is rejected
+    q_pre = QuoteData(earliest_exec_ts - timedelta(microseconds=1), Decimal("2499.00"), Decimal("2499.20"))
+    res_pre = exec_model.simulate_market_after_signal(RiskSide.LONG, sig_t, [q_pre], "fp")
+    assert res_pre.is_filled is False
+    assert res_pre.fill_price is None
+
+    # 2. Quote at EXACT earliest_exec_ts (8:00:01.000000) is accepted and filled
+    q_exact = QuoteData(earliest_exec_ts, Decimal("2500.00"), Decimal("2500.40"))
+    res_exact = exec_model.simulate_market_after_signal(RiskSide.LONG, sig_t, [q_exact], "fp")
+    assert res_exact.is_filled is True
+    assert res_exact.fill_timestamp == earliest_exec_ts
+    assert res_exact.raw_executable_price == Decimal("2500.40")
+
+
+@pytest.mark.unit
+def test_next_bar_open_exact_earliest_exec_ts_boundary(exec_model):
+    """
+    Explicit contract proof: NEXT_BAR_OPEN accepts candle with timestamp_open == earliest_exec_ts,
+    while rejecting candle with timestamp_open < earliest_exec_ts.
+    """
+    sig_t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    earliest_exec_ts = sig_t + timedelta(seconds=1)
+
+    # 1. Bar with open < earliest_exec_ts is rejected
+    bar_pre = CandleData(
+        sig_t, sig_t + timedelta(minutes=15),
+        Decimal("2500.00"), Decimal("2510.00"), Decimal("2495.00"), Decimal("2505.00"),
+        Decimal("100.0"), True
+    )
+    res_pre = exec_model.simulate_next_bar_open(RiskSide.LONG, sig_t, [bar_pre], "fp")
+    assert res_pre.is_filled is False
+    assert res_pre.fill_price is None
+
+    # 2. Bar with open == earliest_exec_ts is accepted and filled on open
+    bar_exact = CandleData(
+        earliest_exec_ts, earliest_exec_ts + timedelta(minutes=15),
+        Decimal("2500.00"), Decimal("2510.00"), Decimal("2495.00"), Decimal("2505.00"),
+        Decimal("100.0"), True
+    )
+    res_exact = exec_model.simulate_next_bar_open(RiskSide.LONG, sig_t, [bar_exact], "fp")
+    assert res_exact.is_filled is True
+    assert res_exact.fill_timestamp == earliest_exec_ts
+    assert res_exact.raw_executable_price == Decimal("2500.00")
+
+
+@pytest.mark.unit
+def test_limit_zone_exact_earliest_exec_ts_boundary(exec_model):
+    """
+    Explicit contract proof: LIMIT_ZONE execution accepts quote and candle activation at exactly earliest_exec_ts,
+    while ignoring pre-activation touches before earliest_exec_ts.
+    """
+    sig_t = datetime(2026, 9, 1, 8, 0, 0, tzinfo=timezone.utc)
+    earliest_exec_ts = sig_t + timedelta(seconds=1)
+    limit = Decimal("2500.00")
+
+    # Quote touch strictly before earliest_exec_ts is ignored
+    q_pre = QuoteData(earliest_exec_ts - timedelta(microseconds=1), Decimal("2499.00"), Decimal("2499.50"))
+    res_pre = exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, limit, "fp", quotes=[q_pre])
+    assert res_pre.is_filled is False
+
+    # Quote touch at EXACT earliest_exec_ts is accepted and filled
+    q_exact = QuoteData(earliest_exec_ts, Decimal("2499.50"), Decimal("2499.80"))
+    res_exact = exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, limit, "fp", quotes=[q_exact])
+    assert res_exact.is_filled is True
+    assert res_exact.fill_timestamp == earliest_exec_ts
+
+    # Candle touch at EXACT earliest_exec_ts open is accepted and filled
+    bar_exact = CandleData(
+        earliest_exec_ts, earliest_exec_ts + timedelta(minutes=15),
+        Decimal("2502.00"), Decimal("2505.00"), Decimal("2498.00"), Decimal("2501.00"),
+        Decimal("100.0"), True
+    )
+    res_bar = exec_model.simulate_limit_zone(RiskSide.LONG, sig_t, limit, "fp", candles=[bar_exact])
+    assert res_bar.is_filled is True
+    assert res_bar.fill_timestamp == earliest_exec_ts
+

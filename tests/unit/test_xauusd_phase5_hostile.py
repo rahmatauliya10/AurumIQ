@@ -350,7 +350,22 @@ def test_h29_h30_h31_h32_h33_governance_and_fingerprints(test_profile):
 
 # H34 - H47: Extended edge cases from Revision 1
 @pytest.mark.unit
-def test_h34_h35_future_structure_result_rejected(test_profile):
+def test_h34_pre_activation_touches_do_not_invalidate_active_zone(test_profile):
+    """H34: Active support zone with pre-existing touches before T is eligible for entry planning."""
+    planner = XauUsdRiskPlanner("rev", test_profile)
+    t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+    zone_with_touches = StructureZone("SUPPORT", Decimal("2500.00"), Decimal("2505.00"), t - timedelta(hours=1), 5, True)
+    res_zone = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t - timedelta(hours=1), 2, True)
+    struct = StructureResult(t, StructureType.HH, None, None, None, (), (zone_with_touches, res_zone))
+
+    plan = planner.plan_long(_make_snapshot(SignalState.BUY_WINDOW, UserDecision.BUY, t), struct, Decimal("5.00"))
+    assert plan.risk_candidate_valid is True
+    assert plan.entry_min == Decimal("2500.00")
+    assert plan.entry_max == Decimal("2505.00")
+
+
+@pytest.mark.unit
+def test_h35_future_structure_result_rejected(test_profile):
     """H35: Future StructureResult (timestamp > T) rejects all its internal zones."""
     planner = XauUsdRiskPlanner("rev", test_profile)
     t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
@@ -407,6 +422,30 @@ def test_h38_tp2_none_does_not_invalidate_tp1(test_profile):
 
 
 @pytest.mark.unit
+def test_h39_tp2_atr_not_beyond_tp1_is_omitted(test_profile):
+    """H39: tp2_atr_multiplier producing price <= TP1 is omitted (tp2=None) rather than invalidating TP1."""
+    # Policy with tp2_atr_multiplier = 1.0 -> 2502.50 + 1.0 * 5 = 2507.50 <= structural TP1 2525.00
+    policy_low_tp2 = SideRiskPolicy(
+        structure_buffer=Decimal("1.50"),
+        atr_multiplier=Decimal("2.0"),
+        max_stop_distance_atr=Decimal("4.0"),
+        min_rr_tp1=Decimal("1.80"),
+        tp2_atr_multiplier=Decimal("1.0"),
+    )
+    t = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+    res = StructureZone("RESISTANCE", Decimal("2525.00"), Decimal("2530.00"), t, 2, True)
+    tp1, tp2, rr1, rr2, tp1_fp, tp2_fp, ok, _ = calculate_long_targets(
+        Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
+        None, Decimal("5.00"), t, policy_low_tp2, custom_zones=[res]
+    )
+    assert ok is True
+    assert tp1 == Decimal("2525.00")
+    assert tp2 is None
+    assert rr2 is None
+    assert tp2_fp is None
+
+
+@pytest.mark.unit
 def test_h40_h41_invalid_quotes_and_chronological_sort(test_profile):
     """H40 & H41: Invalid quotes ignored; unordered quotes sorted chronologically."""
     exec_m = SideAwareEntryExecutionModel("rev", test_profile.long_execution_policy)
@@ -439,12 +478,93 @@ def test_h42_short_candle_limit_uses_high(test_profile):
 
 @pytest.mark.unit
 def test_h43_h44_h45_fingerprints_consistency():
-    """H43, H44, H45: Microsecond diff changes zone fp; identical risk inputs produce identical fp."""
+    """H43, H44, H45: Microsecond diff changes zone fp; identical risk inputs produce identical fp; differing inputs produce differing fp."""
     t1 = datetime(2026, 9, 1, 8, 0, 0, 100000, tzinfo=timezone.utc)
     t2 = datetime(2026, 9, 1, 8, 0, 0, 200000, tzinfo=timezone.utc)
     z1 = StructureZone("SUPPORT", Decimal("2500"), Decimal("2505"), t1, 1, True)
     z2 = StructureZone("SUPPORT", Decimal("2500"), Decimal("2505"), t2, 1, True)
     assert compute_zone_fingerprint(z1) != compute_zone_fingerprint(z2)
+
+    # H44: Identical risk plan inputs produce identical fingerprint
+    fp_a = compute_risk_plan_fingerprint(
+        source_phase4_fingerprint="sig_fp",
+        source_candidate_state=SignalState.BUY_WINDOW,
+        source_candidate_decision=UserDecision.BUY,
+        side=RiskSide.LONG,
+        authoritative_timestamp=t1,
+        entry_min=Decimal("2500.00"),
+        entry_mid=Decimal("2502.50"),
+        entry_max=Decimal("2505.00"),
+        stop_structure=Decimal("2495.00"),
+        stop_atr=Decimal("2492.50"),
+        stop_final=Decimal("2492.50"),
+        stop_distance_atr=Decimal("2.50"),
+        tp1=Decimal("2525.00"),
+        tp2=None,
+        planned_rr_tp1=Decimal("2.00"),
+        planned_rr_tp2=None,
+        entry_zone_fingerprint="z_fp",
+        tp1_zone_fingerprint="tp1_fp",
+        tp2_zone_fingerprint=None,
+        atr_value=Decimal("5.00"),
+        phase5_policy_fingerprint="pol_fp",
+        risk_version="5.0.0",
+        code_revision="rev1",
+    )
+    fp_b = compute_risk_plan_fingerprint(
+        source_phase4_fingerprint="sig_fp",
+        source_candidate_state=SignalState.BUY_WINDOW,
+        source_candidate_decision=UserDecision.BUY,
+        side=RiskSide.LONG,
+        authoritative_timestamp=t1,
+        entry_min=Decimal("2500.00"),
+        entry_mid=Decimal("2502.50"),
+        entry_max=Decimal("2505.00"),
+        stop_structure=Decimal("2495.00"),
+        stop_atr=Decimal("2492.50"),
+        stop_final=Decimal("2492.50"),
+        stop_distance_atr=Decimal("2.50"),
+        tp1=Decimal("2525.00"),
+        tp2=None,
+        planned_rr_tp1=Decimal("2.00"),
+        planned_rr_tp2=None,
+        entry_zone_fingerprint="z_fp",
+        tp1_zone_fingerprint="tp1_fp",
+        tp2_zone_fingerprint=None,
+        atr_value=Decimal("5.00"),
+        phase5_policy_fingerprint="pol_fp",
+        risk_version="5.0.0",
+        code_revision="rev1",
+    )
+    assert fp_a == fp_b
+
+    # H45: Differing stop input produces different fingerprint
+    fp_diff = compute_risk_plan_fingerprint(
+        source_phase4_fingerprint="sig_fp",
+        source_candidate_state=SignalState.BUY_WINDOW,
+        source_candidate_decision=UserDecision.BUY,
+        side=RiskSide.LONG,
+        authoritative_timestamp=t1,
+        entry_min=Decimal("2500.00"),
+        entry_mid=Decimal("2502.50"),
+        entry_max=Decimal("2505.00"),
+        stop_structure=Decimal("2495.00"),
+        stop_atr=Decimal("2492.50"),
+        stop_final=Decimal("2490.00"),
+        stop_distance_atr=Decimal("3.00"),
+        tp1=Decimal("2525.00"),
+        tp2=None,
+        planned_rr_tp1=Decimal("2.00"),
+        planned_rr_tp2=None,
+        entry_zone_fingerprint="z_fp",
+        tp1_zone_fingerprint="tp1_fp",
+        tp2_zone_fingerprint=None,
+        atr_value=Decimal("5.00"),
+        phase5_policy_fingerprint="pol_fp",
+        risk_version="5.0.0",
+        code_revision="rev1",
+    )
+    assert fp_a != fp_diff
 
 
 @pytest.mark.unit
@@ -581,6 +701,19 @@ def test_h63_h64_h65_h66_h67_invalid_and_dedup(test_profile):
     assert fill_res.is_filled is False
     assert fill_res.source_evidence_type is None
     assert fill_res.source_evidence_fingerprint is None
+
+    # H67: Multiple target zones across 15m and 4H with identical zone fingerprint are deduplicated
+    z_res = StructureZone("RESISTANCE", Decimal("2530.00"), Decimal("2535.00"), t, 1, True)
+    tp1, _, _, _, tp1_fp, _, ok_dedup, _ = calculate_long_targets(
+        Decimal("2500.00"), Decimal("2502.50"), Decimal("2505.00"), Decimal("2495.00"),
+        StructureResult(t, StructureType.HH, None, None, None, (), (z_res,)),
+        Decimal("5.00"),
+        t,
+        test_profile.long_risk_policy,
+        structure_4h=StructureResult(t, StructureType.HH, None, None, None, (), (z_res,)),
+    )
+    assert ok_dedup is True
+    assert tp1 == Decimal("2530.00")
 
 
 # H68 - H74: Revision 2.1 Micro-Lock Hostile Tests

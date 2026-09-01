@@ -13,35 +13,72 @@ For the target XAUUSD instrument, the risk engine evaluates both Long and Short 
 
 ```text
 LONG SETUPS (BUY):
-1. Candidate Source Gate: Requires candidate_state == BUY_WINDOW and candidate_user_decision == BUY
-2. Entry Zone: Derived from Support Zone [Support_Low, Support_High] (highest price_high deterministic selection)
+1. Candidate Source Gate: Requires candidate_state == BUY_WINDOW and candidate_user_decision == BUY (no WAIT promotion: WAIT -> WAIT)
+2. Entry Zone: Derived from Support Zone [Support_Low, Support_High] (highest price_high deterministic selection; ties broken by created_at ASC, price_low ASC, zone_fp ASC)
 3. Structure Stop: Support_Low - Structure_Buffer
-4. ATR Stop: Entry_Mid - (k * ATR14)
-5. Stop Final: min(Stop_Structure, Stop_ATR) (invariant: Stop_Final < Entry_Min)
-6. Target 1: Nearest confirmed structural resistance (strictly above Entry_Max)
-7. Target 2: Next structural resistance (strictly beyond TP1) or optional synthetic ATR expansion
-8. RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Max)
-9. Production Authority: Layer B effective action is strictly WAIT (is_production_authorized = False)
+4. ATR Stop Reference: Entry_Mid - (k * ATR14) [where Entry_Mid = (Entry_Min + Entry_Max) / 2]
+5. Stop Final: min(Stop_Structure, Stop_ATR) (invariant: Stop_Final < Entry_Min, planned_risk > 0, stop_distance_atr <= max_stop_distance_atr)
+6. Target 1: Nearest confirmed structural resistance strictly above Entry_Max (deduplicated by zone fingerprint; no RR fabrication)
+7. Target 2: Next structural resistance (strictly beyond TP1) or optional synthetic ATR expansion (strictly beyond TP1; omitted if <= TP1)
+8. Conservative RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Max)
+   Planned Risk = Entry_Max - Stop_Final
+   Planned RR TP1 = (TP1 - Entry_Max) / (Entry_Max - Stop_Final)
+9. Production Authority: Layer B published user decision remains strictly WAIT (is_production_authorized = False pending Phase 6)
 
 SHORT SETUPS (SELL):
-1. Candidate Source Gate: Requires candidate_state == SELL_WINDOW and candidate_user_decision == SELL
-2. Entry Zone: Derived from Resistance Zone [Resistance_Low, Resistance_High] (lowest price_low deterministic selection)
+1. Candidate Source Gate: Requires candidate_state == SELL_WINDOW and candidate_user_decision == SELL (no WAIT promotion: WAIT -> WAIT)
+2. Entry Zone: Derived from Resistance Zone [Resistance_Low, Resistance_High] (lowest price_low deterministic selection; ties broken by created_at ASC, price_high DESC, zone_fp ASC)
 3. Structure Stop: Resistance_High + Structure_Buffer
-4. ATR Stop: Entry_Mid + (k * ATR14)
-5. Stop Final: max(Stop_Structure, Stop_ATR) (invariant: Stop_Final > Entry_Max)
-6. Target 1: Nearest confirmed structural support (strictly below Entry_Min)
-7. Target 2: Next structural support (strictly beyond TP1) or optional synthetic ATR contraction
-8. RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Min)
-9. Production Authority: Layer B effective action is strictly WAIT (is_production_authorized = False)
+4. ATR Stop Reference: Entry_Mid + (k * ATR14) [where Entry_Mid = (Entry_Min + Entry_Max) / 2]
+5. Stop Final: max(Stop_Structure, Stop_ATR) (invariant: Stop_Final > Entry_Max, planned_risk > 0, stop_distance_atr <= max_stop_distance_atr)
+6. Target 1: Nearest confirmed structural support strictly below Entry_Min (deduplicated by zone fingerprint; no RR fabrication)
+7. Target 2: Next structural support (strictly beyond TP1) or optional synthetic ATR contraction (strictly beyond TP1; omitted if <= TP1)
+8. Conservative RR Gate: Planned Reward / Planned Risk >= Min_RR (conservative worst-entry: Entry_Min)
+   Planned Risk = Stop_Final - Entry_Min
+   Planned RR TP1 = (Entry_Min - TP1) / (Stop_Final - Entry_Min)
+9. Production Authority: Layer B published user decision remains strictly WAIT (is_production_authorized = False pending Phase 6)
 ```
 
-### 2. Threshold & Calibration Status
-All numerical risk parameters for XAUUSD (including minimum RR, ATR multiplier $k$, maximum stop distance ATR, and buffer sizes) are managed via `XauUsdRiskProfile`. Uncalibrated profiles default all empirical numerics to `None`. Acceptance test fixtures use explicit `TEST_ONLY` configurations.
+### 2. Mathematics, Provenance & Evidence Governance
+1. **Decimal Precision:** All prices, ATR14 values, stops, targets, spreads, slippages, and RR metrics strictly use `Decimal` with deterministic quantizing (`0.01`).
+2. **Canonical UTC Serialization:** Timestamps require timezone awareness and serialize as canonical ISO-8601 with trailing `Z` (`YYYY-MM-DDTHH:MM:SS.ffffffZ`).
+3. **Lossless Fingerprint Architecture:**
+   - **`StructureZone` Fingerprint:** Binds `zone_type`, `price_low`, `price_high`, `created_at`, `touches`, and `is_active` (SHA-256).
+   - **`QuoteEvidence` Fingerprint:** Binds `evidence_type=QUOTE`, `timestamp`, `bid`, `ask`, and `source` (SHA-256).
+   - **`CandleEvidence` Fingerprint:** Binds complete `CandleData` fields including open, high, low, close, volume, and volume evidence type (SHA-256).
+   - **`RiskPlan` Fingerprint:** Binds Phase 4 fingerprint, state/decision, side, authoritative $T$, Decimal ATR, entries, stops, targets, RR, zone fingerprints, policy fingerprint, risk version, and caller-injected `code_revision`.
+   - **Caller-Injected Code Revision:** The Phase 4 baseline SHA is never hardcoded; producing `code_revision` must be caller-injected.
+4. **Target Deduplication & Strict Ordering:**
+   - Multi-timeframe target evidence across 15m and 4H is deduplicated by canonical `zone_fingerprint` prior to sorting.
+   - Equal-price target zones sort deterministically by `created_at ASC`, `price_high DESC` (for LONG) / `price_low ASC` (for SHORT), and `zone_fingerprint ASC`.
+   - Structural or ATR $\text{TP2}$ must sit strictly beyond $\text{TP1}$ ($\text{TP2} > \text{TP1}$ for LONG, $\text{TP2} < \text{TP1}$ for SHORT); equal or inferior TP2 candidates are skipped (`tp2=None`).
+5. **No Fake Evidence & NO_FILL Semantics:**
+   - Plans failing entry selection or stop validation return `None` for missing coordinates rather than fabricated zero-valued evidence.
+   - `NO_FILL` execution returns `is_filled=False`, `raw_executable_price=None`, `fill_price=None`, and `source_evidence_fingerprint=None`.
+6. **Execution Simulation & Timestamp Boundary:**
+   - Earliest execution timestamp: $\text{earliest\_exec\_ts} = \text{signal\_generated\_at} + \text{latency}$.
+   - Eligible execution evidence: $\text{timestamp} \ge \text{earliest\_exec\_ts}$ (exact equality boundary is valid; pre-activation touches strictly ignored).
+   - Market execution applies adverse slippage to `ASK` for LONG, `BID` for SHORT; observed spread is not added again synthetically.
+   - Candle open execution applies synthetic spread and adverse slippage exactly once to `bar.open`.
+   - Limit execution is bounded by limit price. Mid-bar activations without lower-TF evidence fail closed (`is_filled=False`).
+7. **Strict Validation & Intrabar Replay:**
+   - Strict candle geometric and finite checks (`low <= high`, `open` and `close` bounded, positive finite values).
+   - Intrabar parent candle validation fails closed (`UNRESOLVED`) on malformed parents.
+   - Malformed lower-TF sequences fall back safely to `CONSERVATIVE_SL_FIRST`.
+   - Intrabar `WORST_CASE` resolution: LONG uses $\text{stop} - \text{gap}$, SHORT uses $\text{stop} + \text{gap}$.
+8. **Position Sizing Governance:**
+   - **POSITION SIZING IS OUT OF SCOPE FOR PHASE 5 AND PHASE 6.** Not authorized without a separate future specification and human approval.
 
-### 3. Acceptance Test Contracts (Verified)
+### 3. Threshold & Calibration Status
+All numerical risk parameters for XAUUSD (including minimum RR, ATR multiplier $k$, maximum stop distance ATR, and buffer sizes) are managed via `XauUsdRiskProfile`.
+- `uncalibrated_xauusd_risk_profile()` defaults all empirical numerics to `None` (zero leaked constants, zero 1.80 fallback in production profile).
+- Test fixtures use explicit, clearly marked `TEST_ONLY` configurations.
+
+### 4. Acceptance & Hostile Test Matrix
 - **`XAU-P5-01`**: LONG side-aware risk planning contract (Support entry, stop below, nearest resistance TP1, conservative RR using `entry_max`, publication `WAIT`)
 - **`XAU-P5-02`**: SHORT side-aware risk planning contract (Resistance entry, stop above, nearest support TP1, conservative RR using `entry_min`, publication `WAIT`)
 - **`XAU-P5-03`**: Side-aware market bid/ask execution contract (LONG uses `ASK`, SHORT uses `BID`, adverse slippage, spread counted once, strict quote integrity)
+- **Hostile Matrix `H1`–`H74`**: Complete 74-case hostile matrix fully covered across unit test suites (side segregation, tie resolution, decimal math, boundary equality, fingerprints, immutable provenance, strict validation, fail-closed guards).
 
 ---
 
