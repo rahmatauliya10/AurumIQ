@@ -2,7 +2,8 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN** (Long Risk Architecture)  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **IMPLEMENTED ON FEATURE BRANCH — PENDING FINAL MERGE VERIFICATION** (Side-Aware Risk Planning, Causal Execution & Intrabar Resolver)
+> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED** (Side-Aware Risk Planning, Causal Execution & Intrabar Resolver)  
+> **Authoritative Merge Provenance:** Merged via PR #12 | Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` | Reviewed Head SHA: `da20e956e25fa8ed353c37fbbaa9adebc7890749`
 
 ---
 

@@ -2,30 +2,45 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** ⏸️ **PRODUCT COMPLETION PAUSED**
+> **Current XAUUSD Target Status:** ⏸️ **PRODUCT COMPLETION PAUSED / ADAPTATION PENDING**
 
 ---
 
 ## XAUUSD Migration Addendum
 
 ### 1. Target Scope & Presentation Adaptation
-- **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold).
+- **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD).
 - **User Decision Display:** `BUY / WAIT / SELL` across 15m, 1H, 4H, and 1D closed intervals.
-- **Live Freshness Threshold Status:** The historical 30-second Redis TTL quote freshness threshold is a **LEGACY BASELINE / REVALIDATION REQUIRED** parameter. For XAUUSD, live quote freshness thresholds and stale-data transition parameters remain **NOT FROZEN / REVALIDATION REQUIRED** based on empirical broker feed characteristics.
+- **Dual-Side Metric Dashboard:**
+  - **Live Feed & Health:** Live XAUUSD price, feed freshness (<30s), provider health status (`HEALTHY`, `DEGRADED`, `UNHEALTHY`, `NOT_CONFIGURED`).
+  - **Direction & Timing Scores:** Long Direction Score, Short Direction Score, Long Timing Score, Short Timing Score.
+  - **Dual-Layer State Presentation:** Candidate State (`candidate_state`), Candidate Decision (`candidate_user_decision`), Published State (`state`), Published Decision (`user_decision` — held at `WAIT` pending Phase 6 validation).
+  - **Risk Planning Geometry:** Selected Entry Zone ($[\text{Min}, \text{Max}]$), Invalidation Stop (`Stop_Final`), Structural $\text{TP1}$, $\text{TP2}$, and unrounded Reward-to-Risk ratio.
+  - **Diagnostics & Governance:** Risk candidate status, calibration profile status (`PENDING_DATA` / `CALIBRATION_REQUIRED`), hard-gate reasons, and Phase 3B research status (`production_weight = 0.0`).
+- **Live Cache Architecture:** Active quote streaming and monitoring utilize Redis cache key `livequote:XAUUSD` with 30s TTL. (Historical `livequote:XAUTUSDT` is superseded).
+- **Elimination of Deprecated Active Dependencies:** Removed active dependencies on XAUT/USDT basis z-score, USDT/USD peg deviation monitor, and "XAU confirms XAUT" cross-asset validation.
 
-### 2. Approved Planned Test Contracts
-- **`XAU-P7-01`**: BUY / WAIT / SELL presentation contract (`PLANNED / FUTURE CONTRACT`).
+### 2. Dual-Side Informational Alerting Matrix
+Alerts provide pure real-time notification support for human traders. **Zero alerts contain order execution instructions.**
+- **Long Setup Alerts:** `WATCH_LONG_CREATED`, `READY_LONG`, `BUY_WINDOW_CANDIDATE`.
+- **Short Setup Alerts:** `WATCH_SHORT_CREATED`, `READY_SHORT`, `SELL_WINDOW_CANDIDATE`.
+- **State & Safety Alerts:** `CONFLICT`, `MACRO_BLACKOUT_ACTIVE`, `SYSTEM_SAFETY_HOLD`.
+- **Proximity & Invalidation Alerts:** `ENTRY_ZONE_REACHED`, `INVALIDATION_TOUCHED`.
+- **Infrastructure Alerts:** `LIVE_DATA_STALE`, `PROVIDER_UNHEALTHY`.
+
+### 3. Approved Planned Test Contracts
+- **`XAU-P7-01`**: Dual-side BUY / WAIT / SELL presentation and informational alerting contract (`PLANNED / FUTURE CONTRACT`).
 
 ---
 
 ## Historical XAUT Frozen Specification (Verbatim Baseline)
 
-> **Status:** ✅ **APPROVED**  
+> **Status:** ✅ **APPROVED (HISTORICAL XAUT REFERENCE)**  
 > **Primary Goal:** Build a responsive, server-rendered Django dashboard with interactive Plotly visual analytics, a real-time `LiveMonitor` (WebSocket + Redis with TTL and freshness guards), REST API endpoints, and informational alert dispatchers.
 
 ### 1. Dashboard Architecture (`apps/dashboard/`)
 
-Server-rendered Django templates with dynamic Plotly visualizations and premium CSS styling (strictly adhering to modern dark-tech aesthetics):
+Server-rendered Django templates with dynamic Plotly visualizations and premium CSS styling:
 
 #### Navigation Hierarchy
 `OVERVIEW | LIVE ANALYSIS | TIME CYCLE LAB | SIGNALS HISTORY | BACKTEST LAB | DATA INTEGRITY | SYSTEM HEALTH | AUDIT LOG`
@@ -35,7 +50,7 @@ Server-rendered Django templates with dynamic Plotly visualizations and premium 
    - Live XAUT price, last analysis timestamp (prominently displayed), Data Quality score.
    - Large Gauge / KPI cards: Direction Score, Timing Score, Market Regime, Active Signal State.
    - Current Risk Architecture: Entry Zone ($[\text{Min}, \text{Max}]$), Invalidation/Stop, TP1, TP2, RR.
-   - USDT/USD peg deviation monitor and XAU gold reference confirmation card.
+   - USDT/USD peg deviation monitor and XAU gold reference confirmation card (Historical).
    - Top positive and negative reasons list.
 2. **Live Analysis (`live_analysis.html`):**
    - Interactive Plotly multi-timeframe candlestick chart (1D/4H/1H/15m) with overlay of confirmed swings, BOS markers, and Support/Resistance zones.
@@ -98,22 +113,4 @@ Dispatches real-time notifications via Webhooks / Telegram without order executi
 ### 4. TradingView Policy (R18 & A18)
 
 - **Allowed:** TradingView Lightweight Charts library rendering internal data; manual link to external TradingView charts.
-- **Prohibited:** Scraping TradingView; fetching data from TradingView into the engine calculation pipeline.
-
-### 5. Phase 7 Acceptance Test Suite
-
-| Test ID | Test Name | Assertion Criteria |
-|---|---|---|
-| **A11** | API Freshness Metadata | REST API returns explicit `last_analysis_timestamp` and `data_quality_score`. |
-| **A12** | No Execution Code Gate | Static AST scan confirms zero order placement or exchange trading endpoints in codebase. |
-| **A18** | TradingView Isolation | Engine code has zero network calls or scraping dependencies to TradingView. |
-| **A28** | Live Quote Freshness & Health | Stale, expired, or quarantined Redis live quote emits `LIVE_DATA_STALE` and cannot trigger entry alerts. |
-
-### 6. Definition of Done Checklist
-
-- [x] Django dashboard views and Plotly charts fully responsive.
-- [x] `LiveMonitor` service operates against Redis TTL quotes with freshness guards.
-- [x] Informational alerts trigger without any trading execution permissions.
-- [x] AST scan validates zero trading key / execution methods in codebase.
-- [x] Acceptance tests **A11, A12, A18, A28, A39, A40, A41, A42, A43, A44, A45** passing.
-- [x] Targeted tests **P7-01 through P7-27** and **P7-AUTH-01 through P7-AUTH-07** passing.
+- **Strictly Forbidden:** Using TradingView as a source for indicator math or scraping calculation data.

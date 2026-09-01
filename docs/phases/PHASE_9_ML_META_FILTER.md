@@ -14,25 +14,28 @@ Machine learning **never originates signals from raw market noise**. The determi
 DETERMINISTIC RULE ENGINE ──► Propose Candidate Setup (BUY / SELL)
                                               │
                                               ▼
-                                      ML META-FILTER
-                                 (Predict P(Win | Candidate))
+                                       ML META-FILTER
+                                  (Predict P(Win | Candidate))
                                               │
-                              ┌───────────────┴───────────────┐
-                              ▼                               ▼
-                     P(Win) >= Threshold             P(Win) < Threshold
-                         (ACCEPT)                         (REJECT)
-                              │                               │
-                              ▼                               ▼
-                          RISK GATE                      SUPPRESS / WAIT
-                              │
-                              ▼
-                      BUY_WINDOW / SELL_WINDOW
+                               ┌───────────────┴───────────────┐
+                               ▼                               ▼
+                      P(Win) >= Threshold             P(Win) < Threshold
+                          (ACCEPT)                         (REJECT)
+                               │                               │
+                               ▼                               ▼
+                           RISK GATE                      SUPPRESS / WAIT
+                               │
+                               ▼
+                       BUY_WINDOW / SELL_WINDOW
 ```
 
-### Core Architecture Invariants
-1. **Solves the Signal-to-Noise Problem:** ML focuses only on the conditional probability $\mathbb{P}(\text{Win} \mid \text{Rule Candidate})$, rather than searching across unstructured price noise.
-2. **Transparent Deterministic Fallback:** If ML is disabled, degraded, or in maintenance, the system immediately and deterministically falls back to the rule-only baseline without server restart.
-3. **Zero Execution Code (R1):** Machine learning modules contain zero order routing or execution capabilities.
+### Core Architecture & Governance Invariants
+1. **Secondary Meta-Filtering Only:**
+   - **Allowed Actions:** $\text{BUY} \rightarrow \text{ACCEPT}$ or $\text{BUY} \rightarrow \text{REJECT}$; $\text{SELL} \rightarrow \text{ACCEPT}$ or $\text{SELL} \rightarrow \text{REJECT}$.
+   - **Strictly Forbidden Actions:** $\text{WAIT} \rightarrow \text{BUY}$ or $\text{WAIT} \rightarrow \text{SELL}$. ML can never invent or promote signals from `WAIT`.
+2. **No Bypass of Core Governance:** ML meta-filtering cannot bypass Phase 4 hard safety gates, Phase 5 risk planning validity, Phase 6 walk-forward hurdles, or Layer B publication authority.
+3. **Transparent Deterministic Fallback:** If ML is disabled, degraded, or in maintenance, the system immediately and deterministically falls back to the rule-only baseline without server restart.
+4. **Zero Execution Code (R1):** Machine learning modules contain zero order routing or execution capabilities.
 
 ---
 
@@ -44,7 +47,7 @@ Point-in-time features strictly knowable at candidate signal timestamp $t$:
 - **Structure & Volatility Features:** Distance to active support/resistance zone, zone touch count, ATR percentile, normalized realized volatility.
 - **Time-Cycle Features:** Phase 3A session expectancy, swing duration maturity percentile, calendar seasonality stability.
 - **Setup Context:** Direction indicator (`+1` for Long, `-1` for Short), planned risk-to-reward ratio.
-- **Optional Context Features (Only when reliable PIT data exists):** US Dollar Index (DXY), US 10Y Yields, Gold Futures (GC) volume proxy. *(These cross-market series are optional candidate features only and are not mandatory hard dependencies).*
+- **Optional PIT-Safe Macro/Proxy Features (Validated Only):** US Dollar Index (DXY), US 10Y Yields / Real Yields, Gold Futures (GC) volume proxy. *(XAUT basis is strictly removed from active XAUUSD feature scope)*.
 
 ### B. Binary Meta-Label $y_t$ (Side-Aware Triple-Barrier Outcome)
 $$y_t = \begin{cases} 1 & \text{if candidate reached TP before SL (-1.0R)} \\ 0 & \text{if candidate reached SL first or timed out with negative return} \end{cases}$$
