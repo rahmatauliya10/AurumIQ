@@ -31,6 +31,33 @@ from engine.backtest.types import (
     WalkForwardResult,
 )
 from engine.backtest.walkforward import WalkForwardEngine
+from engine.backtest.xauusd_ablation import XauUsdAblationEngine
+from engine.backtest.xauusd_fingerprint import (
+    compute_xauusd_backtest_fingerprint,
+    compute_xauusd_dataset_identity,
+)
+from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
+from engine.backtest.xauusd_outcomes import XauUsdOutcomeEngine
+from engine.backtest.xauusd_replay import XauUsdPointInTimeReplay
+from engine.backtest.xauusd_runner import XauUsdBacktestRunner
+from engine.backtest.xauusd_types import (
+    XauUsdAblationComparison,
+    XauUsdAblationDelta,
+    XauUsdAblationReport,
+    XauUsdAblationType,
+    XauUsdBacktestMetrics,
+    XauUsdBacktestRunSpec,
+    XauUsdCostConfig,
+    XauUsdCostScenario,
+    XauUsdFoldResult,
+    XauUsdFoldSpec,
+    XauUsdSimulatedTrade,
+    XauUsdSubsystemBreakdown,
+    XauUsdTradeOutcome,
+    XauUsdWalkForwardConfig,
+    XauUsdWalkForwardResult,
+)
+from engine.backtest.xauusd_walkforward import XauUsdWalkForwardEngine
 
 __all__ = [
     "AblatedSignalEngine",
@@ -68,4 +95,28 @@ __all__ = [
     "WalkForwardEngine",
     "WalkForwardResult",
     "compute_backtest_fingerprint",
+    # XAUUSD Phase 6 Additions
+    "XauUsdAblationComparison",
+    "XauUsdAblationDelta",
+    "XauUsdAblationEngine",
+    "XauUsdAblationReport",
+    "XauUsdAblationType",
+    "XauUsdBacktestMetrics",
+    "XauUsdBacktestRunSpec",
+    "XauUsdBacktestRunner",
+    "XauUsdCostConfig",
+    "XauUsdCostScenario",
+    "XauUsdFoldResult",
+    "XauUsdFoldSpec",
+    "XauUsdMetricsCalculator",
+    "XauUsdOutcomeEngine",
+    "XauUsdPointInTimeReplay",
+    "XauUsdSimulatedTrade",
+    "XauUsdSubsystemBreakdown",
+    "XauUsdTradeOutcome",
+    "XauUsdWalkForwardConfig",
+    "XauUsdWalkForwardEngine",
+    "XauUsdWalkForwardResult",
+    "compute_xauusd_backtest_fingerprint",
+    "compute_xauusd_dataset_identity",
 ]

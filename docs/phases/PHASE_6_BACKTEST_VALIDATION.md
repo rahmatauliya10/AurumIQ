@@ -2,7 +2,7 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟡 **NOT STARTED (PIT BACKTEST + WALK-FORWARD + ABLATION REQUIRED)**  
+> **Current XAUUSD Target Status:** 🟢 **IMPLEMENTED ON FEATURE BRANCH — PENDING HUMAN VERIFICATION**  
 > **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6**
 
 ---

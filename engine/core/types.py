@@ -943,6 +943,16 @@ class SideRiskPlanSnapshot:
     risk_version: str
     code_revision: str
 
+    @property
+    def is_valid_risk_plan(self) -> bool:
+        """Convenience property for risk_candidate_valid."""
+        return self.risk_candidate_valid
+
+    @property
+    def execution_eligible(self) -> bool:
+        """Convenience property for simulation_eligible."""
+        return self.simulation_eligible
+
 
 @dataclass(frozen=True)
 class SideAwareFillResult:
