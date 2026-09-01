@@ -1,6 +1,13 @@
-# XAUT SIGNAL INTELLIGENCE
+# HISTORICAL XAUT ARCHITECTURE
+# SUPERSEDED AS ACTIVE SPECIFICATION
 
-## Full-Python Django Engineering Blueprint
+> **Notice:** This document contains the historical XAUT Tether Gold architecture specification. It is **SUPERSEDED** as the active engineering authority by [`XAUUSD_Signal_Intelligence_Blueprint_Django_Python_v2.md`](./XAUUSD_Signal_Intelligence_Blueprint_Django_Python_v2.md). It is permanently retained for historical audit, migration provenance, and baseline regression integrity.
+
+---
+
+# XAUT SIGNAL INTELLIGENCE (HISTORICAL BASELINE)
+
+## Full-Python Django Engineering Blueprint (Legacy v1.0)
 
 Live Analysis, Time Cycle, Signal Scoring, Risk Planning, Backtesting and ML Meta-Filtering
 
