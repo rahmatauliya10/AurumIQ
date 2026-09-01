@@ -3,13 +3,19 @@
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
 > **Current XAUUSD Target Status:** 🟡 **NOT STARTED (PIT BACKTEST + WALK-FORWARD + ABLATION REQUIRED)**  
-> **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6 (COMBINING 6A & 6B)**
+> **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6**
 
 ---
 
-## XAUUSD Canonical Validation Architecture (Phase 6A & Phase 6B)
+## 1. Objective & Governance
 
-Phase 6 is the empirical governance and validation laboratory for XAUUSD. It directly resolves the production pure-Python calculation engine (`XauUsdSignalEngine`, `XauUsdRiskPlanner`, `SideAwareEntryExecutionModel`, and `SideAwareIntrabarResolver`) with zero look-ahead bias, zero double-counted costs, zero speculative account sizing, and strict out-of-sample isolation.
+Phase 6 is the unified empirical governance and validation laboratory for spot XAUUSD. It constructs a deterministic, side-aware point-in-time historical simulation, walk-forward validation, and component ablation engine that directly resolves the production pure-Python calculation engine (`XauUsdSignalEngine`, `XauUsdRiskPlanner`, `SideAwareEntryExecutionModel`, and `SideAwareIntrabarResolver`).
+
+### Key Governance Invariants
+1. **Zero Look-Ahead Bias:** Point-in-time historical simulation strictly uses data knowable at evaluation step $T$.
+2. **Zero Speculative Sizing:** Position sizing, capital allocation, account balance tracking, margin calculations, and leverage compounding are **STRICTLY OUT OF SCOPE**. Performance is evaluated exclusively in normalized $R$ units.
+3. **Zero Order Execution:** The backtest lab contains zero live exchange connectivity, broker execution bindings, or order dispatch endpoints.
+4. **Publication Guard Invariant:** Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`) until Phase 6 empirical validation and calibration criteria are explicitly frozen.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -20,7 +26,7 @@ Phase 6 is the empirical governance and validation laboratory for XAUUSD. It dir
 │         ▼                                                               │
 │  POINT-IN-TIME MARKET CONTEXT (Strictly timestamp <= T)                 │
 │         │                                                               │
-│         ├──► [PHASE 6A] REPLAY & WALK-FORWARD VALIDATION                │
+│         ├──► [REPLAY & WALK-FORWARD VALIDATION]                         │
 │         │    - Direct Phase 4 Engine Call (XAU-P4-01..04)               │
 │         │    - Direct Phase 5 Risk Planner (XAU-P5-01..03)              │
 │         │    - Phase 5 SideAwareEntryExecutionModel                     │
@@ -30,7 +36,7 @@ Phase 6 is the empirical governance and validation laboratory for XAUUSD. It dir
 │         │    - Reporting: LONG (XAU-P6-01), SHORT (XAU-P6-02),          │
 │         │      Combined Side-Aware Parity / Reporting (XAU-P6-03)       │
 │         │                                                               │
-│         └──► [PHASE 6B] COMPONENT ABLATION LAB                          │
+│         └──► [COMPONENT ABLATION LAB]                                   │
 │              - Baseline: Full Sealed Phase 4 + Phase 5 Pipeline         │
 │              - Isolated Ablation Variants (Disabling 1 Factor at a time)│
 │              - Zero Mutation of Baseline Candidate Results              │
@@ -41,70 +47,121 @@ Phase 6 is the empirical governance and validation laboratory for XAUUSD. It dir
 
 ---
 
-## 1. Phase 6A: Point-in-Time Replay & Walk-Forward Validation
+## 2. Point-in-Time Data Replay
 
-### A. Non-Negotiable Core Principle: The One Engine Rule (R2 & A09)
-The backtesting engine must NEVER maintain a simplified secondary set of trading rules. Live analysis, paper observation, and historical backtesting must resolve the **exact same pure-Python `XauUsdSignalEngine` and `XauUsdRiskPlanner` classes, configurations, and feature sets**.
-
-### B. Point-in-Time Causality & Data Isolation (R3, R8, A31)
-1. **Closed-Candle Isolation:** For historical evaluation step $T$, market data queries strictly apply `timestamp_close <= T` and `is_closed=True`.
-2. **Future Mutation Masking:** Candles with timestamp $> T$ are future and strictly invisible; mutating post-exit data produces zero difference in historical outputs at $T$.
-3. **Safety-Hold Alignment:** An unclosed candle at or before $T$ activates the exact same Phase 4 XAUUSD runtime safety context and hard-gate mechanics (`FORCE_WAIT` $\rightarrow$ `WAIT`). Phase 6 must not invent a divergent exception path.
-
-### C. Entry Execution & Friction Model Reuse
-1. **Direct Phase 5 Execution Reuse:** Entry simulation reuses `SideAwareEntryExecutionModel` from Phase 5 (`MARKET_AFTER_SIGNAL`, `NEXT_BAR_OPEN`, `LIMIT_ZONE`, LONG ASK, SHORT BID, observed spread counted once, synthetic spread as Phase 5 specifies, adverse slippage, evidence fingerprints, NO_FILL). Phase 6 does not independently recompute entry fills.
-2. **Causal Execution Timestamp (R13, A19, A27):** Evidence before `earliest_exec_ts` ($\text{signal\_generated\_at} + \text{latency}$) is forbidden. Evidence exactly at `earliest_exec_ts` is eligible ($\text{timestamp} \ge \text{earliest\_exec\_ts}$). When latency > 0, signal-time evidence is naturally pre-activation and ineligible.
-3. **Phase 6 Friction & Commission Assumptions:** Round-trip commissions, execution fees, and friction models are `NOT_CONFIGURED / EVIDENCE-DRIVEN` until separately specified for XAUUSD. Historical crypto fee assumptions (maker/taker) do not apply to active XAUUSD backtesting.
-
-### D. Outcome Resolution & Intrabar Replay (R14, A14)
-1. **Direct Phase 5 Intrabar Resolver Reuse:** Resolved against Take Profit 1 (`TP1_FIRST`), Stop Loss (`SL_FIRST`), or Horizon Timeout (`TIMEOUT`).
-2. **Chronological Intrabar Replay:** Ambiguous parent candles resolve via chronological lower-timeframe (1m preferred, 5m fallback) sequence.
-3. **Conservative Fail-Safe:** If lower-timeframe data is missing or malformed, the resolver falls back to `CONSERVATIVE_SL_FIRST`.
-
-### E. Walk-Forward Cross-Validation with Purging & Embargo (R11, A34, A35)
-1. **Chronological Splitting:** Multi-year spot XAUUSD data is partitioned into rolling out-of-sample folds without random shuffling.
-2. **Label Purging:** Removes historical samples immediately preceding fold boundaries whose triple-barrier evaluation horizon overlaps the boundary.
-3. **Post-Boundary Embargo:** Enforces a protective buffer after each test set to prevent serial correlation leakage into subsequent folds.
-
-### F. Normalized R Metrics (Strictly No Account Sizing or Compounding)
-1. **Expectancy per Trade:**
-   $$\mathbb{E}[R] = (\text{Win\_Rate} \times \bar{R}_{\text{win}}) - ((1 - \text{Win\_Rate}) \times \bar{R}_{\text{loss}})$$
-2. **Normalized Drawdown:** Measured strictly in $R$ units (`max_drawdown_r`, `drawdown_duration_trades`).
-3. **Account Sizing Policy:** Position sizing, account balance tracking, margin calculations, and leverage compounding are **STRICTLY OUT OF SCOPE** for Phase 6.
+1. **Closed-Candle Isolation (R3, R4, A31):** For historical evaluation step $T$, market data queries strictly apply `timestamp_close <= T` and `is_closed=True`.
+2. **Future Mutation Masking:** Candles with timestamp $> T$ are future and strictly invisible. Mutating post-exit data produces zero difference in historical outputs at $T$.
+3. **Safety-Hold Alignment:** An unclosed candle at or before $T$ activates the exact same Phase 4 XAUUSD runtime safety context and hard-gate mechanics (`FORCE_WAIT` $\rightarrow$ `WAIT`). Phase 6 does not invent a divergent exception path.
 
 ---
 
-## 2. Phase 6B: Component Ablation & Calibration Evidence
+## 3. Phase 4 Signal Engine Parity
 
-### A. Isolated Paired Fold Analysis (A10, A37)
-Quantifies the exact marginal out-of-sample contribution of each individual engine subsystem by comparing the full baseline model against ablated variants:
-- **BASELINE:** Full deterministic XAUUSD Phase 4 + Phase 5 pipeline (immutable).
-- **ABLATION VARIANTS:** Disable/remove one approved component at a time in isolated research runs:
-  - Without Market Regime Filter
-  - Without Phase 3A Session Expectancy
-  - Without Phase 3A Swing Duration Maturity
-  - Without Phase 3A Macro Blackout Gate
-  - Without Multi-Timeframe Trend Confirmation
-  - With Phase 3B Experimental Spectral Factors (Evaluated against promotion gate)
+1. **One Engine Rule (R2, A09):** The backtesting engine instantiates and evaluates the master `XauUsdSignalEngine` directly. Live analysis, paper observation, and historical backtesting resolve the identical calculation class, version, and feature configuration.
+2. **Deterministic Dual-Side Output Replay:** Replays `LongDirectionScore`, `ShortDirectionScore`, `LongTimingScore`, `ShortTimingScore`, `candidate_state`, and `candidate_user_decision` (`BUY_WINDOW / BUY`, `SELL_WINDOW / SELL`, `WAIT`, `CONFLICT`).
 
-### B. Ablation Invariants & Calibration Governance
-1. **No Baseline Mutation:** Running an ablation trial must NEVER alter or mutate the primary candidate signal dataset.
-2. **Calibration Governance:** Empirical promotion criteria, sample thresholds, maturity bands, significance methods, and stability requirements must be explicitly estimated, documented, and frozen from approved XAUUSD walk-forward evidence. Until then, these parameters remain `NOT_CONFIGURED / NOT_FROZEN`.
+---
+
+## 4. Phase 5 Risk Engine Parity
+
+1. **Direct Risk Planner Resolution:** Reuses `XauUsdRiskPlanner` directly from Phase 5.
+2. **Exact Decimal Arithmetic:** Preserves exact Decimal arithmetic throughout entries, stops, targets, spreads, slippage, and RR calculations without floating-point precision loss.
+3. **Unrounded Validation Gates:** Threshold decisions (`stop_distance_atr <= max_stop_distance_atr` and `planned_rr_tp1 >= min_rr_tp1`) compare raw unrounded Decimal values (boundary equality is valid).
+4. **Deterministic Structural Risk Geometry:**
+   - **LONG:** Derived from 15m Support Zone (highest `price_high` selection; ties broken by `created_at ASC`, `price_low ASC`, `zone_fingerprint ASC`). Conservative planned risk uses `entry_max`. Structural TP1 only (nearest resistance above `entry_max`).
+   - **SHORT:** Derived from 15m Resistance Zone (lowest `price_low` selection; ties broken by `created_at ASC`, `price_high DESC`, `zone_fingerprint ASC`). Conservative planned risk uses `entry_min`. Structural TP1 only (nearest support below `entry_min`).
+5. **Demotion-Only Invariant:** Phase 5 risk evaluation may demote candidates ($\text{BUY} \to \text{WAIT}$, $\text{SELL} \to \text{WAIT}$), but can never promote $\text{WAIT} \to \text{BUY}$ or $\text{WAIT} \to \text{SELL}$.
+
+---
+
+## 5. Causal Execution Replay
+
+1. **Direct Phase 5 Execution Model Reuse:** Entry simulation reuses `SideAwareEntryExecutionModel` from Phase 5 (`MARKET_AFTER_SIGNAL`, `NEXT_BAR_OPEN`, `LIMIT_ZONE`, LONG ASK, SHORT BID, observed spread counted once, synthetic spread as Phase 5 specifies, adverse slippage, evidence fingerprints, `NO_FILL`). Phase 6 must not independently recompute entry fills.
+2. **Causal Execution Timestamp (R13, A19, A27):** Evidence before $\text{earliest\_exec\_ts} = \text{signal\_generated\_at} + \text{latency}$ is strictly forbidden. Evidence exactly at $\text{earliest\_exec\_ts}$ is eligible ($\text{timestamp} \ge \text{earliest\_exec\_ts}$). When latency > 0, signal-time evidence is naturally pre-activation and ineligible.
+3. **Phase 6 Friction & Commission Assumptions:** Round-trip commissions, execution fees, and friction models are `NOT_CONFIGURED / EVIDENCE-DRIVEN` until separately specified for XAUUSD. Historical crypto fee assumptions (maker/taker) do not apply to active XAUUSD backtesting.
+
+---
+
+## 6. Intrabar Resolution
+
+1. **Direct Phase 5 Intrabar Resolver Reuse:** Triple-barrier resolution reuses `SideAwareIntrabarResolver` (`TP1_FIRST`, `SL_FIRST`, `TIMEOUT`).
+2. **Chronological Lower-Timeframe Sequence:** Ambiguous parent candles resolve via chronological lower-timeframe (1m preferred, 5m fallback) replay.
+3. **Conservative Fail-Safe:** If lower-timeframe data is missing or malformed, the resolver falls back to `CONSERVATIVE_SL_FIRST`. If the parent bar itself is malformed or neither barrier is touched within the horizon, it resolves to `UNRESOLVED`.
+
+---
+
+## 7. Walk-Forward Validation
+
+1. **Chronological Splitting (No Random Shuffle):** Multi-year spot XAUUSD data is partitioned into rolling half-open intervals $[ \text{start}, \text{end} )$ for Train, Validation, and Out-of-Sample (OOS) evaluation.
+2. **Exact Dependency Purging:** Samples whose outcome dependency interval $[ \text{signal\_ts}, \text{dependency\_end\_ts} ]$ crosses partition boundaries are purged from earlier segments to prevent forward label leakage.
+3. **Post-Boundary Embargo:** A protective buffer after each test partition is excluded to prevent serial correlation leakage into subsequent folds.
+4. **Strict OOS Isolation:** Candidate selection and parameter evaluation APIs structurally accept only Train and Validation inputs. OOS evaluation is strictly downstream of frozen model selection.
+
+---
+
+## 8. Performance Metrics
+
+Every backtest report calculates comprehensive, normalized risk-adjusted statistics:
+
+1. **Exact Expectancy Formula:**
+   $$\mathbb{E}[R] = (\text{Win\_Rate} \times \bar{R}_{\text{win}}) - ((1 - \text{Win\_Rate}) \times \bar{R}_{\text{loss}})$$
+2. **Profit Factor:** $\frac{\text{Gross Profit } R}{\text{Gross Loss } R}$ with division-by-zero safeguard.
+3. **Normalized Drawdown:** Peak-to-trough cumulative $R$ drawdown (`max_drawdown_r`, `drawdown_duration_trades`) without speculative account sizing or compounding.
+4. **Execution Quality & Funnel:** Maximum Favorable Excursion (MFE), Maximum Adverse Excursion (MAE), signal-to-fill conversion funnel, and cost drag ($\text{gross\_expectancy\_r} - \text{net\_expectancy\_r}$).
+
+---
+
+## 9. Component Ablation
+
+1. **Isolated Paired Fold Analysis:** Quantifies the exact marginal out-of-sample contribution of each individual engine subsystem by comparing the full baseline model against ablated variants:
+   - **BASELINE:** Full deterministic XAUUSD Phase 4 + Phase 5 pipeline (immutable).
+   - **ABLATION VARIANTS:** Disable/remove one approved component at a time in isolated research runs:
+     - Without Market Regime Filter
+     - Without Phase 3A Session Expectancy
+     - Without Phase 3A Swing Duration Maturity
+     - Without Phase 3A Macro Blackout Gate
+     - Without Multi-Timeframe Trend Confirmation
+     - With Phase 3B Experimental Spectral Factors (Evaluated against promotion gate)
+2. **Ablation Invariants:**
+   - Running an ablation trial must NEVER alter or mutate the primary candidate signal dataset.
+   - Component ablation is executed via pure research workflows without auto-promoting parameters.
+
+---
+
+## 10. Calibration Evidence
+
+1. **Evidence-Driven Governance:** Empirical promotion criteria, sample thresholds, maturity bands, significance methods, and stability requirements must be explicitly estimated, documented, and frozen from approved XAUUSD walk-forward evidence.
+2. **Uncalibrated Status:** Until empirical validation is complete, all active calibration parameters remain `NOT_CONFIGURED / NOT_FROZEN`.
 3. **No In-Sample Optimization:** No feature or threshold is approved for production promotion based solely on in-sample win rate.
 
 ---
 
-## 3. Official Planned Test Contracts
+## 11. Acceptance Contracts
 
 | Contract ID | Name | Focus | Scope | Status |
 |---|---|---|---|:---:|
-| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Phase 6A | 🟡 `PLANNED / FUTURE CONTRACT` |
-| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Phase 6A | 🟡 `PLANNED / FUTURE CONTRACT` |
-| **`XAU-P6-03`** | Combined Side-Aware Parity & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Phase 6A & 6B | 🟡 `PLANNED / FUTURE CONTRACT` |
+| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Replay Engine | 🟡 `PLANNED / FUTURE CONTRACT` |
+| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Replay Engine | 🟡 `PLANNED / FUTURE CONTRACT` |
+| **`XAU-P6-03`** | Combined Side-Aware Parity / Reporting & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Validation & Ablation | 🟡 `PLANNED / FUTURE CONTRACT` |
 
 ---
 
-## Historical XAUT Frozen Specification (Verbatim Baseline)
+## 12. Definition of Done (Pending Phase 6 Implementation)
+
+- [ ] Backtest engine imports pure `engine/` modules with zero Django ORM, Celery, Redis, or Channels dependencies (AST verified).
+- [ ] Point-in-time candle isolation verified (candles $> T$ invisible; unclosed candles $\le T$ trigger safety hold).
+- [ ] Phase 4 `XauUsdSignalEngine` and Phase 5 `XauUsdRiskPlanner` resolved directly without rule divergence.
+- [ ] Causal execution simulation strictly enforces $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$.
+- [ ] Intrabar resolver enforces 1m/5m chronological replay with conservative fallback on ambiguity.
+- [ ] Walk-forward fold generator applies chronological slicing, dependency purging, and post-boundary embargo.
+- [ ] Component ablation harness runs isolated paired trials without mutating baseline candidate signals.
+- [ ] Normalized $R$ metrics suite computed without position sizing, account balances, or leverage compounding.
+- [ ] Canonical SHA-256 fingerprinting generated for all backtest configurations and run artifacts.
+- [ ] Acceptance contracts `XAU-P6-01`, `XAU-P6-02`, and `XAU-P6-03` passing all gates.
+
+---
+
+## 13. Historical XAUT Frozen Specification (Verbatim Baseline)
 
 > **Status:** 🟢 **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
 > **Baseline Commit SHA:** `f22483addd7cc5095c46e4f1c928a8b6651d83eb`  

@@ -104,7 +104,6 @@ Whenever phase implementation status changes:
 - **Documentation Roadmap:** [`docs/phases/README.md`](./docs/phases/README.md)
 - **Deliverables Summary:** [`docs/phases/SUMMARY.md`](./docs/phases/SUMMARY.md)
 - **Active Master Blueprint:** [`XAUUSD_Signal_Intelligence_Blueprint_Django_Python_v2.md`](./XAUUSD_Signal_Intelligence_Blueprint_Django_Python_v2.md)
-- **Historical XAUT Blueprint:** [`XAUT_Signal_Intelligence_Blueprint_Django_Python.md`](./XAUT_Signal_Intelligence_Blueprint_Django_Python.md) (Frozen audit baseline)
 
 ---
 

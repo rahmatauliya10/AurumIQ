@@ -57,6 +57,13 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation only after Phase 6/7 dependencies |
 | **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter only after deterministic baseline is empirically validated |
 
+## 0.5 Historical XAUT Architecture Provenance
+- AurumIQ originated from a historical XAUT/Tether Gold architecture.
+- The original XAUT master blueprint is retained in Git history for migration and audit provenance.
+- Historical XAUT specifications and regression evidence remain preserved within frozen historical phase sections.
+- XAUT is NOT an active signal target.
+- No historical XAUT numerical defaults may silently govern XAUUSD.
+
 ---
 
 # 1. Non-Negotiable Global Rules
@@ -619,23 +626,26 @@ $$\text{is\_filled} = \text{False}, \quad \text{raw\_executable\_price} = \text{
 
 # 23. Phase 6 — ONE Canonical Backtesting and Validation Phase
 
-There must not be two independent active "Phase 6" specifications with overlapping ownership.
-- **Canonical active document:** `PHASE_6_BACKTEST_VALIDATION.md` (owns both Phase 6A and 6B).
-- The older `PHASE_6_BACKTESTING_ABLATION.md` is superseded and preserved under historical appendices.
+Phase 6 is a single, integrated empirical validation phase.
+- **Canonical active document:** `docs/phases/PHASE_6_BACKTEST_VALIDATION.md`.
 
-## 23.1 Phase 6A — PIT Replay and Walk-Forward Validation
-Evaluate multi-year XAUUSD data in three dimensions:
+## 23.1 Integrated Validation Scope
+Evaluate multi-year spot XAUUSD data across three reporting dimensions:
 1. LONG / BUY replay (`XAU-P6-01`)
 2. SHORT / SELL replay (`XAU-P6-02`)
 3. Combined side-aware reporting & parity (`XAU-P6-03`)
 
-**Requirements:** Exact same Phase 4 and Phase 5 pure engines, point-in-time feature reconstruction, strict post-signal execution timing ($\text{timestamp} \ge \text{earliest\_exec\_ts}$), side-aware cost/friction, chronological folds, dependency purging, embargo, zero OOS access during candidate selection, immutable run fingerprints, normalized R metrics, zero account sizing.
+**Core Integrated Capabilities:**
+- **Point-in-Time Data Replay:** Reconstructs historical closed candles at $T$ without lookahead bias.
+- **Engine Reuse Parity:** Directly invokes pure-Python `XauUsdSignalEngine` and `XauUsdRiskPlanner`.
+- **Causal Execution Replay:** Enforces $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$ ($\text{timestamp} \ge \text{earliest\_exec\_ts}$) using Phase 5 `SideAwareEntryExecutionModel`.
+- **Intrabar Collision Resolution:** Reuses Phase 5 `SideAwareIntrabarResolver` (1m/5m chronological sequence with conservative fallback).
+- **Walk-Forward Validation:** Chronological fold splitting with dependency purging and post-boundary embargo buffer.
+- **Normalized R Metrics:** Expectancy per trade $\mathbb{E}[R]$, profit factor, and normalized peak-to-trough drawdown in $R$ (strictly zero position sizing or compounding).
+- **Component Ablation:** Paired fold analysis disabling individual factors against the sealed immutable baseline.
+- **Calibration Evidence:** Promotion criteria and stability thresholds remain `NOT_CONFIGURED / NOT_FROZEN` until empirically estimated and frozen.
 
-## 23.2 Phase 6B — Ablation and Calibration Evidence
-Ablate: regime, structure/BOS, multi-timeframe trend, Phase 3A session, swing duration, macro blackout, optional Phase 3B research features, later optional ML components.
-*Ablation must never mutate the baseline. No feature is promoted merely because it improves in-sample win rate.*
-
-## 23.3 Required XAUUSD Phase 6 Contracts
+## 23.2 Required XAUUSD Phase 6 Contracts
 - `XAU-P6-01`: LONG PIT replay
 - `XAU-P6-02`: SHORT PIT replay
 - `XAU-P6-03`: Combined side-aware parity / reporting & ablation

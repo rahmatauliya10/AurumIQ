@@ -18,7 +18,7 @@
 | [**PHASE 3B**](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🧪 `IMPLEMENTED / RESEARCH ONLY (PRODUCTION WEIGHT = 0.0)` |
 | [**PHASE 4**](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Dual-Side Direction/Timing Scores, State Machine, Fingerprints | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (SEALED PHASE 4 BASELINE)` |
 | [**PHASE 5**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Side-Aware Risk Planning, Causal Execution, Intrabar Resolver | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
-| [**PHASE 6**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Component Ablation | ✅ `VERIFIED / FROZEN` | 🟡 `NOT STARTED (PIT BACKTEST + WALK-FORWARD + ABLATION REQUIRED)` |
+| [**PHASE 6**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | 🟡 `NOT STARTED (PIT BACKTEST + WALK-FORWARD + ABLATION REQUIRED)` |
 | [**PHASE 7**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Multi-Timeframe Charts, Alerts | ✅ `VERIFIED / FROZEN` | ⏸️ `PRODUCT COMPLETION PAUSED / ADAPTATION PENDING` |
 | [**PHASE 8**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
 | [**PHASE 9**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
