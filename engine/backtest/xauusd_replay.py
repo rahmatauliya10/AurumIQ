@@ -150,17 +150,6 @@ class XauUsdPointInTimeReplay:
                 if cycle_3a_snap.macro_event.is_in_blackout:
                     is_blackout = True
 
-            rfh = RuntimeFeedHealth(
-                primary_15m=FeedHealthStatus.HEALTHY if closed_15m else FeedHealthStatus.MISSING,
-                primary_1h=FeedHealthStatus.HEALTHY if closed_1h else FeedHealthStatus.MISSING,
-                primary_4h=FeedHealthStatus.HEALTHY if closed_4h else FeedHealthStatus.MISSING,
-                primary_1d=FeedHealthStatus.HEALTHY if closed_1d else FeedHealthStatus.MISSING,
-                macro_blackout_feed=macro_health,
-                is_macro_blackout=is_blackout,
-                phase3a=FeedHealthStatus.HEALTHY if cycle_3a_snap else FeedHealthStatus.MISSING,
-                is_unclosed_candle=has_unclosed_le_t,
-            )
-
             # 2. Compute PIT Features, Regime & Structure
             feats_15m = self.feature_engine.extract_features(closed_15m) if len(closed_15m) >= 20 else None
             regime_15m = self.regime_engine.classify(feats_15m) if feats_15m else None
@@ -169,6 +158,26 @@ class XauUsdPointInTimeReplay:
             feats_1h = self.feature_engine.extract_features(closed_1h) if len(closed_1h) >= 20 else None
             feats_4h = self.feature_engine.extract_features(closed_4h) if len(closed_4h) >= 20 else None
             feats_1d = self.feature_engine.extract_features(closed_1d) if len(closed_1d) >= 20 else None
+
+            from engine.core.types import VolumeEvidenceType
+            vol_health = FeedHealthStatus.MISSING
+            if feats_15m and getattr(feats_15m, "volume_evidence", None) != VolumeEvidenceType.UNAVAILABLE:
+                vol_health = FeedHealthStatus.HEALTHY if feats_15m.volume_usable else FeedHealthStatus.UNHEALTHY
+
+            rfh = RuntimeFeedHealth(
+                primary_15m=FeedHealthStatus.HEALTHY if closed_15m else FeedHealthStatus.MISSING,
+                primary_1h=FeedHealthStatus.HEALTHY if closed_1h else FeedHealthStatus.MISSING,
+                primary_4h=FeedHealthStatus.HEALTHY if closed_4h else FeedHealthStatus.MISSING,
+                primary_1d=FeedHealthStatus.HEALTHY if closed_1d else FeedHealthStatus.MISSING,
+                secondary_provider=FeedHealthStatus.MISSING,
+                secondary_provider_disagreement=False,
+                macro_blackout_feed=macro_health,
+                is_macro_blackout=is_blackout,
+                volume=vol_health,
+                phase3a=FeedHealthStatus.HEALTHY if cycle_3a_snap else FeedHealthStatus.MISSING,
+                phase3b=FeedHealthStatus.MISSING,
+                is_unclosed_candle=has_unclosed_le_t,
+            )
 
             # Causal 4H Structure for Phase 5 Structural Targets
             structure_4h = self.structure_engine.analyze(closed_4h, atr=feats_4h.atr14 if feats_4h else None) if len(closed_4h) >= 5 else None

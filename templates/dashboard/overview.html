@@ -1,0 +1,248 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="overview-grid">
+    <!-- Row 1: Real-Time Live Quote Bar -->
+    <section class="card quote-banner">
+        <div class="quote-header">
+            <div class="symbol-tag">
+                <span class="symbol-name">XAU/USD</span>
+                <span class="symbol-desc">Spot Gold / US Dollar</span>
+            </div>
+            <div class="freshness-indicator {% if projection.is_quote_stale %}stale{% else %}fresh{% endif %}" id="freshness-pill">
+                <span class="dot"></span>
+                <span id="freshness-text">{% if projection.is_quote_stale %}STALE / EXPIRING{% else %}LIVE STREAMING{% endif %}</span>
+            </div>
+        </div>
+        <div class="quote-metrics">
+            <div class="quote-cell">
+                <span class="metric-label">LIVE BID</span>
+                <span class="metric-value bid-val" id="live-bid">{{ projection.current_bid|default:"—" }}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">LIVE ASK</span>
+                <span class="metric-value ask-val" id="live-ask">{{ projection.current_ask|default:"—" }}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">SPREAD</span>
+                <span class="metric-value" id="live-spread">${{ projection.spread|default:"—" }}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">ENTRY ZONE PROXIMITY</span>
+                <span class="metric-value zone-val" id="live-zone-status">{{ projection.entry_zone_status.value|default:"NO_ACTIVE_ZONE" }}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">LAST CLOSED CANDLE (UTC)</span>
+                <span class="metric-value mono-val" id="last-candle-ts">{{ projection.last_closed_candle_ts|default:"—" }}</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Row 2: Dual-Layer Decision Matrix -->
+    <div class="two-col-grid">
+        <!-- Candidate Intelligence (Layer A) -->
+        <section class="card layer-card candidate-layer">
+            <div class="card-header">
+                <h3>LAYER A: CANDIDATE INTELLIGENCE</h3>
+                <span class="layer-tag">PRE-AUTHORITY MECHANICS</span>
+            </div>
+            <div class="decision-hero">
+                <div class="decision-badge candidate-badge decision-{{ projection.candidate_user_decision|lower }}">
+                    <span class="decision-label">CANDIDATE DECISION</span>
+                    <span class="decision-text" id="candidate-decision">{{ projection.candidate_user_decision }}</span>
+                </div>
+                <div class="state-meta">
+                    <div class="meta-row">
+                        <span>Candidate State:</span>
+                        <strong id="candidate-state">{{ projection.candidate_state }}</strong>
+                    </div>
+                    <div class="meta-row">
+                        <span>Resolution Reason:</span>
+                        <span class="reason-text" id="candidate-reason">{{ projection.candidate_resolution_reason|default:"Awaiting next closed candle" }}</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Dual-Side Score Gauges -->
+            <div class="scores-grid">
+                <div class="score-card">
+                    <div class="score-title">
+                        <span>LONG DIRECTION</span>
+                        <strong id="long-dir-score">{{ projection.long_direction_score|default:"0.0"|floatformat:1 }}</strong>
+                    </div>
+                    <div class="progress-bar"><div class="fill gold" style="width: {{ projection.long_direction_score|default:0 }}%;"></div></div>
+                </div>
+                <div class="score-card">
+                    <div class="score-title">
+                        <span>SHORT DIRECTION</span>
+                        <strong id="short-dir-score">{{ projection.short_direction_score|default:"0.0"|floatformat:1 }}</strong>
+                    </div>
+                    <div class="progress-bar"><div class="fill cyan" style="width: {{ projection.short_direction_score|default:0 }}%;"></div></div>
+                </div>
+                <div class="score-card">
+                    <div class="score-title">
+                        <span>LONG TIMING</span>
+                        <strong id="long-tim-score">{{ projection.long_timing_score|default:"0.0"|floatformat:1 }}</strong>
+                    </div>
+                    <div class="progress-bar"><div class="fill gold" style="width: {{ projection.long_timing_score|default:0 }}%;"></div></div>
+                </div>
+                <div class="score-card">
+                    <div class="score-title">
+                        <span>SHORT TIMING</span>
+                        <strong id="short-tim-score">{{ projection.short_timing_score|default:"0.0"|floatformat:1 }}</strong>
+                    </div>
+                    <div class="progress-bar"><div class="fill cyan" style="width: {{ projection.short_timing_score|default:0 }}%;"></div></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Published Intelligence (Layer B) -->
+        <section class="card layer-card published-layer">
+            <div class="card-header">
+                <h3>LAYER B: PUBLISHED TRADING AUTHORITY</h3>
+                <span class="layer-tag lock">GOVERNANCE LOCKED</span>
+            </div>
+            <div class="decision-hero">
+                <div class="decision-badge published-badge decision-wait">
+                    <span class="decision-label">PUBLISHED DECISION</span>
+                    <span class="decision-text">WAIT</span>
+                </div>
+                <div class="state-meta">
+                    <div class="meta-row">
+                        <span>Published State:</span>
+                        <strong>{{ projection.published_state }}</strong>
+                    </div>
+                    <div class="meta-row">
+                        <span>Publication Guard:</span>
+                        <span class="reason-text">{{ projection.publication_reason|default:"Held at WAIT pending Phase 6 empirical calibration" }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="governance-notice">
+                <p>⚠️ <strong>HUMAN DECISION SUPPORT ONLY</strong> — Automated order execution is strictly forbidden (<code>is_production_authorized = False</code>). Candidate setups are informational notifications.</p>
+            </div>
+        </section>
+    </div>
+
+    <!-- Row 3: Phase 5 Structural Risk Architecture -->
+    <section class="card risk-architecture-card">
+        <div class="card-header">
+            <h3>PHASE 5 STRUCTURAL RISK ARCHITECTURE</h3>
+            <div class="header-badges">
+                <span class="status-pill {% if projection.is_valid_risk_plan %}valid{% else %}invalid{% endif %}">
+                    {% if projection.is_valid_risk_plan %}VALID RISK PLAN{% else %}INVALID / NO CANDIDATE{% endif %}
+                </span>
+                {% if projection.risk_side %}
+                <span class="side-pill side-{{ projection.risk_side|lower }}">{{ projection.risk_side }} PLAN</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="geometry-grid">
+            <div class="geo-cell">
+                <span class="geo-label">SELECTED ENTRY ZONE</span>
+                <span class="geo-value" id="geo-entry">
+                    {% if projection.entry_min and projection.entry_max %}
+                    [{{ projection.entry_min }} — {{ projection.entry_max }}]
+                    {% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="geo-cell">
+                <span class="geo-label">INVALIDATION STOP</span>
+                <span class="geo-value stop-val" id="geo-stop">
+                    {% if projection.stop_final %}{{ projection.stop_final }}{% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="geo-cell">
+                <span class="geo-label">STRUCTURAL TP1</span>
+                <span class="geo-value tp-val" id="geo-tp1">
+                    {% if projection.tp1 %}{{ projection.tp1 }}{% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="geo-cell">
+                <span class="geo-label">EXTENDED TP2</span>
+                <span class="geo-value tp-val" id="geo-tp2">
+                    {% if projection.tp2 %}{{ projection.tp2 }}{% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="geo-cell">
+                <span class="geo-label">REWARD-TO-RISK (TP1)</span>
+                <span class="geo-value rr-val" id="geo-rr">
+                    {% if projection.planned_rr_tp1 %}{{ projection.planned_rr_tp1 }}R{% else %}—{% endif %}
+                </span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Row 4: Diagnostics, Reasons & Calibration Provenance -->
+    <div class="two-col-grid">
+        <section class="card">
+            <div class="card-header">
+                <h3>EXPLAINABILITY & REASONS</h3>
+            </div>
+            <div class="reasons-container">
+                {% if projection.hard_gate_reasons %}
+                <div class="reasons-block hard-gates">
+                    <h4>HARD GATE RESTRICTIONS</h4>
+                    <ul>
+                        {% for r in projection.hard_gate_reasons %}
+                        <li>⛔ {{ r }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                <div class="reasons-block positive">
+                    <h4>POSITIVE FACTORS</h4>
+                    <ul>
+                        {% for r in projection.reasons_positive %}
+                        <li>✓ {{ r }}</li>
+                        {% empty %}
+                        <li class="empty-list">No positive factors active.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="reasons-block negative">
+                    <h4>NEGATIVE FACTORS</h4>
+                    <ul>
+                        {% for r in projection.reasons_negative %}
+                        <li>✗ {{ r }}</li>
+                        {% empty %}
+                        <li class="empty-list">No negative factors active.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-header">
+                <h3>SYSTEM & CALIBRATION PROVENANCE</h3>
+            </div>
+            <div class="provenance-list">
+                <div class="prov-item">
+                    <span>Calibration Status:</span>
+                    <strong class="calibration-badge">{{ projection.calibration_status }}</strong>
+                </div>
+                <div class="prov-item">
+                    <span>Phase 3B Time Cycle:</span>
+                    <span class="mono-badge">RESEARCH ONLY (Weight 0.0)</span>
+                </div>
+                <div class="prov-item">
+                    <span>Signal Fingerprint:</span>
+                    <span class="mono-code">{{ projection.analysis_fingerprint|default:"—"|slice:":24" }}...</span>
+                </div>
+                <div class="prov-item">
+                    <span>Risk Plan Fingerprint:</span>
+                    <span class="mono-code">{{ projection.risk_plan_fingerprint|default:"—"|slice:":24" }}...</span>
+                </div>
+                <div class="prov-item">
+                    <span>Policy Fingerprint:</span>
+                    <span class="mono-code">{{ projection.phase4_policy_fingerprint|default:"—"|slice:":24" }}...</span>
+                </div>
+                <div class="prov-item">
+                    <span>Code Revision:</span>
+                    <span class="mono-code">{{ projection.code_revision|slice:":12" }}</span>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

@@ -65,7 +65,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: xaut_celery_worker
     restart: unless-stopped
-    command: celery -A config worker -l info -Q market_data,analysis,backtest,machine_learning,maintenance -c 4
+    command: celery -A config worker -l info -Q market_data,analysis,backtest,machine_learning,maintenance,alerts -c 4
     volumes:
       - ..:/app
     environment:

@@ -14,6 +14,7 @@ from engine.core.types import (
     DualSideSignalSnapshot,
     DualSideTimingResult,
     FeatureSnapshot,
+    FeedHealthStatus,
     HardGateEvaluation,
     MacroEventContext,
     RegimeResult,
@@ -420,7 +421,7 @@ class XauUsdSignalEngine:
 
     @staticmethod
     def _hash_candles(candles: Optional[Sequence[CandleData]]) -> str:
-        """Hash the full PIT-filtered authoritative candle sequence."""
+        """Hash the full PIT-filtered authoritative candle sequence with canonical normalized decimal precision."""
         if not candles:
             return "EMPTY_FEED"
         import hashlib
@@ -428,11 +429,11 @@ class XauUsdSignalEngine:
         payload = [
             {
                 "ts": (c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)).isoformat(),
-                "o": str(c.open),
-                "h": str(c.high),
-                "l": str(c.low),
-                "c": str(c.close),
-                "v": str(c.volume),
+                "o": f"{Decimal(str(c.open)):.8f}",
+                "h": f"{Decimal(str(c.high)):.8f}",
+                "l": f"{Decimal(str(c.low)):.8f}",
+                "c": f"{Decimal(str(c.close)):.8f}",
+                "v": f"{Decimal(str(c.volume)):.8f}",
                 "closed": bool(c.is_closed),
             }
             for c in candles
@@ -488,7 +489,11 @@ class XauUsdSignalEngine:
 
         has_unclosed_le_t = unclosed_15m or unclosed_1h or unclosed_4h or unclosed_1d
         if not pit_15m and not has_unclosed_le_t:
-            raise ValueError(f"No eligible closed 15m candles found on or before as_of={decision_ts.isoformat()}.")
+            if runtime_health and runtime_health.primary_15m != FeedHealthStatus.HEALTHY:
+                # Primary feed is missing/unhealthy/stale: fail closed through hard safety gate
+                pass
+            else:
+                raise ValueError(f"No eligible closed 15m candles found on or before as_of={decision_ts.isoformat()}.")
 
         latest_candle_15m = pit_15m[-1] if pit_15m else None
         analysis_timestamp = decision_ts

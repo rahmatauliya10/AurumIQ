@@ -292,12 +292,23 @@ def run_xauusd_backtest_task(
     intrabar_policy_enum = IntrabarPolicy(intrabar_policy)
 
     if cost_scenario == "EMPIRICAL":
+        if (
+            entry_fee_bps is None
+            or exit_fee_bps is None
+            or synthetic_spread_bps is None
+            or entry_slippage_bps is None
+            or exit_slippage_bps is None
+        ):
+            raise ValueError(
+                "cost_scenario EMPIRICAL strictly requires all 5 friction parameters: "
+                "entry_fee_bps, exit_fee_bps, synthetic_spread_bps, entry_slippage_bps, exit_slippage_bps."
+            )
         cost_cfg = XauUsdCostConfig.empirical(
-            entry_fee_bps=Decimal(entry_fee_bps or "0.0"),
-            exit_fee_bps=Decimal(exit_fee_bps or "0.0"),
-            synthetic_spread_bps=Decimal(synthetic_spread_bps or "0.0"),
-            entry_slippage_bps=Decimal(entry_slippage_bps or "0.0"),
-            exit_slippage_bps=Decimal(exit_slippage_bps or "0.0"),
+            entry_fee_bps=Decimal(str(entry_fee_bps)),
+            exit_fee_bps=Decimal(str(exit_fee_bps)),
+            synthetic_spread_bps=Decimal(str(synthetic_spread_bps)),
+            entry_slippage_bps=Decimal(str(entry_slippage_bps)),
+            exit_slippage_bps=Decimal(str(exit_slippage_bps)),
         )
     elif cost_scenario == "IDEALIZED":
         cost_cfg = XauUsdCostConfig.idealized()
@@ -334,17 +345,43 @@ def run_xauusd_backtest_task(
     try:
         dataset = PointInTimeDataset()
         from apps.market_data.models import MarketCandle
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+        from django.db import models
 
-        # Load XAUUSD candles
+        # Resolve active PRIMARY_XAUUSD_SPOT listing before loading candles (fail-closed if missing)
+        prim_listing = MarketListing.objects.filter(
+            instrument__base_asset__code="XAU",
+            instrument__quote_asset__code="USD",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        prim_prov = (
+            str(prim_listing.provider).strip().lower()
+            if (prim_listing and prim_listing.provider)
+            else None
+        )
+        if not prim_listing or not prim_prov:
+            return {
+                "status": "EVIDENCE_NOT_CONFIGURED",
+                "message": "PRIMARY_XAUUSD_SPOT listing is required to run XAUUSD backtest.",
+            }
+
+        # Load XAUUSD candles strictly for the active primary source
         for tf in ("15m", "1h", "4h", "1d", "1m", "5m"):
-            candles_qs = MarketCandle.objects.filter(
-                timeframe=tf,
-                timestamp_close__gte=start_dt,
-                timestamp_close__lt=end_dt,
-                is_closed=True,
-                instrument__base_asset__code="XAU",
-                instrument__quote_asset__code="USD",
-            ).order_by("timestamp_close")
+            candles_qs = (
+                MarketCandle.objects.filter(
+                    timeframe=tf,
+                    timestamp_close__gte=start_dt,
+                    timestamp_close__lt=end_dt,
+                    is_closed=True,
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                )
+                .filter(
+                    models.Q(source__iexact=prim_prov) | models.Q(source=prim_listing.provider)
+                )
+                .order_by("timestamp_close", "id")
+            )
 
             for c in candles_qs:
                 dataset.add_candle(

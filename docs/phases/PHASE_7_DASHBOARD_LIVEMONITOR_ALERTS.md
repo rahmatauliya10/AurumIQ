@@ -2,7 +2,9 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** ⏸️ **PRODUCT COMPLETION PAUSED / ADAPTATION PENDING**
+> **Current XAUUSD Target Status:** 🟡 **IMPLEMENTED ON FEATURE BRANCH — PENDING HUMAN VERIFICATION**  
+> **Branch:** `feat/xauusd-phase7-dashboard-livemonitor-alerts`  
+> **Authoritative Baseline SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`
 
 ---
 
@@ -28,8 +30,20 @@ Alerts provide pure real-time notification support for human traders. **Zero ale
 - **Proximity & Invalidation Alerts:** `ENTRY_ZONE_REACHED`, `INVALIDATION_TOUCHED`.
 - **Infrastructure Alerts:** `LIVE_DATA_STALE`, `PROVIDER_UNHEALTHY`.
 
-### 3. Approved Planned Test Contracts
-- **`XAU-P7-01`**: Dual-side BUY / WAIT / SELL presentation and informational alerting contract (`PLANNED / FUTURE CONTRACT`).
+### 3. Verification & Acceptance Results
+- **`XAU-P7-01`**: Dual-side BUY / WAIT / SELL presentation and informational alerting contract (`tests/acceptance/test_xau_p7_contract.py` — **PASSED: 6/6 GATES**).
+  - Gate A: LONG Presentation (Candidate BUY, Published WAIT, Long Scores, Valid Risk Geometry).
+  - Gate B: SHORT Presentation (Candidate SELL, Published WAIT, Short Scores, BID used for Short Entry Zone).
+  - Gate C: WAIT Presentation (Calibration-required / safety-hold, None geometry rendered without fake zeros).
+  - Gate D: Alerting (Candidate informational alert generated with mandatory disclaimer, zero order execution keys).
+  - Gate E: Safety & Suppression (Stale quote / unhealthy provider suppress alerts; blackout emits safety alert).
+  - Gate F: Real-Time Parity (REST API, Django Template context, and WebSocket stream share single projection model).
+- **Hostile Scenarios Suite**: `tests/unit/test_phase7_hostile.py` (**PASSED: 10/10 SCENARIOS**).
+- **Historical XAUT Regression Suites**: `tests/acceptance/test_phase7_acceptance.py`, `test_phase7b_acceptance.py`, `test_phase7c_acceptance.py` (**PASSED: 20/20**).
+- **Phase 4, 5, 6 Regression Suites**: `tests/acceptance/test_xau_p4_contracts.py`, `test_xau_p5_contracts.py`, `test_xau_p6_contracts.py` (**PASSED: 10/10**).
+- **Full Test Suite**: `665 passed, 0 failures, 1 warning` in 15.54s.
+- **Docker Production Build**: `aurumiq:phase7` built cleanly.
+- **Docker Compose Prod**: `docker compose -f docker/docker-compose.prod.yml config` validated with zero errors.
 
 ---
 

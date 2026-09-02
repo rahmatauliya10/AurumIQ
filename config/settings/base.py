@@ -55,6 +55,8 @@ LOCAL_APPS = [
     "apps.signals.apps.SignalsConfig",
     "apps.backtests.apps.BacktestsConfig",
     "apps.live_monitor.apps.LiveMonitorConfig",
+    "apps.alerts.apps.AlertsConfig",
+    "apps.dashboard.apps.DashboardConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -162,6 +164,10 @@ CELERY_TASK_QUEUES = {
         "exchange": "maintenance",
         "routing_key": "maintenance.#",
     },
+    "alerts": {
+        "exchange": "alerts",
+        "routing_key": "alerts.#",
+    },
 }
 
 CELERY_TASK_DEFAULT_QUEUE = "maintenance"
@@ -227,6 +233,30 @@ LOGGING = {
 
 # Authentication URLs
 LOGIN_URL = "/accounts/login/"
-LOGIN_REDIRECT_URL = "/"
+LOGIN_REDIRECT_URL = "/dashboard/"
 LOGOUT_REDIRECT_URL = "/accounts/login/"
+
+# ============================================================
+# XAUUSD Live Monitor Configuration (Fail-Closed)
+# ============================================================
+# These MUST be explicitly configured in environment.
+# Missing configuration -> NOT_CONFIGURED / fail-closed.
+# .env.example contains example values only.
+
+# Redis quote cache TTL (seconds) — no default
+_xauusd_ttl_raw = env("XAUUSD_LIVE_QUOTE_TTL_SECONDS", default=None)
+XAUUSD_LIVE_QUOTE_TTL_SECONDS = int(_xauusd_ttl_raw) if _xauusd_ttl_raw is not None else None
+
+# Quote staleness threshold (seconds) — no default
+_xauusd_stale_raw = env("XAUUSD_QUOTE_STALE_SECONDS", default=None)
+XAUUSD_QUOTE_STALE_SECONDS = int(_xauusd_stale_raw) if _xauusd_stale_raw is not None else None
+
+# Future-skew rejection threshold (seconds) — no default
+_xauusd_skew_raw = env("XAUUSD_QUOTE_FUTURE_SKEW_SECONDS", default=None)
+XAUUSD_QUOTE_FUTURE_SKEW_SECONDS = int(_xauusd_skew_raw) if _xauusd_skew_raw is not None else None
+
+# Alert transport configuration — NOT_CONFIGURED by default
+ALERT_WEBHOOK_URL = env("ALERT_WEBHOOK_URL", default=None)
+ALERT_TELEGRAM_BOT_TOKEN = env("ALERT_TELEGRAM_BOT_TOKEN", default=None)
+ALERT_TELEGRAM_CHAT_ID = env("ALERT_TELEGRAM_CHAT_ID", default=None)
 

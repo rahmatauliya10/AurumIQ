@@ -1,0 +1,71 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="signals-container">
+    <section class="card">
+        <div class="card-header">
+            <h3>IMMUTABLE SIGNAL RECORDS (XAU/USD)</h3>
+            <span class="count-badge">{{ page_obj.paginator.count }} Total Signals</span>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Timeframe</th>
+                        <th>Candidate Decision</th>
+                        <th>Published Decision</th>
+                        <th>Long Scores (Dir / Tim)</th>
+                        <th>Short Scores (Dir / Tim)</th>
+                        <th>Calibration</th>
+                        <th>Fingerprint</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in signals %}
+                    <tr>
+                        <td class="mono-text">{{ s.timestamp|date:"Y-m-d H:i" }}</td>
+                        <td><span class="tf-pill">{{ s.timeframe }}</span></td>
+                        <td>
+                            <span class="decision-pill decision-{{ s.user_decision|lower }}">
+                                {{ s.user_decision }} ({{ s.state }})
+                            </span>
+                        </td>
+                        <td>
+                            <span class="decision-pill decision-wait">WAIT</span>
+                        </td>
+                        <td>
+                            {{ s.long_direction_score|default:"—"|floatformat:1 }} / {{ s.long_timing_score|default:"—"|floatformat:1 }}
+                        </td>
+                        <td>
+                            {{ s.short_direction_score|default:"—"|floatformat:1 }} / {{ s.short_timing_score|default:"—"|floatformat:1 }}
+                        </td>
+                        <td>
+                            <span class="cal-pill">{{ s.calibration_status|default:"CALIBRATION_REQUIRED" }}</span>
+                        </td>
+                        <td class="mono-code">{{ s.analysis_fingerprint|slice:":12" }}...</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center empty-cell">No immutable signal records found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if page_obj.has_other_pages %}
+        <div class="pagination-bar">
+            {% if page_obj.has_previous %}
+            <a href="?page={{ page_obj.previous_page_number }}" class="page-btn">Previous</a>
+            {% endif %}
+            <span class="page-info">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+            {% if page_obj.has_next %}
+            <a href="?page={{ page_obj.next_page_number }}" class="page-btn">Next</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

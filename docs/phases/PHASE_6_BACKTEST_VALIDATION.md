@@ -2,7 +2,9 @@
 
 > **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** 🟢 **IMPLEMENTED ON FEATURE BRANCH — PENDING FINAL MERGE VERIFICATION**  
+> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**  
+> **Verified Main SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`  
+> **Merged via:** PR #14  
 > **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6**
 
 ---
@@ -146,7 +148,7 @@ Every backtest report calculates comprehensive, normalized risk-adjusted statist
 
 ---
 
-## 12. Definition of Done (Implemented on Feature Branch — Pending Final Merge Verification)
+## 12. Definition of Done (Completed & Verified)
 
 - [x] Backtest engine imports pure `engine/` modules with zero Django ORM, Celery, Redis, or Channels dependencies (AST verified).
 - [x] Point-in-time candle isolation verified (candles $> T$ invisible; unclosed candles $\le T$ trigger safety hold).

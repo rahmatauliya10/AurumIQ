@@ -1,0 +1,117 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="cycles-container">
+    <section class="card research-header-card">
+        <div class="research-badge">
+            <span class="badge-icon">🔬</span>
+            <span class="badge-title">TIME CYCLE INTELLIGENCE — PHASE 3A & 3B LAB</span>
+        </div>
+        <p class="research-desc">Phase 3A Session and Pullback Age Intelligence (production integrated) alongside Phase 3B Spectral / Wavelet Cycle Decomposition (research only, production weight locked to <strong>0.0</strong>).</p>
+    </section>
+
+    <!-- Phase 3A Robust Time Cycle Snapshots -->
+    <section class="card">
+        <div class="card-header">
+            <h3>PHASE 3A — ROBUST TIME CYCLE SNAPSHOTS (PIT)</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Timeframe</th>
+                        <th>Session</th>
+                        <th>Session Progress</th>
+                        <th>Liquidity</th>
+                        <th>Pullback Age %</th>
+                        <th>Mature Pullback</th>
+                        <th>Event Blocked</th>
+                        <th>Score (3A)</th>
+                        <th>Version</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in latest_cycles_3a %}
+                    <tr>
+                        <td class="mono-text">{{ c.timestamp|date:"Y-m-d H:i" }}</td>
+                        <td><span class="tf-pill">{{ c.timeframe }}</span></td>
+                        <td><span class="status-pill info">{{ c.session }}</span></td>
+                        <td>{{ c.session_progress_pct|floatformat:1 }}%</td>
+                        <td>
+                            {% if c.is_high_liquidity %}
+                            <span class="status-pill valid">HIGH</span>
+                            {% else %}
+                            <span class="status-pill invalid">LOW/OFF</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ c.pullback_age_percentile|default:"—" }}</td>
+                        <td>
+                            {% if c.is_mature_pullback %}
+                            <span class="status-pill valid">YES</span>
+                            {% else %}
+                            <span class="status-pill neutral">NO</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if c.is_blocked_by_event %}
+                            <span class="status-pill invalid">BLOCKED</span>
+                            {% else %}
+                            <span class="status-pill valid">CLEAR</span>
+                            {% endif %}
+                        </td>
+                        <td class="mono-text"><strong>{{ c.cycle_score_3a|floatformat:2 }}</strong></td>
+                        <td class="mono-text">{{ c.cycle_version }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="10" class="text-center empty-cell">No Phase 3A cycle records available.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Phase 3B Experimental Spectral / CWT Decomposition -->
+    <section class="card">
+        <div class="card-header">
+            <h3>PHASE 3B — EXPERIMENTAL SPECTRAL DECOMPOSITION (RESEARCH ONLY)</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Dominant Period</th>
+                        <th>ACF Lag</th>
+                        <th>FFT Period</th>
+                        <th>Wavelet Period</th>
+                        <th>Reliability</th>
+                        <th>Promotion Status</th>
+                        <th>Prod Weight</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in latest_cycles_3b %}
+                    <tr>
+                        <td class="mono-text">{{ c.timestamp|date:"Y-m-d H:i" }}</td>
+                        <td>{{ c.dominant_period_bars|default:"—" }} bars</td>
+                        <td>{{ c.acf_dominant_lag|default:"—" }}</td>
+                        <td>{{ c.fft_dominant_period|default:"—" }}</td>
+                        <td>{{ c.wavelet_dominant_period|default:"—" }}</td>
+                        <td><span class="status-pill neutral">{{ c.reliability_status }}</span></td>
+                        <td><span class="status-pill info">{{ c.promotion_status }}</span></td>
+                        <td><span class="status-pill invalid"><strong>0.0 (LOCKED)</strong></span></td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center empty-cell">No Phase 3B experimental records available.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

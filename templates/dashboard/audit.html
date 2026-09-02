@@ -1,0 +1,97 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="audit-container">
+    <!-- Informational Alert Events Audit -->
+    <section class="card">
+        <div class="card-header">
+            <h3>INFORMATIONAL ALERT EVENTS LOG</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Emitted At (UTC)</th>
+                        <th>Event Type</th>
+                        <th>Side</th>
+                        <th>Candidate Decision</th>
+                        <th>Entry Zone</th>
+                        <th>Stop / TP1</th>
+                        <th>Status</th>
+                        <th>Event ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in alerts %}
+                    <tr>
+                        <td class="mono-text">{{ a.created_at|date:"Y-m-d H:i:s" }}</td>
+                        <td><span class="event-tag">{{ a.event_type }}</span></td>
+                        <td>{{ a.side|default:"—" }}</td>
+                        <td>{{ a.candidate_user_decision }} ({{ a.candidate_state }})</td>
+                        <td>
+                            {% if a.entry_min and a.entry_max %}[{{ a.entry_min }}, {{ a.entry_max }}]{% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {{ a.stop_final|default:"—" }} / {{ a.tp1|default:"—" }}
+                        </td>
+                        <td><span class="status-pill status-{{ a.status|lower }}">{{ a.status }}</span></td>
+                        <td class="mono-code">{{ a.event_id|slice:":12" }}...</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center empty-cell">No alert events recorded.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Phase 5 Live Risk Plans Audit -->
+    <section class="card" style="margin-top: 24px;">
+        <div class="card-header">
+            <h3>PHASE 5 LIVE RISK PLAN RECORDS</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Signal Timestamp (UTC)</th>
+                        <th>Side</th>
+                        <th>Status</th>
+                        <th>Entry Zone</th>
+                        <th>Stop Final</th>
+                        <th>TP1 / TP2</th>
+                        <th>RR (TP1)</th>
+                        <th>Risk Fingerprint</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in risk_plans %}
+                    <tr>
+                        <td class="mono-text">{{ r.signal_timestamp|date:"Y-m-d H:i" }}</td>
+                        <td>{{ r.risk_side|default:"—" }}</td>
+                        <td>
+                            <span class="status-pill {% if r.is_valid_risk_plan %}valid{% else %}invalid{% endif %}">
+                                {% if r.is_valid_risk_plan %}VALID{% else %}INVALID{% endif %}
+                            </span>
+                        </td>
+                        <td>
+                            {% if r.entry_min and r.entry_max %}[{{ r.entry_min }}, {{ r.entry_max }}]{% else %}—{% endif %}
+                        </td>
+                        <td>{{ r.stop_final|default:"—" }}</td>
+                        <td>{{ r.tp1|default:"—" }} / {{ r.tp2|default:"—" }}</td>
+                        <td>{{ r.rr_tp1|default:"—" }}R</td>
+                        <td class="mono-code">{{ r.risk_plan_fingerprint|default:"—"|slice:":12" }}...</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center empty-cell">No live risk plan records recorded.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}
