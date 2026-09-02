@@ -162,23 +162,32 @@ Twelve Data Basic Free Tier quotas:
 
 ---
 
-## 9. Qualification Command Reproducibility
+## 9. Qualification Command Reproducibility & Mode Semantics
 
-The qualification command `apps/market_data/management/commands/qualify_twelve_data_xauusd.py` provides:
+The qualification command `apps/market_data/management/commands/qualify_twelve_data_xauusd.py` enforces three distinct execution modes with non-overlapping status semantics:
 
-1. **Full Bounded Qualification:**
+1. **Full Bounded Qualification (Authoritative Gate):**
    ```powershell
    uv run python manage.py qualify_twelve_data_xauusd --full
    ```
-   Validates XAU/USD identity, all 6 timeframe endpoints with explicit UTC, future timestamp sanity, OHLC geometry, and closed 15m handling. Emits:
-   `FINAL STATUS: TWELVE_DATA_XAUUSD_PRIMARY_USABLE`
+   - **Scope:** Authoritative qualification verifying XAU/USD identity, live access across all 6 timeframes (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) with explicit `timezone=UTC`, future timestamp sanity checks, OHLC geometry, and live closed 15m candle boundary handling (`only_closed=True`, `is_closed=True`, `timestamp_close <= now`).
+   - **Emits:** `FINAL STATUS: TWELVE_DATA_XAUUSD_PRIMARY_USABLE` (or `LIMITED`, `UNUSABLE`, `TIMESTAMP_SEMANTICS_UNRESOLVED`).
+   - **Pre-requisite:** ONLY this mode qualifies the analytical candle feed as usable.
 
-2. **Offline Contract Check:**
+2. **Fast Diagnostic Probe (Diagnostic Only):**
+   ```powershell
+   uv run python manage.py qualify_twelve_data_xauusd
+   ```
+   - **Scope:** Quick connectivity check verifying API key presence, endpoint health, and a single 15m closed candle request.
+   - **Emits:** `FINAL STATUS: TWELVE_DATA_FAST_PROBE_PASS`
+   - **Invariant:** Strictly diagnostic; explicitly warns that it does NOT constitute comprehensive provider qualification and never emits `PRIMARY_USABLE`.
+
+3. **Offline Contract Check (CI/CD Verification):**
    ```powershell
    uv run python manage.py qualify_twelve_data_xauusd --offline
    ```
-   Validates contract invariants without network calls. Explicitly emits:
-   `STATUS: OFFLINE_CONTRACT_CHECK_ONLY`
+   - **Scope:** Validates timezone contracts and prohibited proxy filters locally without network calls.
+   - **Emits:** `STATUS: OFFLINE_CONTRACT_CHECK_ONLY`
 
 ---
 
