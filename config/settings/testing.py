@@ -27,3 +27,9 @@ LOGGING["root"]["level"] = "WARNING"  # noqa: F405
 LOGGING["loggers"]["django"]["level"] = "WARNING"  # noqa: F405
 LOGGING["loggers"]["engine"]["level"] = "WARNING"  # noqa: F405
 LOGGING["loggers"]["apps"]["level"] = "WARNING"  # noqa: F405
+
+# TEST_ONLY: Explicit XAUUSD live monitor configuration for test suite.
+# These are NOT production defaults — production MUST configure via environment.
+XAUUSD_LIVE_QUOTE_TTL_SECONDS = 60
+XAUUSD_QUOTE_STALE_SECONDS = 45
+XAUUSD_QUOTE_FUTURE_SKEW_SECONDS = 60

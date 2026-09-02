@@ -1,0 +1,137 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="analysis-container">
+    <div class="chart-controls-bar card">
+        <div class="tf-selector">
+            <span class="control-label">TIMEFRAME:</span>
+            <a href="?tf=15m" class="tf-btn {% if selected_timeframe == '15m' %}active{% endif %}">15M</a>
+            <a href="?tf=1h" class="tf-btn {% if selected_timeframe == '1h' %}active{% endif %}">1H</a>
+            <a href="?tf=4h" class="tf-btn {% if selected_timeframe == '4h' %}active{% endif %}">4H</a>
+            <a href="?tf=1d" class="tf-btn {% if selected_timeframe == '1d' %}active{% endif %}">1D</a>
+        </div>
+        <div class="overlay-legend">
+            <span class="legend-item"><span class="legend-box entry-box"></span> Entry Zone</span>
+            <span class="legend-item"><span class="legend-box stop-box"></span> Invalidation Stop</span>
+            <span class="legend-item"><span class="legend-box tp-box"></span> Structural TP</span>
+        </div>
+    </div>
+
+    <section class="card chart-card">
+        <div id="plotly-chart-container" style="width: 100%; height: 600px;"></div>
+        <div id="chart-loading" class="chart-loading-overlay">
+            <div class="spinner"></div>
+            <span>Loading XAU/USD {{ selected_timeframe|upper }} Chart Data...</span>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const tf = "{{ selected_timeframe }}";
+        fetch(`/dashboard/api/chart/${tf}/?limit=120`)
+            .then(res => res.json())
+            .then(data => {
+                const loading = document.getElementById("chart-loading");
+                if (loading) loading.style.display = "none";
+
+                if (!data.timestamps || data.timestamps.length === 0) {
+                    document.getElementById("plotly-chart-container").innerHTML = "<div class='no-data-msg'>No closed candle data available for timeframe " + tf + ".</div>";
+                    return;
+                }
+
+                const trace = {
+                    x: data.timestamps,
+                    close: data.close,
+                    decreasing: {line: {color: '#ef4444'}},
+                    high: data.high,
+                    increasing: {line: {color: '#10b981'}},
+                    low: data.low,
+                    open: data.open,
+                    type: 'candlestick',
+                    xaxis: 'x',
+                    yaxis: 'y',
+                    name: 'XAU/USD ' + tf.toUpperCase()
+                };
+
+                const shapes = [];
+                const overlays = data.overlays || {};
+                
+                // Overlay Entry Zone
+                if (overlays.entry_min && overlays.entry_max) {
+                    shapes.push({
+                        type: 'rect',
+                        xref: 'paper',
+                        yref: 'y',
+                        x0: 0,
+                        x1: 1,
+                        y0: overlays.entry_min,
+                        y1: overlays.entry_max,
+                        fillcolor: 'rgba(217, 119, 6, 0.15)',
+                        line: {color: '#d97706', width: 1, dash: 'dot'}
+                    });
+                }
+
+                // Overlay Stop Loss
+                if (overlays.stop_final) {
+                    shapes.push({
+                        type: 'line',
+                        xref: 'paper',
+                        yref: 'y',
+                        x0: 0,
+                        x1: 1,
+                        y0: overlays.stop_final,
+                        y1: overlays.stop_final,
+                        line: {color: '#dc2626', width: 1.5, dash: 'dash'}
+                    });
+                }
+
+                // Overlay TP1
+                if (overlays.tp1) {
+                    shapes.push({
+                        type: 'line',
+                        xref: 'paper',
+                        yref: 'y',
+                        x0: 0,
+                        x1: 1,
+                        y0: overlays.tp1,
+                        y1: overlays.tp1,
+                        line: {color: '#059669', width: 1.5, dash: 'dash'}
+                    });
+                }
+
+                const layout = {
+                    dragmode: 'zoom',
+                    margin: {r: 20, t: 25, b: 40, l: 60},
+                    showlegend: false,
+                    xaxis: {
+                        autorange: true,
+                        title: 'Time (UTC)',
+                        type: 'date',
+                        rangeslider: {visible: false},
+                        gridcolor: '#27272a',
+                        color: '#a1a1aa'
+                    },
+                    yaxis: {
+                        autorange: true,
+                        type: 'linear',
+                        gridcolor: '#27272a',
+                        color: '#a1a1aa'
+                    },
+                    paper_bgcolor: '#121214',
+                    plot_bgcolor: '#121214',
+                    shapes: shapes
+                };
+
+                Plotly.newPlot('plotly-chart-container', [trace], layout, {responsive: true, displayModeBar: true});
+            })
+            .catch(err => {
+                console.error("Error loading chart:", err);
+                const loading = document.getElementById("chart-loading");
+                if (loading) loading.innerHTML = "<span>Failed to load chart data.</span>";
+            });
+    });
+</script>
+{% endblock %}

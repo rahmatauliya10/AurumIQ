@@ -1,0 +1,55 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="cycles-container">
+    <section class="card research-header-card">
+        <div class="research-badge">
+            <span class="badge-icon">🔬</span>
+            <span class="badge-title">TIME CYCLE INTELLIGENCE — RESEARCH LAB</span>
+        </div>
+        <p class="research-desc">Continuous Wavelet Transform (CWT) spectral analysis and harmonic cycle decomposition. Production weight is strictly locked at <strong>0.0</strong>.</p>
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <h3>CYCLE SNAPSHOT RECORDS (PIT)</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Timeframe</th>
+                        <th>Dominant Period</th>
+                        <th>Cycle Power</th>
+                        <th>Macro Status</th>
+                        <th>Cycle Version</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in latest_cycles %}
+                    <tr>
+                        <td class="mono-text">{{ c.timestamp|date:"Y-m-d H:i" }}</td>
+                        <td><span class="tf-pill">{{ c.timeframe }}</span></td>
+                        <td>{{ c.dominant_period|default:"—" }} bars</td>
+                        <td>{{ c.spectral_power|default:"—"|floatformat:3 }}</td>
+                        <td>
+                            {% if c.is_in_blackout %}
+                            <span class="status-pill invalid">BLACKOUT</span>
+                            {% else %}
+                            <span class="status-pill valid">CLEAR</span>
+                            {% endif %}
+                        </td>
+                        <td class="mono-text">{{ c.cycle_version }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="text-center empty-cell">No cycle records available.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

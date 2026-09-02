@@ -90,7 +90,7 @@ class LiveEventBroadcaster:
                 "spread": str(spread),
                 "spread_pct": str(spread_pct),
                 "entry_zone_status": entry_zone_status,
-                "distance_to_entry_zone_pct": str(distance_to_entry_zone_pct) if distance_to_entry_zone_pct else None,
+                "distance_to_entry_zone_pct": str(distance_to_entry_zone_pct) if distance_to_entry_zone_pct is not None else None,
             },
         }
 
@@ -162,14 +162,14 @@ class LiveEventBroadcaster:
                 "risk_plan_valid": risk_plan_valid,
                 "execution_eligible": execution_eligible,
                 "effective_action": effective_action,
-                "entry_min": str(entry_min) if entry_min else None,
-                "entry_mid": str(entry_mid) if entry_mid else None,
-                "entry_max": str(entry_max) if entry_max else None,
-                "stop_final": str(stop_final) if stop_final else None,
-                "tp1": str(tp1) if tp1 else None,
-                "tp2": str(tp2) if tp2 else None,
-                "rr_tp1": str(rr_tp1) if rr_tp1 else None,
-                "rr_tp2": str(rr_tp2) if rr_tp2 else None,
+                "entry_min": str(entry_min) if entry_min is not None else None,
+                "entry_mid": str(entry_mid) if entry_mid is not None else None,
+                "entry_max": str(entry_max) if entry_max is not None else None,
+                "stop_final": str(stop_final) if stop_final is not None else None,
+                "tp1": str(tp1) if tp1 is not None else None,
+                "tp2": str(tp2) if tp2 is not None else None,
+                "rr_tp1": str(rr_tp1) if rr_tp1 is not None else None,
+                "rr_tp2": str(rr_tp2) if rr_tp2 is not None else None,
             },
         }
 
@@ -196,7 +196,7 @@ class LiveMonitorWebSocketHandler:
     ASGI-compliant WebSocket session handler for authenticated streaming (P7-25).
     """
 
-    def __init__(self, user: Any, instrument: str = "XAUT/USDT"):
+    def __init__(self, user: Any, instrument: str = "XAUUSD"):
         self.user = user
         self.instrument = instrument
         self.is_connected = False
@@ -227,8 +227,11 @@ class LiveMonitorWebSocketHandler:
         """Send formatted event JSON to client if connected."""
         if not self.is_connected:
             return
-        if event_payload.get("instrument") != self.instrument:
-            return
+        inst = event_payload.get("instrument")
+        # Match exact instrument or accept both gold instruments for general connections
+        if inst and self.instrument and inst != self.instrument:
+            if not (inst in ("XAUUSD", "XAUT/USDT", "XAU/USD") and self.instrument in ("XAUUSD", "XAUT/USDT", "XAU/USD")):
+                return
 
         msg_str = json.dumps(event_payload)
         self.message_queue.append(msg_str)
@@ -252,8 +255,8 @@ class LiveMonitorWebSocketHandler:
 
 class LiveMonitorAsyncWebsocketConsumer:
     """
-    Native ASGI 3.0 WebSocket Application for real-time live monitoring.
-    Handles connect, authentication verification, disconnect, and streaming with Redis pub/sub.
+    Pure ASGI WebSocket Consumer for live market data & decision streaming.
+    Bypasses Channels dependency; compatible directly with Uvicorn / Daphne ASGI.
     """
 
     def __init__(self, scope, receive, send):
@@ -280,10 +283,19 @@ class LiveMonitorAsyncWebsocketConsumer:
             await _safe_send({"type": "websocket.close", "code": 4401})
             return
 
+        # Determine instrument from query string or default
+        query_string = self.scope.get("query_string", b"").decode("utf-8")
+        instrument = "XAUUSD"
+        if "symbol=" in query_string:
+            for part in query_string.split("&"):
+                if part.startswith("symbol="):
+                    instrument = part.split("=")[1]
+                    break
+
         # Accept websocket connection
         await _safe_send({"type": "websocket.accept"})
-        
-        self.handler = LiveMonitorWebSocketHandler(user=user, instrument="XAUT/USDT")
+
+        self.handler = LiveMonitorWebSocketHandler(user=user, instrument=instrument)
         try:
             self.handler.loop = asyncio.get_running_loop()
         except Exception:
@@ -302,8 +314,11 @@ class LiveMonitorAsyncWebsocketConsumer:
                 return
             try:
                 pubsub = r.pubsub()
-                channel = "aurumiq:live_events:XAUT/USDT"
-                pubsub.subscribe(channel)
+                pubsub.subscribe(
+                    f"aurumiq:live_events:{instrument}",
+                    "aurumiq:live_events:XAUT/USDT",
+                    "aurumiq:live_events:XAUUSD",
+                )
                 while True:
                     msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=1.0)
                     if msg and msg.get("type") == "message":
@@ -342,4 +357,3 @@ class LiveMonitorAsyncWebsocketConsumer:
             redis_task.cancel()
             if self.handler:
                 self.handler.disconnect()
-

@@ -59,7 +59,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.prod
     container_name: aurumiq_celery_worker_prod
-    command: celery -A config worker -l INFO -Q market_data,analysis,backtest,machine_learning,maintenance --concurrency=4
+    command: celery -A config worker -l INFO -Q market_data,analysis,backtest,machine_learning,maintenance,alerts --concurrency=4
     restart: always
     env_file:
       - ../.env.prod

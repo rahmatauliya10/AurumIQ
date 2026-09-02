@@ -1,4 +1,4 @@
-"""URL configuration for XAUT Signal Intelligence."""
+"""URL configuration for AurumIQ."""
 from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
@@ -18,6 +18,7 @@ urlpatterns = [
     path("health/", health_check, name="health_check"),
     path("health/live/", LivenessHealthView.as_view(), name="health_live"),
     path("health/ready/", ReadinessHealthView.as_view(), name="health_ready"),
+    path("dashboard/", include("apps.dashboard.urls", namespace="dashboard")),
     path("live/", include("apps.live_monitor.urls", namespace="live_monitor")),
     path("", include("apps.live_monitor.urls", namespace="root_live")),
 ]

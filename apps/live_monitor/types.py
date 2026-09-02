@@ -19,8 +19,11 @@ class FeedStatus(str, Enum):
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
     STALE = "STALE"
+    UNHEALTHY = "UNHEALTHY"
     DOWN = "DOWN"
     TRANSITION = "TRANSITION"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    MISSING = "MISSING"
 
 
 class OperationalHealthStatus(str, Enum):
@@ -43,7 +46,6 @@ class OperationalMetrics:
     recovery_count: int = 0
     websocket_connections: int = 0
     operational_health: OperationalHealthStatus = OperationalHealthStatus.HEALTHY
-
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,7 @@ class CandleClosedEvent:
 
 @dataclass(frozen=True)
 class LiveFeedHealthStatus:
-    """Consolidated critical feed health assessment."""
+    """Consolidated critical feed health assessment (Historical XAUT)."""
     xaut_status: FeedStatus = FeedStatus.HEALTHY
     xau_status: FeedStatus = FeedStatus.HEALTHY
     usdt_norm_status: FeedStatus = FeedStatus.HEALTHY
@@ -114,13 +116,35 @@ class LiveFeedHealthStatus:
 
 
 @dataclass(frozen=True)
+class XauUsdFeedHealthStatus:
+    """
+    Consolidated critical feed health assessment for active XAUUSD.
+    Strict Invariant: Fails closed. Defaults to NOT_CONFIGURED.
+    Only verified real evidence may set status to HEALTHY.
+    """
+    xauusd_primary_status: FeedStatus = FeedStatus.NOT_CONFIGURED
+    xauusd_secondary_status: FeedStatus = FeedStatus.NOT_CONFIGURED
+    macro_status: FeedStatus = FeedStatus.NOT_CONFIGURED
+    provider_sync_status: FeedStatus = FeedStatus.NOT_CONFIGURED
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_all_healthy(self) -> bool:
+        return (
+            self.xauusd_primary_status == FeedStatus.HEALTHY
+            and self.macro_status == FeedStatus.HEALTHY
+            and self.provider_sync_status in (FeedStatus.HEALTHY, FeedStatus.DEGRADED)
+        )
+
+
+@dataclass(frozen=True)
 class LiveProjectionState:
     """
-    Immutable snapshot of the live presentation projection.
+    Immutable snapshot of the live presentation projection (Historical XAUT).
     Strict separation between Phase 4 signal output and Phase 5 risk effective action (P7-C1).
     """
     instrument: str
-    
+
     # Path A: Quote fields
     current_bid: Optional[Decimal]
     current_ask: Optional[Decimal]
@@ -161,7 +185,7 @@ class LiveProjectionState:
     reasons_negative: List[str]
     hard_gate_reasons: List[str]
     feed_health: LiveFeedHealthStatus
-    
+
     # Provenance Signatures (P7-C6)
     engine_version: str
     config_version: str
@@ -170,3 +194,93 @@ class LiveProjectionState:
     risk_version: str
     code_revision: str
     decision_sequence: int
+
+
+@dataclass(frozen=True)
+class XauUsdLiveProjectionState:
+    """
+    Immutable canonical live presentation projection for XAUUSD.
+    Unified single projection model used across:
+      - Django template context
+      - REST JSON serialization
+      - WebSocket snapshot and update events
+    """
+    instrument: str = "XAUUSD"
+    display_symbol: str = "XAU/USD"
+
+    # Path A: Quote fields
+    current_bid: Optional[Decimal] = None
+    current_ask: Optional[Decimal] = None
+    spread: Optional[Decimal] = None
+    spread_pct: Optional[Decimal] = None
+    quote_source_timestamp: Optional[datetime] = None
+    quote_received_timestamp: Optional[datetime] = None
+    quote_age_seconds: Optional[float] = None
+    is_quote_stale: bool = True
+    quote_sequence: Optional[int] = None
+    entry_zone_status: EntryZoneStatus = EntryZoneStatus.NO_ACTIVE_ZONE
+    distance_to_entry_zone_pct: Optional[Decimal] = None
+
+    # Path B: Dual-Layer Phase 4 Decision fields
+    last_closed_candle_ts: Optional[datetime] = None
+    last_analysis_timestamp: Optional[datetime] = None
+    candidate_state: str = "NO_TRADE"
+    candidate_user_decision: str = "WAIT"
+    published_state: str = "NO_TRADE"
+    published_user_decision: str = "WAIT"
+
+    # Path B: Dual-Side Scores (0-100)
+    long_direction_score: Optional[float] = None
+    short_direction_score: Optional[float] = None
+    long_timing_score: Optional[float] = None
+    short_timing_score: Optional[float] = None
+
+    # Path B: Phase 5 Side-Aware Risk fields
+    risk_side: Optional[str] = None
+    risk_candidate_status: Optional[str] = None
+    is_valid_risk_plan: bool = False
+    execution_eligible: bool = False
+    candidate_effective_action: str = "WAIT"
+    publication_effective_action: str = "WAIT"
+
+    # Geometry (None when invalid)
+    entry_min: Optional[Decimal] = None
+    entry_mid: Optional[Decimal] = None
+    entry_max: Optional[Decimal] = None
+    stop_structure: Optional[Decimal] = None
+    stop_atr: Optional[Decimal] = None
+    stop_final: Optional[Decimal] = None
+    stop_distance_atr: Optional[Decimal] = None
+    tp1: Optional[Decimal] = None
+    tp2: Optional[Decimal] = None
+    planned_rr_tp1: Optional[Decimal] = None
+    planned_rr_tp2: Optional[Decimal] = None
+
+    # Calibration & Diagnostics
+    calibration_status: str = "CALIBRATION_REQUIRED"
+    profile_name: Optional[str] = None
+    phase3b_status: str = "RESEARCH_ONLY"
+    phase3b_production_weight: float = 0.0
+
+    # Reasons & Explainability
+    reasons_positive: List[str] = field(default_factory=list)
+    reasons_negative: List[str] = field(default_factory=list)
+    hard_gate_reasons: List[str] = field(default_factory=list)
+    candidate_resolution_reason: Optional[str] = None
+    publication_reason: Optional[str] = None
+
+    # Feed Health
+    feed_health: Dict[str, Any] = field(default_factory=dict)
+
+    # Cryptographic & Version Provenance
+    analysis_fingerprint: Optional[str] = None
+    phase4_policy_fingerprint: Optional[str] = None
+    risk_plan_fingerprint: Optional[str] = None
+    source_phase4_fingerprint: Optional[str] = None
+    engine_version: str = "4.0.0"
+    config_version: str = "cfg-2026-v1"
+    feature_version: str = "feat-2026-v1"
+    cycle_version: str = "3.0.0-3A"
+    risk_version: str = "5.0.0"
+    code_revision: str = "dab3b6f8999bcef537bf4d8450f774ce36eb8e0f"
+    decision_sequence: int = 0

@@ -1,0 +1,131 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="backtest-container">
+    <!-- Backtest Job Launch Surface -->
+    <section class="card launch-card">
+        <div class="card-header">
+            <h3>PHASE 6 POINT-IN-TIME BACKTEST & ABLATION LAB</h3>
+            <span class="authority-tag">ZERO EXECUTION RISK</span>
+        </div>
+        <p class="section-desc">Launch historical point-in-time replay, walk-forward validation folds, and component ablation trials. Evaluated exclusively in normalized R units without account sizing.</p>
+
+        <form id="backtest-form" class="backtest-form">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="ablation-select">Ablation / Configuration ID:</label>
+                    <select id="ablation-select" name="ablation_id" class="form-control">
+                        <option value="BASELINE">BASELINE (Full Dual-Side XAUUSD Pipeline)</option>
+                        <option value="NO_REGIME">NO_REGIME (Ablate Market Regime Filter)</option>
+                        <option value="NO_MACRO">NO_MACRO (Ablate Macro Blackout Gate)</option>
+                        <option value="NO_CYCLE">NO_CYCLE (Ablate Phase 3A Cycle Filter)</option>
+                        <option value="NO_TIMING">NO_TIMING (Ablate 15m Timing Optimization)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="start-date">Historical Start (UTC):</label>
+                    <input type="datetime-local" id="start-date" name="start_date" class="form-control" value="2026-01-01T00:00">
+                </div>
+                <div class="form-group">
+                    <label for="end-date">Historical End (UTC):</label>
+                    <input type="datetime-local" id="end-date" name="end_date" class="form-control" value="2026-08-30T00:00">
+                </div>
+                <div class="form-group form-action">
+                    <button type="submit" class="btn btn-primary" id="launch-btn">Launch Async Simulation</button>
+                </div>
+            </div>
+            <div id="launch-status-msg" class="launch-msg" style="display: none;"></div>
+        </form>
+    </section>
+
+    <!-- Past Runs Table -->
+    <section class="card">
+        <div class="card-header">
+            <h3>HISTORICAL VALIDATION RUNS</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Run ID</th>
+                        <th>Ablation Variant</th>
+                        <th>Historical Window</th>
+                        <th>Status</th>
+                        <th>Expectancy (R)</th>
+                        <th>Win Rate</th>
+                        <th>Max DD (R)</th>
+                        <th>Created At (UTC)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in runs %}
+                    <tr>
+                        <td class="mono-text">#{{ r.id }}</td>
+                        <td><span class="ablation-tag">{{ r.ablation_id }}</span></td>
+                        <td class="mono-text">{{ r.historical_start|date:"Y-m-d" }} → {{ r.historical_end|date:"Y-m-d" }}</td>
+                        <td>
+                            <span class="status-pill status-{{ r.status|lower }}">{{ r.status }}</span>
+                        </td>
+                        <td>{{ r.aggregate_metrics.expectancy_r|default:"—" }}</td>
+                        <td>{{ r.aggregate_metrics.win_rate_pct|default:"—" }}%</td>
+                        <td>{{ r.aggregate_metrics.max_drawdown_r|default:"—" }}R</td>
+                        <td class="mono-text">{{ r.created_at|date:"Y-m-d H:i" }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center empty-cell">No historical backtest runs recorded.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.getElementById("backtest-form").addEventListener("submit", function(e) {
+        e.preventDefault();
+        const btn = document.getElementById("launch-btn");
+        const msg = document.getElementById("launch-status-msg");
+        btn.disabled = true;
+        btn.innerText = "Enqueuing...";
+
+        const payload = {
+            ablation_id: document.getElementById("ablation-select").value,
+            start_date: new Date(document.getElementById("start-date").value).toISOString(),
+            end_date: new Date(document.getElementById("end-date").value).toISOString(),
+        };
+
+        fetch("/dashboard/api/backtest/run/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || "",
+            },
+            body: JSON.stringify(payload),
+        })
+        .then(res => res.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerText = "Launch Async Simulation";
+            msg.style.display = "block";
+            if (data.status === "ENQUEUED") {
+                msg.className = "launch-msg success";
+                msg.innerText = `Task enqueued successfully (Task ID: ${data.task_id}). Refresh shortly.`;
+            } else {
+                msg.className = "launch-msg error";
+                msg.innerText = `Error: ${data.error || 'Failed to enqueue'}`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerText = "Launch Async Simulation";
+            msg.style.display = "block";
+            msg.className = "launch-msg error";
+            msg.innerText = `Network error: ${err}`;
+        });
+    });
+</script>
+{% endblock %}

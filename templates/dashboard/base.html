@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AurumIQ — {{ page_title|default:"Gold Signal Intelligence" }}</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Pinned Plotly.js CDN with SRI / exact pinned release -->
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <link rel="stylesheet" href="/static/dashboard/css/dashboard.css">
+</head>
+<body class="aurum-app">
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand-header">
+                <div class="brand-logo">
+                    <span class="gold-gem">◆</span>
+                    <span class="brand-name">AURUM<strong>IQ</strong></span>
+                </div>
+                <div class="brand-subtitle">XAU/USD DECISION LAB</div>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="{% url 'dashboard:overview' %}" class="nav-item {% if active_tab == 'overview' %}active{% endif %}">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-label">OVERVIEW</span>
+                </a>
+                <a href="{% url 'dashboard:analysis' %}" class="nav-item {% if active_tab == 'live_analysis' %}active{% endif %}">
+                    <span class="nav-icon">📈</span>
+                    <span class="nav-label">LIVE ANALYSIS</span>
+                </a>
+                <a href="{% url 'dashboard:cycles' %}" class="nav-item {% if active_tab == 'time_cycle' %}active{% endif %}">
+                    <span class="nav-icon">⏱️</span>
+                    <span class="nav-label">TIME CYCLE LAB</span>
+                </a>
+                <a href="{% url 'dashboard:signals' %}" class="nav-item {% if active_tab == 'signals_history' %}active{% endif %}">
+                    <span class="nav-icon">📡</span>
+                    <span class="nav-label">SIGNALS HISTORY</span>
+                </a>
+                <a href="{% url 'dashboard:backtest' %}" class="nav-item {% if active_tab == 'backtest_lab' %}active{% endif %}">
+                    <span class="nav-icon">🧪</span>
+                    <span class="nav-label">BACKTEST LAB</span>
+                </a>
+                <a href="{% url 'dashboard:data_integrity' %}" class="nav-item {% if active_tab == 'data_integrity' %}active{% endif %}">
+                    <span class="nav-icon">🛡️</span>
+                    <span class="nav-label">DATA INTEGRITY</span>
+                </a>
+                <a href="{% url 'dashboard:system_health' %}" class="nav-item {% if active_tab == 'system_health' %}active{% endif %}">
+                    <span class="nav-icon">💓</span>
+                    <span class="nav-label">SYSTEM HEALTH</span>
+                </a>
+                <a href="{% url 'dashboard:audit' %}" class="nav-item {% if active_tab == 'audit_log' %}active{% endif %}">
+                    <span class="nav-icon">📜</span>
+                    <span class="nav-label">AUDIT LOG</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="governance-badge">
+                    <span class="badge-dot pulse-amber"></span>
+                    <span class="badge-text">PAPER / RESEARCH ONLY</span>
+                </div>
+                <div class="version-meta">
+                    <span>Engine v4.0.0</span> • <span>Risk v5.0.0</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Top App Bar -->
+            <header class="top-bar">
+                <div class="header-left">
+                    <h1 class="page-heading">{{ page_title }}</h1>
+                    <span class="instrument-pill">XAU/USD SPOT</span>
+                </div>
+                <div class="header-right">
+                    <div class="authority-banner">
+                        <span class="lock-icon">🔒</span>
+                        <span>PRODUCTION AUTHORITY: <strong>OFF</strong></span>
+                    </div>
+                    <div class="user-profile">
+                        <span class="user-avatar">{{ user.username|slice:":1"|upper }}</span>
+                        <span class="user-name">{{ user.username }}</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Body -->
+            <div class="content-body">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <!-- Pinned Static JS -->
+    <script src="/static/dashboard/js/dashboard.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

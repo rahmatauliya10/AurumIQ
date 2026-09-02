@@ -1,0 +1,85 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="integrity-container">
+    <div class="two-col-grid">
+        <section class="card">
+            <div class="card-header">
+                <h3>PROVIDER HEALTH SNAPSHOTS</h3>
+            </div>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Checked At (UTC)</th>
+                            <th>Status</th>
+                            <th>Latency</th>
+                            <th>Error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in snapshots %}
+                        <tr>
+                            <td class="mono-text">{{ s.checked_at|date:"Y-m-d H:i:s" }}</td>
+                            <td><span class="status-pill status-{{ s.status|lower }}">{{ s.status }}</span></td>
+                            <td>{{ s.latency_ms|default:"—" }}ms</td>
+                            <td>{{ s.error_message|default:"None"|truncatechars:30 }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="text-center empty-cell">No provider health records available.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-header">
+                <h3>DATA QUALITY AUDIT LOG</h3>
+            </div>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp (UTC)</th>
+                            <th>Timeframe</th>
+                            <th>Completeness</th>
+                            <th>Staleness</th>
+                            <th>Hard Fail</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for dq in dq_records %}
+                        <tr>
+                            <td class="mono-text">{{ dq.timestamp|date:"Y-m-d H:i" }}</td>
+                            <td><span class="tf-pill">{{ dq.timeframe }}</span></td>
+                            <td>{{ dq.completeness_score|floatformat:2 }}</td>
+                            <td>
+                                {% if dq.is_stale %}
+                                <span class="status-pill stale">STALE</span>
+                                {% else %}
+                                <span class="status-pill fresh">FRESH</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if dq.hard_fail %}
+                                <span class="status-pill invalid">FAIL</span>
+                                {% else %}
+                                <span class="status-pill valid">PASS</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center empty-cell">No data quality records available.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

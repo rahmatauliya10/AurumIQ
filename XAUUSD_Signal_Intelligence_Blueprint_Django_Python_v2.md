@@ -52,8 +52,8 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **Phase 3B** | IMPLEMENTED / RESEARCH ONLY | Production weight hard locked to 0.0 |
 | **Phase 4** | COMPLETED & VERIFIED | Sealed dual-side candidate architecture (Baseline: `b619a140391e5e308241246e105b9767a1b0716d`) |
 | **Phase 5** | COMPLETED & VERIFIED | Merged via PR #12 | Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` | Reviewed Head: `da20e956e25fa8ed353c37fbbaa9adebc7890749` |
-| **Phase 6** | NOT STARTED FOR XAUUSD | PIT backtest + walk-forward + ablation required |
-| **Phase 7** | PRODUCT COMPLETION PAUSED | XAUUSD presentation/live-monitor adaptation pending |
+| **Phase 6** | COMPLETED & VERIFIED | Merged via PR #14 (Main SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) |
+| **Phase 7** | IMPLEMENTATION IN PROGRESS / FEATURE BRANCH | Dashboard, LiveMonitor & Alerts |
 | **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation only after Phase 6/7 dependencies |
 | **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter only after deterministic baseline is empirically validated |
 

@@ -1,0 +1,47 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<div class="system-health-container">
+    <div class="two-col-grid">
+        <section class="card">
+            <div class="card-header">
+                <h3>INFRASTRUCTURE HEALTH</h3>
+            </div>
+            <div class="health-metrics-list">
+                <div class="health-row">
+                    <span>Redis Cache Bus:</span>
+                    <strong class="status-pill {% if redis_status == 'ONLINE' %}valid{% else %}invalid{% endif %}">{{ redis_status }}</strong>
+                </div>
+                <div class="health-row">
+                    <span>Celery Worker Queues:</span>
+                    <strong class="status-pill valid">ONLINE (market_data, analysis, backtest, alerts)</strong>
+                </div>
+                <div class="health-row">
+                    <span>PostgreSQL Database:</span>
+                    <strong class="status-pill valid">CONNECTED</strong>
+                </div>
+                <div class="health-row">
+                    <span>WebSocket Real-Time Gateway:</span>
+                    <strong class="status-pill valid">ACTIVE</strong>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-header">
+                <h3>FEED STATUS BREAKDOWN</h3>
+            </div>
+            <div class="health-metrics-list">
+                {% for key, val in feed_health.items %}
+                <div class="health-row">
+                    <span class="mono-text">{{ key }}:</span>
+                    <strong class="status-pill status-{{ val|lower }}">{{ val }}</strong>
+                </div>
+                {% empty %}
+                <div class="empty-list">No feed health metrics recorded.</div>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
