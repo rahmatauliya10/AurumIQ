@@ -209,6 +209,23 @@ def test_provider_metadata_excludes_sensitive_account_data():
         assert forbidden not in fields
 
 
+def test_disconnected_mt5_symbol_remains_null_and_canonical_preserved():
+    """
+    Verify that when MT5 is disconnected:
+    canonical_symbol is XAUUSD,
+    broker_symbol / provider_symbol is null (never fabricated as XAUUSD or XAUUSDm).
+    """
+    adapter = Mt5ReadOnlyAdapter()
+    adapter._connected = False
+    adapter._is_connected_override = False
+
+    assert adapter.discover_gold_symbol() is None
+
+    meta = adapter.get_provider_metadata()
+    assert meta.canonical_instrument == "XAUUSD"
+    assert meta.provider_symbol is None
+
+
 # -----------------------------------------------------------------------------
 # 5. Symbol Discovery (Canonical XAUUSD vs Broker Suffix)
 # -----------------------------------------------------------------------------

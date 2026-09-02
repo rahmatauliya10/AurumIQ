@@ -22,7 +22,7 @@ class ProviderResponse(BaseModel):
     environment: str = Field("DEMO", description="Account trading environment: DEMO or REAL")
     server: str = Field(..., description="Sanitized non-sensitive trade server name")
     canonical_instrument: str = Field("XAUUSD", description="Canonical AurumIQ instrument symbol")
-    provider_symbol: str = Field(..., description="Actual discovered broker symbol on terminal")
+    provider_symbol: Optional[str] = Field(None, description="Actual discovered broker symbol on terminal, or null if undiscovered")
     read_only: bool = Field(True, description="Strictly true; trading endpoints are completely absent")
 
 

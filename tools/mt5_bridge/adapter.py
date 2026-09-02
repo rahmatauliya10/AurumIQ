@@ -149,11 +149,11 @@ class Mt5ReadOnlyAdapter:
             return self._discovered_symbol
 
         if not self.is_connected:
-            return self.config.canonical_instrument
+            return None
 
         symbols = mt5.symbols_get()
         if not symbols:
-            return self.config.canonical_instrument
+            return None
 
         candidates: List[Tuple[str, int]] = []
         for s in symbols:
@@ -190,8 +190,8 @@ class Mt5ReadOnlyAdapter:
             logger.info(f"Discovered Exness gold symbol: '{chosen}' (canonical: XAUUSD)")
             return chosen
 
-        # Fallback to canonical
-        return self.config.canonical_instrument
+        # Return None when not discovered (never fabricate canonical as broker symbol)
+        return None
 
     def get_provider_metadata(self) -> ProviderResponse:
         """Return safe attribution metadata excluding all account/personal information."""
@@ -212,6 +212,8 @@ class Mt5ReadOnlyAdapter:
             raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Terminal is not connected.")
 
         target = symbol or self.discover_gold_symbol()
+        if not target:
+            raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Gold symbol is not discovered.")
         info = mt5.symbol_info(target)
         if not info:
             raise ValueError(f"Symbol '{target}' not found on terminal.")
@@ -247,6 +249,8 @@ class Mt5ReadOnlyAdapter:
             raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Terminal is not connected.")
 
         target = symbol or self.discover_gold_symbol()
+        if not target:
+            raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Gold symbol is not discovered.")
         tick = mt5.symbol_info_tick(target)
         if not tick:
             raise RuntimeError(f"Failed to retrieve live tick for symbol '{target}'.")
@@ -298,6 +302,8 @@ class Mt5ReadOnlyAdapter:
             raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Terminal is not connected.")
 
         target = symbol or self.discover_gold_symbol()
+        if not target:
+            raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Gold symbol is not discovered.")
         norm_tf = normalize_timeframe_str(timeframe)
         mt5_tf = map_timeframe_to_mt5(norm_tf)
         tf_delta = get_timeframe_delta(norm_tf)
@@ -374,6 +380,8 @@ class Mt5ReadOnlyAdapter:
             raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Terminal is not connected.")
 
         target = symbol or self.discover_gold_symbol()
+        if not target:
+            raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Gold symbol is not discovered.")
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         if end.tzinfo is None:
@@ -440,6 +448,8 @@ class Mt5ReadOnlyAdapter:
             raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Terminal is not connected.")
 
         target = symbol or self.discover_gold_symbol()
+        if not target:
+            raise RuntimeError("EXNESS_MT5_LOCAL_TERMINAL_NOT_READY: Gold symbol is not discovered.")
         capabilities: Dict[str, HistoryTimeframeCapability] = {}
 
         for tf_str in TIMEFRAME_DELTAS.keys():
