@@ -228,17 +228,26 @@ class BacktestStatusAPIView(APIView):
 class BacktestRunLaunchAPIView(APIView):
     """
     Research-only API for enqueuing Phase 6 backtest runs asynchronously (Amendment 7).
-    Strict Invariant:
-      - Only enqueues existing Celery backtest task.
+    Strict Invariants:
+      - Only enqueues existing Celery run_xauusd_backtest_task.
       - Strictly forbidden from placing, modifying, or executing orders.
+      - Rejects naive timestamps.
+      - Requires explicit friction configuration when cost_scenario is EMPIRICAL.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request: HttpRequest) -> Response:
         data = request.data
-        ablation_id = data.get("ablation_id", "BASELINE")
-        start_date_str = data.get("start_date")
-        end_date_str = data.get("end_date")
+        ablation_id = data.get("ablation_id") or data.get("ablation_type", "BASELINE")
+        start_date_str = data.get("start_date") or data.get("start_time_iso")
+        end_date_str = data.get("end_date") or data.get("end_time_iso")
+        cost_scenario = data.get("cost_scenario", "ZERO_FRICTION")
+        code_revision = data.get("code_revision", "5a05d9ba1c0d63790fe2b0e3b6a6bbcc0de63f61")
+        dataset_hash = data.get("dataset_hash", "dataset-xauusd-p6-v1")
+        holding_horizon_bars = int(data.get("holding_horizon_bars_15m", 16))
+        max_fill_wait_bars = int(data.get("max_fill_wait_bars_15m", 4))
+        execution_policy = data.get("execution_policy", "NEXT_BAR_OPEN")
+        intrabar_policy = data.get("intrabar_policy", "PESSIMISTIC")
 
         if not start_date_str or not end_date_str:
             return Response(
@@ -249,24 +258,54 @@ class BacktestRunLaunchAPIView(APIView):
         try:
             start_dt = datetime.fromisoformat(start_date_str)
             end_dt = datetime.fromisoformat(end_date_str)
-            if start_dt.tzinfo is None:
-                start_dt = start_dt.replace(tzinfo=timezone.utc)
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if start_dt.tzinfo is None or start_dt.tzinfo.utcoffset(start_dt) is None:
+                return Response(
+                    {"error": "start_date must include an explicit timezone offset (naive timestamps forbidden)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if end_dt.tzinfo is None or end_dt.tzinfo.utcoffset(end_dt) is None:
+                return Response(
+                    {"error": "end_date must include an explicit timezone offset (naive timestamps forbidden)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         except Exception as e:
             return Response(
                 {"error": f"Invalid date format: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Enqueue Phase 6 task
-        from apps.backtests.tasks import run_point_in_time_backtest_task
+        # Validate explicit friction for EMPIRICAL scenario
+        if cost_scenario == "EMPIRICAL":
+            entry_fee = data.get("entry_fee_bps")
+            exit_fee = data.get("exit_fee_bps")
+            spread_bps = data.get("synthetic_spread_bps")
+            if entry_fee is None or exit_fee is None or spread_bps is None:
+                return Response(
+                    {"error": "cost_scenario EMPIRICAL requires explicit entry_fee_bps, exit_fee_bps, and synthetic_spread_bps."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        task_res = run_point_in_time_backtest_task.delay(
-            instrument="XAUUSD",
-            start_iso=start_dt.isoformat(),
-            end_iso=end_dt.isoformat(),
-            ablation_id=ablation_id,
+        # Enqueue Phase 6 task
+        from apps.backtests.tasks import run_xauusd_backtest_task
+
+        task_res = run_xauusd_backtest_task.delay(
+            start_time_iso=start_dt.isoformat(),
+            end_time_iso=end_dt.isoformat(),
+            dataset_hash=dataset_hash,
+            code_revision=code_revision,
+            cost_scenario=cost_scenario,
+            holding_horizon_bars_15m=holding_horizon_bars,
+            max_fill_wait_bars_15m=max_fill_wait_bars,
+            execution_policy=execution_policy,
+            intrabar_policy=intrabar_policy,
+            ablation_type=ablation_id,
+            entry_fee_bps=data.get("entry_fee_bps"),
+            exit_fee_bps=data.get("exit_fee_bps"),
+            synthetic_spread_bps=data.get("synthetic_spread_bps"),
+            entry_slippage_bps=data.get("entry_slippage_bps"),
+            exit_slippage_bps=data.get("exit_slippage_bps"),
+            signal_profile_dict=data.get("signal_profile_dict"),
+            risk_profile_dict=data.get("risk_profile_dict"),
         )
 
         return Response(
@@ -274,6 +313,7 @@ class BacktestRunLaunchAPIView(APIView):
                 "status": "ENQUEUED",
                 "task_id": str(task_res.id),
                 "ablation_id": ablation_id,
+                "cost_scenario": cost_scenario,
                 "instrument": "XAUUSD",
                 "message": "Phase 6 research simulation enqueued.",
             },

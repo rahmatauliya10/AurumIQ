@@ -217,6 +217,16 @@ def test_p7_bus_01_separate_redis_producer_to_websocket():
     session[HASH_SESSION_KEY] = user.get_session_auth_hash()
     session.save()
 
+    # Check if real Redis connection is available
+    r_check = LiveEventBroadcaster.get_redis_client()
+    if r_check:
+        try:
+            r_check.ping()
+        except Exception:
+            pytest.skip("Redis server is not running; skipping cross-process bus test.")
+    else:
+        pytest.skip("Redis client not configured.")
+
     async def _test_redis_transport():
         sent_frames = []
         recv_queue = asyncio.Queue()

@@ -27,13 +27,16 @@ from engine.core.types import (
     CandleData,
     Cycle3ASnapshot,
     DualSideSignalSnapshot,
+    FeedHealthStatus,
     MacroEventContext,
+    RiskCandidateStatus,
     RiskSide,
     RuntimeFeedHealth,
     SideRiskPlanSnapshot,
     SignalSnapshot,
     SignalState,
     UserDecision,
+    VolumeEvidenceType,
 )
 from engine.risk.planner import RiskPlanner
 from engine.risk.xauusd_planner import XauUsdRiskPlanner
@@ -69,6 +72,11 @@ class LiveQuoteService:
         return float(val) if val is not None else None
 
     @classmethod
+    def get_live_quote_ttl_seconds(cls) -> Optional[int]:
+        val = getattr(settings, "XAUUSD_LIVE_QUOTE_TTL_SECONDS", None)
+        return int(val) if val is not None else None
+
+    @classmethod
     def process_quote(
         cls,
         event: LiveQuoteEvent,
@@ -95,15 +103,19 @@ class LiveQuoteService:
         stale_threshold = max_staleness_seconds if max_staleness_seconds is not None else cls.get_stale_seconds()
         skew_threshold = cls.get_future_skew_seconds()
 
-        # Check future skew
+        # Check future skew (fail-closed without implicit 60s fallback)
         future_skew = (src_ts - rec_ts).total_seconds()
-        is_future_skewed = (future_skew > skew_threshold) if skew_threshold is not None else (future_skew > 60.0)
+        if skew_threshold is None:
+            # Missing configuration -> fail closed / future skewed / STALE
+            is_future_skewed = True
+        else:
+            is_future_skewed = future_skew > skew_threshold
 
         # Calculate quote age strictly from source_timestamp
         raw_age = (now_utc - src_ts).total_seconds()
         quote_age = max(0.0, raw_age) if not is_future_skewed else 9999.0
 
-        if stale_threshold is None:
+        if stale_threshold is None or skew_threshold is None:
             # Missing configuration -> fail closed / STALE
             is_stale = True
         else:
@@ -201,10 +213,10 @@ class LiveQuoteService:
 
             # 4. Trigger Informational Alerts
             from apps.alerts.services import AlertGenerationService
-            provider_healthy = True
+            provider_healthy = False
             if state.feed_health_data:
-                provider_status = state.feed_health_data.get("xauusd_primary_status") or state.feed_health_data.get("xaut_status")
-                provider_healthy = provider_status in ("HEALTHY", "DEGRADED")
+                provider_status = state.feed_health_data.get("xauusd_primary_status")
+                provider_healthy = provider_status == "HEALTHY"
 
             AlertGenerationService.evaluate_live_quote_alerts(
                 state=state,
@@ -215,7 +227,29 @@ class LiveQuoteService:
                 provider_healthy=provider_healthy,
             )
 
-            # 5. Broadcast typed quote update after atomic DB commit
+            # 5. Redis Quote Cache with explicit XAUUSD_LIVE_QUOTE_TTL_SECONDS
+            ttl = cls.get_live_quote_ttl_seconds()
+            if ttl is not None and event.instrument == "XAUUSD" and not is_stale:
+                r = LiveEventBroadcaster.get_redis_client()
+                if r:
+                    try:
+                        import json
+                        quote_cache_payload = {
+                            "instrument": "XAUUSD",
+                            "bid": str(state.current_bid),
+                            "ask": str(state.current_ask),
+                            "spread": str(state.spread),
+                            "spread_pct": str(state.spread_pct),
+                            "source_timestamp": src_ts.isoformat(),
+                            "received_timestamp": rec_ts.isoformat(),
+                            "sequence_number": state.quote_sequence,
+                            "entry_zone_status": state.entry_zone_status,
+                        }
+                        r.set("livequote:XAUUSD", json.dumps(quote_cache_payload), ex=ttl)
+                    except Exception as e:
+                        logger.debug("redis_quote_cache_failed", error=str(e))
+
+            # 6. Broadcast typed quote update after atomic DB commit
             quote_payload = LiveEventBroadcaster.format_quote_event(
                 instrument=state.instrument,
                 bid=state.current_bid,
@@ -402,7 +436,55 @@ class XauUsdLiveDecisionPipelineService:
         if macro_context is None and cycle_3a_snapshot is not None:
             macro_context = cycle_3a_snapshot.macro_event
 
-        # Step 5: Execute Deterministic Master XauUsdSignalEngine
+        # Resolve macro feed health
+        macro_feed_health = FeedHealthStatus.MISSING
+        is_in_blackout = False
+        if macro_context is not None:
+            macro_feed_health = FeedHealthStatus.HEALTHY if macro_context.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+            is_in_blackout = bool(macro_context.is_in_blackout)
+
+        # Step 5: Extract Causal Technical Features & Structure (Phase 6 Parity)
+        from engine.features.engine import FeatureEngine
+        from engine.regime.engine import RegimeEngine
+        from engine.structure.engine import CausalStructureEngine
+
+        fe = FeatureEngine()
+        re = RegimeEngine()
+        se = CausalStructureEngine()
+
+        feats_15m = fe.extract_features(engine_candles_15m) if len(engine_candles_15m) >= 20 else None
+        regime_15m = re.classify(feats_15m) if feats_15m else None
+        structure_15m = se.analyze(engine_candles_15m, atr=feats_15m.atr14 if feats_15m else None) if len(engine_candles_15m) >= 5 else None
+
+        feats_1h = fe.extract_features(engine_candles_1h) if (engine_candles_1h and len(engine_candles_1h) >= 20) else None
+        feats_4h = fe.extract_features(engine_candles_4h) if (engine_candles_4h and len(engine_candles_4h) >= 20) else None
+        feats_1d = fe.extract_features(engine_candles_1d) if (engine_candles_1d and len(engine_candles_1d) >= 20) else None
+
+        # 4H structure uses 4H ATR
+        structure_4h = se.analyze(engine_candles_4h, atr=feats_4h.atr14 if feats_4h else None) if (engine_candles_4h and len(engine_candles_4h) >= 5) else None
+
+        # Volume health derived from actual volume evidence
+        vol_health = FeedHealthStatus.MISSING
+        if feats_15m and feats_15m.volume_evidence != VolumeEvidenceType.UNAVAILABLE:
+            vol_health = FeedHealthStatus.HEALTHY if feats_15m.volume_usable else FeedHealthStatus.UNHEALTHY
+
+        # Construct typed RuntimeFeedHealth using FeedHealthStatus enum
+        runtime_health = RuntimeFeedHealth(
+            primary_15m=FeedHealthStatus.STALE if is_feed_stale else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING),
+            primary_1h=FeedHealthStatus.HEALTHY if engine_candles_1h else FeedHealthStatus.MISSING,
+            primary_4h=FeedHealthStatus.HEALTHY if engine_candles_4h else FeedHealthStatus.MISSING,
+            primary_1d=FeedHealthStatus.HEALTHY if engine_candles_1d else FeedHealthStatus.MISSING,
+            secondary_provider=FeedHealthStatus.HEALTHY if provider_status == "HEALTHY" else (FeedHealthStatus.UNHEALTHY if provider_status == "DOWN" else FeedHealthStatus.NOT_CONFIGURED),
+            secondary_provider_disagreement=False,
+            macro_blackout_feed=macro_feed_health,
+            is_macro_blackout=is_in_blackout,
+            volume=vol_health,
+            phase3a=FeedHealthStatus.HEALTHY if cycle_3a_snapshot else FeedHealthStatus.MISSING,
+            phase3b=FeedHealthStatus.MISSING,
+            is_unclosed_candle=False,
+        )
+
+        # Step 6: Execute Deterministic Master XauUsdSignalEngine
         engine = XauUsdSignalEngine(
             code_revision=code_revision,
             engine_version=engine_version,
@@ -410,64 +492,43 @@ class XauUsdLiveDecisionPipelineService:
             cycle_version=cycle_version,
         )
 
-        # Use uncalibrated profile if none provided
         prof = signal_profile if signal_profile is not None else uncalibrated_xauusd_signal_profile()
-
-        runtime_health = RuntimeFeedHealth(
-            primary_15m=FeedStatus.STALE if is_feed_stale else FeedStatus.HEALTHY,
-            primary_1h=FeedStatus.HEALTHY if engine_candles_1h else FeedStatus.NOT_CONFIGURED,
-            primary_4h=FeedStatus.HEALTHY if engine_candles_4h else FeedStatus.NOT_CONFIGURED,
-            primary_1d=FeedStatus.HEALTHY if engine_candles_1d else FeedStatus.NOT_CONFIGURED,
-            secondary_provider=FeedStatus.HEALTHY if provider_status == "HEALTHY" else FeedStatus.DEGRADED,
-            secondary_provider_disagreement=False,
-            macro_blackout_feed=FeedStatus.DEGRADED if (macro_context and macro_context.is_in_blackout) else FeedStatus.HEALTHY,
-            is_macro_blackout=bool(macro_context and macro_context.is_in_blackout),
-            volume=FeedStatus.HEALTHY,
-            phase3a=FeedStatus.HEALTHY if cycle_3a_snapshot else FeedStatus.NOT_CONFIGURED,
-            phase3b=FeedStatus.HEALTHY,
-            is_unclosed_candle=False,
-        )
 
         signal_snapshot: DualSideSignalSnapshot = engine.analyze(
             closed_candles_15m=engine_candles_15m,
             closed_candles_1h=engine_candles_1h if engine_candles_1h else None,
             closed_candles_4h=engine_candles_4h if engine_candles_4h else None,
             closed_candles_1d=engine_candles_1d if engine_candles_1d else None,
-            as_of=candle_ts,
-            instrument="XAUUSD",
-            timeframe=event.timeframe,
-            runtime_health=runtime_health,
+            regime_15m=regime_15m,
+            features_15m=feats_15m,
+            features_1h=feats_1h,
+            features_4h=feats_4h,
+            features_1d=feats_1d,
+            structure_15m=structure_15m,
             cycle_3a=cycle_3a_snapshot,
+            runtime_health=runtime_health,
             profile=prof,
+            instrument="XAUUSD",
+            timeframe="15m",
+            as_of=candle_ts,
         )
 
-        # Step 6: Persist Immutable Dual-Side SignalRecord
+        # Persist Immutable Dual-Side SignalRecord
         signal_record, _ = SignalPersistenceService.save_dual_side_snapshot(
             instrument=instrument_obj,
             snapshot=signal_snapshot,
         )
 
-        # Step 7: Evaluate Phase 5 XauUsdRiskPlanner
+        # Step 7: Evaluate Phase 5 XauUsdRiskPlanner (Side-aware, No Fake Plans)
         risk_planner = XauUsdRiskPlanner(
             code_revision=code_revision,
             risk_version=risk_version,
             risk_profile=risk_profile,
         )
 
-        # Extract features and structure for risk planning
-        from engine.features.engine import FeatureEngine
-        from engine.structure.engine import CausalStructureEngine
-
-        fe = FeatureEngine()
-        se = CausalStructureEngine()
-
-        features_15m = fe.extract_features(engine_candles_15m) if len(engine_candles_15m) >= 32 else None
-        atr14 = features_15m.atr14 if features_15m else Decimal("5.00")
-        structure_15m = se.analyze(engine_candles_15m, atr=atr14) if (len(engine_candles_15m) >= 32 and atr14 is not None) else None
-        structure_4h = se.analyze(engine_candles_4h, atr=atr14) if (engine_candles_4h and len(engine_candles_4h) >= 32 and atr14 is not None) else None
-
-        # Plan risk based on candidate side
+        atr14 = feats_15m.atr14 if feats_15m else None
         risk_plan_snapshot: Optional[SideRiskPlanSnapshot] = None
+
         if signal_snapshot.candidate_state == SignalState.BUY_WINDOW and signal_snapshot.candidate_user_decision == UserDecision.BUY:
             risk_plan_snapshot = risk_planner.plan_long(
                 phase4_snapshot=signal_snapshot,
@@ -483,20 +544,16 @@ class XauUsdLiveDecisionPipelineService:
                 structure_4h=structure_4h,
             )
         else:
-            # Invalid/no candidate plan
-            risk_plan_snapshot = risk_planner.plan_long(
-                phase4_snapshot=signal_snapshot,
-                structure_15m=structure_15m,
-                atr14=atr14,
-                structure_4h=structure_4h,
-            )
+            # Strictly NO LONG/SHORT risk plan for neutral / wait / conflict states
+            risk_plan_snapshot = None
 
-        # Step 8: Persist Immutable LiveRiskPlanRecord
+        # Step 8: Persist Immutable LiveRiskPlanRecord (Idempotent on risk_plan_fingerprint)
         risk_record: Optional[LiveRiskPlanRecord] = None
         if risk_plan_snapshot is not None:
             risk_record, _ = LiveRiskPlanRecord.objects.get_or_create(
-                source_signal_fingerprint=risk_plan_snapshot.source_phase4_fingerprint,
+                risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
                 defaults={
+                    "source_signal_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
                     "signal_timestamp": risk_plan_snapshot.signal_generated_at,
                     "instrument": "XAUUSD",
                     "risk_side": risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
@@ -526,8 +583,8 @@ class XauUsdLiveDecisionPipelineService:
                     "phase5_policy_fingerprint": risk_plan_snapshot.phase5_policy_fingerprint,
                     "risk_plan_fingerprint": risk_plan_snapshot.risk_plan_fingerprint,
                     "source_phase4_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
-                    "source_zone_id": risk_plan_snapshot.entry_zone_fingerprint or "",
-                    "source_zone_timestamp": candle_ts,
+                    "source_zone_id": None,
+                    "source_zone_timestamp": None,
                     "risk_version": risk_plan_snapshot.risk_version,
                     "execution_model_version": "5.0.0-exec-v1",
                     "config_version": config_version,
@@ -537,18 +594,10 @@ class XauUsdLiveDecisionPipelineService:
 
         # Step 9: Assemble Feed Health Status (Fail Closed)
         feed_health = {
-            "xauusd_primary_status": FeedStatus.STALE.value if is_feed_stale else (FeedStatus.HEALTHY.value if provider_status == "HEALTHY" else FeedStatus.DEGRADED.value),
-            "xauusd_secondary_status": FeedStatus.NOT_CONFIGURED.value,
-            "macro_status": (
-                FeedStatus.DEGRADED.value
-                if (macro_context and macro_context.is_in_blackout)
-                else (FeedStatus.HEALTHY.value if (macro_context and macro_context.is_feed_healthy) else FeedStatus.NOT_CONFIGURED.value)
-            ),
-            "provider_sync_status": (
-                FeedStatus.TRANSITION.value
-                if is_provider_transition
-                else (FeedStatus.HEALTHY.value if provider_status == "HEALTHY" else FeedStatus.DEGRADED.value)
-            ),
+            "xauusd_primary_status": runtime_health.primary_15m.value,
+            "xauusd_secondary_status": runtime_health.secondary_provider.value,
+            "macro_status": runtime_health.macro_blackout_feed.value,
+            "provider_sync_status": FeedStatus.TRANSITION.value if is_provider_transition else runtime_health.primary_15m.value,
         }
 
         # Step 10: Atomically update Decision-Owned fields in LiveMonitorState
@@ -672,9 +721,23 @@ class XauUsdLiveDecisionPipelineService:
                 "decision_sequence": state.decision_sequence,
                 "analysis_fingerprint": state.analysis_fingerprint,
                 "calibration_status": state.calibration_status,
+                "candidate_resolution_reason": state.candidate_resolution_reason,
+                "publication_reason": state.publication_reason,
                 "reasons_positive": state.reasons_positive,
                 "reasons_negative": state.reasons_negative,
                 "hard_gate_reasons": state.hard_gate_reasons,
+                "data": {
+                    "candidate_state": state.candidate_state,
+                    "candidate_user_decision": state.candidate_user_decision,
+                    "published_state": state.published_state,
+                    "published_user_decision": state.published_user_decision,
+                    "long_direction_score": state.long_direction_score,
+                    "short_direction_score": state.short_direction_score,
+                    "long_timing_score": state.long_timing_score,
+                    "short_timing_score": state.short_timing_score,
+                    "candidate_resolution_reason": state.candidate_resolution_reason,
+                    "publication_reason": state.publication_reason,
+                },
             }
             transaction.on_commit(lambda p=sig_payload: LiveEventBroadcaster.broadcast(p))
 
@@ -695,6 +758,18 @@ class XauUsdLiveDecisionPipelineService:
                 "tp2": str(state.tp2) if state.tp2 else None,
                 "rr_tp1": str(state.rr_tp1) if state.rr_tp1 else None,
                 "decision_sequence": state.decision_sequence,
+                "data": {
+                    "risk_side": state.risk_side,
+                    "is_valid_risk_plan": state.risk_plan_valid,
+                    "candidate_effective_action": state.candidate_effective_action,
+                    "entry_min": str(state.entry_min) if state.entry_min else None,
+                    "entry_mid": str(state.entry_mid) if state.entry_mid else None,
+                    "entry_max": str(state.entry_max) if state.entry_max else None,
+                    "stop_final": str(state.stop_final) if state.stop_final else None,
+                    "tp1": str(state.tp1) if state.tp1 else None,
+                    "tp2": str(state.tp2) if state.tp2 else None,
+                    "rr_tp1": str(state.rr_tp1) if state.rr_tp1 else None,
+                },
             }
             transaction.on_commit(lambda p=risk_payload: LiveEventBroadcaster.broadcast(p))
 
@@ -1248,11 +1323,20 @@ class XauUsdLiveProjectionService:
                 ).first()
 
             feed_health = {
-                "xauusd_primary_status": FeedStatus.HEALTHY.value if latest_signal else FeedStatus.NOT_CONFIGURED.value,
+                "xauusd_primary_status": FeedStatus.NOT_CONFIGURED.value,
                 "xauusd_secondary_status": FeedStatus.NOT_CONFIGURED.value,
-                "macro_status": FeedStatus.HEALTHY.value if latest_signal else FeedStatus.NOT_CONFIGURED.value,
-                "provider_sync_status": FeedStatus.HEALTHY.value if latest_signal else FeedStatus.NOT_CONFIGURED.value,
+                "macro_status": FeedStatus.NOT_CONFIGURED.value,
+                "provider_sync_status": FeedStatus.NOT_CONFIGURED.value,
             }
+
+            if latest_signal and latest_signal.provenance:
+                prov = latest_signal.provenance
+                feed_health = {
+                    "xauusd_primary_status": prov.get("primary_15m", FeedStatus.NOT_CONFIGURED.value),
+                    "xauusd_secondary_status": prov.get("secondary_provider", FeedStatus.NOT_CONFIGURED.value),
+                    "macro_status": prov.get("macro_blackout_feed", FeedStatus.NOT_CONFIGURED.value),
+                    "provider_sync_status": prov.get("primary_15m", FeedStatus.NOT_CONFIGURED.value),
+                }
 
             state, _ = LiveMonitorState.objects.select_for_update().get_or_create(
                 instrument="XAUUSD",
@@ -1260,8 +1344,13 @@ class XauUsdLiveProjectionService:
             )
 
             if latest_signal:
-                state.candidate_state = latest_signal.state
-                state.candidate_user_decision = latest_signal.user_decision
+                # Recover candidate state from persisted candidate breakdown (do not map published WAIT)
+                cb = latest_signal.components_breakdown or {}
+                cand_state = cb.get("candidate_state") or getattr(latest_signal, "candidate_state", None) or latest_signal.state
+                cand_decision = cb.get("candidate_user_decision") or getattr(latest_signal, "candidate_user_decision", None) or latest_signal.user_decision
+
+                state.candidate_state = cand_state
+                state.candidate_user_decision = cand_decision
                 state.published_state = latest_signal.state
                 state.published_user_decision = "WAIT"
                 state.long_direction_score = latest_signal.long_direction_score
@@ -1272,6 +1361,8 @@ class XauUsdLiveProjectionService:
                 state.calibration_status = latest_signal.calibration_status or "CALIBRATION_REQUIRED"
                 state.phase4_policy_fingerprint = latest_signal.phase4_policy_fingerprint
                 state.analysis_fingerprint = latest_signal.analysis_fingerprint
+                state.candidate_resolution_reason = cb.get("candidate_resolution_reason") or latest_signal.resolution_reason
+                state.publication_reason = cb.get("publication_reason") or "Phase 7 presentation mode: automated order execution forbidden."
                 state.reasons_positive = latest_signal.reasons_positive
                 state.reasons_negative = latest_signal.reasons_negative
                 state.hard_gate_reasons = latest_signal.hard_gate_reasons
@@ -1305,6 +1396,26 @@ class XauUsdLiveProjectionService:
                 state.risk_plan_fingerprint = risk_record.risk_plan_fingerprint
                 state.source_phase4_fingerprint = risk_record.source_phase4_fingerprint
                 state.risk_version = risk_record.risk_version
+            else:
+                state.risk_side = None
+                state.risk_candidate_status = None
+                state.risk_plan_valid = False
+                state.execution_eligible = False
+                state.candidate_effective_action = "WAIT"
+                state.publication_effective_action = "WAIT"
+                state.effective_action = "WAIT"
+                state.entry_min = None
+                state.entry_mid = None
+                state.entry_max = None
+                state.stop_structure = None
+                state.stop_atr = None
+                state.stop_final = None
+                state.stop_distance_atr = None
+                state.tp1 = None
+                state.tp2 = None
+                state.rr_tp1 = None
+                state.rr_tp2 = None
+                state.risk_plan_fingerprint = None
 
             state.feed_health_data = feed_health
             state.save()

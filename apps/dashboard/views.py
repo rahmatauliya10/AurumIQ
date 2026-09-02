@@ -81,16 +81,19 @@ class TimeCycleLabView(LoginRequiredMixin, View):
     """
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.models import CycleSnapshotRecord, ExperimentalCycleSnapshotRecord
         inst = Instrument.get_canonical_xauusd()
-        latest_cycles = []
+        latest_cycles_3a = []
+        latest_cycles_3b = []
         if inst:
-            latest_cycles = CycleSnapshotRecord.objects.filter(instrument=inst).order_by("-timestamp")[:20]
+            latest_cycles_3a = CycleSnapshotRecord.objects.filter(instrument=inst).order_by("-timestamp")[:20]
+            latest_cycles_3b = ExperimentalCycleSnapshotRecord.objects.filter(instrument=inst).order_by("-timestamp")[:20]
 
         context = {
             "page_title": "Time Cycle Lab",
             "active_tab": "time_cycle",
-            "latest_cycles": latest_cycles,
+            "latest_cycles_3a": latest_cycles_3a,
+            "latest_cycles_3b": latest_cycles_3b,
             "phase3b_status": "RESEARCH ONLY — PRODUCTION WEIGHT 0.0",
             "user": request.user,
         }

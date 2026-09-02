@@ -122,52 +122,51 @@ class AlertGenerationService:
             if alert:
                 emitted_alerts.append(alert)
 
-        elif cand_state == SignalState.READY:
-            # Check which side is ready
-            long_dir = signal_snapshot.long_direction.total_score
-            short_dir = signal_snapshot.short_direction.total_score
-            if long_dir > short_dir:
-                event_id = cls.generate_event_id(inst, AlertEventType.READY_LONG.value, sig_fp)
-                alert = cls._create_or_get_alert(
-                    event_id=event_id,
-                    event_type=AlertEventType.READY_LONG,
-                    signal_snapshot=signal_snapshot,
-                    risk_plan=risk_plan,
-                    side="LONG",
-                )
-            else:
-                event_id = cls.generate_event_id(inst, AlertEventType.READY_SHORT.value, sig_fp)
-                alert = cls._create_or_get_alert(
-                    event_id=event_id,
-                    event_type=AlertEventType.READY_SHORT,
-                    signal_snapshot=signal_snapshot,
-                    risk_plan=risk_plan,
-                    side="SHORT",
-                )
+        elif cand_state == SignalState.READY_LONG:
+            event_id = cls.generate_event_id(inst, AlertEventType.READY_LONG.value, sig_fp)
+            alert = cls._create_or_get_alert(
+                event_id=event_id,
+                event_type=AlertEventType.READY_LONG,
+                signal_snapshot=signal_snapshot,
+                risk_plan=risk_plan,
+                side="LONG",
+            )
             if alert:
                 emitted_alerts.append(alert)
 
-        elif cand_state == SignalState.WATCH:
-            long_dir = signal_snapshot.long_direction.total_score
-            short_dir = signal_snapshot.short_direction.total_score
-            if long_dir >= short_dir:
-                event_id = cls.generate_event_id(inst, AlertEventType.WATCH_LONG_CREATED.value, sig_fp)
-                alert = cls._create_or_get_alert(
-                    event_id=event_id,
-                    event_type=AlertEventType.WATCH_LONG_CREATED,
-                    signal_snapshot=signal_snapshot,
-                    risk_plan=risk_plan,
-                    side="LONG",
-                )
-            else:
-                event_id = cls.generate_event_id(inst, AlertEventType.WATCH_SHORT_CREATED.value, sig_fp)
-                alert = cls._create_or_get_alert(
-                    event_id=event_id,
-                    event_type=AlertEventType.WATCH_SHORT_CREATED,
-                    signal_snapshot=signal_snapshot,
-                    risk_plan=risk_plan,
-                    side="SHORT",
-                )
+        elif cand_state == SignalState.READY_SHORT:
+            event_id = cls.generate_event_id(inst, AlertEventType.READY_SHORT.value, sig_fp)
+            alert = cls._create_or_get_alert(
+                event_id=event_id,
+                event_type=AlertEventType.READY_SHORT,
+                signal_snapshot=signal_snapshot,
+                risk_plan=risk_plan,
+                side="SHORT",
+            )
+            if alert:
+                emitted_alerts.append(alert)
+
+        elif cand_state == SignalState.WATCH_LONG:
+            event_id = cls.generate_event_id(inst, AlertEventType.WATCH_LONG_CREATED.value, sig_fp)
+            alert = cls._create_or_get_alert(
+                event_id=event_id,
+                event_type=AlertEventType.WATCH_LONG_CREATED,
+                signal_snapshot=signal_snapshot,
+                risk_plan=risk_plan,
+                side="LONG",
+            )
+            if alert:
+                emitted_alerts.append(alert)
+
+        elif cand_state == SignalState.WATCH_SHORT:
+            event_id = cls.generate_event_id(inst, AlertEventType.WATCH_SHORT_CREATED.value, sig_fp)
+            alert = cls._create_or_get_alert(
+                event_id=event_id,
+                event_type=AlertEventType.WATCH_SHORT_CREATED,
+                signal_snapshot=signal_snapshot,
+                risk_plan=risk_plan,
+                side="SHORT",
+            )
             if alert:
                 emitted_alerts.append(alert)
 
@@ -185,47 +184,61 @@ class AlertGenerationService:
     ) -> List[AlertEvent]:
         """
         Evaluate real-time quote against current state for proximity and invalidation alerts.
-        Applies strict fail-closed suppression rules.
+        Applies strict fail-closed suppression rules and incident-based infrastructure alert deduplication.
         """
         emitted: List[AlertEvent] = []
         inst = state.instrument
 
-        # 1. Check Infrastructure & Freshness Alerts
+        # 1. Check Infrastructure & Freshness Alerts (Transition/Incident Based)
         if is_quote_stale:
-            # Emit LIVE_DATA_STALE (deduplicated by minute or analysis ts)
-            ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
-            event_id = cls.generate_event_id(inst, AlertEventType.LIVE_DATA_STALE.value, ts_key)
-            alert = cls._create_or_get_quote_alert(
-                event_id=event_id,
-                event_type=AlertEventType.LIVE_DATA_STALE,
-                state=state,
-                bid=bid,
-                ask=ask,
-                quote_ts=quote_ts,
-            )
-            if alert:
-                emitted.append(alert)
+            # Check if active stale alert already exists (prevent quote-by-quote alert storm)
+            has_active_stale = AlertEvent.objects.filter(
+                instrument=inst,
+                event_type=AlertEventType.LIVE_DATA_STALE.value,
+                status=AlertStatus.PENDING.value,
+            ).exists()
+            if not has_active_stale:
+                ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
+                event_id = cls.generate_event_id(inst, AlertEventType.LIVE_DATA_STALE.value, f"STALE_{ts_key}")
+                alert = cls._create_or_get_quote_alert(
+                    event_id=event_id,
+                    event_type=AlertEventType.LIVE_DATA_STALE,
+                    state=state,
+                    bid=bid,
+                    ask=ask,
+                    quote_ts=quote_ts,
+                )
+                if alert:
+                    emitted.append(alert)
 
         if not provider_healthy:
-            ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
-            event_id = cls.generate_event_id(inst, AlertEventType.PROVIDER_UNHEALTHY.value, ts_key)
-            alert = cls._create_or_get_quote_alert(
-                event_id=event_id,
-                event_type=AlertEventType.PROVIDER_UNHEALTHY,
-                state=state,
-                bid=bid,
-                ask=ask,
-                quote_ts=quote_ts,
-            )
-            if alert:
-                emitted.append(alert)
+            has_active_unhealthy = AlertEvent.objects.filter(
+                instrument=inst,
+                event_type=AlertEventType.PROVIDER_UNHEALTHY.value,
+                status=AlertStatus.PENDING.value,
+            ).exists()
+            if not has_active_unhealthy:
+                ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
+                event_id = cls.generate_event_id(inst, AlertEventType.PROVIDER_UNHEALTHY.value, f"UNHEALTHY_{ts_key}")
+                alert = cls._create_or_get_quote_alert(
+                    event_id=event_id,
+                    event_type=AlertEventType.PROVIDER_UNHEALTHY,
+                    state=state,
+                    bid=bid,
+                    ask=ask,
+                    quote_ts=quote_ts,
+                )
+                if alert:
+                    emitted.append(alert)
 
-        # 2. Strict Suppression Gate: If quote stale or provider unhealthy or safety hold, suppress zone alerts
-        if is_quote_stale or not provider_healthy:
+        # 2. Strict Suppression Gate: If quote stale, provider unhealthy, or hard gates active, suppress zone alerts
+        has_hard_gates = bool(state.hard_gate_reasons and len(state.hard_gate_reasons) > 0)
+        if is_quote_stale or not provider_healthy or has_hard_gates:
             logger.debug(
-                "zone_alerts_suppressed_feed_unhealthy",
+                "zone_alerts_suppressed_feed_or_safety",
                 is_stale=is_quote_stale,
                 provider_healthy=provider_healthy,
+                hard_gates=state.hard_gate_reasons,
             )
             return emitted
 

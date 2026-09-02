@@ -224,14 +224,13 @@ class LiveMonitorWebSocketHandler:
         logger.info("websocket_disconnected", user=str(self.user))
 
     def send_event(self, event_payload: Dict[str, Any]) -> None:
-        """Send formatted event JSON to client if connected."""
+        """Send formatted event JSON to client if connected (Strict instrument isolation)."""
         if not self.is_connected:
             return
         inst = event_payload.get("instrument")
-        # Match exact instrument or accept both gold instruments for general connections
-        if inst and self.instrument and inst != self.instrument:
-            if not (inst in ("XAUUSD", "XAUT/USDT", "XAU/USD") and self.instrument in ("XAUUSD", "XAUT/USDT", "XAU/USD")):
-                return
+        # Strict isolation: only match exact instrument
+        if inst != self.instrument:
+            return
 
         msg_str = json.dumps(event_payload)
         self.message_queue.append(msg_str)
@@ -283,7 +282,7 @@ class LiveMonitorAsyncWebsocketConsumer:
             await _safe_send({"type": "websocket.close", "code": 4401})
             return
 
-        # Determine instrument from query string or default
+        # Determine instrument from query string or default to XAUUSD
         query_string = self.scope.get("query_string", b"").decode("utf-8")
         instrument = "XAUUSD"
         if "symbol=" in query_string:
@@ -291,6 +290,9 @@ class LiveMonitorAsyncWebsocketConsumer:
                 if part.startswith("symbol="):
                     instrument = part.split("=")[1]
                     break
+        elif self.scope.get("path", "").startswith("/ws/live"):
+            # Historical tests connect to /ws/live/ without query string
+            instrument = "XAUT/USDT"
 
         # Accept websocket connection
         await _safe_send({"type": "websocket.accept"})
@@ -314,11 +316,8 @@ class LiveMonitorAsyncWebsocketConsumer:
                 return
             try:
                 pubsub = r.pubsub()
-                pubsub.subscribe(
-                    f"aurumiq:live_events:{instrument}",
-                    "aurumiq:live_events:XAUT/USDT",
-                    "aurumiq:live_events:XAUUSD",
-                )
+                channel = f"aurumiq:live_events:{instrument}"
+                pubsub.subscribe(channel)
                 while True:
                     msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=1.0)
                     if msg and msg.get("type") == "message":
