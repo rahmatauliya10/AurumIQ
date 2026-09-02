@@ -72,6 +72,7 @@ class BacktestRun(models.Model):
 class BacktestTrade(models.Model):
     """
     Immutable trade ledger entry simulated in a point-in-time backtest.
+    Supports both historical XAUT records and side-aware XAUUSD records.
     """
     id = models.BigAutoField(primary_key=True)
     backtest_run = models.ForeignKey(
@@ -80,7 +81,12 @@ class BacktestTrade(models.Model):
         related_name="trades",
     )
     trade_id = models.CharField(max_length=64, db_index=True)
+    side = models.CharField(max_length=10, default="LONG", null=True, blank=True, db_index=True)
+    candidate_state = models.CharField(max_length=40, null=True, blank=True)
+    candidate_decision = models.CharField(max_length=20, null=True, blank=True)
     source_signal_fingerprint = models.CharField(max_length=64, db_index=True)
+    risk_plan_fingerprint = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    execution_evidence_fingerprint = models.CharField(max_length=64, null=True, blank=True)
 
     signal_timestamp = models.DateTimeField(db_index=True)
     dependency_end_timestamp = models.DateTimeField(db_index=True)
@@ -115,8 +121,9 @@ class BacktestTrade(models.Model):
         unique_together = [("backtest_run", "trade_id")]
         indexes = [
             models.Index(fields=["backtest_run", "outcome"]),
+            models.Index(fields=["backtest_run", "side"]),
             models.Index(fields=["signal_timestamp", "dependency_end_timestamp"]),
         ]
 
     def __str__(self) -> str:
-        return f"BacktestTrade({self.trade_id}: {self.outcome} NetR={self.net_r})"
+        return f"BacktestTrade({self.trade_id}: [{self.side}] {self.outcome} NetR={self.net_r})"

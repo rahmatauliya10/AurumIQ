@@ -131,6 +131,28 @@ def test_persist_walkforward_run():
     )
 
     m = BacktestMetricsCalculator.calculate([], [])
+    oos_trade = SimulatedTrade(
+        trade_id="t-wf-oos-1",
+        source_signal_fingerprint="sig-wf-1",
+        signal_timestamp=t_start + timedelta(days=61),
+        risk_plan_fingerprint="r-wf-1",
+        planned_risk_amount=Decimal("10.00"),
+        outcome=TradeOutcome.TP1_FIRST,
+        fill_timestamp=t_start + timedelta(days=61, minutes=1),
+        fill_price=Decimal("2600.00"),
+        exit_timestamp=t_start + timedelta(days=61, minutes=30),
+        exit_price=Decimal("2620.00"),
+        gross_pnl_per_unit=Decimal("20.00"),
+        net_pnl_per_unit=Decimal("20.00"),
+        gross_r=Decimal("2.0000"),
+        net_r=Decimal("2.0000"),
+        gross_return_pct=Decimal("0.7692"),
+        net_return_pct=Decimal("0.7692"),
+        mfe_r=Decimal("2.5000"),
+        mae_r=Decimal("0.1000"),
+        fold_id=1,
+        dependency_window=(t_start + timedelta(days=61), t_start + timedelta(days=61, minutes=30)),
+    )
     fold = FoldDataResult(
         fold_id=1,
         spec=FoldSpec(
@@ -143,19 +165,19 @@ def test_persist_walkforward_run():
         train_metrics=m,
         oos_metrics=m,
         train_trades=(),
-        oos_trades=(),
+        oos_trades=(oos_trade,),
     )
     stab = TemporalStabilityReport(
         total_folds=1,
-        positive_expectancy_folds=0,
-        oos_expectancies_r=(0.0,),
+        positive_expectancy_folds=1,
+        oos_expectancies_r=(2.0,),
         oos_profit_factors=(1.0,),
         oos_drawdowns_r=(0.0,),
-        median_oos_expectancy_r=0.0,
-        worst_oos_expectancy_r=0.0,
-        best_oos_expectancy_r=0.0,
+        median_oos_expectancy_r=2.0,
+        worst_oos_expectancy_r=2.0,
+        best_oos_expectancy_r=2.0,
         aggregate_oos_metrics=m,
-        is_stable_positive=False,
+        is_stable_positive=True,
     )
     wf_res = WalkForwardResult(
         config=WalkForwardConfig(),
@@ -168,6 +190,10 @@ def test_persist_walkforward_run():
     assert created is True
     assert run_obj.run_fingerprint == "fp-wf-persisted-001"
     assert "total_folds" in run_obj.temporal_stability
+    # Verify OOS trades were persisted into BacktestTrade table
+    persisted_trades = BacktestTrade.objects.filter(backtest_run=run_obj)
+    assert persisted_trades.count() == 1
+    assert persisted_trades.first().trade_id == "f1-t-wf-oos-1"
 
 
 @pytest.mark.django_db
