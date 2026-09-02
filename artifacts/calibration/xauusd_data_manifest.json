@@ -1,0 +1,69 @@
+{
+  "instrument": "XAUUSD",
+  "primary_provider": "xauusd_primary",
+  "primary_symbol": "XAUUSD",
+  "listing_status": "ACTIVE",
+  "listing_role": "PRIMARY_XAUUSD_SPOT",
+  "data_start": null,
+  "data_end": null,
+  "timeframe_counts": {
+    "15m": 0,
+    "1h": 0,
+    "4h": 0,
+    "1d": 0,
+    "5m": 0,
+    "1m": 0
+  },
+  "source_identity": "PRIMARY_XAUUSD_SPOT (xauusd_primary)",
+  "code_revision": "HEAD",
+  "dataset_fingerprint": "15537f598a70da5968b53a3d52c3a4aa090f9aba11e190c43ea06509882bdba0",
+  "missing_data_statistics": {
+    "expected_duration_days": 0.0,
+    "actual_duration_days": 0.0,
+    "total_persisted_candles": 0,
+    "duplicate_count": 0,
+    "missing_expected_intervals": "100.0%",
+    "largest_gap_seconds": 0,
+    "naive_timestamp_count": 0,
+    "invalid_ohlc_count": 0,
+    "zero_or_negative_price_count": 0,
+    "source_contamination_count": 0
+  },
+  "15m_feature_readiness": {
+    "warm_up_coverage": "0/20 bars",
+    "is_feature_warm_up_satisfied": false,
+    "volume_evidence_distribution": {
+      "REAL_VOLUME": 0,
+      "TICK_VOLUME": 0,
+      "PROXY_VOLUME": 0,
+      "UNAVAILABLE": 0
+    },
+    "volume_classification": "UNAVAILABLE"
+  },
+  "auxiliary_evidence": {
+    "provider_health_snapshot_count": 0,
+    "cycle_3a_status": "PENDING_DATA",
+    "cycle_3a_sample_quality": "INSUFFICIENT",
+    "macro_event_count": 0,
+    "macro_blackout_coverage": "0.0%",
+    "historical_quote_count": 0,
+    "market_after_signal_quote_evidence": false
+  },
+  "empirical_friction_evidence": {
+    "entry_fee_bps": null,
+    "exit_fee_bps": null,
+    "synthetic_spread_bps": null,
+    "entry_slippage_bps": null,
+    "exit_slippage_bps": null,
+    "status": "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+  },
+  "hard_data_readiness_gate": {
+    "passed": false,
+    "decision": "CALIBRATION_DATA_NOT_READY",
+    "reasons": [
+      "Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.",
+      "Insufficient 15m feature warm-up bars (0/20 bars required)."
+    ]
+  },
+  "generated_at": "2026-09-02T10:08:23Z"
+}
