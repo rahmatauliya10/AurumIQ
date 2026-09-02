@@ -8,6 +8,7 @@ from .gold_reference import GoldReferenceProvider
 from .usdt_usd import UsdtUsdRateProvider
 from .xauusd_spot import XauUsdSpotProvider
 from .xauusd_secondary import SecondaryXauUsdSpotProvider
+from .twelve_data import TwelveDataProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -59,3 +60,4 @@ registry.register(GoldReferenceProvider(canonical_url=get_configured_gold_refere
 registry.register(UsdtUsdRateProvider())
 registry.register(XauUsdSpotProvider())
 registry.register(SecondaryXauUsdSpotProvider())
+registry.register(TwelveDataProvider())

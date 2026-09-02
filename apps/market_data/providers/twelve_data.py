@@ -1,0 +1,347 @@
+"""Twelve Data XAU/USD Market Data Provider Adapter.
+
+Provides analytical spot gold market data directly from Twelve Data HTTPS API.
+Strictly decoupled from execution venues (Exness) per AurumIQ data-readiness protocol.
+"""
+import os
+import re
+import time
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Optional, Any, Dict, Tuple
+import requests
+import structlog
+from .base import MarketDataProvider, RawCandle, ProviderHealth, TickerSnapshot
+
+logger = structlog.get_logger(__name__)
+
+
+def _get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        from django.conf import settings
+        return getattr(settings, key, os.environ.get(key, default))
+    except Exception:
+        return os.environ.get(key, default)
+
+
+def _sanitize_secret(text: str, secret: Optional[str] = None) -> str:
+    """Mask any occurrence of API keys in log/error text."""
+    if not text:
+        return ""
+    clean = re.sub(r"(apikey=)[^&]+", r"\1***MASKED***", text, flags=re.IGNORECASE)
+    clean = re.sub(r"(api_key=)[^&]+", r"\1***MASKED***", clean, flags=re.IGNORECASE)
+    if secret and secret in clean:
+        clean = clean.replace(secret, "***MASKED***")
+    return clean
+
+
+class TwelveDataProvider(MarketDataProvider):
+    """
+    Twelve Data Market Data Provider for Spot Gold (XAU/USD).
+    
+    Provider ID: twelve_data_xauusd
+    Canonical Instrument: XAUUSD
+    Provider Symbol: XAU/USD
+    
+    Fail-closed policy:
+    - Missing API key
+    - HTTP errors / timeout / 429 rate limit
+    - Provider error responses
+    - Symbol mismatch (never substitute crypto-gold or foreign symbols)
+    - Interval mismatch
+    - Corrupted or invalid OHLC geometry
+    - Invalid timestamps
+    """
+
+    CANONICAL_SYMBOL = "XAUUSD"
+    PROVIDER_SYMBOL = "XAU/USD"
+
+    TIMEFRAME_MAP: Dict[str, str] = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1day",
+    }
+
+    TIMEFRAME_DELTAS: Dict[str, timedelta] = {
+        "1m": timedelta(minutes=1),
+        "5m": timedelta(minutes=5),
+        "15m": timedelta(minutes=15),
+        "1h": timedelta(hours=1),
+        "4h": timedelta(hours=4),
+        "1d": timedelta(days=1),
+    }
+
+    PROHIBITED_SYMBOLS = {"XAUT", "XAUTUSDT", "PAXG", "PAXGUSDT", "XAUEUR"}
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = "https://api.twelvedata.com",
+        timeout: float = 15.0,
+    ):
+        self._api_key = api_key or _get_setting_or_env("TWELVE_DATA_API_KEY")
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+
+    @property
+    def provider_id(self) -> str:
+        return "twelve_data_xauusd"
+
+    def is_configured(self) -> bool:
+        return bool(self._api_key and self._api_key.strip())
+
+    def map_timeframe(self, timeframe: str) -> str:
+        tf = timeframe.lower().strip()
+        if tf not in self.TIMEFRAME_MAP:
+            raise KeyError(
+                f"UNSUPPORTED_TIMEFRAME: Timeframe '{timeframe}' is not supported by Twelve Data adapter. "
+                f"Allowed: {sorted(list(self.TIMEFRAME_MAP.keys()))}"
+            )
+        return self.TIMEFRAME_MAP[tf]
+
+    def _validate_symbol(self, symbol: str) -> str:
+        norm = symbol.replace("/", "").replace("_", "").upper().strip()
+        if norm in self.PROHIBITED_SYMBOLS:
+            raise ValueError(
+                f"PROHIBITED_SYMBOL_FALLBACK: Symbol '{symbol}' is a prohibited proxy or foreign asset. "
+                "Substituting crypto-gold for spot XAUUSD is strictly forbidden."
+            )
+        if norm != self.CANONICAL_SYMBOL:
+            raise ValueError(
+                f"SYMBOL_MISMATCH: Expected canonical '{self.CANONICAL_SYMBOL}' or provider '{self.PROVIDER_SYMBOL}', "
+                f"got '{symbol}'."
+            )
+        return self.PROVIDER_SYMBOL
+
+    def fetch_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        only_closed: bool = True,
+    ) -> list[RawCandle]:
+        """
+        Fetch authoritative spot XAU/USD candles within [start, end] window.
+        
+        Guarantees:
+        - Strict direct Decimal(str) parsing (never float -> Decimal).
+        - Direct UTC-aware timezone normalization.
+        - Strict OHLC geometry enforcement.
+        - Discards or flags in-progress candle so signal computation uses completed candles only.
+        - Fail-closed on missing key, timeout, 429, API errors, symbol/interval mismatch.
+        """
+        if not self.is_configured():
+            logger.error("twelve_data_not_configured")
+            raise RuntimeError(
+                "TWELVE_DATA_API_KEY_NOT_CONFIGURED: Twelve Data API key is not configured in environment/.env. "
+                "Fail-closed per Section 10."
+            )
+
+        provider_symbol = self._validate_symbol(symbol)
+        provider_interval = self.map_timeframe(timeframe)
+        interval_delta = self.TIMEFRAME_DELTAS[timeframe.lower().strip()]
+
+        # Format dates in UTC for provider
+        start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+        end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+
+        params = {
+            "symbol": provider_symbol,
+            "interval": provider_interval,
+            "start_date": start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_date": end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            "timezone": "UTC",
+            "order": "ASC",
+            "apikey": self._api_key,
+        }
+
+        url = f"{self._base_url}/time_series"
+        try:
+            resp = requests.get(url, params=params, timeout=self._timeout)
+        except requests.exceptions.Timeout as e:
+            logger.error("twelve_data_request_timeout")
+            raise RuntimeError("TWELVE_DATA_TIMEOUT: Twelve Data request timed out.") from e
+        except requests.exceptions.RequestException as e:
+            sanitized = _sanitize_secret(str(e), self._api_key)
+            logger.error("twelve_data_http_failure", error=sanitized)
+            raise RuntimeError(f"TWELVE_DATA_HTTP_FAILURE: {sanitized}") from e
+
+        if resp.status_code == 429:
+            logger.error("twelve_data_rate_limit_429")
+            raise RuntimeError("TWELVE_DATA_RATE_LIMIT_EXCEEDED: HTTP 429 received from Twelve Data.")
+
+        if resp.status_code != 200:
+            sanitized_body = _sanitize_secret(resp.text[:200], self._api_key)
+            raise RuntimeError(f"TWELVE_DATA_HTTP_ERROR: HTTP {resp.status_code} — {sanitized_body}")
+
+        try:
+            payload = resp.json()
+        except Exception as e:
+            raise RuntimeError("TWELVE_DATA_INVALID_JSON: Failed to parse JSON response from Twelve Data.") from e
+
+        # Validate provider payload status
+        status = payload.get("status")
+        if status == "error":
+            err_msg = _sanitize_secret(payload.get("message", "Unknown API error"), self._api_key)
+            raise RuntimeError(f"TWELVE_DATA_API_ERROR: {err_msg}")
+
+        # Validate meta fields
+        meta = payload.get("meta")
+        if not meta or not isinstance(meta, dict):
+            raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'meta' field in response.")
+
+        returned_symbol = meta.get("symbol")
+        if returned_symbol != provider_symbol:
+            raise ValueError(
+                f"TWELVE_DATA_SYMBOL_MISMATCH: Expected meta.symbol '{provider_symbol}', got '{returned_symbol}'."
+            )
+
+        returned_interval = meta.get("interval")
+        if returned_interval != provider_interval:
+            raise ValueError(
+                f"TWELVE_DATA_INTERVAL_MISMATCH: Expected meta.interval '{provider_interval}', got '{returned_interval}'."
+            )
+
+        raw_values = payload.get("values")
+        if raw_values is None or not isinstance(raw_values, list):
+            raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'values' array in response.")
+
+        now_utc = datetime.now(timezone.utc)
+        candles: list[RawCandle] = []
+
+        for row in raw_values:
+            if not isinstance(row, dict):
+                raise ValueError("TWELVE_DATA_INVALID_CANDLE: Candle row is not a JSON object.")
+
+            for required_key in ("datetime", "open", "high", "low", "close"):
+                if required_key not in row:
+                    raise ValueError(f"TWELVE_DATA_INVALID_CANDLE: Missing field '{required_key}' in candle.")
+
+            # Parse datetime strictly into UTC
+            dt_str = str(row["datetime"]).strip()
+            try:
+                if len(dt_str) == 10:  # Daily candle: YYYY-MM-DD
+                    dt_open = datetime.strptime(dt_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                else:  # Intraday candle: YYYY-MM-DD HH:MM:SS
+                    dt_open = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError as e:
+                raise ValueError(f"TWELVE_DATA_INVALID_TIMESTAMP: Invalid timestamp format '{dt_str}'.") from e
+
+            dt_close = dt_open + interval_delta
+
+            # Parse Decimal directly from string — float conversion strictly prohibited
+            try:
+                open_val = Decimal(str(row["open"]))
+                high_val = Decimal(str(row["high"]))
+                low_val = Decimal(str(row["low"]))
+                close_val = Decimal(str(row["close"]))
+            except (InvalidOperation, TypeError, ValueError) as e:
+                raise ValueError(f"TWELVE_DATA_INVALID_DECIMAL: Failed to parse OHLC values for {dt_str}.") from e
+
+            # OHLC Geometry constraints validation
+            if not (open_val > 0 and high_val > 0 and low_val > 0 and close_val > 0):
+                raise ValueError(f"TWELVE_DATA_INVALID_OHLC: Non-positive price at {dt_str}.")
+            if not (high_val >= open_val and high_val >= close_val and high_val >= low_val):
+                raise ValueError(f"TWELVE_DATA_INVALID_OHLC: High is not maximal at {dt_str}.")
+            if not (low_val <= open_val and low_val <= close_val and low_val <= high_val):
+                raise ValueError(f"TWELVE_DATA_INVALID_OHLC: Low is not minimal at {dt_str}.")
+
+            # Closed candle evaluation: candle is closed iff close timestamp <= now_utc
+            is_closed = dt_close <= now_utc
+
+            if only_closed and not is_closed:
+                # Discard in-progress candle from analytical set
+                continue
+
+            # Volume semantics: Twelve Data XAU/USD does not provide real trade volume
+            vol_val = Decimal("0")
+            if "volume" in row and row["volume"] is not None and str(row["volume"]).strip():
+                try:
+                    vol_val = Decimal(str(row["volume"]))
+                except Exception:
+                    vol_val = Decimal("0")
+
+            candles.append(
+                RawCandle(
+                    symbol=self.CANONICAL_SYMBOL,
+                    timeframe=timeframe.lower().strip(),
+                    timestamp_open=dt_open,
+                    timestamp_close=dt_close,
+                    open=open_val,
+                    high=high_val,
+                    low=low_val,
+                    close=close_val,
+                    volume=vol_val,
+                    is_closed=is_closed,
+                    source=self.provider_id,
+                    volume_evidence="UNAVAILABLE",
+                )
+            )
+
+        return candles
+
+    def fetch_ticker(self, symbol: str) -> Optional[TickerSnapshot]:
+        """
+        Spot gold ticker snapshot.
+        
+        Twelve Data XAU/USD is an analytical reference feed, not an Exness execution venue.
+        Per Section 10 & 11, bid/ask and spread are NOT_AVAILABLE and NOT_CONFIGURED.
+        Fabricating execution bid/ask quotes is prohibited.
+        """
+        return None
+
+    def health_check(self) -> ProviderHealth:
+        """Probe Twelve Data API endpoint health."""
+        now = datetime.now(timezone.utc)
+        if not self.is_configured():
+            return ProviderHealth(
+                provider_id=self.provider_id,
+                status="NOT_CONFIGURED",
+                latency_ms=None,
+                checked_at=now,
+                error_message="Twelve Data API key is NOT_CONFIGURED. Awaiting TWELVE_DATA_API_KEY.",
+            )
+
+        t0 = time.perf_counter()
+        try:
+            url = f"{self._base_url}/api_usage"
+            resp = requests.get(url, params={"apikey": self._api_key}, timeout=self._timeout)
+            latency = int((time.perf_counter() - t0) * 1000)
+            if resp.status_code == 200:
+                return ProviderHealth(
+                    provider_id=self.provider_id,
+                    status="HEALTHY",
+                    latency_ms=latency,
+                    checked_at=now,
+                    error_message="",
+                )
+            elif resp.status_code == 429:
+                return ProviderHealth(
+                    provider_id=self.provider_id,
+                    status="DEGRADED",
+                    latency_ms=latency,
+                    checked_at=now,
+                    error_message="Rate limit exceeded (HTTP 429).",
+                )
+            else:
+                return ProviderHealth(
+                    provider_id=self.provider_id,
+                    status="UNHEALTHY",
+                    latency_ms=latency,
+                    checked_at=now,
+                    error_message=f"HTTP {resp.status_code}",
+                )
+        except Exception as e:
+            latency = int((time.perf_counter() - t0) * 1000)
+            clean_err = _sanitize_secret(str(e), self._api_key)
+            return ProviderHealth(
+                provider_id=self.provider_id,
+                status="UNHEALTHY",
+                latency_ms=latency,
+                checked_at=now,
+                error_message=clean_err,
+            )
