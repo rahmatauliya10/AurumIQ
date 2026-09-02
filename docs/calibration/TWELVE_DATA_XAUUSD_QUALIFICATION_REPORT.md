@@ -5,9 +5,11 @@
 > **Provider Identity:** `twelve_data_xauusd`  
 > **Provider Symbol:** `XAU/USD`  
 > **Baseline Commit:** `6a6bb16de112ba88cd6e0a80e11fe51074e2018d`  
+> **Seal Micro-Patch Commit:** `research/xauusd-data-readiness`  
 > **Qualification Date:** September 2026  
-> **Execution Status:** Complete — Technical Qualification Successful  
-> **Final Qualification Status:** `TWELVE_DATA_XAUUSD_PRIMARY_USABLE`
+> **Execution Status:** Complete — Technical Qualification Sealed  
+> **Final Qualification Status:** `TWELVE_DATA_XAUUSD_PRIMARY_USABLE`  
+> *(Strictly defined as: Primary Analytical Candlestick Feed Usable. Execution quotes and live bid/ask remain NOT_CONFIGURED).*
 
 ---
 
@@ -23,8 +25,8 @@ The provider satisfies all core analytical requirements for automated market mon
 |                                                                                   |
 |  [ Twelve Data HTTPS API ] ---> Analytical Feed (1m, 5m, 15m, 1h, 4h, 1d)          |
 |                                 - Spot Gold (XAU/USD)                             |
-|                                 - Direct Decimal(str) Parsing                     |
-|                                 - UTC-Normalized Datetime                         |
+|                                 - Direct Decimal(str) Parsing (Float Prohibited)  |
+|                                 - UTC-Normalized Datetime (Explicit timezone=UTC) |
 |                                 - Closed 15m Signal Filtering                     |
 |                                                                                   |
 |  [ Exness MT5 ]            ---> Execution Venue (Manual Execution Only)           |
@@ -57,32 +59,44 @@ Per Section 10 and 11 of the protocol:
    - `ENTRY_SLIPPAGE`: `NOT_CONFIGURED`
    - `EXIT_SLIPPAGE`: `NOT_CONFIGURED`
    - `FEE_EVIDENCE`: `NOT_CONFIGURED`
+5. **Live Monitoring Integration Scope:**
+   - `ANALYTICAL_CANDLE_SOURCE`: `USABLE`
+   - `LIVE_BID_ASK_SOURCE`: `NOT_CONFIGURED`
+   - `PHASE7_QUOTE_LIVEMONITOR`: `NOT_YET_BOUND_TO_TWELVE_DATA`
 
 ---
 
-## 3. Empirical Live Access & Timeframe Evidence
+## 3. Empirical Live Access & Timeframe Evidence (Explicit UTC Re-Probe)
 
-All probes were executed against the official Twelve Data HTTPS endpoint (`https://api.twelvedata.com`) with pacing adhering to the Basic Free tier rate limit (8 requests/minute):
+All probes were executed against the official Twelve Data HTTPS endpoint (`https://api.twelvedata.com`) with explicit parameter `timezone=UTC` and pacing adhering to the Basic Free tier rate limit (8 requests/minute):
 
-| Timeframe | Provider Interval | HTTP Status | Returned Symbol | Returned Interval | Sample Count | Earliest Accessible | Latest Observed Timestamp | OHLC Geometry | Volume Presence |
+| Timeframe | Provider Interval | HTTP Status | Returned Symbol | Returned Interval | Raw Latest Datetime | Normalized UTC Datetime | Future Sanity Check | OHLC Geometry | Volume Presence |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`1m`** | `1min` | 200 OK | `XAU/USD` | `1min` | 5 | `2020-04-06 16:40:00` | `2026-09-03 01:34:00` | **PASS** | `ABSENT` |
-| **`5m`** | `5min` | 200 OK | `XAU/USD` | `5min` | 5 | `2020-03-16 12:10:00` | `2026-09-03 01:30:00` | **PASS** | `ABSENT` |
-| **`15m`** | `15min` | 200 OK | `XAU/USD` | `15min` | 5 | `2020-01-24 13:00:00` | `2026-09-03 01:30:00` | **PASS** | `ABSENT` |
-| **`1h`** | `1h` | 200 OK | `XAU/USD` | `1h` | 5 | `2020-01-24 13:00:00` | `2026-09-03 01:00:00` | **PASS** | `ABSENT` |
-| **`4h`** | `4h` | 200 OK | `XAU/USD` | `4h` | 5 | `2020-01-24 11:00:00` | `2026-09-02 23:00:00` | **PASS** | `ABSENT` |
-| **`1d`** | `1day` | 200 OK | `XAU/USD` | `1day` | 5 | `1979-12-26` | `2026-09-02` | **PASS** | `ABSENT` |
+| **`1m`** | `1min` | 200 OK | `XAU/USD` | `1min` | `2026-09-02 15:54:00` | `2026-09-02 15:54:00+00:00` | **PASS** (Not in future) | **PASS** | `ABSENT` |
+| **`5m`** | `5min` | 200 OK | `XAU/USD` | `5min` | `2026-09-02 15:50:00` | `2026-09-02 15:50:00+00:00` | **PASS** (Not in future) | **PASS** | `ABSENT` |
+| **`15m`** | `15min` | 200 OK | `XAU/USD` | `15min` | `2026-09-02 15:45:00` | `2026-09-02 15:45:00+00:00` | **PASS** (Not in future) | **PASS** | `ABSENT` |
+| **`1h`** | `1h` | 200 OK | `XAU/USD` | `1h` | `2026-09-02 15:00:00` | `2026-09-02 15:00:00+00:00` | **PASS** (Not in future) | **PASS** | `ABSENT` |
+| **`4h`** | `4h` | 200 OK | `XAU/USD` | `4h` | `2026-09-02 13:00:00` | `2026-09-02 13:00:00+00:00` | **PASS** (Not in future) | **PASS** | `ABSENT` |
+| **`1d`** | `1day` | 200 OK | `XAU/USD` | `1day` | `2026-09-02` | `2026-09-02 00:00:00+00:00` | **PASS** (Current date) | **PASS** | `ABSENT` |
 
 ---
 
-## 4. History Capability Assessment
+## 4. History Capability Assessment & Timezone Clarification
 
-- **Earliest Timestamp Endpoint:** Twelve Data official `/earliest_timestamp` endpoint is fully accessible on the user's Basic tier.
-- **Intraday History Depth:**
-  - 1m history extends back to April 2020 (~6.4 years of 1-minute data).
-  - 15m and 1h history extends back to January 2020 (~6.6 years of data).
-  - 1d history extends back to December 1979 (>46 years of daily data).
-- **Prohibition on Bulk Downloading:** No bulk backfill was initiated during qualification; historical records persisted into database remain exactly 0.
+The official `/earliest_timestamp` endpoint was re-probed with explicit parameter `timezone=UTC`:
+
+| Timeframe | Raw Provider Timestamp | Unix Epoch Seconds | Normalized UTC Timestamp | Timezone Semantics |
+| :--- | :--- | :--- | :--- | :--- |
+| **`1m`** | `2020-04-06 06:40:00` | `1586155200` | `2020-04-06 06:40:00+00:00` | **Explicit UTC** (Matches unix epoch exactly) |
+| **`5m`** | `2020-03-16 01:10:00` | `1584321000` | `2020-03-16 01:10:00+00:00` | **Explicit UTC** (Matches unix epoch exactly) |
+| **`15m`** | `2020-01-24 02:00:00` | `1579831200` | `2020-01-24 02:00:00+00:00` | **Explicit UTC** (Matches unix epoch exactly) |
+| **`1h`** | `2020-01-24 02:00:00` | `1579831200` | `2020-01-24 02:00:00+00:00` | **Explicit UTC** (Matches unix epoch exactly) |
+| **`4h`** | `2020-01-24 00:00:00` | `1579824000` | `2020-01-24 00:00:00+00:00` | **Explicit UTC** (Matches unix epoch exactly) |
+| **`1d`** | `1979-12-26` | `315000000` | `1979-12-26` (Date-Only) | **Date-Only** (No intraday session anchor implied) |
+
+**Note on Daily Bars:** For `1day`, Twelve Data delivers date-only values (`YYYY-MM-DD`). AurumIQ normalizes daily storage to midnight UTC (`00:00:00+00:00`), documented as canonical platform normalization rather than provider intraday session open evidence.
+
+**Prohibition on Bulk Downloading:** No bulk backfill was initiated during qualification; historical records persisted into the database remain exactly `0`.
 
 ---
 
@@ -102,47 +116,69 @@ A continuous evaluation was conducted on two full completed market days (Monday 
 
 ---
 
-## 6. Closed 15-Minute Candle Validation
+## 6. Closed 15-Minute Candle Validation & Datetime Input Contracts
 
 - **Provider Timestamp Convention:** Twelve Data returns the bar opening timestamp with `timezone="UTC"` parameter.
-- **In-Progress Bar Detection:** When a request is made while a 15m bar is forming (e.g., at 15:37 UTC for the 15:30 bar), Twelve Data delivers the floating in-progress bar as `values[0]`.
+- **In-Progress Bar Detection:** When a request is made while a 15m bar is forming, Twelve Data delivers the floating in-progress bar as `values[0]`.
 - **Closed Bar Rule:**
   $$\text{timestamp\_close} = \text{timestamp\_open} + \text{interval\_delta}$$
   A bar is classified as closed if and only if:
   $$\text{timestamp\_close} \le T_{\text{now, UTC}}$$
   AurumIQ's `TwelveDataProvider` automatically filters out in-progress bars when `only_closed=True`, ensuring signal computation is conducted exclusively on completed price action.
+- **Strict Datetime Input Contract:**
+  `_normalize_to_utc_aware(dt, param_name)` enforces:
+  - Rejects `None` (`ValueError: MISSING_DATETIME`)
+  - Rejects naive datetime (`ValueError: NAIVE_DATETIME_FORBIDDEN`)
+  - Rejects ambiguous tzinfo (`dt.utcoffset() is None`)
+  - Converts timezone-aware inputs strictly via `dt.astimezone(timezone.utc)`
+  - Rejects invalid bounded windows (`start > end`)
 
 ---
 
-## 7. Decimal Integrity & Precision
+## 7. Latency Metrics Breakdown
 
-- **No Float Contamination:** Price attributes (`open`, `high`, `low`, `close`) are parsed directly via `Decimal(str(val))` without intermediate IEEE-754 float representation.
-- **Verification:** Precision test confirmed exact 5-decimal retention (`4370.40058`).
-
----
-
-## 8. Volume Semantics Classification
-
-- **Observed Payload:** Twelve Data spot `XAU/USD` returns no volume field in standard REST payload.
-- **Classification:** Categorized strictly as `UNAVAILABLE` with `volume = Decimal("0")`.
-- **Prohibition on Synthetic Volume:** Tick volume or proxy crypto-volume is never promoted to `REAL_VOLUME`.
+Per Section 7 of the protocol:
+- **`HTTP_ROUNDTRIP_LATENCY_MS`:** `506ms` *(observed range: 506ms – 816ms)*. This represents network roundtrip transit time for HTTPS REST request/response.
+- **`CANDLE_PUBLICATION_LATENCY`:** `NOT_EMPIRICALLY_MEASURED` *(requires long-term tick timestamp differential logging; not fabricated)*.
 
 ---
 
-## 9. Quota & Free Plan Suitability
+## 8. Quota Model & Multi-Scenario Accounting
 
-- **API Usage Probe:**
-  - Plan Category: `basic` (Free tier)
-  - Rate Limit: 8 requests / minute
-  - Daily Budget: 800 requests / day
-- **Qualification Consumption:**
-  - Requests used during live audit: 17 calls
-  - 429 Rate Limit Encountered: **NO**
-- **AurumIQ Live Cadence Requirement:**
-  - One 15-minute evaluation cycle every 15 minutes: $4 \times 24 = 96\text{ requests/day}$.
-  - Daily Budget Utilization: $96 / 800 = 12.0\%$.
-  - Free Tier Headroom: **88.0% safety margin**.
-- **Assessment:** Fully suitable for operational live monitoring without incurring infrastructure costs.
+Twelve Data Basic Free Tier quotas:
+- **Rate Limit:** 8 requests / minute
+- **Daily Budget:** 800 requests (credits) / day
+- **Credit Weight:** 1 credit per request (equal for `/time_series`, `/earliest_timestamp`, `/api_usage`).
+
+### Operational Scenarios:
+
+| Scenario | Description | Query Cadence | Daily Requests / Credits | Free Plan Budget Utilization | Free Tier Suitability |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Scenario A** | **15m Trigger-Only** | 1 request every 15 minutes at bar close | $4 \times 24 = 96$ / day | **12.0%** (88% headroom) | **PASS** |
+| **Scenario B** *(Recommended)* | **Timeframe-Aligned Refresh** | 15m: every 15m (96/d)<br>1h: every 1h (24/d)<br>4h: every 4h (6/d)<br>1d: once daily (1/d)<br>Health probes: 24/d<br>Retries buffer: ~10/d | $96 + 24 + 6 + 1 + 24 + 10 = \mathbf{161}$ / day | **20.1%** (79.9% headroom) | **PASS** |
+| **Scenario C** | **Conservative Upper Bound** | All 6 timeframes fetched on every 15m cycle | $6 \times 4 \times 24 = 576$ / day<br>+ 24 health checks = $\mathbf{600}$ / day | **75.0%** (25.0% headroom) | **PASS** |
+
+**Conclusion:** Twelve Data Free Basic plan is fully suitable for operational live monitoring without consuming excessive quota or requiring paid plans.
+
+---
+
+## 9. Qualification Command Reproducibility
+
+The qualification command `apps/market_data/management/commands/qualify_twelve_data_xauusd.py` provides:
+
+1. **Full Bounded Qualification:**
+   ```powershell
+   uv run python manage.py qualify_twelve_data_xauusd --full
+   ```
+   Validates XAU/USD identity, all 6 timeframe endpoints with explicit UTC, future timestamp sanity, OHLC geometry, and closed 15m handling. Emits:
+   `FINAL STATUS: TWELVE_DATA_XAUUSD_PRIMARY_USABLE`
+
+2. **Offline Contract Check:**
+   ```powershell
+   uv run python manage.py qualify_twelve_data_xauusd --offline
+   ```
+   Validates contract invariants without network calls. Explicitly emits:
+   `STATUS: OFFLINE_CONTRACT_CHECK_ONLY`
 
 ---
 
@@ -161,12 +197,13 @@ A continuous evaluation was conducted on two full completed market days (Monday 
 
 ---
 
-## 11. Conclusion & Provider Identity
+## 11. Final Status Declaration
 
-The Twelve Data provider adapter is integrated as:
+The Twelve Data provider adapter is sealed as:
 - **Module:** `apps/market_data/providers/twelve_data.py`
 - **Registry ID:** `twelve_data_xauusd`
 - **Management Command:** `python manage.py qualify_twelve_data_xauusd`
-- **Unit Test Suite:** `tests/unit/test_twelve_data_provider.py` (34 tests passing)
+- **Unit Test Suite:** `tests/unit/test_twelve_data_provider.py` (41 tests passing)
 
-**Status:** `TWELVE_DATA_XAUUSD_PRIMARY_USABLE`
+**Status:** `TWELVE_DATA_XAUUSD_PRIMARY_USABLE`  
+*(Primary Analytical Candlestick Feed Usable)*

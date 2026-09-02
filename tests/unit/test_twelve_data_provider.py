@@ -3,7 +3,7 @@
 All tests run strictly offline using mocked fixtures.
 No real network calls or exposed API keys.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 import pytest
@@ -155,6 +155,97 @@ class TestTwelveDataDecimalAndUTC:
         assert c.timestamp_close == datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
+class TestTwelveDataHostileDatetimeContract:
+    """Validate strict timezone-aware contract, rejection of naive/ambiguous dates, and start <= end."""
+
+    def test_naive_start_rejected(self, provider):
+        naive_start = datetime(2026, 9, 2, 10, 0, 0)
+        aware_end = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValueError, match="NAIVE_DATETIME_FORBIDDEN"):
+            provider.fetch_candles("XAUUSD", "15m", naive_start, aware_end)
+
+    def test_naive_end_rejected(self, provider):
+        aware_start = datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc)
+        naive_end = datetime(2026, 9, 2, 12, 0, 0)
+        with pytest.raises(ValueError, match="NAIVE_DATETIME_FORBIDDEN"):
+            provider.fetch_candles("XAUUSD", "15m", aware_start, naive_end)
+
+    def test_ambiguous_tzinfo_without_utcoffset_rejected(self, provider):
+        class AmbiguousTz(tzinfo):
+            def utcoffset(self, dt):
+                return None
+            def tzname(self, dt):
+                return "Ambiguous"
+            def dst(self, dt):
+                return None
+
+        ambiguous_dt = datetime(2026, 9, 2, 10, 0, 0, tzinfo=AmbiguousTz())
+        aware_end = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValueError, match="NAIVE_DATETIME_FORBIDDEN"):
+            provider.fetch_candles("XAUUSD", "15m", ambiguous_dt, aware_end)
+
+    def test_none_datetime_rejected(self, provider):
+        aware_dt = datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValueError, match="MISSING_DATETIME"):
+            provider.fetch_candles("XAUUSD", "15m", None, aware_dt)
+        with pytest.raises(ValueError, match="MISSING_DATETIME"):
+            provider.fetch_candles("XAUUSD", "15m", aware_dt, None)
+
+    @patch("apps.market_data.providers.twelve_data.requests.get")
+    def test_timezone_aware_positive_offset_converted_to_utc(self, mock_get, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "ok",
+            "meta": {"symbol": "XAU/USD", "interval": "15min"},
+            "values": [],
+        }
+        mock_get.return_value = mock_response
+
+        # +07:00 timezone (e.g. Jakarta / Bangkok)
+        tz_plus7 = timezone(timedelta(hours=7))
+        start_plus7 = datetime(2026, 9, 2, 22, 0, 0, tzinfo=tz_plus7)  # 22:00 +07:00 == 15:00 UTC
+        end_plus7 = datetime(2026, 9, 2, 23, 0, 0, tzinfo=tz_plus7)    # 23:00 +07:00 == 16:00 UTC
+
+        provider.fetch_candles("XAUUSD", "15m", start_plus7, end_plus7)
+
+        _, kwargs = mock_get.call_args
+        params = kwargs["params"]
+        assert params["start_date"] == "2026-09-02 15:00:00"
+        assert params["end_date"] == "2026-09-02 16:00:00"
+        assert params["timezone"] == "UTC"
+
+    @patch("apps.market_data.providers.twelve_data.requests.get")
+    def test_timezone_aware_negative_offset_converted_to_utc(self, mock_get, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "ok",
+            "meta": {"symbol": "XAU/USD", "interval": "15min"},
+            "values": [],
+        }
+        mock_get.return_value = mock_response
+
+        # -05:00 timezone (e.g. US Eastern Standard Time)
+        tz_minus5 = timezone(timedelta(hours=-5))
+        start_minus5 = datetime(2026, 9, 2, 10, 0, 0, tzinfo=tz_minus5)  # 10:00 -05:00 == 15:00 UTC
+        end_minus5 = datetime(2026, 9, 2, 11, 0, 0, tzinfo=tz_minus5)    # 11:00 -05:00 == 16:00 UTC
+
+        provider.fetch_candles("XAUUSD", "15m", start_minus5, end_minus5)
+
+        _, kwargs = mock_get.call_args
+        params = kwargs["params"]
+        assert params["start_date"] == "2026-09-02 15:00:00"
+        assert params["end_date"] == "2026-09-02 16:00:00"
+        assert params["timezone"] == "UTC"
+
+    def test_start_greater_than_end_rejected(self, provider):
+        start = datetime(2026, 9, 2, 15, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 9, 2, 14, 0, 0, tzinfo=timezone.utc)  # end < start
+        with pytest.raises(ValueError, match="INVALID_BOUNDED_WINDOW"):
+            provider.fetch_candles("XAUUSD", "15m", start, end)
+
+
 class TestTwelveDataClosedCandleHandling:
     """Validate distinction between latest completed candle and in-progress candle."""
 
@@ -187,12 +278,8 @@ class TestTwelveDataClosedCandleHandling:
         }
         mock_get.return_value = mock_response
 
-        with patch("apps.market_data.providers.twelve_data.datetime") as mock_dt:
-            # Mock datetime.now(timezone.utc) to 12:08:00
-            fixed_now = datetime(2026, 9, 2, 12, 8, 0, tzinfo=timezone.utc)
-            mock_dt.now.return_value = fixed_now
-            mock_dt.strptime = datetime.strptime
-
+        fixed_now = datetime(2026, 9, 2, 12, 8, 0, tzinfo=timezone.utc)
+        with patch.object(provider, "_get_now_utc", return_value=fixed_now):
             # By default only_closed=True
             candles = provider.fetch_candles(
                 "XAUUSD", "15m",

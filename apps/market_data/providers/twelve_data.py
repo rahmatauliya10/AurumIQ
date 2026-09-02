@@ -35,6 +35,35 @@ def _sanitize_secret(text: str, secret: Optional[str] = None) -> str:
     return clean
 
 
+_real_datetime = datetime
+
+
+def _normalize_to_utc_aware(dt: Any, param_name: str) -> datetime:
+    """
+    Validate that datetime is timezone-aware and convert strictly to UTC.
+    
+    Rejects:
+    - None or non-datetime instances
+    - Naive datetimes (tzinfo is None)
+    - Ambiguous tzinfo (dt.utcoffset() is None)
+    
+    Converts:
+    - Aware UTC -> unchanged instant
+    - Aware non-UTC offsets (e.g. +07:00, -05:00) -> exact UTC equivalent via astimezone()
+    """
+    if dt is None:
+        raise ValueError(f"MISSING_DATETIME: '{param_name}' cannot be None.")
+    if not isinstance(dt, _real_datetime):
+        raise TypeError(f"INVALID_DATETIME_TYPE: '{param_name}' must be a datetime instance, got {type(dt).__name__}.")
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError(
+            f"NAIVE_DATETIME_FORBIDDEN: '{param_name}' must be timezone-aware. "
+            "Naive datetimes are strictly forbidden under AurumIQ canonical XAUUSD contracts."
+        )
+    return dt.astimezone(timezone.utc)
+
+
+
 class TwelveDataProvider(MarketDataProvider):
     """
     Twelve Data Market Data Provider for Spot Gold (XAU/USD).
@@ -93,6 +122,10 @@ class TwelveDataProvider(MarketDataProvider):
     def is_configured(self) -> bool:
         return bool(self._api_key and self._api_key.strip())
 
+    def _get_now_utc(self) -> datetime:
+        """Internal helper returning current UTC time, overridable in tests."""
+        return datetime.now(timezone.utc)
+
     def map_timeframe(self, timeframe: str) -> str:
         tf = timeframe.lower().strip()
         if tf not in self.TIMEFRAME_MAP:
@@ -145,9 +178,14 @@ class TwelveDataProvider(MarketDataProvider):
         provider_interval = self.map_timeframe(timeframe)
         interval_delta = self.TIMEFRAME_DELTAS[timeframe.lower().strip()]
 
-        # Format dates in UTC for provider
-        start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
-        end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+        # Validate and convert strictly to UTC-aware datetime
+        start_utc = _normalize_to_utc_aware(start, "start")
+        end_utc = _normalize_to_utc_aware(end, "end")
+
+        if start_utc > end_utc:
+            raise ValueError(
+                f"INVALID_BOUNDED_WINDOW: 'start' ({start_utc.isoformat()}) must be less than or equal to 'end' ({end_utc.isoformat()})."
+            )
 
         params = {
             "symbol": provider_symbol,
@@ -210,7 +248,7 @@ class TwelveDataProvider(MarketDataProvider):
         if raw_values is None or not isinstance(raw_values, list):
             raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'values' array in response.")
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = self._get_now_utc()
         candles: list[RawCandle] = []
 
         for row in raw_values:
@@ -225,9 +263,9 @@ class TwelveDataProvider(MarketDataProvider):
             dt_str = str(row["datetime"]).strip()
             try:
                 if len(dt_str) == 10:  # Daily candle: YYYY-MM-DD
-                    dt_open = datetime.strptime(dt_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    dt_open = _real_datetime.strptime(dt_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 else:  # Intraday candle: YYYY-MM-DD HH:MM:SS
-                    dt_open = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    dt_open = _real_datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             except ValueError as e:
                 raise ValueError(f"TWELVE_DATA_INVALID_TIMESTAMP: Invalid timestamp format '{dt_str}'.") from e
 
