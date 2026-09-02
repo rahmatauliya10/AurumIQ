@@ -547,10 +547,60 @@ class TwelveDataProvider(MarketDataProvider):
         except Exception as e:
             raise RuntimeError(f"TWELVE_DATA_API_USAGE_INVALID_JSON: {e}") from e
 
+        if not isinstance(data, dict):
+            raise RuntimeError("TWELVE_DATA_API_USAGE_MALFORMED: Response payload is not a JSON object.")
+
+        if "daily_usage" not in data or data["daily_usage"] is None:
+            raise RuntimeError("TWELVE_DATA_API_USAGE_MALFORMED: Missing required 'daily_usage' field.")
+
+        try:
+            daily_usage = int(data["daily_usage"])
+        except (ValueError, TypeError) as e:
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Malformed 'daily_usage': {e}") from e
+
+        if daily_usage < 0:
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Negative 'daily_usage' ({daily_usage}).")
+
+        if "plan_daily_limit" not in data or data["plan_daily_limit"] is None:
+            raise RuntimeError("TWELVE_DATA_API_USAGE_MALFORMED: Missing required 'plan_daily_limit' field.")
+
+        try:
+            plan_daily_limit = int(data["plan_daily_limit"])
+        except (ValueError, TypeError) as e:
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Malformed 'plan_daily_limit': {e}") from e
+
+        if plan_daily_limit <= 0:
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Invalid 'plan_daily_limit' <= 0 ({plan_daily_limit}).")
+
+        current_usage = 0
+        if "current_usage" in data and data["current_usage"] is not None:
+            try:
+                current_usage = int(data["current_usage"])
+                if current_usage < 0:
+                    raise ValueError("current_usage is negative")
+            except Exception as e:
+                raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Malformed 'current_usage': {e}") from e
+
+        plan_limit = 8
+        if "plan_limit" in data and data["plan_limit"] is not None:
+            try:
+                plan_limit = int(data["plan_limit"])
+                if plan_limit <= 0:
+                    raise ValueError("plan_limit <= 0")
+            except Exception as e:
+                raise RuntimeError(f"TWELVE_DATA_API_USAGE_MALFORMED: Malformed 'plan_limit': {e}") from e
+
+        raw_plan_category = data.get("plan_category", "basic")
+        if not raw_plan_category or not isinstance(raw_plan_category, str):
+            raise RuntimeError("TWELVE_DATA_API_USAGE_MALFORMED: 'plan_category' is empty or invalid.")
+        plan_category = raw_plan_category.strip()
+        if not plan_category:
+            raise RuntimeError("TWELVE_DATA_API_USAGE_MALFORMED: 'plan_category' is blank.")
+
         return {
-            "daily_usage": int(data.get("daily_usage", 0)),
-            "plan_daily_limit": int(data.get("plan_daily_limit", 800)),
-            "current_usage": int(data.get("current_usage", 0)),
-            "plan_limit": int(data.get("plan_limit", 8)),
-            "plan_category": str(data.get("plan_category", "basic")),
+            "daily_usage": daily_usage,
+            "plan_daily_limit": plan_daily_limit,
+            "current_usage": current_usage,
+            "plan_limit": plan_limit,
+            "plan_category": plan_category,
         }

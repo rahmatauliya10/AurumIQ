@@ -1,7 +1,7 @@
 """Management command to audit XAUUSD persisted market data readiness."""
 import os
 import json
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
 
@@ -63,11 +63,17 @@ class Command(BaseCommand):
         exp_start = None
         exp_end = None
         if not no_coverage_check:
-            from datetime import datetime, timezone
+            from apps.market_data.readiness import parse_strict_iso_datetime
             if expected_start_str:
-                exp_start = datetime.fromisoformat(expected_start_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+                try:
+                    exp_start = parse_strict_iso_datetime(expected_start_str)
+                except Exception as e:
+                    raise CommandError(f"INVALID_EXPECTED_START: {e}") from e
             if expected_end_str:
-                exp_end = datetime.fromisoformat(expected_end_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+                try:
+                    exp_end = parse_strict_iso_datetime(expected_end_str)
+                except Exception as e:
+                    raise CommandError(f"INVALID_EXPECTED_END: {e}") from e
 
         self.stdout.write("Auditing XAUUSD persisted dataset readiness...")
         report = XauUsdDataReadinessEvaluator.evaluate(

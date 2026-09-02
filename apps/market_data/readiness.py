@@ -28,6 +28,33 @@ TIMEFRAME_DELTAS = {
     "1d": timedelta(days=1),
 }
 
+def parse_strict_iso_datetime(value: str) -> datetime:
+    """
+    Parse an ISO datetime string requiring an explicit timezone offset and normalize to UTC.
+
+    Rejects naive datetimes without timezone offset.
+    Normalizes timezone offsets (e.g. +07:00, -05:00, Z) to UTC (+00:00).
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"ISO_DATETIME_INVALID_TYPE: Expected string, got {type(value).__name__}.")
+
+    raw = value.strip()
+    if not raw:
+        raise ValueError("ISO_DATETIME_EMPTY: Empty timestamp string provided.")
+
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception as e:
+        raise ValueError(f"INVALID_ISO_DATETIME: '{value}' is not a valid ISO datetime: {e}") from e
+
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError(
+            f"NAIVE_DATETIME_FORBIDDEN: '{value}' lacks an explicit timezone designator (e.g. 'Z' or '+00:00')."
+        )
+
+    return dt.astimezone(timezone.utc)
+
+
 # Authoritative SHA-256 hash of empty bytes b"" representing deterministic identity of an empty dataset
 EMPTY_DATASET_HASH_EMPTY_BYTES = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 EMPTY_DATASET_HASH_SENTINEL = hashlib.sha256(b"EMPTY_DATASET").hexdigest()
