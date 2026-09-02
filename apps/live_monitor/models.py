@@ -154,7 +154,6 @@ class LiveRiskPlanRecord(models.Model):
     id = models.BigAutoField(primary_key=True)
     source_signal_fingerprint = models.CharField(
         max_length=64,
-        unique=True,
         db_index=True,
         help_text="SHA-256 fingerprint of the triggering Phase 4 SignalRecord",
     )
@@ -211,7 +210,14 @@ class LiveRiskPlanRecord(models.Model):
     source_zone_id = models.CharField(max_length=128, null=True, blank=True)
     source_zone_timestamp = models.DateTimeField(null=True, blank=True)
     phase5_policy_fingerprint = models.CharField(max_length=64, null=True, blank=True)
-    risk_plan_fingerprint = models.CharField(max_length=64, null=True, blank=True)
+    risk_plan_fingerprint = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        help_text="Immutable unique identity of the Phase 5 Risk Plan",
+    )
     source_phase4_fingerprint = models.CharField(max_length=64, null=True, blank=True,
                                                   help_text="Alias for source_signal_fingerprint for side-aware records")
 

@@ -482,3 +482,198 @@ class TestPhase7HostileScenarios(TestCase):
             format="json",
         )
         self.assertEqual(res2.status_code, 400)
+
+    def test_hostile_18_provider_health_enum_mapping(self):
+        """All ProviderHealthStatus values must map cleanly to engine FeedHealthStatus without NOT_CONFIGURED."""
+        from apps.instruments.models import ProviderHealthStatus
+        from engine.core.types import FeedHealthStatus
+        from apps.live_monitor.services import _map_provider_status_to_feed_health
+
+        # Check all possible provider health values
+        expected_mappings = {
+            ProviderHealthStatus.HEALTHY.value: FeedHealthStatus.HEALTHY,
+            ProviderHealthStatus.DEGRADED.value: FeedHealthStatus.UNHEALTHY,
+            ProviderHealthStatus.UNHEALTHY.value: FeedHealthStatus.UNHEALTHY,
+            ProviderHealthStatus.QUARANTINED.value: FeedHealthStatus.UNHEALTHY,
+            ProviderHealthStatus.NOT_CONFIGURED.value: FeedHealthStatus.MISSING,
+            ProviderHealthStatus.UNKNOWN.value: FeedHealthStatus.MISSING,
+            "MISSING": FeedHealthStatus.MISSING,
+            None: FeedHealthStatus.MISSING,
+            "INVALID_VALUE": FeedHealthStatus.MISSING,
+        }
+        for prov_stat, expected_feed in expected_mappings.items():
+            result = _map_provider_status_to_feed_health(prov_stat)
+            self.assertEqual(result, expected_feed)
+            self.assertFalse(hasattr(FeedHealthStatus, "NOT_CONFIGURED"))
+
+    def test_hostile_19_direct_service_rejects_non_15m(self):
+        """Direct call to XauUsdLiveDecisionPipelineService.process_closed_candle with non-15m must raise ValueError."""
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        event_5m = CandleClosedEvent(
+            event_id="EVT_NON_15M",
+            instrument="XAUUSD",
+            timeframe="5m",
+            timestamp_open=now - timedelta(minutes=5),
+            timestamp_close=now,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            is_closed=True,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            XauUsdLiveDecisionPipelineService.process_closed_candle(
+                event=event_5m,
+                code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            )
+        self.assertIn("timeframe", str(ctx.exception).lower())
+
+    def test_hostile_20_long_history_parity_over_128_candles(self):
+        """_get_engine_candles loads all closed candles <= candle_ts without arbitrary limits."""
+        from apps.market_data.models import MarketCandle
+        base_ts = datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+        # Create 140 candles
+        candles_to_create = []
+        for i in range(140):
+            ts_open = base_ts + timedelta(minutes=15 * i)
+            candles_to_create.append(
+                MarketCandle(
+                    instrument=self.xauusd,
+                    timeframe="15m",
+                    timestamp_open=ts_open,
+                    timestamp_close=ts_open + timedelta(minutes=15),
+                    open=Decimal("2600.00") + Decimal(str(i * 0.1)),
+                    high=Decimal("2605.00") + Decimal(str(i * 0.1)),
+                    low=Decimal("2595.00") + Decimal(str(i * 0.1)),
+                    close=Decimal("2602.00") + Decimal(str(i * 0.1)),
+                    volume=Decimal("1000.0"),
+                    is_closed=True,
+                )
+            )
+        MarketCandle.objects.bulk_create(candles_to_create)
+
+        eval_ts = base_ts + timedelta(minutes=15 * 140)
+        engine_candles = XauUsdLiveDecisionPipelineService.get_engine_candles(
+            instrument=self.xauusd,
+            timeframe="15m",
+            candle_ts=eval_ts,
+        )
+        self.assertEqual(len(engine_candles), 140)
+        # Verify chronological order
+        for idx in range(len(engine_candles) - 1):
+            self.assertLess(engine_candles[idx].timestamp_open, engine_candles[idx + 1].timestamp_open)
+
+    def test_hostile_21_live_risk_immutability_multiple_risk_profiles_same_signal(self):
+        """Same Phase 4 signal evaluated with 2 different risk profiles persists 2 records uniquely on risk_plan_fingerprint."""
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        sig_fp = "sig_fp_immutability_test_1"
+
+        # Record 1
+        rec1 = LiveRiskPlanRecord.objects.create(
+            risk_plan_fingerprint="risk_fp_profile_A",
+            source_signal_fingerprint=sig_fp,
+            signal_timestamp=now,
+            instrument="XAUUSD",
+            risk_side="LONG",
+            is_valid_risk_plan=True,
+            execution_eligible=True,
+            effective_action="WAIT",
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+        )
+        self.assertIsNotNone(rec1.pk)
+
+        # Record 2: Same source signal fingerprint, different risk plan fingerprint -> must succeed
+        rec2 = LiveRiskPlanRecord.objects.create(
+            risk_plan_fingerprint="risk_fp_profile_B",
+            source_signal_fingerprint=sig_fp,
+            signal_timestamp=now,
+            instrument="XAUUSD",
+            risk_side="LONG",
+            is_valid_risk_plan=True,
+            execution_eligible=True,
+            effective_action="WAIT",
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+        )
+        self.assertIsNotNone(rec2.pk)
+        self.assertEqual(LiveRiskPlanRecord.objects.filter(source_signal_fingerprint=sig_fp).count(), 2)
+
+    def test_hostile_22_multi_minute_incident_state_transitions_and_deduplication(self):
+        """HEALTHY -> STALE emits once; continuous STALE -> STALE does not duplicate; STALE -> HEALTHY resets."""
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        state, _ = LiveMonitorState.objects.get_or_create(
+            instrument="XAUUSD",
+            defaults={"effective_action": "WAIT", "feed_health_data": {}},
+        )
+
+        # 1. First STALE evaluation: HEALTHY -> STALE -> Emits 1 incident alert
+        alerts_m1 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now,
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_m1), 1)
+        self.assertEqual(alerts_m1[0].event_type, AlertEventType.LIVE_DATA_STALE.value)
+
+        # 2. Minute 2: STALE -> STALE -> Deduplicated (0 alerts emitted)
+        now_m2 = now + timedelta(minutes=1)
+        alerts_m2 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now_m2,
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_m2), 0)
+
+        # 3. Minute 3: STALE -> STALE -> Deduplicated (0 alerts emitted)
+        now_m3 = now + timedelta(minutes=2)
+        alerts_m3 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now_m3,
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_m3), 0)
+
+        # 4. Minute 4: Quote recovers -> STALE -> HEALTHY (Incident reset)
+        now_m4 = now + timedelta(minutes=3)
+        alerts_m4 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now_m4,
+            is_quote_stale=False,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_m4), 0)
+        self.assertFalse(state.feed_health_data.get("stale_incident_active", False))
+
+        # 5. Minute 5: New STALE incident -> HEALTHY -> STALE -> Emits 1 new incident alert
+        now_m5 = now + timedelta(minutes=4)
+        alerts_m5 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now_m5,
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_m5), 1)
+        self.assertEqual(alerts_m5[0].event_type, AlertEventType.LIVE_DATA_STALE.value)
+
+    def test_hostile_23_redis_ttl_verification_and_fail_closed(self):
+        """Quote TTL helper fails closed when TTL is missing or unconfigured."""
+        with self.settings(XAUUSD_LIVE_QUOTE_TTL_SECONDS=None):
+            ttl_val = LiveQuoteService.get_live_quote_ttl_seconds()
+            self.assertIsNone(ttl_val)
+
+        with self.settings(XAUUSD_LIVE_QUOTE_TTL_SECONDS=60):
+            ttl_val = LiveQuoteService.get_live_quote_ttl_seconds()
+            self.assertEqual(ttl_val, 60)
+

@@ -25,7 +25,12 @@ class LiveEventBroadcaster:
         if cls._redis_client is None:
             try:
                 redis_url = getattr(settings, "REDIS_URL", "redis://localhost:6379/0")
-                cls._redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+                cls._redis_client = redis.Redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=0.2,
+                    socket_timeout=0.2,
+                )
             except Exception as e:
                 logger.warning("redis_broadcaster_connection_failed", error=str(e))
                 cls._redis_client = None

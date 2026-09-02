@@ -7,7 +7,7 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 
-from apps.instruments.models import Instrument
+from apps.instruments.models import Instrument, InstrumentType
 from apps.live_monitor.consumers import LiveEventBroadcaster
 from apps.live_monitor.models import LiveMonitorState, LiveRiskPlanRecord
 from apps.live_monitor.types import (
@@ -45,6 +45,26 @@ from engine.signals.engine import XautSignalEngine, XauUsdSignalEngine
 from engine.signals.profile import uncalibrated_xauusd_signal_profile
 
 logger = structlog.get_logger(__name__)
+
+
+def _map_provider_status_to_feed_health(status_val: Optional[str]) -> FeedHealthStatus:
+    """Map external provider health status string to engine FeedHealthStatus enum without NOT_CONFIGURED."""
+    if not status_val:
+        return FeedHealthStatus.MISSING
+    s = str(status_val).upper()
+    if s == "HEALTHY":
+        return FeedHealthStatus.HEALTHY
+    elif s in ("UNHEALTHY", "DEGRADED", "QUARANTINED", "DOWN"):
+        return FeedHealthStatus.UNHEALTHY
+    elif s == "STALE":
+        return FeedHealthStatus.STALE
+    elif s == "TRANSITION":
+        return FeedHealthStatus.TRANSITION
+    elif s in ("NOT_CONFIGURED", "MISSING", "UNKNOWN"):
+        return FeedHealthStatus.MISSING
+    else:
+        return FeedHealthStatus.MISSING
+
 
 
 class LiveQuoteService:
@@ -284,6 +304,40 @@ class XauUsdLiveDecisionPipelineService:
     FORBIDDEN_ACTIVE_ALIASES = {"XAUT", "XAUTUSD", "XAUTUSDT", "GOLD", "GOLD_REFERENCE", "XAU"}
 
     @classmethod
+    def get_engine_candles(
+        cls,
+        instrument: Instrument,
+        timeframe: str,
+        candle_ts: datetime,
+    ) -> list[CandleData]:
+        """Query closed historical candles <= candle_ts without arbitrary limits (Deterministic Complete History)."""
+        qs = (
+            MarketCandle.objects.filter(
+                instrument=instrument,
+                timeframe=timeframe,
+                timestamp_close__lte=candle_ts,
+                is_closed=True,
+            )
+            .order_by("timestamp_close")
+        )
+        return [
+            CandleData(
+                timestamp_open=c.timestamp_open,
+                timestamp_close=c.timestamp_close,
+                open=c.open,
+                high=c.high,
+                low=c.low,
+                close=c.close,
+                volume=c.volume,
+                is_closed=c.is_closed,
+                quote_rate=c.quote_rate,
+                close_usd=c.close_usd,
+                source_id=c.source,
+            )
+            for c in qs
+        ]
+
+    @classmethod
     def process_closed_candle(
         cls,
         event: CandleClosedEvent,
@@ -307,6 +361,12 @@ class XauUsdLiveDecisionPipelineService:
         if not event.is_closed:
             raise ValueError(f"Unclosed candle for {event.instrument} cannot trigger decision pipeline.")
 
+        # Step 1b: Enforce 15m timeframe strictly at service boundary
+        if event.timeframe != "15m":
+            raise ValueError(
+                f"XauUsdLiveDecisionPipelineService strictly requires 15m decision timeframe, got '{event.timeframe}'"
+            )
+
         # Step 2: Canonical Instrument Validation
         inst_upper = event.instrument.upper().replace("/", "")
         if event.instrument.upper() in cls.FORBIDDEN_ACTIVE_ALIASES or inst_upper in cls.FORBIDDEN_ACTIVE_ALIASES:
@@ -318,7 +378,12 @@ class XauUsdLiveDecisionPipelineService:
             raise ValueError(f"XauUsdLiveDecisionPipelineService requires XAUUSD, got '{event.instrument}'")
 
         # Resolve canonical XAUUSD instrument from database (fail closed if missing)
-        instrument_obj = Instrument.get_canonical_xauusd()
+        instrument_obj = Instrument.objects.filter(
+            base_asset__code="XAU",
+            quote_asset__code="USD",
+            instrument_type=InstrumentType.SPOT,
+            is_active=True,
+        ).first()
         if not instrument_obj:
             raise ValueError("Canonical XAUUSD instrument is NOT_CONFIGURED / missing in database.")
 
@@ -331,38 +396,28 @@ class XauUsdLiveDecisionPipelineService:
         candle_ts = event.timestamp_close.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
 
-        # Step 3: Query closed historical candles <= candle_ts
-        def _get_engine_candles(tf: str, limit: int = 128) -> list[CandleData]:
-            qs = (
-                MarketCandle.objects.filter(
-                    instrument=instrument_obj,
-                    timeframe=tf,
-                    timestamp_close__lte=candle_ts,
-                    is_closed=True,
-                )
-                .order_by("-timestamp_close")[:limit]
-            )
-            return [
-                CandleData(
-                    timestamp_open=c.timestamp_open,
-                    timestamp_close=c.timestamp_close,
-                    open=c.open,
-                    high=c.high,
-                    low=c.low,
-                    close=c.close,
-                    volume=c.volume,
-                    is_closed=c.is_closed,
-                    quote_rate=c.quote_rate,
-                    close_usd=c.close_usd,
-                    source_id=c.source,
-                )
-                for c in reversed(list(qs))
-            ]
+        # Step 2: Persist incoming closed candle (Idempotent)
+        c_obj, _ = MarketCandle.objects.update_or_create(
+            instrument=instrument_obj,
+            timeframe=event.timeframe,
+            timestamp_open=event.timestamp_open.astimezone(timezone.utc),
+            timestamp_close=candle_ts,
+            defaults={
+                "open": event.open,
+                "high": event.high,
+                "low": event.low,
+                "close": event.close,
+                "volume": event.volume,
+                "is_closed": True,
+                "source": "live_feed",
+            },
+        )
 
-        engine_candles_15m = _get_engine_candles("15m", 128)
-        engine_candles_1h = _get_engine_candles("1h", 64)
-        engine_candles_4h = _get_engine_candles("4h", 64)
-        engine_candles_1d = _get_engine_candles("1d", 32)
+        # Step 3: Query closed historical candles <= candle_ts (Deterministic Complete History)
+        engine_candles_15m = cls.get_engine_candles(instrument_obj, "15m", candle_ts)
+        engine_candles_1h = cls.get_engine_candles(instrument_obj, "1h", candle_ts)
+        engine_candles_4h = cls.get_engine_candles(instrument_obj, "4h", candle_ts)
+        engine_candles_1d = cls.get_engine_candles(instrument_obj, "1d", candle_ts)
 
         # Ensure current event candle is present
         if not any(c.timestamp_close == candle_ts for c in engine_candles_15m):
@@ -379,8 +434,14 @@ class XauUsdLiveDecisionPipelineService:
                 )
             )
 
-        # Step 4: Resolve Feed & Provider Health (Fail Closed)
-        from apps.instruments.models import ProviderHealthSnapshot
+        # Step 4: Resolve Feed & Provider Health (Fail Closed via ListingRole)
+        from apps.instruments.models import (
+            ListingRole,
+            ListingStatus,
+            MarketListing,
+            ProviderHealthSnapshot,
+            ProviderHealthStatus,
+        )
         from apps.market_data.models import DataQualitySnapshot
 
         if is_feed_stale is None:
@@ -395,23 +456,61 @@ class XauUsdLiveDecisionPipelineService:
             )
             is_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
 
-        if is_provider_transition is None or provider_status is None:
-            latest_health = (
-                ProviderHealthSnapshot.objects.filter(
-                    listing__instrument=instrument_obj,
-                    checked_at__lte=candle_ts,
-                )
-                .order_by("-checked_at")
-                .first()
+        # Resolve explicit PRIMARY and SECONDARY listings and health
+        primary_listing = MarketListing.objects.filter(
+            instrument=instrument_obj,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+
+        secondary_listing = MarketListing.objects.filter(
+            instrument=instrument_obj,
+            listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+
+        primary_health_rec = (
+            ProviderHealthSnapshot.objects.filter(
+                listing=primary_listing,
+                checked_at__lte=candle_ts,
             )
-            if latest_health:
-                if provider_status is None:
-                    provider_status = latest_health.status
-                if is_provider_transition is None:
-                    is_provider_transition = bool(latest_health.status == "TRANSITION")
-            else:
-                provider_status = "DOWN"
-                is_provider_transition = True
+            .order_by("-checked_at")
+            .first()
+        ) if primary_listing else None
+
+        secondary_health_rec = (
+            ProviderHealthSnapshot.objects.filter(
+                listing=secondary_listing,
+                checked_at__lte=candle_ts,
+            )
+            .order_by("-checked_at")
+            .first()
+        ) if secondary_listing else None
+
+        primary_feed_health = (
+            _map_provider_status_to_feed_health(provider_status)
+            if provider_status is not None
+            else _map_provider_status_to_feed_health(primary_health_rec.status if primary_health_rec else None)
+        )
+        secondary_feed_health = _map_provider_status_to_feed_health(
+            secondary_health_rec.status if secondary_health_rec else None
+        )
+
+        if is_provider_transition is None:
+            is_provider_transition = bool(
+                (primary_health_rec and primary_health_rec.status == "TRANSITION")
+                or primary_feed_health == FeedHealthStatus.TRANSITION
+            )
+
+        # Derive provider sync status from provider evidence (NOT 15m candle health)
+        if is_provider_transition:
+            provider_sync_status_val = "TRANSITION"
+        elif primary_health_rec:
+            provider_sync_status_val = primary_health_rec.status
+        elif provider_status is not None:
+            provider_sync_status_val = provider_status
+        else:
+            provider_sync_status_val = "MISSING"
 
         # Resolve Phase 3A Cycle Snapshot (PIT)
         from apps.analysis.models import CycleSnapshotRecord
@@ -468,13 +567,13 @@ class XauUsdLiveDecisionPipelineService:
         if feats_15m and feats_15m.volume_evidence != VolumeEvidenceType.UNAVAILABLE:
             vol_health = FeedHealthStatus.HEALTHY if feats_15m.volume_usable else FeedHealthStatus.UNHEALTHY
 
-        # Construct typed RuntimeFeedHealth using FeedHealthStatus enum
+        # Construct typed RuntimeFeedHealth using FeedHealthStatus enum (NO NOT_CONFIGURED)
         runtime_health = RuntimeFeedHealth(
             primary_15m=FeedHealthStatus.STALE if is_feed_stale else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING),
             primary_1h=FeedHealthStatus.HEALTHY if engine_candles_1h else FeedHealthStatus.MISSING,
             primary_4h=FeedHealthStatus.HEALTHY if engine_candles_4h else FeedHealthStatus.MISSING,
             primary_1d=FeedHealthStatus.HEALTHY if engine_candles_1d else FeedHealthStatus.MISSING,
-            secondary_provider=FeedHealthStatus.HEALTHY if provider_status == "HEALTHY" else (FeedHealthStatus.UNHEALTHY if provider_status == "DOWN" else FeedHealthStatus.NOT_CONFIGURED),
+            secondary_provider=secondary_feed_health,
             secondary_provider_disagreement=False,
             macro_blackout_feed=macro_feed_health,
             is_macro_blackout=is_in_blackout,
@@ -594,10 +693,10 @@ class XauUsdLiveDecisionPipelineService:
 
         # Step 9: Assemble Feed Health Status (Fail Closed)
         feed_health = {
-            "xauusd_primary_status": runtime_health.primary_15m.value,
-            "xauusd_secondary_status": runtime_health.secondary_provider.value,
+            "xauusd_primary_status": primary_health_rec.status if primary_health_rec else (provider_status or "MISSING"),
+            "xauusd_secondary_status": secondary_health_rec.status if secondary_health_rec else "MISSING",
             "macro_status": runtime_health.macro_blackout_feed.value,
-            "provider_sync_status": FeedStatus.TRANSITION.value if is_provider_transition else runtime_health.primary_15m.value,
+            "provider_sync_status": provider_sync_status_val,
         }
 
         # Step 10: Atomically update Decision-Owned fields in LiveMonitorState
@@ -1323,19 +1422,19 @@ class XauUsdLiveProjectionService:
                 ).first()
 
             feed_health = {
-                "xauusd_primary_status": FeedStatus.NOT_CONFIGURED.value,
-                "xauusd_secondary_status": FeedStatus.NOT_CONFIGURED.value,
-                "macro_status": FeedStatus.NOT_CONFIGURED.value,
-                "provider_sync_status": FeedStatus.NOT_CONFIGURED.value,
+                "xauusd_primary_status": "MISSING",
+                "xauusd_secondary_status": "MISSING",
+                "macro_status": "MISSING",
+                "provider_sync_status": "MISSING",
             }
 
             if latest_signal and latest_signal.provenance:
                 prov = latest_signal.provenance
                 feed_health = {
-                    "xauusd_primary_status": prov.get("primary_15m", FeedStatus.NOT_CONFIGURED.value),
-                    "xauusd_secondary_status": prov.get("secondary_provider", FeedStatus.NOT_CONFIGURED.value),
-                    "macro_status": prov.get("macro_blackout_feed", FeedStatus.NOT_CONFIGURED.value),
-                    "provider_sync_status": prov.get("primary_15m", FeedStatus.NOT_CONFIGURED.value),
+                    "xauusd_primary_status": prov.get("primary_15m", "MISSING"),
+                    "xauusd_secondary_status": prov.get("secondary_provider", "MISSING"),
+                    "macro_status": prov.get("macro_blackout_feed", "MISSING"),
+                    "provider_sync_status": prov.get("primary_15m", "MISSING"),
                 }
 
             state, _ = LiveMonitorState.objects.select_for_update().get_or_create(

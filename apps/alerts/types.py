@@ -93,6 +93,7 @@ class AlertPayload:
 
     # Mandatory Legal/Governance Disclaimer
     disclaimer: str = CANONICAL_DISCLAIMER
+    is_production_authorized: bool = False
 
     def __post_init__(self):
         """Validate that no forbidden execution fields or structures exist."""
@@ -131,5 +132,6 @@ class AlertPayload:
             "hard_gate_reasons": list(self.hard_gate_reasons),
             "reasons": list(self.reasons),
             "disclaimer": self.disclaimer,
+            "is_production_authorized": self.is_production_authorized,
         }
         return d

@@ -393,8 +393,13 @@ def process_xauusd_closed_candle_task(
             risk_profile=risk_prof,
         )
 
+        calibrated = bool(sig_prof is not None and risk_prof is not None)
+        task_status = "SUCCESS" if calibrated else "CALIBRATION_REQUIRED"
+        calib_status_str = "CALIBRATED" if calibrated else "CALIBRATION_REQUIRED"
+
         return {
-            "status": "SUCCESS",
+            "status": task_status,
+            "calibration_status": calib_status_str,
             "fingerprint": signal_record.analysis_fingerprint,
             "candidate_state": state.candidate_state,
             "candidate_user_decision": state.candidate_user_decision,

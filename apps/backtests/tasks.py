@@ -292,12 +292,23 @@ def run_xauusd_backtest_task(
     intrabar_policy_enum = IntrabarPolicy(intrabar_policy)
 
     if cost_scenario == "EMPIRICAL":
+        if (
+            entry_fee_bps is None
+            or exit_fee_bps is None
+            or synthetic_spread_bps is None
+            or entry_slippage_bps is None
+            or exit_slippage_bps is None
+        ):
+            raise ValueError(
+                "cost_scenario EMPIRICAL strictly requires all 5 friction parameters: "
+                "entry_fee_bps, exit_fee_bps, synthetic_spread_bps, entry_slippage_bps, exit_slippage_bps."
+            )
         cost_cfg = XauUsdCostConfig.empirical(
-            entry_fee_bps=Decimal(entry_fee_bps or "0.0"),
-            exit_fee_bps=Decimal(exit_fee_bps or "0.0"),
-            synthetic_spread_bps=Decimal(synthetic_spread_bps or "0.0"),
-            entry_slippage_bps=Decimal(entry_slippage_bps or "0.0"),
-            exit_slippage_bps=Decimal(exit_slippage_bps or "0.0"),
+            entry_fee_bps=Decimal(str(entry_fee_bps)),
+            exit_fee_bps=Decimal(str(exit_fee_bps)),
+            synthetic_spread_bps=Decimal(str(synthetic_spread_bps)),
+            entry_slippage_bps=Decimal(str(entry_slippage_bps)),
+            exit_slippage_bps=Decimal(str(exit_slippage_bps)),
         )
     elif cost_scenario == "IDEALIZED":
         cost_cfg = XauUsdCostConfig.idealized()

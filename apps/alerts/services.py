@@ -189,17 +189,19 @@ class AlertGenerationService:
         emitted: List[AlertEvent] = []
         inst = state.instrument
 
-        # 1. Check Infrastructure & Freshness Alerts (Transition/Incident Based)
+        # 1. Check Infrastructure & Freshness Alerts (Durable Transition/Incident Based)
+        feed_health = dict(state.feed_health_data) if state.feed_health_data else {}
+        stale_incident_active = bool(feed_health.get("stale_incident_active", False))
+        unhealthy_incident_active = bool(feed_health.get("unhealthy_incident_active", False))
+        feed_health_modified = False
+
         if is_quote_stale:
-            # Check if active stale alert already exists (prevent quote-by-quote alert storm)
-            has_active_stale = AlertEvent.objects.filter(
-                instrument=inst,
-                event_type=AlertEventType.LIVE_DATA_STALE.value,
-                status=AlertStatus.PENDING.value,
-            ).exists()
-            if not has_active_stale:
-                ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
-                event_id = cls.generate_event_id(inst, AlertEventType.LIVE_DATA_STALE.value, f"STALE_{ts_key}")
+            if not stale_incident_active:
+                # Transition: HEALTHY -> STALE -> emit new incident alert
+                incident_ts_key = int(quote_ts.timestamp())
+                event_id = cls.generate_event_id(
+                    inst, AlertEventType.LIVE_DATA_STALE.value, f"STALE_INCIDENT_{incident_ts_key}"
+                )
                 alert = cls._create_or_get_quote_alert(
                     event_id=event_id,
                     event_type=AlertEventType.LIVE_DATA_STALE,
@@ -210,16 +212,21 @@ class AlertGenerationService:
                 )
                 if alert:
                     emitted.append(alert)
+                feed_health["stale_incident_active"] = True
+                feed_health_modified = True
+        else:
+            if stale_incident_active:
+                # Transition: STALE -> HEALTHY -> close/reset incident
+                feed_health["stale_incident_active"] = False
+                feed_health_modified = True
 
         if not provider_healthy:
-            has_active_unhealthy = AlertEvent.objects.filter(
-                instrument=inst,
-                event_type=AlertEventType.PROVIDER_UNHEALTHY.value,
-                status=AlertStatus.PENDING.value,
-            ).exists()
-            if not has_active_unhealthy:
-                ts_key = quote_ts.strftime("%Y-%m-%d-%H-%M")
-                event_id = cls.generate_event_id(inst, AlertEventType.PROVIDER_UNHEALTHY.value, f"UNHEALTHY_{ts_key}")
+            if not unhealthy_incident_active:
+                # Transition: HEALTHY -> UNHEALTHY -> emit new incident alert
+                incident_ts_key = int(quote_ts.timestamp())
+                event_id = cls.generate_event_id(
+                    inst, AlertEventType.PROVIDER_UNHEALTHY.value, f"UNHEALTHY_INCIDENT_{incident_ts_key}"
+                )
                 alert = cls._create_or_get_quote_alert(
                     event_id=event_id,
                     event_type=AlertEventType.PROVIDER_UNHEALTHY,
@@ -230,6 +237,18 @@ class AlertGenerationService:
                 )
                 if alert:
                     emitted.append(alert)
+                feed_health["unhealthy_incident_active"] = True
+                feed_health_modified = True
+        else:
+            if unhealthy_incident_active:
+                # Transition: UNHEALTHY -> HEALTHY -> close/reset incident
+                feed_health["unhealthy_incident_active"] = False
+                feed_health_modified = True
+
+        if feed_health_modified:
+            state.feed_health_data = feed_health
+            if state.pk:
+                LiveMonitorState.objects.filter(pk=state.pk).update(feed_health_data=feed_health)
 
         # 2. Strict Suppression Gate: If quote stale, provider unhealthy, or hard gates active, suppress zone alerts
         has_hard_gates = bool(state.hard_gate_reasons and len(state.hard_gate_reasons) > 0)

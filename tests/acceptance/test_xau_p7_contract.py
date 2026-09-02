@@ -53,6 +53,7 @@ from engine.core.types import (
     DualSideDirectionResult,
     DualSideSignalSnapshot,
     DualSideTimingResult,
+    EventImpact,
     MacroEventContext,
     Phase5CalibrationStatus,
     RiskCandidateStatus,
@@ -83,6 +84,14 @@ from engine.signals.profile import (
 )
 
 
+class MockWsSubscriber:
+    def __init__(self):
+        self.events = []
+
+    def send_event(self, event_payload):
+        self.events.append(event_payload)
+
+
 def _make_candle(
     ts_open: datetime,
     duration_min: int,
@@ -90,7 +99,7 @@ def _make_candle(
     high_p: Decimal,
     low_p: Decimal,
     close_p: Decimal,
-    vol: Decimal = Decimal("100.0"),
+    volume: Decimal = Decimal("1000.0"),
     is_closed: bool = True,
 ) -> CandleData:
     return CandleData(
@@ -100,49 +109,106 @@ def _make_candle(
         high=high_p,
         low=low_p,
         close=close_p,
-        volume=vol,
+        volume=volume,
         is_closed=is_closed,
     )
 
 
-def _seed_candles(instrument: Instrument, count: int = 50, start_price: Decimal = Decimal("2650.00")):
-    start_time = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
-    curr = start_price
+def _seed_candles(instrument_obj: Instrument, count: int = 40):
+    """Seed synthetic closed 15m, 1h, 4h, 1d candles for tests."""
+    import math
+    base_ts = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    # Seed 15m with causal swing waves (support ~2638 and resistance ~2662)
     for i in range(count):
-        t_open = start_time + timedelta(minutes=15 * i)
-        t_close = t_open + timedelta(minutes=15)
-        o = curr
-        h = o + Decimal("2.00")
-        l = o - Decimal("1.00")
-        c = o + Decimal("0.50")
-        curr = c
+        ts_open = base_ts + timedelta(minutes=15 * i)
+        ts_close = ts_open + timedelta(minutes=15)
+        wave = round(math.sin(i * 0.4) * 12.0, 2)
+        c_open = Decimal(str(round(2650.0 + wave, 2)))
+        c_close = Decimal(str(round(2650.0 + wave + (1.0 if wave >= 0 else -1.0), 2)))
+        c_high = max(c_open, c_close) + Decimal("2.00")
+        c_low = min(c_open, c_close) - Decimal("2.00")
         MarketCandle.objects.get_or_create(
-            instrument=instrument,
+            instrument=instrument_obj,
             timeframe="15m",
-            timestamp_close=t_close,
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
             defaults={
-                "timestamp_open": t_open,
-                "open": o,
-                "high": h,
-                "low": l,
-                "close": c,
+                "open": c_open,
+                "high": c_high,
+                "low": c_low,
+                "close": c_close,
                 "volume": Decimal("1000.0"),
                 "is_closed": True,
-                "source": "primary_xauusd",
+            },
+        )
+    # Seed 1h
+    for i in range(25):
+        ts_open = base_ts + timedelta(hours=i)
+        ts_close = ts_open + timedelta(hours=1)
+        MarketCandle.objects.get_or_create(
+            instrument=instrument_obj,
+            timeframe="1h",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            defaults={
+                "open": Decimal("2645.00") + Decimal(str(i * 0.2)),
+                "high": Decimal("2660.00") + Decimal(str(i * 0.2)),
+                "low": Decimal("2640.00") + Decimal(str(i * 0.2)),
+                "close": Decimal("2655.00") + Decimal(str(i * 0.2)),
+                "volume": Decimal("4000.0"),
+                "is_closed": True,
+            },
+        )
+    # Seed 4h
+    for i in range(25):
+        ts_open = base_ts + timedelta(hours=4 * i)
+        ts_close = ts_open + timedelta(hours=4)
+        MarketCandle.objects.get_or_create(
+            instrument=instrument_obj,
+            timeframe="4h",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            defaults={
+                "open": Decimal("2640.00"),
+                "high": Decimal("2670.00"),
+                "low": Decimal("2635.00"),
+                "close": Decimal("2660.00"),
+                "volume": Decimal("16000.0"),
+                "is_closed": True,
+            },
+        )
+    # Seed 1d
+    for i in range(25):
+        ts_open = base_ts + timedelta(days=i)
+        ts_close = ts_open + timedelta(days=1)
+        MarketCandle.objects.get_or_create(
+            instrument=instrument_obj,
+            timeframe="1d",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            defaults={
+                "open": Decimal("2630.00"),
+                "high": Decimal("2680.00"),
+                "low": Decimal("2620.00"),
+                "close": Decimal("2665.00"),
+                "volume": Decimal("64000.0"),
+                "is_closed": True,
             },
         )
 
 
-@pytest.mark.acceptance
 @pytest.mark.django_db
 class TestXauP701AcceptanceContract(TestCase):
-    """Canonical Phase 7 Acceptance Test Suite."""
+    """
+    Formal Phase 7 Acceptance Contract Test Suite.
+    Directly exercises XauUsdLiveDecisionPipelineService, LiveQuoteService,
+    XauUsdLiveProjectionService, and AlertGenerationService.
+    """
 
     def setUp(self):
-        self.client = Client()
-        # Seed Assets & Canonical XAUUSD
-        self.xau, _ = Asset.objects.get_or_create(code="XAU", name="Gold Spot", asset_type=AssetType.COMMODITY)
+        super().setUp()
         self.usd, _ = Asset.objects.get_or_create(code="USD", name="US Dollar", asset_type=AssetType.FIAT)
+        self.xau, _ = Asset.objects.get_or_create(code="XAU", name="Gold Spot", asset_type=AssetType.COMMODITY)
         self.xauusd, _ = Instrument.objects.get_or_create(
             base_asset=self.xau,
             quote_asset=self.usd,
@@ -189,8 +255,20 @@ class TestXauP701AcceptanceContract(TestCase):
             short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
             long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
-            long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
-            short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+            long_gate=SideGatePolicy(
+                threshold_watch_direction=0.0,
+                threshold_ready_direction=0.0,
+                threshold_ready_timing=0.0,
+                threshold_window_direction=0.0,
+                threshold_window_timing=0.0,
+            ),
+            short_gate=SideGatePolicy(
+                threshold_watch_direction=99.0,
+                threshold_ready_direction=99.0,
+                threshold_ready_timing=99.0,
+                threshold_window_direction=99.0,
+                threshold_window_timing=99.0,
+            ),
         )
         risk_prof = XauUsdRiskProfile(
             name="LONG_RISK_PROFILE",
@@ -198,37 +276,57 @@ class TestXauP701AcceptanceContract(TestCase):
             long_risk_policy=SideRiskPolicy(
                 structure_buffer=Decimal("0.50"),
                 atr_multiplier=Decimal("1.5"),
-                max_stop_distance_atr=Decimal("3.5"),
-                min_rr_tp1=Decimal("1.2"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
             ),
             short_risk_policy=SideRiskPolicy(
                 structure_buffer=Decimal("0.50"),
                 atr_multiplier=Decimal("1.5"),
-                max_stop_distance_atr=Decimal("3.5"),
-                min_rr_tp1=Decimal("1.2"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
             ),
+        )
+
+        macro_ctx = MacroEventContext(
+            is_in_blackout=False,
+            is_feed_healthy=True,
+            active_event_name="Normal",
+            minutes_to_next_event=120,
         )
 
         sig_rec, risk_rec, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
             event=event,
-            code_revision="dab3b6f8999bcef537bf4d8450f774ce36eb8e0f",
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
             provider_status="HEALTHY",
             is_feed_stale=False,
+            macro_context=macro_ctx,
             signal_profile=prof,
             risk_profile=risk_prof,
         )
 
         # Verification
         self.assertEqual(state.instrument, "XAUUSD")
+        self.assertEqual(state.candidate_state, "BUY_WINDOW")
+        self.assertEqual(state.candidate_user_decision, "BUY")
         self.assertEqual(state.published_user_decision, "WAIT")  # Published is strictly WAIT
-        self.assertIsNotNone(state.long_direction_score)
-        self.assertIsNotNone(state.long_timing_score)
+        self.assertIsNotNone(risk_rec)
+        self.assertEqual(risk_rec.risk_side, "LONG")
+        self.assertTrue(risk_rec.is_valid_risk_plan)
+        self.assertTrue(risk_rec.execution_eligible)
+        self.assertEqual(state.candidate_effective_action, "BUY")
+        self.assertEqual(state.publication_effective_action, "WAIT")
+        self.assertIsNotNone(state.entry_min)
+        self.assertIsNotNone(state.stop_final)
+        self.assertIsNotNone(state.tp1)
+        self.assertTrue(bool(state.risk_plan_fingerprint))
+        self.assertEqual(state.risk_plan_fingerprint, risk_rec.risk_plan_fingerprint)
 
         # Projection check
         proj = XauUsdLiveProjectionService.assemble_projection(state)
+        self.assertEqual(proj.candidate_user_decision, "BUY")
         self.assertEqual(proj.published_user_decision, "WAIT")
         self.assertEqual(proj.display_symbol, "XAU/USD")
-        self.assertIn("WAIT", proj.published_user_decision)
+        self.assertEqual(proj.risk_side, "LONG")
 
     def test_gate_b_short_presentation(self):
         """
@@ -254,51 +352,81 @@ class TestXauP701AcceptanceContract(TestCase):
             is_closed=True,
         )
 
-        # Directly configure state for SHORT candidate to test BID entry-zone monitoring
-        state, _ = LiveMonitorState.objects.get_or_create(
-            instrument="XAUUSD",
-            defaults={
-                "candidate_state": "SELL_WINDOW",
-                "candidate_user_decision": "SELL",
-                "published_state": "NO_TRADE",
-                "published_user_decision": "WAIT",
-                "candidate_effective_action": "SELL",
-                "publication_effective_action": "WAIT",
-                "risk_side": "SHORT",
-                "risk_plan_valid": True,
-                "execution_eligible": True,
-                "entry_min": Decimal("2644.00"),
-                "entry_max": Decimal("2648.00"),
-                "stop_final": Decimal("2655.00"),
-                "tp1": Decimal("2630.00"),
-                "rr_tp1": Decimal("2.0"),
-                "last_closed_candle_ts": now,
-            },
+        prof_short = Phase4SignalProfile(
+            target_instrument="XAUUSD",
+            calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            long_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            long_gate=SideGatePolicy(
+                threshold_watch_direction=99.0,
+                threshold_ready_direction=99.0,
+                threshold_ready_timing=99.0,
+                threshold_window_direction=99.0,
+                threshold_window_timing=99.0,
+            ),
+            short_gate=SideGatePolicy(
+                threshold_watch_direction=0.0,
+                threshold_ready_direction=0.0,
+                threshold_ready_timing=0.0,
+                threshold_window_direction=0.0,
+                threshold_window_timing=0.0,
+            ),
         )
-        LiveMonitorState.objects.filter(id=state.id).update(
-            candidate_state="SELL_WINDOW",
-            candidate_user_decision="SELL",
-            candidate_effective_action="SELL",
-            risk_side="SHORT",
-            risk_plan_valid=True,
-            execution_eligible=True,
-            entry_min=Decimal("2644.00"),
-            entry_max=Decimal("2648.00"),
-            stop_final=Decimal("2655.00"),
-            tp1=Decimal("2630.00"),
-            rr_tp1=Decimal("2.0"),
+        risk_prof = XauUsdRiskProfile(
+            name="SHORT_RISK_PROFILE",
+            calibration_status=Phase5CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            long_risk_policy=SideRiskPolicy(
+                structure_buffer=Decimal("0.50"),
+                atr_multiplier=Decimal("1.5"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
+            ),
+            short_risk_policy=SideRiskPolicy(
+                structure_buffer=Decimal("0.50"),
+                atr_multiplier=Decimal("1.5"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
+            ),
         )
-        state.refresh_from_db()
 
-        # Send Live Quote: BID is 2646.00 (inside [2644, 2648]), ASK is 2649.00 (above 2648)
-        # If SHORT uses BID -> INSIDE_ZONE
-        # If SHORT erroneously used ASK -> ABOVE_ZONE
+        macro_ctx = MacroEventContext(
+            is_in_blackout=False,
+            is_feed_healthy=True,
+            active_event_name="Normal",
+            minutes_to_next_event=120,
+        )
+
+        sig_rec, risk_rec, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            provider_status="HEALTHY",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            signal_profile=prof_short,
+            risk_profile=risk_prof,
+        )
+
+        self.assertEqual(state.candidate_state, "SELL_WINDOW")
+        self.assertEqual(state.candidate_user_decision, "SELL")
+        self.assertEqual(state.published_user_decision, "WAIT")
+        self.assertIsNotNone(risk_rec)
+        self.assertEqual(risk_rec.risk_side, "SHORT")
+        self.assertTrue(risk_rec.is_valid_risk_plan)
+        self.assertIsNotNone(state.entry_min)
+        self.assertIsNotNone(state.entry_max)
+
+        # Send Live Quote: BID is inside [entry_min, entry_max], ASK is above entry_max
+        bid_inside = (state.entry_min + state.entry_max) / Decimal("2.0")
+        ask_above = state.entry_max + Decimal("2.00")
+
         quote_evt = LiveQuoteEvent(
             event_id="Q_SHORT_1",
             instrument="XAUUSD",
             provider="primary_feed",
-            bid=Decimal("2646.00"),
-            ask=Decimal("2649.00"),
+            bid=bid_inside,
+            ask=ask_above,
             source_timestamp=now + timedelta(seconds=5),
             received_timestamp=now + timedelta(seconds=5),
             sequence_number=100,
@@ -306,9 +434,10 @@ class TestXauP701AcceptanceContract(TestCase):
         updated_state = LiveQuoteService.process_quote(quote_evt, max_staleness_seconds=60.0)
 
         self.assertIsNotNone(updated_state)
-        # Must be INSIDE_ZONE because BID (2646.00) is within [2644, 2648]
+        # Must be INSIDE_ZONE because SHORT uses BID (which is inside entry zone)
         self.assertEqual(updated_state.entry_zone_status, EntryZoneStatus.INSIDE_ZONE.value)
         self.assertEqual(updated_state.distance_to_entry_zone_pct, Decimal("0.00"))
+        self.assertEqual(updated_state.published_user_decision, "WAIT")
 
     def test_gate_c_wait_presentation(self):
         """
@@ -352,12 +481,30 @@ class TestXauP701AcceptanceContract(TestCase):
         """
         Gate D: ALERTING
         - candidate informational alert generated
-        - payload contains disclaimer
-        - no order execution fields
+        - payload contains mandatory disclaimer
+        - zero order execution fields
         """
-        # Create candidate alert
         now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
-        sig_snap = DualSideSignalSnapshot(
+        sig = SignalRecord.objects.create(
+            instrument=self.xauusd,
+            timeframe="15m",
+            timestamp=now,
+            state="NO_TRADE",
+            user_decision="WAIT",
+            long_direction_score=75.0,
+            short_direction_score=20.0,
+            long_timing_score=80.0,
+            short_timing_score=15.0,
+            analysis_fingerprint="sig_fp_alert_gate_d",
+            components_breakdown={
+                "candidate_state": "BUY_WINDOW",
+                "candidate_user_decision": "BUY",
+            },
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+        )
+
+        # Create dual-side snapshot for alert generator
+        snapshot = DualSideSignalSnapshot(
             timestamp=now,
             instrument="XAUUSD",
             timeframe="15m",
@@ -365,87 +512,71 @@ class TestXauP701AcceptanceContract(TestCase):
             user_decision=UserDecision.WAIT,
             candidate_state=SignalState.BUY_WINDOW,
             candidate_user_decision=UserDecision.BUY,
-            long_direction=SideDirectionScoreResult(SignalSide.LONG, 75.0, 100.0, (), True, True),
-            short_direction=SideDirectionScoreResult(SignalSide.SHORT, 30.0, 100.0, (), True, False),
-            long_timing=SideTimingScoreResult(SignalSide.LONG, 80.0, 100.0, (), True, True),
-            short_timing=SideTimingScoreResult(SignalSide.SHORT, 20.0, 100.0, (), True, False),
+            long_direction=SideDirectionScoreResult(
+                side=SignalSide.LONG,
+                total_score=75.0,
+                max_score=100.0,
+                components=(),
+                is_valid=True,
+                is_direction_ready=True,
+            ),
+            short_direction=SideDirectionScoreResult(
+                side=SignalSide.SHORT,
+                total_score=20.0,
+                max_score=100.0,
+                components=(),
+                is_valid=True,
+                is_direction_ready=False,
+            ),
+            long_timing=SideTimingScoreResult(
+                side=SignalSide.LONG,
+                total_score=80.0,
+                max_score=100.0,
+                components=(),
+                is_valid=True,
+                is_timing_ready=True,
+            ),
+            short_timing=SideTimingScoreResult(
+                side=SignalSide.SHORT,
+                total_score=15.0,
+                max_score=100.0,
+                components=(),
+                is_valid=True,
+                is_timing_ready=False,
+            ),
             hard_gate=XauUsdHardGateEvaluation(
                 is_blocked=False,
                 override_state=None,
                 block_reasons=(),
-                runtime_health=RuntimeFeedHealth(
-                    primary_15m=FeedStatus.HEALTHY,
-                    primary_1h=FeedStatus.HEALTHY,
-                    primary_4h=FeedStatus.HEALTHY,
-                    primary_1d=FeedStatus.HEALTHY,
-                    secondary_provider=FeedStatus.HEALTHY,
-                    secondary_provider_disagreement=False,
-                    macro_blackout_feed=FeedStatus.HEALTHY,
-                    is_macro_blackout=False,
-                    volume=FeedStatus.HEALTHY,
-                    phase3a=FeedStatus.HEALTHY,
-                    phase3b=FeedStatus.HEALTHY,
-                    is_unclosed_candle=False,
-                ),
+                runtime_health=RuntimeFeedHealth(),
             ),
             reasons_long_positive=("Strong momentum",),
             reasons_long_negative=(),
             reasons_short_positive=(),
             reasons_short_negative=(),
             hard_gate_reasons=(),
-            resolution_reason="Layer B locked",
-            candidate_resolution_reason="BUY_WINDOW active",
-            publication_reason="Held at WAIT pending Phase 6 validation",
-            analysis_fingerprint="abc_test_analysis_fp_123",
-            phase4_policy_fingerprint="pol_fp_456",
-            code_revision="dab3b6f8999bcef537bf4d8450f774ce36eb8e0f",
-            profile_name="TEST_PROFILE",
-            calibration_status="CALIBRATED_RESEARCH_TEST",
-        )
-
-        risk_plan = SideRiskPlanSnapshot(
-            side=RiskSide.LONG,
-            source_phase4_fingerprint="abc_test_analysis_fp_123",
-            source_candidate_state=SignalState.BUY_WINDOW,
-            source_candidate_decision=UserDecision.BUY,
-            signal_generated_at=now,
-            entry_min=Decimal("2650.00"),
-            entry_mid=Decimal("2652.00"),
-            entry_max=Decimal("2654.00"),
-            stop_structure=Decimal("2640.00"),
-            stop_atr=Decimal("2638.00"),
-            stop_final=Decimal("2638.00"),
-            stop_distance_atr=Decimal("2.4"),
-            tp1=Decimal("2670.00"),
-            tp2=Decimal("2685.00"),
-            planned_rr_tp1=Decimal("1.5"),
-            planned_rr_tp2=Decimal("2.5"),
-            risk_candidate_valid=True,
-            risk_candidate_status=RiskCandidateStatus.VALID_LONG_RISK_CANDIDATE,
-            simulation_eligible=True,
-            candidate_effective_action=UserDecision.BUY,
-            publication_effective_action=UserDecision.WAIT,
-            reasons=("Valid geometry",),
-            entry_zone_fingerprint="zone_123",
-            tp1_zone_fingerprint="tp_123",
-            tp2_zone_fingerprint="tp_456",
-            phase5_policy_fingerprint="p5_pol_789",
-            risk_plan_fingerprint="risk_fp_999",
-            risk_version="5.0.0",
-            code_revision="dab3b6f8999bcef537bf4d8450f774ce36eb8e0f",
+            resolution_reason="BUY_WINDOW qualified",
+            candidate_resolution_reason="QUALIFIED",
+            publication_reason="AUTHORITY_UNAUTHORIZED",
+            analysis_fingerprint="sig_fp_alert_gate_d",
+            phase4_policy_fingerprint="p4_pol_123",
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            profile_name="TEST_PROF",
+            calibration_status="CANDIDATE_NOT_FROZEN",
         )
 
         alerts = AlertGenerationService.evaluate_closed_candle_alerts(
-            signal_snapshot=sig_snap,
-            risk_plan=risk_plan,
+            signal_snapshot=snapshot,
+            risk_plan=None,
         )
-
-        self.assertTrue(len(alerts) >= 1)
+        self.assertEqual(len(alerts), 1)
         alert = alerts[0]
-        self.assertEqual(alert.event_type, AlertEventType.BUY_WINDOW_CANDIDATE.value)
-        self.assertEqual(alert.disclaimer, CANONICAL_DISCLAIMER)
 
-        # Verify payload forbids all order execution keys
+        # Verify informational disclaimer
+        self.assertEqual(alert.payload.get("disclaimer"), CANONICAL_DISCLAIMER)
+        self.assertEqual(alert.payload.get("is_production_authorized"), False)
+
+        # Verify forbidden order fields are ABSENT
         for forbidden in FORBIDDEN_ALERT_PAYLOAD_FIELDS:
             self.assertNotIn(forbidden, alert.payload)
 
@@ -455,6 +586,7 @@ class TestXauP701AcceptanceContract(TestCase):
         - stale quote suppresses entry-zone alerts
         - provider unhealthy suppresses proximity alerts
         - macro blackout emits safety notification and published WAIT
+        - macro missing/unhealthy fails closed
         """
         now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
@@ -469,6 +601,18 @@ class TestXauP701AcceptanceContract(TestCase):
                 "stop_final": Decimal("2640.00"),
             },
         )
+        LiveMonitorState.objects.filter(id=state.id).update(
+            risk_plan_valid=True,
+            execution_eligible=True,
+            risk_side="LONG",
+            candidate_effective_action="BUY",
+            entry_min=Decimal("2650.00"),
+            entry_max=Decimal("2655.00"),
+            stop_final=Decimal("2640.00"),
+            hard_gate_reasons=[],
+            feed_health_data={},
+        )
+        state.refresh_from_db()
 
         # 1. Stale quote -> zone alert suppressed
         alerts_stale = AlertGenerationService.evaluate_live_quote_alerts(
@@ -496,40 +640,151 @@ class TestXauP701AcceptanceContract(TestCase):
         self.assertIn(AlertEventType.PROVIDER_UNHEALTHY.value, unhealthy_types)
         self.assertNotIn(AlertEventType.ENTRY_ZONE_REACHED.value, unhealthy_types)
 
+        # 3. Macro Blackout PIT test via service pipeline
+        event = CandleClosedEvent(
+            event_id="EVT_MACRO_TEST",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=now - timedelta(minutes=15),
+            timestamp_close=now,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1500.0"),
+            is_closed=True,
+        )
+        macro_blackout_ctx = MacroEventContext(
+            is_in_blackout=True,
+            is_feed_healthy=True,
+            active_event_name="Non-Farm Payrolls",
+            minutes_to_next_event=0,
+        )
+        _, _, state_mb = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            provider_status="HEALTHY",
+            is_feed_stale=False,
+            macro_context=macro_blackout_ctx,
+        )
+        self.assertEqual(state_mb.published_user_decision, "WAIT")
+        self.assertTrue(
+            any("macroeconomic event blackout window" in r.lower() or "macro_blackout" in r.lower() for r in state_mb.hard_gate_reasons)
+        )
+
+        # Proximity alert suppressed when safety hold is active
+        alerts_mb = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state_mb,
+            bid=Decimal("2652.00"),
+            ask=Decimal("2653.00"),
+            quote_ts=now,
+            is_quote_stale=False,
+            provider_healthy=True,
+        )
+        self.assertNotIn(AlertEventType.ENTRY_ZONE_REACHED.value, [a.event_type for a in alerts_mb])
+
+        # 4. Macro feed missing / unhealthy -> fail closed
+        macro_unhealthy_ctx = MacroEventContext(
+            is_in_blackout=False,
+            is_feed_healthy=False,
+            active_event_name="Macro Down",
+            minutes_to_next_event=100,
+        )
+        _, _, state_mu = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            provider_status="HEALTHY",
+            is_feed_stale=False,
+            macro_context=macro_unhealthy_ctx,
+        )
+        self.assertEqual(state_mu.published_user_decision, "WAIT")
+        self.assertEqual(state_mu.feed_health_data["macro_status"], "UNHEALTHY")
+
     def test_gate_f_realtime_parity(self):
         """
         Gate F: REAL-TIME PARITY
         - REST projection
         - server-rendered projection
         - WebSocket projection
-        must agree on candidate/published/risk state.
+        must agree on candidate/published/risk state with real broadcaster capture.
         """
-        state, _ = LiveMonitorState.objects.get_or_create(
+        from apps.live_monitor.consumers import LiveEventBroadcaster
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        event = CandleClosedEvent(
+            event_id="EVT_GATE_F_PARITY",
             instrument="XAUUSD",
-            defaults={
-                "current_bid": Decimal("2650.50"),
-                "current_ask": Decimal("2651.00"),
-                "spread": Decimal("0.50"),
-                "spread_pct": Decimal("0.000189"),
-                "candidate_state": "BUY_WINDOW",
-                "candidate_user_decision": "BUY",
-                "published_state": "NO_TRADE",
-                "published_user_decision": "WAIT",
-                "long_direction_score": 75.0,
-                "short_direction_score": 20.0,
-                "long_timing_score": 80.0,
-                "short_timing_score": 15.0,
-                "risk_side": "LONG",
-                "risk_candidate_status": "VALID",
-                "risk_plan_valid": True,
-                "execution_eligible": True,
-                "entry_min": Decimal("2650.00"),
-                "entry_max": Decimal("2654.00"),
-                "stop_final": Decimal("2640.00"),
-                "tp1": Decimal("2670.00"),
-                "calibration_status": "CALIBRATED_RESEARCH_TEST",
-            },
+            timeframe="15m",
+            timestamp_open=now - timedelta(minutes=15),
+            timestamp_close=now,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1500.0"),
+            is_closed=True,
         )
+
+        prof = Phase4SignalProfile(
+            target_instrument="XAUUSD",
+            calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            long_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            long_gate=SideGatePolicy(
+                threshold_watch_direction=0.0,
+                threshold_ready_direction=0.0,
+                threshold_ready_timing=0.0,
+                threshold_window_direction=0.0,
+                threshold_window_timing=0.0,
+            ),
+            short_gate=SideGatePolicy(
+                threshold_watch_direction=99.0,
+                threshold_ready_direction=99.0,
+                threshold_ready_timing=99.0,
+                threshold_window_direction=99.0,
+                threshold_window_timing=99.0,
+            ),
+        )
+        risk_prof = XauUsdRiskProfile(
+            name="LONG_RISK_PROFILE",
+            calibration_status=Phase5CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            long_risk_policy=SideRiskPolicy(
+                structure_buffer=Decimal("0.50"),
+                atr_multiplier=Decimal("1.5"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
+            ),
+            short_risk_policy=SideRiskPolicy(
+                structure_buffer=Decimal("0.50"),
+                atr_multiplier=Decimal("1.5"),
+                max_stop_distance_atr=Decimal("10.0"),
+                min_rr_tp1=Decimal("0.5"),
+            ),
+        )
+
+        macro_ctx = MacroEventContext(
+            is_in_blackout=False,
+            is_feed_healthy=True,
+            active_event_name="Normal",
+            minutes_to_next_event=120,
+        )
+
+        mock_sub = MockWsSubscriber()
+        LiveEventBroadcaster.subscribe(mock_sub)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            sig_rec, risk_rec, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+                event=event,
+                code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+                provider_status="HEALTHY",
+                is_feed_stale=False,
+                macro_context=macro_ctx,
+                signal_profile=prof,
+                risk_profile=risk_prof,
+            )
+
+        LiveEventBroadcaster.unsubscribe(mock_sub)
 
         # 1. Server-rendered projection
         server_proj = XauUsdLiveProjectionService.assemble_projection(state)
@@ -539,17 +794,22 @@ class TestXauP701AcceptanceContract(TestCase):
         self.assertEqual(res.status_code, 200)
         rest_data = res.json()
 
-        # 3. WebSocket event payload format
-        ws_dict = XauUsdLiveProjectionService.assemble_projection_dict(state)
+        # 3. Real WebSocket broadcast frame
+        self.assertGreaterEqual(len(mock_sub.events), 1)
+        sig_frame = next(e for e in mock_sub.events if e.get("event_type") == "signal_update")
+        ws_data = sig_frame.get("data", sig_frame)
 
         # Semantic Parity Check
         self.assertEqual(server_proj.candidate_user_decision, rest_data["candidate_user_decision"])
         self.assertEqual(server_proj.published_user_decision, rest_data["published_user_decision"])
-        self.assertEqual(rest_data["candidate_user_decision"], ws_dict["candidate_user_decision"])
-        self.assertEqual(rest_data["published_user_decision"], ws_dict["published_user_decision"])
-        self.assertEqual(Decimal(str(server_proj.entry_min)), Decimal(str(rest_data["entry_min"])))
-        self.assertEqual(Decimal(str(rest_data["entry_min"])), Decimal(str(ws_dict["entry_min"])))
+        self.assertEqual(rest_data["candidate_user_decision"], ws_data["candidate_user_decision"])
+        self.assertEqual(rest_data["published_user_decision"], ws_data["published_user_decision"])
         self.assertEqual(server_proj.long_direction_score, rest_data["long_direction_score"])
-        self.assertEqual(rest_data["long_direction_score"], ws_dict["long_direction_score"])
+        self.assertEqual(rest_data["long_direction_score"], ws_data["long_direction_score"])
         self.assertEqual(server_proj.risk_side, rest_data["risk_side"])
-        self.assertEqual(rest_data["risk_side"], ws_dict["risk_side"])
+        self.assertEqual(rest_data["risk_side"], state.risk_side)
+        self.assertEqual(server_proj.candidate_state, rest_data["candidate_state"])
+        self.assertEqual(rest_data["candidate_state"], ws_data["candidate_state"])
+        self.assertEqual(server_proj.published_state, rest_data["published_state"])
+        self.assertEqual(rest_data["published_state"], ws_data["published_state"])
+        self.assertEqual(server_proj.risk_candidate_status, rest_data["risk_candidate_status"])

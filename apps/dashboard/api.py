@@ -231,23 +231,19 @@ class BacktestRunLaunchAPIView(APIView):
     Strict Invariants:
       - Only enqueues existing Celery run_xauusd_backtest_task.
       - Strictly forbidden from placing, modifying, or executing orders.
-      - Rejects naive timestamps.
-      - Requires explicit friction configuration when cost_scenario is EMPIRICAL.
+      - Rejects naive timestamps. Require end_date > start_date.
+      - Requires explicit cost_scenario in (IDEALIZED, EMPIRICAL).
+      - Requires all 5 friction fields for EMPIRICAL (no hidden defaults).
+      - Requires valid EntryExecutionPolicy and IntrabarPolicy enums.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request: HttpRequest) -> Response:
+        from engine.core.types import EntryExecutionPolicy, IntrabarPolicy
         data = request.data
-        ablation_id = data.get("ablation_id") or data.get("ablation_type", "BASELINE")
+
         start_date_str = data.get("start_date") or data.get("start_time_iso")
         end_date_str = data.get("end_date") or data.get("end_time_iso")
-        cost_scenario = data.get("cost_scenario", "ZERO_FRICTION")
-        code_revision = data.get("code_revision", "5a05d9ba1c0d63790fe2b0e3b6a6bbcc0de63f61")
-        dataset_hash = data.get("dataset_hash", "dataset-xauusd-p6-v1")
-        holding_horizon_bars = int(data.get("holding_horizon_bars_15m", 16))
-        max_fill_wait_bars = int(data.get("max_fill_wait_bars_15m", 4))
-        execution_policy = data.get("execution_policy", "NEXT_BAR_OPEN")
-        intrabar_policy = data.get("intrabar_policy", "PESSIMISTIC")
 
         if not start_date_str or not end_date_str:
             return Response(
@@ -268,22 +264,97 @@ class BacktestRunLaunchAPIView(APIView):
                     {"error": "end_date must include an explicit timezone offset (naive timestamps forbidden)."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if end_dt <= start_dt:
+                return Response(
+                    {"error": "end_date must be strictly greater than start_date."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         except Exception as e:
             return Response(
                 {"error": f"Invalid date format: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Validate explicit friction for EMPIRICAL scenario
+        cost_scenario = data.get("cost_scenario")
+        if cost_scenario not in ("IDEALIZED", "EMPIRICAL"):
+            return Response(
+                {"error": "cost_scenario is required and must be either 'IDEALIZED' or 'EMPIRICAL'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate explicit friction for EMPIRICAL scenario (all 5 required)
         if cost_scenario == "EMPIRICAL":
             entry_fee = data.get("entry_fee_bps")
             exit_fee = data.get("exit_fee_bps")
             spread_bps = data.get("synthetic_spread_bps")
-            if entry_fee is None or exit_fee is None or spread_bps is None:
+            entry_slip = data.get("entry_slippage_bps")
+            exit_slip = data.get("exit_slippage_bps")
+            if (
+                entry_fee is None
+                or exit_fee is None
+                or spread_bps is None
+                or entry_slip is None
+                or exit_slip is None
+            ):
                 return Response(
-                    {"error": "cost_scenario EMPIRICAL requires explicit entry_fee_bps, exit_fee_bps, and synthetic_spread_bps."},
+                    {
+                        "error": "cost_scenario EMPIRICAL strictly requires all 5 friction parameters: "
+                        "entry_fee_bps, exit_fee_bps, synthetic_spread_bps, entry_slippage_bps, exit_slippage_bps."
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+        code_revision = data.get("code_revision")
+        if not code_revision or not str(code_revision).strip():
+            return Response(
+                {"error": "code_revision is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset_hash = data.get("dataset_hash")
+        if not dataset_hash or not str(dataset_hash).strip():
+            return Response(
+                {"error": "dataset_hash is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            holding_horizon_bars = int(data.get("holding_horizon_bars_15m", 0))
+            if holding_horizon_bars <= 0:
+                raise ValueError()
+        except Exception:
+            return Response(
+                {"error": "holding_horizon_bars_15m is required and must be a positive integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            max_fill_wait_bars = int(data.get("max_fill_wait_bars_15m", 0))
+            if max_fill_wait_bars <= 0:
+                raise ValueError()
+        except Exception:
+            return Response(
+                {"error": "max_fill_wait_bars_15m is required and must be a positive integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        execution_policy = data.get("execution_policy")
+        valid_exec_policies = [e.value for e in EntryExecutionPolicy]
+        if execution_policy not in valid_exec_policies:
+            return Response(
+                {"error": f"Invalid execution_policy '{execution_policy}'. Allowed: {valid_exec_policies}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        intrabar_policy = data.get("intrabar_policy")
+        valid_intrabar_policies = [e.value for e in IntrabarPolicy]
+        if intrabar_policy not in valid_intrabar_policies:
+            return Response(
+                {"error": f"Invalid intrabar_policy '{intrabar_policy}'. Allowed: {valid_intrabar_policies}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ablation_id = data.get("ablation_id") or data.get("ablation_type", "BASELINE")
 
         # Enqueue Phase 6 task
         from apps.backtests.tasks import run_xauusd_backtest_task
@@ -299,11 +370,11 @@ class BacktestRunLaunchAPIView(APIView):
             execution_policy=execution_policy,
             intrabar_policy=intrabar_policy,
             ablation_type=ablation_id,
-            entry_fee_bps=data.get("entry_fee_bps"),
-            exit_fee_bps=data.get("exit_fee_bps"),
-            synthetic_spread_bps=data.get("synthetic_spread_bps"),
-            entry_slippage_bps=data.get("entry_slippage_bps"),
-            exit_slippage_bps=data.get("exit_slippage_bps"),
+            entry_fee_bps=str(data.get("entry_fee_bps")) if data.get("entry_fee_bps") is not None else None,
+            exit_fee_bps=str(data.get("exit_fee_bps")) if data.get("exit_fee_bps") is not None else None,
+            synthetic_spread_bps=str(data.get("synthetic_spread_bps")) if data.get("synthetic_spread_bps") is not None else None,
+            entry_slippage_bps=str(data.get("entry_slippage_bps")) if data.get("entry_slippage_bps") is not None else None,
+            exit_slippage_bps=str(data.get("exit_slippage_bps")) if data.get("exit_slippage_bps") is not None else None,
             signal_profile_dict=data.get("signal_profile_dict"),
             risk_profile_dict=data.get("risk_profile_dict"),
         )
