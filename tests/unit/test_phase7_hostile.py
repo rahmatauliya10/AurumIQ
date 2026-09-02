@@ -13,6 +13,7 @@ from apps.alerts.types import (
     FORBIDDEN_ALERT_PAYLOAD_FIELDS,
 )
 from apps.instruments.models import Asset, AssetType, Instrument, InstrumentRole, InstrumentType
+from apps.market_data.models import MarketCandle
 from apps.live_monitor.models import LiveMonitorState, LiveRiskPlanRecord
 from apps.live_monitor.services import (
     LiveQuoteService,
@@ -24,6 +25,7 @@ from apps.signals.models import SignalRecord
 from engine.core.types import (
     CandleData,
     DualSideSignalSnapshot,
+    FeedHealthStatus,
     MacroEventContext,
     RiskCandidateStatus,
     RiskSide,
@@ -676,4 +678,592 @@ class TestPhase7HostileScenarios(TestCase):
         with self.settings(XAUUSD_LIVE_QUOTE_TTL_SECONDS=60):
             ttl_val = LiveQuoteService.get_live_quote_ttl_seconds()
             self.assertEqual(ttl_val, 60)
+
+    def test_hostile_24_primary_provider_participation_in_hard_gate(self):
+        """Primary provider health strictly participates in RuntimeFeedHealth.primary_15m hard gate."""
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+        from engine.signals.profile import (
+            Phase4CalibrationStatus,
+            Phase4SignalProfile,
+            SideDirectionPolicy,
+            SideGatePolicy,
+            SideTimingPolicy,
+        )
+
+        test_prof = Phase4SignalProfile(
+            target_instrument="XAUUSD",
+            calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            long_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+            long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+            long_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+            short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
+        )
+
+        base_ts = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        # Seed 30 15m candles
+        for i in range(30):
+            ts = base_ts - timedelta(minutes=15 * (30 - i))
+            MarketCandle.objects.create(
+                instrument=self.xauusd,
+                timeframe="15m",
+                timestamp_open=ts,
+                timestamp_close=ts + timedelta(minutes=15),
+                open=Decimal("2600.00"),
+                high=Decimal("2605.00"),
+                low=Decimal("2595.00"),
+                close=Decimal("2602.00"),
+                volume=Decimal("1000.0"),
+                is_closed=True,
+                source="test_feed",
+            )
+
+        evt = CandleClosedEvent(
+            event_id="EVT_HEALTH_GATE",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=base_ts,
+            timestamp_close=base_ts + timedelta(minutes=15),
+            open=Decimal("2602.00"),
+            high=Decimal("2606.00"),
+            low=Decimal("2601.00"),
+            close=Decimal("2605.00"),
+            volume=Decimal("1200.0"),
+            is_closed=True,
+        )
+
+        macro_ctx = MacroEventContext(
+            is_in_blackout=False,
+            is_feed_healthy=True,
+            active_event_name="Normal",
+            minutes_to_next_event=120,
+        )
+
+        # Case 1: Missing primary listing -> FORCE_WAIT
+        MarketListing.objects.filter(instrument=self.xauusd, listing_role=ListingRole.PRIMARY_XAUUSD_SPOT).delete()
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            macro_context=macro_ctx,
+        )
+        self.assertEqual(state.candidate_state, "FORCE_WAIT")
+        self.assertEqual(state.candidate_user_decision, "WAIT")
+        self.assertEqual(sig_rec.state, "FORCE_WAIT")
+
+        # Create Primary listing
+        prim_listing = MarketListing.objects.create(
+            instrument=self.xauusd,
+            provider="primary_spot_feed",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+            provider_symbol="XAUUSD",
+        )
+
+        # Case 2: Primary listing exists, but no health snapshot -> FORCE_WAIT
+        ProviderHealthSnapshot.objects.filter(listing=prim_listing).delete()
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            macro_context=macro_ctx,
+        )
+        self.assertEqual(state.candidate_state, "FORCE_WAIT")
+
+        # Case 3: Primary DEGRADED -> FORCE_WAIT
+        snap = ProviderHealthSnapshot.objects.create(
+            listing=prim_listing,
+            status="DEGRADED",
+            checked_at=base_ts + timedelta(minutes=15),
+        )
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            macro_context=macro_ctx,
+        )
+        self.assertEqual(state.candidate_state, "FORCE_WAIT")
+
+        # Case 4: Primary UNHEALTHY -> FORCE_WAIT
+        snap.status = "UNHEALTHY"
+        snap.save()
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            macro_context=macro_ctx,
+        )
+        self.assertEqual(state.candidate_state, "FORCE_WAIT")
+
+        # Case 5: Primary QUARANTINED -> FORCE_WAIT
+        snap.status = "QUARANTINED"
+        snap.save()
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            macro_context=macro_ctx,
+        )
+        self.assertEqual(state.candidate_state, "FORCE_WAIT")
+
+        # Case 6: Primary HEALTHY + secondary missing -> Candidate mechanics eligible (secondary is optional)
+        snap.status = "HEALTHY"
+        snap.save()
+        sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="test_rev",
+            signal_profile=test_prof,
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+        )
+        self.assertNotEqual(state.candidate_state, "FORCE_WAIT")
+        self.assertEqual(state.feed_health_data.get("xauusd_primary_status"), "HEALTHY")
+        self.assertEqual(state.feed_health_data.get("xauusd_secondary_status"), "MISSING")
+
+    def test_hostile_25_market_evidence_immutability(self):
+        """Decision service does not mutate DB candle source or raise MultipleObjectsReturned on multi-source candles."""
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+
+        prim_list = MarketListing.objects.create(
+            instrument=self.xauusd,
+            provider="primary_spot_feed",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+            provider_symbol="XAUUSD",
+        )
+        sec_list = MarketListing.objects.create(
+            instrument=self.xauusd,
+            provider="secondary_spot_feed",
+            listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+            provider_symbol="XAUUSD_SEC",
+        )
+
+        ts_open = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        ts_close = datetime(2026, 8, 1, 10, 15, tzinfo=timezone.utc)
+
+        # Create two distinct provider rows for the same timestamp
+        c_prim = MarketCandle.objects.create(
+            instrument=self.xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1000.0"),
+            is_closed=True,
+            source="primary_spot_feed",
+        )
+        c_sec = MarketCandle.objects.create(
+            instrument=self.xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2650.10"),
+            high=Decimal("2655.20"),
+            low=Decimal("2649.10"),
+            close=Decimal("2654.10"),
+            volume=Decimal("950.0"),
+            is_closed=True,
+            source="secondary_spot_feed",
+        )
+
+        ProviderHealthSnapshot.objects.create(listing=prim_list, status="HEALTHY", checked_at=ts_close)
+
+        evt = CandleClosedEvent(
+            event_id="EVT_IMMUT_TEST",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1000.0"),
+            is_closed=True,
+            source="primary_spot_feed",
+        )
+
+        # Call decision pipeline
+        XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="immutability_rev",
+        )
+
+        # Verify DB rows are NOT mutated or rewritten to 'live_feed'
+        c_prim.refresh_from_db()
+        c_sec.refresh_from_db()
+        self.assertEqual(c_prim.source, "primary_spot_feed")
+        self.assertEqual(c_sec.source, "secondary_spot_feed")
+        self.assertFalse(MarketCandle.objects.filter(source="live_feed").exists())
+
+    def test_hostile_26_deterministic_candle_source_selection(self):
+        """get_engine_candles prioritizes primary provider source and prevents same-timestamp duplicates."""
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+        MarketListing.objects.create(
+            instrument=self.xauusd,
+            provider="canonical_prim",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+            provider_symbol="XAUUSD",
+        )
+
+        ts_close = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        ts_open = ts_close - timedelta(minutes=15)
+
+        # Create secondary candle first, then primary candle
+        MarketCandle.objects.create(
+            instrument=self.xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2600.00"),
+            high=Decimal("2605.00"),
+            low=Decimal("2595.00"),
+            close=Decimal("2600.00"),
+            volume=Decimal("500.0"),
+            is_closed=True,
+            source="secondary_feed",
+        )
+        MarketCandle.objects.create(
+            instrument=self.xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1500.0"),
+            is_closed=True,
+            source="canonical_prim",
+        )
+
+        engine_candles = XauUsdLiveDecisionPipelineService.get_engine_candles(
+            instrument=self.xauusd,
+            timeframe="15m",
+            candle_ts=ts_close,
+        )
+
+        self.assertEqual(len(engine_candles), 1)
+        self.assertEqual(engine_candles[0].source_id, "canonical_prim")
+        self.assertEqual(engine_candles[0].close, Decimal("2654.00"))
+
+    def test_hostile_27_incident_state_persistence_across_decision_and_restart(self):
+        """Incident state survives closed-candle decision cycles, projection updates, and restart reconstruction."""
+        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        state, _ = LiveMonitorState.objects.get_or_create(
+            instrument="XAUUSD",
+            defaults={"effective_action": "WAIT", "feed_health_data": {}},
+        )
+
+        # t1: STALE -> alert #1
+        alerts_1 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now,
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_1), 1)
+        self.assertTrue(state.feed_health_data.get("stale_incident_active"))
+
+        # t2: STALE -> 0 alerts
+        alerts_2 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now + timedelta(minutes=1),
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_2), 0)
+
+        # t3: Closed-candle decision executes while quote is still stale
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+        prim_listing, _ = MarketListing.objects.get_or_create(
+            instrument=self.xauusd,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            defaults={"provider": "test_prim_feed", "status": ListingStatus.ACTIVE, "provider_symbol": "XAUUSD"},
+        )
+        ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=now + timedelta(minutes=2))
+
+        evt = CandleClosedEvent(
+            event_id="EVT_STALE_SURVIVE",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=now - timedelta(minutes=15),
+            timestamp_close=now,
+            open=Decimal("2650.00"),
+            high=Decimal("2655.00"),
+            low=Decimal("2649.00"),
+            close=Decimal("2654.00"),
+            volume=Decimal("1000.0"),
+            is_closed=True,
+            source="test_prim_feed",
+        )
+        XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision="rev_incident",
+        )
+        state.refresh_from_db()
+        # Incident flag must still be active
+        self.assertTrue(state.feed_health_data.get("stale_incident_active"))
+
+        # t4: STALE quote -> 0 alerts (still deduplicated)
+        alerts_4 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now + timedelta(minutes=3),
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_4), 0)
+
+        # Restart / Reconstruct state
+        state = XauUsdLiveProjectionService.reconstruct_xauusd_state()
+        self.assertTrue(state.feed_health_data.get("stale_incident_active"))
+
+        # t5: STALE quote after restart -> 0 alerts
+        alerts_5 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now + timedelta(minutes=4),
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_5), 0)
+
+        # t6: Quote recovers -> HEALTHY -> resets incident flag
+        alerts_6 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now + timedelta(minutes=5),
+            is_quote_stale=False,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_6), 0)
+        self.assertFalse(state.feed_health_data.get("stale_incident_active"))
+
+        # t7: New STALE incident -> alert #2
+        alerts_7 = AlertGenerationService.evaluate_live_quote_alerts(
+            state=state,
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            quote_ts=now + timedelta(minutes=6),
+            is_quote_stale=True,
+            provider_healthy=True,
+        )
+        self.assertEqual(len(alerts_7), 1)
+
+    def test_hostile_28_real_redis_cache_storage_and_ttl(self):
+        """LiveQuoteService caches valid quotes in Redis with explicit TTL and blocks stale overwrite."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None
+
+        now = datetime.now(timezone.utc)
+        fresh_quote = LiveQuoteEvent(
+            event_id="Q_REDIS_FRESH",
+            instrument="XAUUSD",
+            provider="test_prov",
+            bid=Decimal("2650.00"),
+            ask=Decimal("2651.00"),
+            source_timestamp=now,
+            received_timestamp=now,
+            sequence_number=10,
+        )
+
+        with self.settings(
+            XAUUSD_LIVE_QUOTE_TTL_SECONDS=60,
+            XAUUSD_QUOTE_STALE_SECONDS=45,
+            XAUUSD_QUOTE_FUTURE_SKEW_SECONDS=60,
+        ):
+            with patch("apps.live_monitor.services.LiveEventBroadcaster.get_redis_client", return_value=mock_redis):
+                LiveQuoteService.process_quote(fresh_quote)
+
+                # Verify mock_redis.set was called with livequote:XAUUSD, correct JSON, and ex=60
+                self.assertTrue(mock_redis.set.called)
+                call_args = mock_redis.set.call_args
+                self.assertEqual(call_args[0][0], "livequote:XAUUSD")
+                cached_data = json.loads(call_args[0][1])
+                self.assertEqual(cached_data["instrument"], "XAUUSD")
+                self.assertEqual(Decimal(cached_data["bid"]), Decimal("2650.00"))
+                self.assertEqual(Decimal(cached_data["ask"]), Decimal("2651.00"))
+                self.assertEqual(call_args[1]["ex"], 60)
+
+                mock_redis.reset_mock()
+
+                # Stale quote cannot write to cache
+                stale_quote = LiveQuoteEvent(
+                    event_id="Q_REDIS_STALE",
+                    instrument="XAUUSD",
+                    provider="test_prov",
+                    bid=Decimal("2640.00"),
+                    ask=Decimal("2641.00"),
+                    source_timestamp=now - timedelta(seconds=100),
+                    received_timestamp=now,
+                    sequence_number=11,
+                )
+                LiveQuoteService.process_quote(stale_quote)
+                self.assertFalse(mock_redis.set.called)
+
+    def test_hostile_29_exact_phase6_phase7_history_parity_over_128_candles(self):
+        """Exact parity between pure Phase 6 replay engine and Phase 7 XauUsdLiveDecisionPipelineService on >128 bars."""
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+        from engine.signals.engine import XauUsdSignalEngine
+        from engine.signals.profile import uncalibrated_xauusd_signal_profile
+        from engine.features.engine import FeatureEngine
+        from engine.regime.engine import RegimeEngine
+        from engine.structure.engine import CausalStructureEngine
+
+        prim_listing, _ = MarketListing.objects.get_or_create(
+            instrument=self.xauusd,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            defaults={"provider": "parity_prov", "status": ListingStatus.ACTIVE, "provider_symbol": "XAUUSD"},
+        )
+
+        base_ts = datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+        # Create 140 15m candles
+        candles_15m = []
+        for i in range(140):
+            ts = base_ts + timedelta(minutes=15 * i)
+            # Upward trending wave pattern
+            o = Decimal("2600.00") + Decimal(str(i * 0.2))
+            c = Decimal("2601.00") + Decimal(str(i * 0.2))
+            h = c + Decimal("2.00")
+            l = o - Decimal("1.00")
+            candles_15m.append(
+                MarketCandle(
+                    instrument=self.xauusd,
+                    timeframe="15m",
+                    timestamp_open=ts,
+                    timestamp_close=ts + timedelta(minutes=15),
+                    open=o,
+                    high=h,
+                    low=l,
+                    close=c,
+                    volume=Decimal("1000.0"),
+                    is_closed=True,
+                    source="parity_prov",
+                )
+            )
+        MarketCandle.objects.bulk_create(candles_15m)
+
+        # Create 35 1h candles
+        candles_1h = []
+        for i in range(35):
+            ts = base_ts + timedelta(hours=i)
+            candles_1h.append(
+                MarketCandle(
+                    instrument=self.xauusd,
+                    timeframe="1h",
+                    timestamp_open=ts,
+                    timestamp_close=ts + timedelta(hours=1),
+                    open=Decimal("2600.00") + Decimal(str(i * 0.8)),
+                    high=Decimal("2605.00") + Decimal(str(i * 0.8)),
+                    low=Decimal("2598.00") + Decimal(str(i * 0.8)),
+                    close=Decimal("2604.00") + Decimal(str(i * 0.8)),
+                    volume=Decimal("4000.0"),
+                    is_closed=True,
+                    source="parity_prov",
+                )
+            )
+        MarketCandle.objects.bulk_create(candles_1h)
+
+        eval_ts = base_ts + timedelta(minutes=15 * 140)
+        ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=eval_ts)
+
+        code_rev = "34a21541f2a9725c7fde324c1e08245a2363742d"
+        profile = uncalibrated_xauusd_signal_profile()
+
+        # A. Phase 6 Replay calculation using pure engines
+        eng_15m = XauUsdLiveDecisionPipelineService.get_engine_candles(self.xauusd, "15m", eval_ts)
+        eng_1h = XauUsdLiveDecisionPipelineService.get_engine_candles(self.xauusd, "1h", eval_ts)
+
+        fe = FeatureEngine()
+        re = RegimeEngine()
+        se = CausalStructureEngine()
+        f15 = fe.extract_features(eng_15m)
+        r15 = re.classify(f15)
+        s15 = se.analyze(eng_15m, atr=f15.atr14 if f15 else None)
+        f1h = fe.extract_features(eng_1h)
+
+        vol_health = FeedHealthStatus.HEALTHY if (f15 and f15.volume_usable) else FeedHealthStatus.MISSING
+        runtime_h = RuntimeFeedHealth(
+            primary_15m=FeedHealthStatus.HEALTHY,
+            primary_1h=FeedHealthStatus.HEALTHY if eng_1h else FeedHealthStatus.MISSING,
+            primary_4h=FeedHealthStatus.MISSING,
+            primary_1d=FeedHealthStatus.MISSING,
+            secondary_provider=FeedHealthStatus.MISSING,
+            secondary_provider_disagreement=False,
+            macro_blackout_feed=FeedHealthStatus.MISSING,
+            is_macro_blackout=False,
+            volume=vol_health,
+            phase3a=FeedHealthStatus.MISSING,
+            phase3b=FeedHealthStatus.MISSING,
+            is_unclosed_candle=False,
+        )
+
+        pure_engine = XauUsdSignalEngine(code_revision=code_rev)
+        pure_snap = pure_engine.analyze(
+            closed_candles_15m=eng_15m,
+            closed_candles_1h=eng_1h,
+            regime_15m=r15,
+            features_15m=f15,
+            features_1h=f1h,
+            structure_15m=s15,
+            runtime_health=runtime_h,
+            profile=profile,
+            instrument="XAUUSD",
+            timeframe="15m",
+            as_of=eval_ts,
+        )
+
+        # B. Phase 7 XauUsdLiveDecisionPipelineService
+        last_candle = eng_15m[-1]
+        evt = CandleClosedEvent(
+            event_id="EVT_PARITY_140",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=last_candle.timestamp_open,
+            timestamp_close=last_candle.timestamp_close,
+            open=last_candle.open,
+            high=last_candle.high,
+            low=last_candle.low,
+            close=last_candle.close,
+            volume=last_candle.volume,
+            is_closed=True,
+            source="parity_prov",
+        )
+        sig_rec, risk_rec, live_state = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt,
+            code_revision=code_rev,
+            signal_profile=profile,
+            is_feed_stale=False,
+        )
+
+        # Assert EXACT parity between pure engine and Phase 7 service
+        self.assertEqual(live_state.candidate_state, pure_snap.candidate_state.value)
+        self.assertEqual(live_state.candidate_user_decision, pure_snap.candidate_user_decision.value)
+        self.assertEqual(live_state.published_state, pure_snap.state.value)
+        self.assertEqual(live_state.published_user_decision, pure_snap.user_decision.value)
+        self.assertEqual(live_state.long_direction_score, pure_snap.long_direction.total_score)
+        self.assertEqual(live_state.short_direction_score, pure_snap.short_direction.total_score)
+        self.assertEqual(live_state.long_timing_score, pure_snap.long_timing.total_score)
+        self.assertEqual(live_state.short_timing_score, pure_snap.short_timing.total_score)
+        self.assertEqual(live_state.phase4_policy_fingerprint, pure_snap.phase4_policy_fingerprint)
+        self.assertEqual(live_state.analysis_fingerprint, pure_snap.analysis_fingerprint)
+
+
 

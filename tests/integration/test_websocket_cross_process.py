@@ -652,3 +652,93 @@ def test_p7_bus_06_committed_decision_emits_all_decision_events():
         await t
 
     asyncio.run(_test_flow())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_xauusd_asgi_websocket_subscription_and_event_isolation():
+    """Verify active XAUUSD ASGI WebSocket subscription, frame delivery, and legacy XAUT event isolation."""
+    user = User.objects.create_user(username="xauusd_ws_user", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    async def _test_flow():
+        sent_frames = []
+        recv_q = asyncio.Queue()
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/live/ws/",
+            "query_string": b"symbol=XAUUSD",
+        }
+        t = asyncio.create_task(application(scope, lambda: recv_q.get(), lambda m: sent_frames.append(m)))
+        await asyncio.sleep(0.05)
+
+        now_utc = datetime.now(timezone.utc)
+
+        # 1. Broadcast legacy XAUT event -> Should be isolated and NOT received by XAUUSD subscriber
+        def _emit_xaut():
+            LiveEventBroadcaster.broadcast({
+                "event_id": "EVT_XAUT_IGNORE",
+                "event_type": "quote_update",
+                "instrument": "XAUT/USDT",
+                "data": {"bid": "2500.00", "ask": "2501.00"},
+            })
+        await sync_to_async(_emit_xaut)()
+        await asyncio.sleep(0.05)
+
+        # 2. Broadcast active XAUUSD quote event -> Should be received
+        def _emit_xauusd_quote():
+            LiveEventBroadcaster.broadcast({
+                "event_id": "EVT_XAUUSD_DELIVER",
+                "event_type": "quote_update",
+                "instrument": "XAUUSD",
+                "data": {"bid": "2650.00", "ask": "2651.00"},
+                "source_timestamp": now_utc.isoformat(),
+                "server_timestamp": now_utc.isoformat(),
+            })
+        await sync_to_async(_emit_xauusd_quote)()
+        await asyncio.sleep(0.05)
+
+        # 3. Broadcast active XAUUSD decision events
+        def _emit_xauusd_decision():
+            LiveEventBroadcaster.broadcast({
+                "event_id": "SIG_XAUUSD_01",
+                "event_type": "signal_update",
+                "instrument": "XAUUSD",
+                "data": {"state": "BUY_WINDOW", "candidate_action": "BUY"},
+            })
+            LiveEventBroadcaster.broadcast({
+                "event_id": "RISK_XAUUSD_01",
+                "event_type": "risk_plan_update",
+                "instrument": "XAUUSD",
+                "data": {"entry_price": "2650.00", "stop_loss": "2640.00"},
+            })
+        await sync_to_async(_emit_xauusd_decision)()
+        await asyncio.sleep(0.05)
+
+        # Parse received text frames
+        received = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "text" in m
+        ]
+
+        # Verify XAUT was completely excluded
+        assert not any(f.get("instrument") == "XAUT/USDT" for f in received)
+
+        # Verify XAUUSD quote and signal frames received
+        xauusd_quotes = [f for f in received if f.get("event_type") == "quote_update" and f.get("instrument") == "XAUUSD"]
+        xauusd_signals = [f for f in received if f.get("event_type") == "signal_update" and f.get("instrument") == "XAUUSD"]
+        xauusd_risks = [f for f in received if f.get("event_type") == "risk_plan_update" and f.get("instrument") == "XAUUSD"]
+
+        assert len(xauusd_quotes) >= 1
+        assert len(xauusd_signals) >= 1
+        assert len(xauusd_risks) >= 1
+
+        await recv_q.put({"type": "websocket.disconnect"})
+        await t
+
+    asyncio.run(_test_flow())
+

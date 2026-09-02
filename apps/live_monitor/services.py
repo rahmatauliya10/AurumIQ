@@ -310,7 +310,20 @@ class XauUsdLiveDecisionPipelineService:
         timeframe: str,
         candle_ts: datetime,
     ) -> list[CandleData]:
-        """Query closed historical candles <= candle_ts without arbitrary limits (Deterministic Complete History)."""
+        """Query closed historical candles <= candle_ts with deterministic canonical source selection."""
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+
+        primary_listing = MarketListing.objects.filter(
+            instrument=instrument,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        primary_source_name = (
+            str(primary_listing.provider).lower()
+            if (primary_listing and primary_listing.provider)
+            else None
+        )
+
         qs = (
             MarketCandle.objects.filter(
                 instrument=instrument,
@@ -318,8 +331,25 @@ class XauUsdLiveDecisionPipelineService:
                 timestamp_close__lte=candle_ts,
                 is_closed=True,
             )
-            .order_by("timestamp_close")
+            .order_by("timestamp_close", "id")
         )
+
+        # Deduplicate same-close timestamps, prioritizing primary provider source
+        candles_by_close: dict[datetime, MarketCandle] = {}
+        for c in qs:
+            ts = c.timestamp_close
+            if ts not in candles_by_close:
+                candles_by_close[ts] = c
+            else:
+                existing = candles_by_close[ts]
+                if (
+                    primary_source_name
+                    and str(existing.source).lower() != primary_source_name
+                    and str(c.source).lower() == primary_source_name
+                ):
+                    candles_by_close[ts] = c
+
+        sorted_candles = sorted(candles_by_close.values(), key=lambda x: x.timestamp_close)
         return [
             CandleData(
                 timestamp_open=c.timestamp_open,
@@ -334,7 +364,7 @@ class XauUsdLiveDecisionPipelineService:
                 close_usd=c.close_usd,
                 source_id=c.source,
             )
-            for c in qs
+            for c in sorted_candles
         ]
 
     @classmethod
@@ -396,34 +426,17 @@ class XauUsdLiveDecisionPipelineService:
         candle_ts = event.timestamp_close.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
 
-        # Step 2: Persist incoming closed candle (Idempotent)
-        c_obj, _ = MarketCandle.objects.update_or_create(
-            instrument=instrument_obj,
-            timeframe=event.timeframe,
-            timestamp_open=event.timestamp_open.astimezone(timezone.utc),
-            timestamp_close=candle_ts,
-            defaults={
-                "open": event.open,
-                "high": event.high,
-                "low": event.low,
-                "close": event.close,
-                "volume": event.volume,
-                "is_closed": True,
-                "source": "live_feed",
-            },
-        )
-
-        # Step 3: Query closed historical candles <= candle_ts (Deterministic Complete History)
+        # Step 3: Query closed historical candles <= candle_ts (Deterministic Complete History without mutating DB)
         engine_candles_15m = cls.get_engine_candles(instrument_obj, "15m", candle_ts)
         engine_candles_1h = cls.get_engine_candles(instrument_obj, "1h", candle_ts)
         engine_candles_4h = cls.get_engine_candles(instrument_obj, "4h", candle_ts)
         engine_candles_1d = cls.get_engine_candles(instrument_obj, "1d", candle_ts)
 
-        # Ensure current event candle is present
+        # If current event candle is absent from DB PIT query, append in-memory only (do not overwrite DB source)
         if not any(c.timestamp_close == candle_ts for c in engine_candles_15m):
             engine_candles_15m.append(
                 CandleData(
-                    timestamp_open=event.timestamp_open,
+                    timestamp_open=event.timestamp_open.astimezone(timezone.utc),
                     timestamp_close=candle_ts,
                     open=event.open,
                     high=event.high,
@@ -431,6 +444,9 @@ class XauUsdLiveDecisionPipelineService:
                     close=event.close,
                     volume=event.volume,
                     is_closed=True,
+                    quote_rate=event.quote_rate,
+                    close_usd=getattr(event, "close_usd", None),
+                    source_id=event.source,
                 )
             )
 
@@ -487,11 +503,19 @@ class XauUsdLiveDecisionPipelineService:
             .first()
         ) if secondary_listing else None
 
-        primary_feed_health = (
-            _map_provider_status_to_feed_health(provider_status)
-            if provider_status is not None
-            else _map_provider_status_to_feed_health(primary_health_rec.status if primary_health_rec else None)
-        )
+        # Conservative Rule (§2):
+        # Do not use caller-supplied provider_status to fabricate a configured primary provider when no primary listing exists.
+        # An explicit provider_status may annotate/override an actual resolved primary listing only.
+        if primary_listing is None:
+            primary_feed_health = FeedHealthStatus.MISSING
+        elif provider_status is not None:
+            primary_feed_health = _map_provider_status_to_feed_health(provider_status)
+        elif primary_health_rec is not None:
+            primary_feed_health = _map_provider_status_to_feed_health(primary_health_rec.status)
+        else:
+            # Primary listing exists but no health record -> fail closed
+            primary_feed_health = FeedHealthStatus.MISSING
+
         secondary_feed_health = _map_provider_status_to_feed_health(
             secondary_health_rec.status if secondary_health_rec else None
         )
@@ -503,12 +527,14 @@ class XauUsdLiveDecisionPipelineService:
             )
 
         # Derive provider sync status from provider evidence (NOT 15m candle health)
-        if is_provider_transition:
+        if primary_listing is None:
+            provider_sync_status_val = "MISSING"
+        elif is_provider_transition:
             provider_sync_status_val = "TRANSITION"
-        elif primary_health_rec:
-            provider_sync_status_val = primary_health_rec.status
         elif provider_status is not None:
             provider_sync_status_val = provider_status
+        elif primary_health_rec:
+            provider_sync_status_val = primary_health_rec.status
         else:
             provider_sync_status_val = "MISSING"
 
@@ -567,9 +593,29 @@ class XauUsdLiveDecisionPipelineService:
         if feats_15m and feats_15m.volume_evidence != VolumeEvidenceType.UNAVAILABLE:
             vol_health = FeedHealthStatus.HEALTHY if feats_15m.volume_usable else FeedHealthStatus.UNHEALTHY
 
+        # Conservative merge rule (§2):
+        # primary_15m reflects BOTH primary market-data evidence/data-quality state AND PRIMARY_XAUUSD_SPOT provider health.
+        # If either side is UNKNOWN / MISSING / UNHEALTHY / STALE / TRANSITION -> primary_15m must NOT be HEALTHY.
+        market_15m_health = (
+            FeedHealthStatus.STALE
+            if is_feed_stale
+            else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING)
+        )
+
+        if market_15m_health == FeedHealthStatus.HEALTHY and primary_feed_health == FeedHealthStatus.HEALTHY:
+            effective_primary_15m = FeedHealthStatus.HEALTHY
+        elif market_15m_health == FeedHealthStatus.STALE or primary_feed_health == FeedHealthStatus.STALE:
+            effective_primary_15m = FeedHealthStatus.STALE
+        elif market_15m_health == FeedHealthStatus.UNHEALTHY or primary_feed_health == FeedHealthStatus.UNHEALTHY:
+            effective_primary_15m = FeedHealthStatus.UNHEALTHY
+        elif market_15m_health == FeedHealthStatus.TRANSITION or primary_feed_health == FeedHealthStatus.TRANSITION:
+            effective_primary_15m = FeedHealthStatus.TRANSITION
+        else:
+            effective_primary_15m = FeedHealthStatus.MISSING
+
         # Construct typed RuntimeFeedHealth using FeedHealthStatus enum (NO NOT_CONFIGURED)
         runtime_health = RuntimeFeedHealth(
-            primary_15m=FeedHealthStatus.STALE if is_feed_stale else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING),
+            primary_15m=effective_primary_15m,
             primary_1h=FeedHealthStatus.HEALTHY if engine_candles_1h else FeedHealthStatus.MISSING,
             primary_4h=FeedHealthStatus.HEALTHY if engine_candles_4h else FeedHealthStatus.MISSING,
             primary_1d=FeedHealthStatus.HEALTHY if engine_candles_1d else FeedHealthStatus.MISSING,
@@ -706,6 +752,16 @@ class XauUsdLiveDecisionPipelineService:
                 defaults={"effective_action": "WAIT"},
             )
 
+            existing_feed_data = state.feed_health_data or {}
+            merged_feed_health = {
+                **existing_feed_data,
+                **feed_health,
+            }
+            # Specifically preserve incident tracking keys across closed candle decisions
+            for inc_key in ("stale_incident_active", "unhealthy_incident_active"):
+                if inc_key in existing_feed_data:
+                    merged_feed_health[inc_key] = existing_feed_data[inc_key]
+
             # Re-evaluate side-aware entry zone if quote is present
             entry_status = EntryZoneStatus.NO_ACTIVE_ZONE
             dist_pct = None
@@ -782,7 +838,7 @@ class XauUsdLiveDecisionPipelineService:
                 reasons_positive=reasons_pos,
                 reasons_negative=reasons_neg,
                 hard_gate_reasons=list(signal_snapshot.hard_gate_reasons),
-                feed_health_data=feed_health,
+                feed_health_data=merged_feed_health,
                 entry_zone_status=entry_status.value,
                 distance_to_entry_zone_pct=dist_pct,
                 engine_version=engine_version,
@@ -801,7 +857,7 @@ class XauUsdLiveDecisionPipelineService:
             AlertGenerationService.evaluate_closed_candle_alerts(
                 signal_snapshot=signal_snapshot,
                 risk_plan=risk_plan_snapshot,
-                feed_health_data=feed_health,
+                feed_health_data=merged_feed_health,
             )
 
             # Step 12: Broadcast decision updates via WebSocket broadcaster
@@ -1516,7 +1572,17 @@ class XauUsdLiveProjectionService:
                 state.rr_tp2 = None
                 state.risk_plan_fingerprint = None
 
-            state.feed_health_data = feed_health
+            existing_feed_data = state.feed_health_data or {}
+            merged_feed_health = {
+                **existing_feed_data,
+                **feed_health,
+            }
+            # Specifically preserve incident tracking keys across state reconstruction
+            for inc_key in ("stale_incident_active", "unhealthy_incident_active"):
+                if inc_key in existing_feed_data:
+                    merged_feed_health[inc_key] = existing_feed_data[inc_key]
+
+            state.feed_health_data = merged_feed_health
             state.save()
             return state
 

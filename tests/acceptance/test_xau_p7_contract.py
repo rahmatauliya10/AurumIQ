@@ -139,6 +139,7 @@ def _seed_candles(instrument_obj: Instrument, count: int = 40):
                 "close": c_close,
                 "volume": Decimal("1000.0"),
                 "is_closed": True,
+                "source": "primary_spot_feed",
             },
         )
     # Seed 1h
@@ -217,6 +218,23 @@ class TestXauP701AcceptanceContract(TestCase):
         )
         _seed_candles(self.xauusd, count=40)
 
+        # Create primary listing and healthy snapshot
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+        self.primary_listing, _ = MarketListing.objects.get_or_create(
+            instrument=self.xauusd,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            defaults={
+                "provider": "primary_spot_feed",
+                "provider_symbol": "XAUUSD",
+                "status": ListingStatus.ACTIVE,
+            },
+        )
+        ProviderHealthSnapshot.objects.create(
+            listing=self.primary_listing,
+            status="HEALTHY",
+            checked_at=datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc),
+        )
+
         # Create authenticated test user
         from django.contrib.auth.models import User
         self.user = User.objects.create_user(username="test_trader", password="secure_test_password_123")
@@ -256,18 +274,18 @@ class TestXauP701AcceptanceContract(TestCase):
             long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             long_gate=SideGatePolicy(
-                threshold_watch_direction=0.0,
-                threshold_ready_direction=0.0,
-                threshold_ready_timing=0.0,
-                threshold_window_direction=0.0,
-                threshold_window_timing=0.0,
+                threshold_watch_direction=25.0,
+                threshold_ready_direction=30.0,
+                threshold_ready_timing=50.0,
+                threshold_window_direction=35.0,
+                threshold_window_timing=55.0,
             ),
             short_gate=SideGatePolicy(
-                threshold_watch_direction=99.0,
-                threshold_ready_direction=99.0,
-                threshold_ready_timing=99.0,
-                threshold_window_direction=99.0,
-                threshold_window_timing=99.0,
+                threshold_watch_direction=50.0,
+                threshold_ready_direction=60.0,
+                threshold_ready_timing=60.0,
+                threshold_window_direction=70.0,
+                threshold_window_timing=70.0,
             ),
         )
         risk_prof = XauUsdRiskProfile(
@@ -360,18 +378,18 @@ class TestXauP701AcceptanceContract(TestCase):
             long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             long_gate=SideGatePolicy(
-                threshold_watch_direction=99.0,
-                threshold_ready_direction=99.0,
-                threshold_ready_timing=99.0,
-                threshold_window_direction=99.0,
-                threshold_window_timing=99.0,
+                threshold_watch_direction=50.0,
+                threshold_ready_direction=60.0,
+                threshold_ready_timing=60.0,
+                threshold_window_direction=70.0,
+                threshold_window_timing=70.0,
             ),
             short_gate=SideGatePolicy(
-                threshold_watch_direction=0.0,
-                threshold_ready_direction=0.0,
-                threshold_ready_timing=0.0,
-                threshold_window_direction=0.0,
-                threshold_window_timing=0.0,
+                threshold_watch_direction=15.0,
+                threshold_ready_direction=18.0,
+                threshold_ready_timing=30.0,
+                threshold_window_direction=20.0,
+                threshold_window_timing=35.0,
             ),
         )
         risk_prof = XauUsdRiskProfile(
@@ -700,6 +718,17 @@ class TestXauP701AcceptanceContract(TestCase):
         self.assertEqual(state_mu.published_user_decision, "WAIT")
         self.assertEqual(state_mu.feed_health_data["macro_status"], "UNHEALTHY")
 
+        # 5. Missing / None macro context -> strictly fails closed to WAIT
+        _, _, state_missing_macro = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=event,
+            code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+            provider_status="HEALTHY",
+            is_feed_stale=False,
+            macro_context=None,
+        )
+        self.assertEqual(state_missing_macro.published_user_decision, "WAIT")
+        self.assertEqual(state_missing_macro.candidate_state, "FORCE_WAIT")
+
     def test_gate_f_realtime_parity(self):
         """
         Gate F: REAL-TIME PARITY
@@ -732,18 +761,18 @@ class TestXauP701AcceptanceContract(TestCase):
             long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
             long_gate=SideGatePolicy(
-                threshold_watch_direction=0.0,
-                threshold_ready_direction=0.0,
-                threshold_ready_timing=0.0,
-                threshold_window_direction=0.0,
-                threshold_window_timing=0.0,
+                threshold_watch_direction=25.0,
+                threshold_ready_direction=30.0,
+                threshold_ready_timing=50.0,
+                threshold_window_direction=35.0,
+                threshold_window_timing=55.0,
             ),
             short_gate=SideGatePolicy(
-                threshold_watch_direction=99.0,
-                threshold_ready_direction=99.0,
-                threshold_ready_timing=99.0,
-                threshold_window_direction=99.0,
-                threshold_window_timing=99.0,
+                threshold_watch_direction=50.0,
+                threshold_ready_direction=60.0,
+                threshold_ready_timing=60.0,
+                threshold_window_direction=70.0,
+                threshold_window_timing=70.0,
             ),
         )
         risk_prof = XauUsdRiskProfile(

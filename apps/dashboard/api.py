@@ -354,7 +354,15 @@ class BacktestRunLaunchAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        ablation_id = data.get("ablation_id") or data.get("ablation_type", "BASELINE")
+        from engine.backtest.xauusd_types import XauUsdAblationType
+        ablation_raw = data.get("ablation_id") or data.get("ablation_type", "BASELINE")
+        valid_ablations = [a.value for a in XauUsdAblationType]
+        if ablation_raw not in valid_ablations:
+            return Response(
+                {"error": f"Invalid ablation_type '{ablation_raw}'. Allowed: {valid_ablations}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ablation_id = ablation_raw
 
         # Enqueue Phase 6 task
         from apps.backtests.tasks import run_xauusd_backtest_task
