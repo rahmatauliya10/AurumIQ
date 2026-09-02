@@ -1373,5 +1373,141 @@ class TestPhase7HostileScenarios(TestCase):
         self.assertEqual(live_state.phase4_policy_fingerprint, phase6_snap.phase4_policy_fingerprint)
         self.assertEqual(live_state.analysis_fingerprint, phase6_snap.analysis_fingerprint)
 
+    def test_hostile_30_strict_event_source_validation(self):
+        """
+        Prove incoming candle event source validation is strictly enforced:
+        - primary listing exists, event.source=None, no primary DB candle at T => event is NOT authoritative (not appended).
+        - primary listing exists, event.source="", no primary DB candle at T => event is NOT authoritative (not appended).
+        - primary listing exists, correct primary source => may append in-memory as authoritative primary evidence.
+        """
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+
+        prim_listing = MarketListing.objects.create(
+            instrument=self.xauusd,
+            provider="authoritative_prime",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+            provider_symbol="XAUUSD",
+        )
+
+        base_ts = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        t_close = base_ts + timedelta(minutes=15)
+        ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=t_close)
+        macro_ctx = MacroEventContext(is_in_blackout=False, is_feed_healthy=True, active_event_name="Normal", minutes_to_next_event=120)
+
+        # Part A: With zero DB candles, non-authoritative events are not appended (fails closed to FORCE_WAIT)
+        evt_none = CandleClosedEvent(
+            event_id="EVT_SRC_NONE",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=base_ts,
+            timestamp_close=t_close,
+            open=Decimal("2602.00"),
+            high=Decimal("2606.00"),
+            low=Decimal("2601.00"),
+            close=Decimal("2605.00"),
+            volume=Decimal("1200.0"),
+            is_closed=True,
+            source=None,
+        )
+        sig_none_0, _, state_none_0 = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt_none,
+            code_revision="test_rev_p7_strict",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            provider_status="HEALTHY",
+        )
+        self.assertEqual(state_none_0.candidate_state, "FORCE_WAIT")
+        self.assertEqual(sig_none_0.state, "FORCE_WAIT")
+
+        evt_empty = CandleClosedEvent(
+            event_id="EVT_SRC_EMPTY",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=base_ts,
+            timestamp_close=t_close,
+            open=Decimal("2602.00"),
+            high=Decimal("2606.00"),
+            low=Decimal("2601.00"),
+            close=Decimal("2605.00"),
+            volume=Decimal("1200.0"),
+            is_closed=True,
+            source="",
+        )
+        sig_empty_0, _, state_empty_0 = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt_empty,
+            code_revision="test_rev_p7_strict",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            provider_status="HEALTHY",
+        )
+        self.assertEqual(state_empty_0.candidate_state, "FORCE_WAIT")
+        self.assertEqual(sig_empty_0.state, "FORCE_WAIT")
+
+        # Part B: Seed historical primary candles up to base_ts (T-15m), but no primary DB candle at T (10:15)
+        candles = []
+        for i in range(32):
+            ts_open = base_ts - timedelta(minutes=15 * (32 - i))
+            candles.append(
+                MarketCandle(
+                    instrument=self.xauusd,
+                    timeframe="15m",
+                    timestamp_open=ts_open,
+                    timestamp_close=ts_open + timedelta(minutes=15),
+                    open=Decimal("2600.00"),
+                    high=Decimal("2605.00"),
+                    low=Decimal("2595.00"),
+                    close=Decimal("2602.00"),
+                    volume=Decimal("1000.0"),
+                    is_closed=True,
+                    source="authoritative_prime",
+                )
+            )
+        MarketCandle.objects.bulk_create(candles)
+
+        # Baseline: Decision evaluates only historical DB candles (event at T is not authoritative)
+        sig_none, _, _ = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt_none,
+            code_revision="test_rev_p7_strict",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            provider_status="HEALTHY",
+        )
+        sig_empty, _, _ = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt_empty,
+            code_revision="test_rev_p7_strict",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            provider_status="HEALTHY",
+        )
+        # Both unauthoritative events produce identical analysis fingerprints based purely on DB history
+        self.assertEqual(sig_none.analysis_fingerprint, sig_empty.analysis_fingerprint)
+
+        # Valid primary source event at T with new price information is appended in-memory
+        evt_valid = CandleClosedEvent(
+            event_id="EVT_SRC_VALID",
+            instrument="XAUUSD",
+            timeframe="15m",
+            timestamp_open=base_ts,
+            timestamp_close=t_close,
+            open=Decimal("2602.00"),
+            high=Decimal("2620.00"),
+            low=Decimal("2601.00"),
+            close=Decimal("2618.00"),
+            volume=Decimal("2500.0"),
+            is_closed=True,
+            source="Authoritative_Prime",  # Case-insensitive normalization
+        )
+        sig_valid, _, _ = XauUsdLiveDecisionPipelineService.process_closed_candle(
+            event=evt_valid,
+            code_revision="test_rev_p7_strict",
+            is_feed_stale=False,
+            macro_context=macro_ctx,
+            provider_status="HEALTHY",
+        )
+        # Appending in-memory authoritative primary candle at T changes the analysis fingerprint
+        self.assertNotEqual(sig_valid.analysis_fingerprint, sig_none.analysis_fingerprint)
+
+
 
 

@@ -348,30 +348,40 @@ def run_xauusd_backtest_task(
         from apps.instruments.models import ListingRole, ListingStatus, MarketListing
         from django.db import models
 
-        # Resolve primary listing provider if available to ensure canonical source parity
+        # Resolve active PRIMARY_XAUUSD_SPOT listing before loading candles (fail-closed if missing)
         prim_listing = MarketListing.objects.filter(
             instrument__base_asset__code="XAU",
             instrument__quote_asset__code="USD",
             listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
             status=ListingStatus.ACTIVE,
         ).first()
-        prim_prov = str(prim_listing.provider).lower() if (prim_listing and prim_listing.provider) else None
+        prim_prov = (
+            str(prim_listing.provider).strip().lower()
+            if (prim_listing and prim_listing.provider)
+            else None
+        )
+        if not prim_listing or not prim_prov:
+            return {
+                "status": "EVIDENCE_NOT_CONFIGURED",
+                "message": "PRIMARY_XAUUSD_SPOT listing is required to run XAUUSD backtest.",
+            }
 
-        # Load XAUUSD candles
+        # Load XAUUSD candles strictly for the active primary source
         for tf in ("15m", "1h", "4h", "1d", "1m", "5m"):
-            candles_qs = MarketCandle.objects.filter(
-                timeframe=tf,
-                timestamp_close__gte=start_dt,
-                timestamp_close__lt=end_dt,
-                is_closed=True,
-                instrument__base_asset__code="XAU",
-                instrument__quote_asset__code="USD",
-            )
-            if prim_prov:
-                candles_qs = candles_qs.filter(
+            candles_qs = (
+                MarketCandle.objects.filter(
+                    timeframe=tf,
+                    timestamp_close__gte=start_dt,
+                    timestamp_close__lt=end_dt,
+                    is_closed=True,
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                )
+                .filter(
                     models.Q(source__iexact=prim_prov) | models.Q(source=prim_listing.provider)
                 )
-            candles_qs = candles_qs.order_by("timestamp_close", "id")
+                .order_by("timestamp_close", "id")
+            )
 
             for c in candles_qs:
                 dataset.add_candle(

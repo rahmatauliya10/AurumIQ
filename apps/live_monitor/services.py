@@ -436,18 +436,28 @@ class XauUsdLiveDecisionPipelineService:
             listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
             status=ListingStatus.ACTIVE,
         ).first()
-        primary_source_name = (
-            str(primary_listing.provider).lower()
-            if (primary_listing and primary_listing.provider)
-            else None
+        primary_provider_raw = primary_listing.provider if primary_listing else None
+        primary_source_norm = (
+            str(primary_provider_raw).strip().lower()
+            if primary_provider_raw
+            else ""
         )
 
         has_primary_candle_at_t = any(c.timestamp_close == candle_ts for c in engine_candles_15m)
-        event_source = getattr(event, "source", None)
+        raw_event_source = getattr(event, "source", None)
+        event_source_norm = (
+            str(raw_event_source).strip().lower()
+            if raw_event_source is not None and str(raw_event_source).strip()
+            else ""
+        )
+
+        # An incoming event may be appended as authoritative primary evidence ONLY if:
+        # primary listing exists AND event.source is non-empty AND normalized event.source == normalized primary provider.
         event_matches_primary = bool(
-            not primary_source_name
-            or (event_source and str(event_source).lower() == primary_source_name)
-            or (event_source is None)
+            primary_listing is not None
+            and primary_source_norm
+            and event_source_norm
+            and event_source_norm == primary_source_norm
         )
 
         if not has_primary_candle_at_t and event_matches_primary:

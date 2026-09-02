@@ -14,6 +14,7 @@ from engine.core.types import (
     DualSideSignalSnapshot,
     DualSideTimingResult,
     FeatureSnapshot,
+    FeedHealthStatus,
     HardGateEvaluation,
     MacroEventContext,
     RegimeResult,
@@ -488,7 +489,11 @@ class XauUsdSignalEngine:
 
         has_unclosed_le_t = unclosed_15m or unclosed_1h or unclosed_4h or unclosed_1d
         if not pit_15m and not has_unclosed_le_t:
-            raise ValueError(f"No eligible closed 15m candles found on or before as_of={decision_ts.isoformat()}.")
+            if runtime_health and runtime_health.primary_15m != FeedHealthStatus.HEALTHY:
+                # Primary feed is missing/unhealthy/stale: fail closed through hard safety gate
+                pass
+            else:
+                raise ValueError(f"No eligible closed 15m candles found on or before as_of={decision_ts.isoformat()}.")
 
         latest_candle_15m = pit_15m[-1] if pit_15m else None
         analysis_timestamp = decision_ts

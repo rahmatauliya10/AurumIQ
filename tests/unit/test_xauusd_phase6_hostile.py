@@ -850,6 +850,15 @@ def test_hostile_celery_json_serialization_safety():
         defaults={"role": "EXECUTION", "is_active": True},
     )
 
+    from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+    MarketListing.objects.create(
+        instrument=inst,
+        provider="test_feed",
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        status=ListingStatus.ACTIVE,
+        provider_symbol="XAUUSD",
+    )
+
     start_dt = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
     end_dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
 
@@ -1057,5 +1066,122 @@ def test_hostile_ablation_no_macro_blackout_recomputes_counterfactual_score():
     assert blocked_snap.cycle_score_3a != abl_snap.cycle_score_3a
     assert blocked_snap.cycle_score_3a == 0.0
     assert abl_snap.cycle_score_3a > 0.0
+
+
+@pytest.mark.django_db
+def test_hostile_backtest_task_fails_closed_without_primary_listing():
+    """
+    Prove run_xauusd_backtest_task fails closed when PRIMARY_XAUUSD_SPOT listing is missing:
+    - Primary missing + mixed (secondary/random) XAUUSD candles present in DB.
+    - Backtest does NOT run.
+    - Returns EVIDENCE_NOT_CONFIGURED with descriptive message.
+    - Mixed-source dataset is NEVER accepted.
+    """
+    from apps.backtests.tasks import run_xauusd_backtest_task
+    from apps.instruments.models import (
+        Asset,
+        AssetType,
+        Instrument,
+        InstrumentRole,
+        InstrumentType,
+        ListingRole,
+        ListingStatus,
+        MarketListing,
+    )
+    from apps.market_data.models import MarketCandle
+
+    # Ensure canonical XAUUSD instrument exists
+    xau, _ = Asset.objects.get_or_create(code="XAU", defaults={"name": "Gold", "asset_type": AssetType.COMMODITY})
+    usd, _ = Asset.objects.get_or_create(code="USD", defaults={"name": "Dollar", "asset_type": AssetType.FIAT})
+    xauusd, _ = Instrument.objects.get_or_create(
+        base_asset=xau,
+        quote_asset=usd,
+        instrument_type=InstrumentType.SPOT,
+        defaults={"role": InstrumentRole.GOLD_REFERENCE, "is_active": True},
+    )
+
+    # Ensure NO active PRIMARY_XAUUSD_SPOT listing exists
+    MarketListing.objects.filter(
+        instrument__base_asset__code="XAU",
+        instrument__quote_asset__code="USD",
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+    ).delete()
+
+    # Create secondary listing
+    MarketListing.objects.get_or_create(
+        instrument=xauusd,
+        listing_role=ListingRole.SECONDARY_XAUUSD_SPOT,
+        defaults={"provider": "secondary_prov", "status": ListingStatus.ACTIVE, "provider_symbol": "XAUUSD_SEC"},
+    )
+
+    # Populate mixed-source candles (secondary and random)
+    start_dt = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    end_dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+
+    for i in range(16):
+        ts_open = start_dt + timedelta(minutes=15 * i)
+        ts_close = ts_open + timedelta(minutes=15)
+        # Secondary candle
+        MarketCandle.objects.create(
+            instrument=xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2600.00"),
+            high=Decimal("2605.00"),
+            low=Decimal("2595.00"),
+            close=Decimal("2602.00"),
+            volume=Decimal("500.0"),
+            is_closed=True,
+            source="secondary_prov",
+        )
+        # Random provider candle
+        MarketCandle.objects.create(
+            instrument=xauusd,
+            timeframe="15m",
+            timestamp_open=ts_open,
+            timestamp_close=ts_close,
+            open=Decimal("2601.00"),
+            high=Decimal("2606.00"),
+            low=Decimal("2596.00"),
+            close=Decimal("2603.00"),
+            volume=Decimal("600.0"),
+            is_closed=True,
+            source="random_untrusted_feed",
+        )
+
+    # Call run_xauusd_backtest_task with explicit calibrated profile dicts
+    res = run_xauusd_backtest_task(
+        start_time_iso=start_dt.isoformat(),
+        end_time_iso=end_dt.isoformat(),
+        dataset_hash="dummy_hash_mixed_rejection",
+        code_revision="test_rev_fail_closed",
+        cost_scenario="IDEALIZED",
+        holding_horizon_bars_15m=5,
+        max_fill_wait_bars_15m=2,
+        signal_profile_dict={
+            "target_instrument": "XAUUSD",
+            "name": "TEST",
+            "calibration_status": "CANDIDATE_NOT_FROZEN",
+            "long_direction": {"weight_regime": 20.0, "weight_trend_1h": 20.0, "weight_trend_4h": 20.0, "weight_trend_1d": 10.0, "weight_structure_bos": 10.0, "weight_pullback": 10.0, "weight_momentum": 5.0, "weight_volume": 5.0},
+            "short_direction": {"weight_regime": 20.0, "weight_trend_1h": 20.0, "weight_trend_4h": 20.0, "weight_trend_1d": 10.0, "weight_structure_bos": 10.0, "weight_pullback": 10.0, "weight_momentum": 5.0, "weight_volume": 5.0},
+            "long_timing": {"weight_entry_zone": 30.0, "weight_reversal_confirmation_15m": 25.0, "weight_momentum_turn_15m_1h": 20.0, "weight_phase3a": 15.0, "weight_volume_response": 10.0},
+            "short_timing": {"weight_entry_zone": 30.0, "weight_reversal_confirmation_15m": 25.0, "weight_momentum_turn_15m_1h": 20.0, "weight_phase3a": 15.0, "weight_volume_response": 10.0},
+            "long_gate": {"threshold_watch_direction": 5.0, "threshold_ready_direction": 8.0, "threshold_ready_timing": 8.0, "threshold_window_direction": 10.0, "threshold_window_timing": 10.0},
+            "short_gate": {"threshold_watch_direction": 5.0, "threshold_ready_direction": 8.0, "threshold_ready_timing": 8.0, "threshold_window_direction": 10.0, "threshold_window_timing": 10.0},
+        },
+        risk_profile_dict={
+            "instrument": "XAUUSD",
+            "name": "TEST",
+            "long_risk_policy": {"structure_buffer": 1.5, "atr_multiplier": 2.0, "max_stop_distance_atr": 4.0, "min_rr_tp1": 1.8, "tp2_atr_multiplier": 2.5},
+            "short_risk_policy": {"structure_buffer": 1.5, "atr_multiplier": 2.0, "max_stop_distance_atr": 4.0, "min_rr_tp1": 1.8, "tp2_atr_multiplier": 2.5},
+            "long_execution_policy": {"latency_seconds": 1.0, "synthetic_spread_pct": 0.02, "slippage_pct": 0.01},
+            "short_execution_policy": {"latency_seconds": 1.0, "synthetic_spread_pct": 0.02, "slippage_pct": 0.01},
+        },
+    )
+
+    assert res["status"] == "EVIDENCE_NOT_CONFIGURED"
+    assert "PRIMARY_XAUUSD_SPOT" in res["message"]
+
 
 
