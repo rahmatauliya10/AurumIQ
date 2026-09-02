@@ -142,9 +142,9 @@ Every backtest report calculates comprehensive, normalized risk-adjusted statist
 
 | Contract ID | Name | Focus | Scope | Status |
 |---|---|---|---|:---:|
-| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Replay Engine | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
-| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Replay Engine | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
-| **`XAU-P6-03`** | Combined Side-Aware Parity / Reporting & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Validation & Ablation | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
+| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Replay Engine | 🟢 `COMPLETED & VERIFIED` |
+| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Replay Engine | 🟢 `COMPLETED & VERIFIED` |
+| **`XAU-P6-03`** | Combined Side-Aware Parity / Reporting & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Validation & Ablation | 🟢 `COMPLETED & VERIFIED` |
 
 ---
 
