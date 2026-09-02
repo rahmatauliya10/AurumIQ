@@ -28,6 +28,7 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 ### Decision Rationale & Missing Dependencies:
 - Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.
 - Insufficient 15m feature warm-up bars (0/20 bars required).
+- Empty dataset hash 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness.
 
 ---
 
@@ -67,7 +68,7 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 ---
 
 ## 5. Dataset Fingerprint
-- **Canonical Dataset SHA-256:** `15537f598a70da5968b53a3d52c3a4aa090f9aba11e190c43ea06509882bdba0`
+- **Canonical Dataset SHA-256:** `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
 
 ---
 

@@ -28,12 +28,21 @@ TIMEFRAME_DELTAS = {
     "1d": timedelta(days=1),
 }
 
+# Authoritative SHA-256 hash of empty bytes b"" representing deterministic identity of an empty dataset
+EMPTY_DATASET_HASH_EMPTY_BYTES = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+EMPTY_DATASET_HASH_SENTINEL = hashlib.sha256(b"EMPTY_DATASET").hexdigest()
+EMPTY_DATASET_HASH = EMPTY_DATASET_HASH_EMPTY_BYTES
+KNOWN_EMPTY_DATASET_HASHES = {
+    EMPTY_DATASET_HASH_EMPTY_BYTES,
+    EMPTY_DATASET_HASH_SENTINEL,
+}
+
 
 @dataclass(frozen=True)
 class XauUsdDataReadinessReport:
     """Immutable audit report of XAUUSD data readiness."""
     passed: bool
-    decision: str  # READY_FOR_EMPIRICAL_CALIBRATION or CALIBRATION_DATA_NOT_READY
+    decision: str  # DATA_READY_FOR_CALIBRATION_REVIEW, CALIBRATION_DATA_NOT_READY, CANDLES_READY_MACRO_MISSING, etc.
     reasons: List[str]
     total_candles: int
     timeframe_counts: Dict[str, int]
@@ -55,6 +64,7 @@ class XauUsdDataReadinessReport:
     friction_status: str
     dataset_hash: str
     generated_at: str
+    candle_gate_passed: bool = False
 
     def to_manifest_dict(self, code_revision: str = "HEAD") -> Dict[str, Any]:
         """Format as machine-readable manifest JSON dictionary."""
@@ -211,6 +221,10 @@ class XauUsdDataReadinessEvaluator:
         primary_provider: str = "xauusd_primary",
         timeframes: Sequence[str] = REQUIRED_TIMEFRAMES,
         override_candles: Optional[Sequence[Any]] = None,
+        technical_only: bool = False,
+        override_macro_count: Optional[int] = None,
+        override_quote_count: Optional[int] = None,
+        override_friction_status: Optional[str] = None,
     ) -> XauUsdDataReadinessReport:
         """Execute full deterministic audit across persisted database records or provided candles."""
         reasons: List[str] = []
@@ -225,7 +239,10 @@ class XauUsdDataReadinessEvaluator:
             return XauUsdDataReadinessReport(
                 passed=False,
                 decision="CALIBRATION_DATA_NOT_READY",
-                reasons=["CRITICAL: Canonical XAU/USD Instrument does not exist in database."],
+                reasons=[
+                    "CRITICAL: Canonical XAU/USD Instrument does not exist in database.",
+                    f"Empty dataset hash '{EMPTY_DATASET_HASH}' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness.",
+                ],
                 total_candles=0,
                 timeframe_counts={tf: 0 for tf in timeframes},
                 earliest_timestamp=None,
@@ -244,8 +261,9 @@ class XauUsdDataReadinessEvaluator:
                 macro_event_count=0,
                 quote_count=0,
                 friction_status="EMPIRICAL_FRICTION_NOT_CONFIGURED",
-                dataset_hash=hashlib.sha256(b"EMPTY_DATASET").hexdigest(),
+                dataset_hash=EMPTY_DATASET_HASH,
                 generated_at=now_str,
+                candle_gate_passed=False,
             )
 
         # 1. Check Primary Listing
@@ -379,12 +397,10 @@ class XauUsdDataReadinessEvaluator:
             volume_classification = "UNAVAILABLE"
 
         # Auxiliary Evidence
-        macro_count = 0
+        macro_count = override_macro_count if override_macro_count is not None else 0
         health_count = ProviderHealthSnapshot.objects.filter(listing__instrument=instrument).count()
-        quote_count = 0  # MarketQuote table count or historical quote count
-
-        # Friction status
-        friction_status = "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+        quote_count = override_quote_count if override_quote_count is not None else 0
+        friction_status = override_friction_status or "EMPIRICAL_FRICTION_NOT_CONFIGURED"
 
         # Dataset Hash calculation
         if total_candles > 0 and earliest_dt and latest_dt:
@@ -415,12 +431,17 @@ class XauUsdDataReadinessEvaluator:
             except Exception as e:
                 dataset_hash = hashlib.sha256(f"CANDLES_{total_candles}".encode()).hexdigest()
         else:
-            dataset_hash = hashlib.sha256(b"EMPTY_DATASET").hexdigest()
+            dataset_hash = EMPTY_DATASET_HASH
+            reasons.append(
+                f"Empty dataset hash '{EMPTY_DATASET_HASH}' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness."
+            )
 
         # Final Hard Gate Decision
         # Needs: >= 20 bars of 15m, total_candles > 0, 0 ohlc errors, 0 duplicates, 0 naive timestamps, 0 source contamination
-        passed = (
-            total_candles > 0
+        is_empty = (total_candles == 0 or dataset_hash in KNOWN_EMPTY_DATASET_HASHES)
+
+        candle_gate_passed = (
+            not is_empty
             and is_warmup_satisfied
             and ohlc_errors == 0
             and duplicate_count == 0
@@ -430,7 +451,31 @@ class XauUsdDataReadinessEvaluator:
             and primary_listing is not None
         )
 
-        decision = "READY_FOR_EMPIRICAL_CALIBRATION" if passed else "CALIBRATION_DATA_NOT_READY"
+        if not candle_gate_passed:
+            decision = "CALIBRATION_DATA_NOT_READY"
+            passed = False
+        elif technical_only:
+            # Technical minimum for feature calculation only (20 bars)
+            decision = "READY_FOR_EMPIRICAL_CALIBRATION"
+            passed = True
+        else:
+            # Holistic evidence-driven calibration readiness gate (R1-R20, Spec §33, §34)
+            # Never return generic PASS if auxiliary evidence is missing.
+            if macro_count == 0:
+                decision = "CANDLES_READY_MACRO_MISSING"
+                passed = False
+                reasons.append("Auxiliary evidence incomplete: Point-in-time macro event coverage is 0. Macro feed remains MISSING.")
+            elif friction_status != "EMPIRICAL_FRICTION_CONFIGURED":
+                decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+                passed = False
+                reasons.append("Auxiliary evidence incomplete: Empirical friction parameters are NOT_CONFIGURED (requires contract fees, quote spread distribution, and slippage telemetry).")
+            elif quote_count == 0:
+                decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
+                passed = False
+                reasons.append("Auxiliary evidence incomplete: Historical quote evidence count is 0 (MARKET_AFTER_SIGNAL calibration blocked).")
+            else:
+                decision = "DATA_READY_FOR_CALIBRATION_REVIEW"
+                passed = True
 
         return XauUsdDataReadinessReport(
             passed=passed,
@@ -456,4 +501,5 @@ class XauUsdDataReadinessEvaluator:
             friction_status=friction_status,
             dataset_hash=dataset_hash,
             generated_at=now_str,
+            candle_gate_passed=candle_gate_passed,
         )

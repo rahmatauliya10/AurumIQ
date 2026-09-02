@@ -69,14 +69,16 @@ def _create_clean_candles(instrument, count=25, tf="15m", source="xauusd_primary
 
 @pytest.mark.django_db
 def test_01_empty_database_calibration_blocked(xauusd_setup):
-    """Scenario 1: Empty database must strictly block calibration."""
+    """Scenario 1: Empty database must strictly block calibration and produce canonical empty hash."""
     instrument, _ = xauusd_setup
     report = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument)
 
     assert report.passed is False
     assert report.decision == "CALIBRATION_DATA_NOT_READY"
     assert report.total_candles == 0
+    assert report.dataset_hash == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     assert any("Zero historical spot XAUUSD candles" in r for r in report.reasons)
+    assert any("Empty dataset hash" in r for r in report.reasons)
 
 
 @pytest.mark.django_db
@@ -216,18 +218,74 @@ def test_07_insufficient_warmup_blocked(xauusd_setup):
 
 @pytest.mark.django_db
 def test_08_valid_xauusd_dataset_readiness_eligible_to_open(xauusd_setup):
-    """Scenario 8: A fully valid, non-contaminated XAUUSD dataset passes the gate."""
+    """Scenario 8: A fully valid, non-contaminated XAUUSD candle dataset satisfies technical candle gate but returns CANDLES_READY_MACRO_MISSING in full gate."""
     instrument, _ = xauusd_setup
     _create_clean_candles(instrument, count=30, tf="15m")
 
+    # Technical-only check passes feature calculation gate
+    report_tech = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, technical_only=True)
+    assert report_tech.candle_gate_passed is True
+    assert report_tech.passed is True
+    assert report_tech.decision == "READY_FOR_EMPIRICAL_CALIBRATION"
+
+    # Full governance gate prevents generic PASS and accurately reports missing macro evidence
     report = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument)
-    assert report.passed is True
-    assert report.decision == "READY_FOR_EMPIRICAL_CALIBRATION"
+    assert report.candle_gate_passed is True
+    assert report.passed is False
+    assert report.decision == "CANDLES_READY_MACRO_MISSING"
     assert report.warmup_15m_bars == 30
     assert report.ohlc_error_count == 0
     assert report.duplicate_count == 0
     assert report.source_contamination_count == 0
     assert len(report.dataset_hash) == 64
+
+
+@pytest.mark.django_db
+def test_08a_candles_ready_empirical_friction_missing(xauusd_setup):
+    """Scenario 8A: When candles and macro are present, reports CANDLES_READY_EMPIRICAL_FRICTION_MISSING."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    report = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=5,
+    )
+    assert report.candle_gate_passed is True
+    assert report.passed is False
+    assert report.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+
+
+@pytest.mark.django_db
+def test_08b_candles_ready_quote_evidence_missing(xauusd_setup):
+    """Scenario 8B: When candles, macro, and friction are configured, reports CANDLES_READY_QUOTE_EVIDENCE_MISSING."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    report = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=5,
+        override_friction_status="EMPIRICAL_FRICTION_CONFIGURED",
+    )
+    assert report.candle_gate_passed is True
+    assert report.passed is False
+    assert report.decision == "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
+
+
+@pytest.mark.django_db
+def test_08c_full_evidence_data_ready_for_calibration_review(xauusd_setup):
+    """Scenario 8C: When all evidence streams exist defensibly, returns DATA_READY_FOR_CALIBRATION_REVIEW."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    report = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=5,
+        override_friction_status="EMPIRICAL_FRICTION_CONFIGURED",
+        override_quote_count=100,
+    )
+    assert report.candle_gate_passed is True
+    assert report.passed is True
+    assert report.decision == "DATA_READY_FOR_CALIBRATION_REVIEW"
 
 
 @pytest.mark.django_db
@@ -350,3 +408,55 @@ def test_12_no_xaut_contamination_enforced(xauusd_setup):
     assert report.total_candles == 0
     assert report.passed is False
     assert report.decision == "CALIBRATION_DATA_NOT_READY"
+
+
+@pytest.mark.django_db
+def test_13_empty_dataset_hash_strictly_blocked_from_calibration_and_runner(xauusd_setup):
+    """Scenario 13: Empty dataset hash (e3b0c442...) strictly causes CALIBRATION_DATA_NOT_READY and blocks backtest runner."""
+    instrument, _ = xauusd_setup
+    EMPTY_DATASET_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    report = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument)
+    assert report.dataset_hash == EMPTY_DATASET_HASH
+    assert report.decision == "CALIBRATION_DATA_NOT_READY"
+    assert report.passed is False
+
+    # Attempting to run backtest runner with empty dataset hash raises ValueError
+    from engine.backtest.repository import PointInTimeDataset
+    from engine.backtest.xauusd_runner import XauUsdBacktestRunner
+    from engine.backtest.xauusd_types import XauUsdBacktestRunSpec, XauUsdCostScenario, XauUsdCostConfig
+    from engine.signals.profile import uncalibrated_xauusd_signal_profile
+    from engine.risk.xauusd_policy import uncalibrated_xauusd_risk_profile
+
+    empty_ds = PointInTimeDataset()
+    t_start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    t_end = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
+
+    spec = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=t_start,
+        end_time=t_end,
+        timeframes=("15m",),
+        cost_config=XauUsdCostConfig(
+            entry_fee_bps=Decimal("0.0"),
+            exit_fee_bps=Decimal("0.0"),
+            synthetic_spread_bps=Decimal("1.5"),
+            entry_slippage_bps=Decimal("0.5"),
+            exit_slippage_bps=Decimal("0.5"),
+        ),
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        holding_horizon_bars_15m=4,
+        holding_horizon_seconds=3600,
+        max_fill_wait_bars_15m=1,
+        max_fill_wait_seconds=900,
+        dataset_hash=EMPTY_DATASET_HASH,
+        code_revision="HEAD",
+        signal_profile=uncalibrated_xauusd_signal_profile(),
+        risk_profile=uncalibrated_xauusd_risk_profile(),
+    )
+
+    runner = XauUsdBacktestRunner()
+    with pytest.raises(ValueError) as exc_info:
+        runner.run_point_in_time(empty_ds, spec)
+
+    assert "cannot be calibrated" in str(exc_info.value)

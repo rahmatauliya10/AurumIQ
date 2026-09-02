@@ -46,6 +46,7 @@ def test_data_readiness_manifest_integrity():
     assert manifest["hard_data_readiness_gate"]["decision"] == "CALIBRATION_DATA_NOT_READY"
     assert manifest["timeframe_counts"]["15m"] == 0
     assert manifest["empirical_friction_evidence"]["status"] == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+    assert manifest["dataset_fingerprint"] == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 def test_data_readiness_report_exists():
@@ -59,6 +60,7 @@ def test_data_readiness_report_exists():
     assert "CALIBRATION_DATA_NOT_READY" in content
     assert "PRIMARY_XAUUSD_SPOT" in content
     assert "EMPIRICAL_FRICTION_NOT_CONFIGURED" in content
+    assert "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" in content
 
 
 @pytest.mark.django_db

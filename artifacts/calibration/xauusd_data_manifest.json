@@ -16,7 +16,7 @@
   },
   "source_identity": "PRIMARY_XAUUSD_SPOT (xauusd_primary)",
   "code_revision": "HEAD",
-  "dataset_fingerprint": "15537f598a70da5968b53a3d52c3a4aa090f9aba11e190c43ea06509882bdba0",
+  "dataset_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "missing_data_statistics": {
     "expected_duration_days": 0.0,
     "actual_duration_days": 0.0,
@@ -62,8 +62,9 @@
     "decision": "CALIBRATION_DATA_NOT_READY",
     "reasons": [
       "Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.",
-      "Insufficient 15m feature warm-up bars (0/20 bars required)."
+      "Insufficient 15m feature warm-up bars (0/20 bars required).",
+      "Empty dataset hash 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness."
     ]
   },
-  "generated_at": "2026-09-02T10:08:23Z"
+  "generated_at": "2026-09-02T10:26:25Z"
 }
