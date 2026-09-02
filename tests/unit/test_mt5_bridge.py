@@ -33,6 +33,25 @@ from tools.mt5_bridge.adapter import Mt5ReadOnlyAdapter
 from tools.mt5_bridge.main import app
 
 
+@pytest.fixture(autouse=True)
+def mock_mt5_on_non_windows():
+    """Ensure adapter.mt5 is a mock on platforms where MetaTrader5 is unavailable (e.g. Linux CI)."""
+    from tools.mt5_bridge import adapter
+    if adapter.mt5 is None:
+        mock_module = MagicMock()
+        mock_module.symbol_info_tick = MagicMock()
+        mock_module.symbols_get = MagicMock()
+        mock_module.copy_rates_from_pos = MagicMock()
+        mock_module.copy_ticks_range = MagicMock()
+        mock_module.symbol_info = MagicMock()
+        mock_module.terminal_info = MagicMock()
+        mock_module.version = MagicMock(return_value=(500, 4400, "20 Sep 2024"))
+        with patch.object(adapter, "mt5", mock_module):
+            yield mock_module
+    else:
+        yield adapter.mt5
+
+
 # -----------------------------------------------------------------------------
 # 1. AST & Static Safety Tests (Zero Trade Execution APIs)
 # -----------------------------------------------------------------------------
