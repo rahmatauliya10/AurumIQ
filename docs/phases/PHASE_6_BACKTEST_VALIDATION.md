@@ -140,24 +140,24 @@ Every backtest report calculates comprehensive, normalized risk-adjusted statist
 
 | Contract ID | Name | Focus | Scope | Status |
 |---|---|---|---|:---:|
-| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Replay Engine | 🟡 `PLANNED / FUTURE CONTRACT` |
-| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Replay Engine | 🟡 `PLANNED / FUTURE CONTRACT` |
-| **`XAU-P6-03`** | Combined Side-Aware Parity / Reporting & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Validation & Ablation | 🟡 `PLANNED / FUTURE CONTRACT` |
+| **`XAU-P6-01`** | LONG Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for BUY candidates | Replay Engine | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
+| **`XAU-P6-02`** | SHORT Point-in-Time Replay | Verifies PIT replay, causal execution, intrabar collision resolution, and normalized $R$ metrics for SELL candidates | Replay Engine | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
+| **`XAU-P6-03`** | Combined Side-Aware Parity / Reporting & Ablation | Verifies combined Long/Short parity reporting, walk-forward purging/embargo, and isolated component ablation | Validation & Ablation | 🟢 `IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION` |
 
 ---
 
-## 12. Definition of Done (Pending Phase 6 Implementation)
+## 12. Definition of Done (Implemented on Feature Branch — Pending Final Merge Verification)
 
-- [ ] Backtest engine imports pure `engine/` modules with zero Django ORM, Celery, Redis, or Channels dependencies (AST verified).
-- [ ] Point-in-time candle isolation verified (candles $> T$ invisible; unclosed candles $\le T$ trigger safety hold).
-- [ ] Phase 4 `XauUsdSignalEngine` and Phase 5 `XauUsdRiskPlanner` resolved directly without rule divergence.
-- [ ] Causal execution simulation strictly enforces $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$.
-- [ ] Intrabar resolver enforces 1m/5m chronological replay with conservative fallback on ambiguity.
-- [ ] Walk-forward fold generator applies chronological slicing, dependency purging, and post-boundary embargo.
-- [ ] Component ablation harness runs isolated paired trials without mutating baseline candidate signals.
-- [ ] Normalized $R$ metrics suite computed without position sizing, account balances, or leverage compounding.
-- [ ] Canonical SHA-256 fingerprinting generated for all backtest configurations and run artifacts.
-- [ ] Acceptance contracts `XAU-P6-01`, `XAU-P6-02`, and `XAU-P6-03` passing all gates.
+- [x] Backtest engine imports pure `engine/` modules with zero Django ORM, Celery, Redis, or Channels dependencies (AST verified).
+- [x] Point-in-time candle isolation verified (candles $> T$ invisible; unclosed candles $\le T$ trigger safety hold).
+- [x] Phase 4 `XauUsdSignalEngine` and Phase 5 `XauUsdRiskPlanner` resolved directly without rule divergence.
+- [x] Causal execution simulation strictly enforces $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$.
+- [x] Intrabar resolver enforces 1m/5m chronological replay with conservative fallback on ambiguity.
+- [x] Walk-forward fold generator applies chronological slicing, dependency purging, and post-boundary embargo.
+- [x] Component ablation harness runs isolated paired trials without mutating baseline candidate signals.
+- [x] Normalized $R$ metrics suite computed without position sizing, account balances, or leverage compounding.
+- [x] Canonical SHA-256 fingerprinting generated for all backtest configurations and run artifacts.
+- [x] Acceptance contracts `XAU-P6-01`, `XAU-P6-02`, and `XAU-P6-03` passing all gates.
 
 ---
 
@@ -203,9 +203,6 @@ HISTORICAL POINT-IN-TIME REPLAY PIPELINE
 
 | Test ID | Test Name | Gate Criteria | Status |
 |---|---|---|:---:|
-| **XAU-P6-01** | Historical LONG PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 LONG execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
-| **XAU-P6-02** | Historical SHORT PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 SHORT execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
-| **XAU-P6-03** | Combined Side-Aware Parity, Walk-Forward Purge/Embargo & Ablation | Side-aware metric parity, chronological fold purging, post-boundary embargo, and component ablation immutability | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
 | **P6-01** | PIT Candle Filtering | `timestamp_close <= as_of` & `is_closed == True` | ✅ PASS |
 | **P6-02** | Future Mutation Safety | Mutating $> T$ / $> \text{exit}$ preserves historical outputs | ✅ PASS |
 | **P6-03** | Closed Candle Only | Unclosed candle at $T$ rejected from decision set | ✅ PASS |
