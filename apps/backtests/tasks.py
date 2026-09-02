@@ -345,6 +345,17 @@ def run_xauusd_backtest_task(
     try:
         dataset = PointInTimeDataset()
         from apps.market_data.models import MarketCandle
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+        from django.db import models
+
+        # Resolve primary listing provider if available to ensure canonical source parity
+        prim_listing = MarketListing.objects.filter(
+            instrument__base_asset__code="XAU",
+            instrument__quote_asset__code="USD",
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        prim_prov = str(prim_listing.provider).lower() if (prim_listing and prim_listing.provider) else None
 
         # Load XAUUSD candles
         for tf in ("15m", "1h", "4h", "1d", "1m", "5m"):
@@ -355,7 +366,12 @@ def run_xauusd_backtest_task(
                 is_closed=True,
                 instrument__base_asset__code="XAU",
                 instrument__quote_asset__code="USD",
-            ).order_by("timestamp_close")
+            )
+            if prim_prov:
+                candles_qs = candles_qs.filter(
+                    models.Q(source__iexact=prim_prov) | models.Q(source=prim_listing.provider)
+                )
+            candles_qs = candles_qs.order_by("timestamp_close", "id")
 
             for c in candles_qs:
                 dataset.add_candle(

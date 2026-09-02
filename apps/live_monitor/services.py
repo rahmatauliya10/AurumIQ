@@ -310,7 +310,7 @@ class XauUsdLiveDecisionPipelineService:
         timeframe: str,
         candle_ts: datetime,
     ) -> list[CandleData]:
-        """Query closed historical candles <= candle_ts with deterministic canonical source selection."""
+        from django.db import models
         from apps.instruments.models import ListingRole, ListingStatus, MarketListing
 
         primary_listing = MarketListing.objects.filter(
@@ -324,6 +324,9 @@ class XauUsdLiveDecisionPipelineService:
             else None
         )
 
+        if not primary_source_name:
+            return []
+
         qs = (
             MarketCandle.objects.filter(
                 instrument=instrument,
@@ -331,23 +334,17 @@ class XauUsdLiveDecisionPipelineService:
                 timestamp_close__lte=candle_ts,
                 is_closed=True,
             )
+            .filter(
+                models.Q(source__iexact=primary_source_name)
+                | models.Q(source=primary_listing.provider)
+            )
             .order_by("timestamp_close", "id")
         )
 
-        # Deduplicate same-close timestamps, prioritizing primary provider source
+        # Deduplicate same-close timestamps, latest id wins
         candles_by_close: dict[datetime, MarketCandle] = {}
         for c in qs:
-            ts = c.timestamp_close
-            if ts not in candles_by_close:
-                candles_by_close[ts] = c
-            else:
-                existing = candles_by_close[ts]
-                if (
-                    primary_source_name
-                    and str(existing.source).lower() != primary_source_name
-                    and str(c.source).lower() == primary_source_name
-                ):
-                    candles_by_close[ts] = c
+            candles_by_close[c.timestamp_close] = c
 
         sorted_candles = sorted(candles_by_close.values(), key=lambda x: x.timestamp_close)
         return [
@@ -432,8 +429,28 @@ class XauUsdLiveDecisionPipelineService:
         engine_candles_4h = cls.get_engine_candles(instrument_obj, "4h", candle_ts)
         engine_candles_1d = cls.get_engine_candles(instrument_obj, "1d", candle_ts)
 
-        # If current event candle is absent from DB PIT query, append in-memory only (do not overwrite DB source)
-        if not any(c.timestamp_close == candle_ts for c in engine_candles_15m):
+        # Section 4: If incoming event matches primary provider and no PRIMARY DB candle exists at T, append in-memory
+        from apps.instruments.models import ListingRole, ListingStatus, MarketListing
+        primary_listing = MarketListing.objects.filter(
+            instrument=instrument_obj,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        primary_source_name = (
+            str(primary_listing.provider).lower()
+            if (primary_listing and primary_listing.provider)
+            else None
+        )
+
+        has_primary_candle_at_t = any(c.timestamp_close == candle_ts for c in engine_candles_15m)
+        event_source = getattr(event, "source", None)
+        event_matches_primary = bool(
+            not primary_source_name
+            or (event_source and str(event_source).lower() == primary_source_name)
+            or (event_source is None)
+        )
+
+        if not has_primary_candle_at_t and event_matches_primary:
             engine_candles_15m.append(
                 CandleData(
                     timestamp_open=event.timestamp_open.astimezone(timezone.utc),
@@ -503,18 +520,26 @@ class XauUsdLiveDecisionPipelineService:
             .first()
         ) if secondary_listing else None
 
-        # Conservative Rule (§2):
-        # Do not use caller-supplied provider_status to fabricate a configured primary provider when no primary listing exists.
-        # An explicit provider_status may annotate/override an actual resolved primary listing only.
+        # Section 2: PIT ProviderHealthSnapshot is authoritative for PRIMARY_XAUUSD_SPOT
+        # Caller provider_status must NOT upgrade unserviceable persisted status to HEALTHY.
         if primary_listing is None:
             primary_feed_health = FeedHealthStatus.MISSING
-        elif provider_status is not None:
-            primary_feed_health = _map_provider_status_to_feed_health(provider_status)
-        elif primary_health_rec is not None:
-            primary_feed_health = _map_provider_status_to_feed_health(primary_health_rec.status)
-        else:
-            # Primary listing exists but no health record -> fail closed
+        elif primary_health_rec is None:
+            # Primary listing exists but no PIT health record -> fail closed
             primary_feed_health = FeedHealthStatus.MISSING
+        else:
+            persisted_health = _map_provider_status_to_feed_health(primary_health_rec.status)
+            if provider_status is not None:
+                caller_health = _map_provider_status_to_feed_health(provider_status)
+                # Most restrictive merge: persisted unserviceable status cannot be upgraded by caller
+                if persisted_health != FeedHealthStatus.HEALTHY:
+                    primary_feed_health = persisted_health
+                elif caller_health != FeedHealthStatus.HEALTHY:
+                    primary_feed_health = caller_health
+                else:
+                    primary_feed_health = FeedHealthStatus.HEALTHY
+            else:
+                primary_feed_health = persisted_health
 
         secondary_feed_health = _map_provider_status_to_feed_health(
             secondary_health_rec.status if secondary_health_rec else None
@@ -527,10 +552,12 @@ class XauUsdLiveDecisionPipelineService:
             )
 
         # Derive provider sync status from provider evidence (NOT 15m candle health)
-        if primary_listing is None:
+        if primary_listing is None or primary_health_rec is None:
             provider_sync_status_val = "MISSING"
         elif is_provider_transition:
             provider_sync_status_val = "TRANSITION"
+        elif primary_feed_health != FeedHealthStatus.HEALTHY:
+            provider_sync_status_val = primary_health_rec.status if primary_health_rec.status != "HEALTHY" else (provider_status or "UNHEALTHY")
         elif provider_status is not None:
             provider_sync_status_val = provider_status
         elif primary_health_rec:
@@ -739,7 +766,7 @@ class XauUsdLiveDecisionPipelineService:
 
         # Step 9: Assemble Feed Health Status (Fail Closed)
         feed_health = {
-            "xauusd_primary_status": primary_health_rec.status if primary_health_rec else (provider_status or "MISSING"),
+            "xauusd_primary_status": primary_feed_health.value if primary_feed_health else "MISSING",
             "xauusd_secondary_status": secondary_health_rec.status if secondary_health_rec else "MISSING",
             "macro_status": runtime_health.macro_blackout_feed.value,
             "provider_sync_status": provider_sync_status_val,

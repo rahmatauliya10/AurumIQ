@@ -30,6 +30,5 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
-EXPOSE 8000
-
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+

@@ -158,6 +158,7 @@ def _seed_candles(instrument_obj: Instrument, count: int = 40):
                 "close": Decimal("2655.00") + Decimal(str(i * 0.2)),
                 "volume": Decimal("4000.0"),
                 "is_closed": True,
+                "source": "primary_spot_feed",
             },
         )
     # Seed 4h
@@ -176,6 +177,7 @@ def _seed_candles(instrument_obj: Instrument, count: int = 40):
                 "close": Decimal("2660.00"),
                 "volume": Decimal("16000.0"),
                 "is_closed": True,
+                "source": "primary_spot_feed",
             },
         )
     # Seed 1d
@@ -194,6 +196,7 @@ def _seed_candles(instrument_obj: Instrument, count: int = 40):
                 "close": Decimal("2665.00"),
                 "volume": Decimal("64000.0"),
                 "is_closed": True,
+                "source": "primary_spot_feed",
             },
         )
 
@@ -232,7 +235,7 @@ class TestXauP701AcceptanceContract(TestCase):
         ProviderHealthSnapshot.objects.create(
             listing=self.primary_listing,
             status="HEALTHY",
-            checked_at=datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
         )
 
         # Create authenticated test user
@@ -671,6 +674,7 @@ class TestXauP701AcceptanceContract(TestCase):
             close=Decimal("2654.00"),
             volume=Decimal("1500.0"),
             is_closed=True,
+            source="primary_spot_feed",
         )
         macro_blackout_ctx = MacroEventContext(
             is_in_blackout=True,
@@ -686,8 +690,21 @@ class TestXauP701AcceptanceContract(TestCase):
             macro_context=macro_blackout_ctx,
         )
         self.assertEqual(state_mb.published_user_decision, "WAIT")
+        self.assertEqual(state_mb.candidate_state, "FORCE_WAIT")
         self.assertTrue(
             any("macroeconomic event blackout window" in r.lower() or "macro_blackout" in r.lower() for r in state_mb.hard_gate_reasons)
+        )
+
+        # Query persisted AlertEvent rows for macro blackout
+        from apps.alerts.models import AlertEvent
+        self.assertTrue(
+            AlertEvent.objects.filter(instrument="XAUUSD", event_type=AlertEventType.MACRO_BLACKOUT_ACTIVE.value).exists()
+        )
+        self.assertTrue(
+            AlertEvent.objects.filter(instrument="XAUUSD", event_type=AlertEventType.SYSTEM_SAFETY_HOLD.value).exists()
+        )
+        self.assertFalse(
+            AlertEvent.objects.filter(instrument="XAUUSD", event_type=AlertEventType.ENTRY_ZONE_REACHED.value).exists()
         )
 
         # Proximity alert suppressed when safety hold is active
@@ -701,7 +718,7 @@ class TestXauP701AcceptanceContract(TestCase):
         )
         self.assertNotIn(AlertEventType.ENTRY_ZONE_REACHED.value, [a.event_type for a in alerts_mb])
 
-        # 4. Macro feed missing / unhealthy -> fail closed
+        # 4. Macro feed missing / unhealthy -> fail closed to FORCE_WAIT
         macro_unhealthy_ctx = MacroEventContext(
             is_in_blackout=False,
             is_feed_healthy=False,
@@ -716,9 +733,10 @@ class TestXauP701AcceptanceContract(TestCase):
             macro_context=macro_unhealthy_ctx,
         )
         self.assertEqual(state_mu.published_user_decision, "WAIT")
+        self.assertEqual(state_mu.candidate_state, "FORCE_WAIT")
         self.assertEqual(state_mu.feed_health_data["macro_status"], "UNHEALTHY")
 
-        # 5. Missing / None macro context -> strictly fails closed to WAIT
+        # 5. Missing / None macro context -> strictly fails closed to FORCE_WAIT
         _, _, state_missing_macro = XauUsdLiveDecisionPipelineService.process_closed_candle(
             event=event,
             code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",

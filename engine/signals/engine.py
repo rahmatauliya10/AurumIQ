@@ -420,7 +420,7 @@ class XauUsdSignalEngine:
 
     @staticmethod
     def _hash_candles(candles: Optional[Sequence[CandleData]]) -> str:
-        """Hash the full PIT-filtered authoritative candle sequence."""
+        """Hash the full PIT-filtered authoritative candle sequence with canonical normalized decimal precision."""
         if not candles:
             return "EMPTY_FEED"
         import hashlib
@@ -428,11 +428,11 @@ class XauUsdSignalEngine:
         payload = [
             {
                 "ts": (c.timestamp_close.astimezone(timezone.utc) if c.timestamp_close.tzinfo else c.timestamp_close.replace(tzinfo=timezone.utc)).isoformat(),
-                "o": str(c.open),
-                "h": str(c.high),
-                "l": str(c.low),
-                "c": str(c.close),
-                "v": str(c.volume),
+                "o": f"{Decimal(str(c.open)):.8f}",
+                "h": f"{Decimal(str(c.high)):.8f}",
+                "l": f"{Decimal(str(c.low)):.8f}",
+                "c": f"{Decimal(str(c.close)):.8f}",
+                "v": f"{Decimal(str(c.volume)):.8f}",
                 "closed": bool(c.is_closed),
             }
             for c in candles

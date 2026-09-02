@@ -742,3 +742,189 @@ def test_xauusd_asgi_websocket_subscription_and_event_isolation():
 
     asyncio.run(_test_flow())
 
+
+@pytest.mark.django_db(transaction=True)
+def test_xauusd_e2e_producer_to_asgi_websocket_delivery():
+    """Verify actual runtime producer path (LiveQuoteService & XauUsdLiveDecisionPipelineService -> on_commit -> ASGI WS)."""
+    from apps.instruments.models import Asset, AssetType, Instrument, InstrumentRole, InstrumentType, ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
+    from apps.market_data.models import MarketCandle
+    from apps.live_monitor.services import LiveQuoteService, XauUsdLiveDecisionPipelineService
+    from apps.live_monitor.types import LiveQuoteEvent, CandleClosedEvent
+    from engine.core.types import MacroEventContext
+    from engine.signals.profile import Phase4SignalProfile, Phase4CalibrationStatus, SideDirectionPolicy, SideTimingPolicy, SideGatePolicy
+    from engine.risk.xauusd_policy import XauUsdRiskProfile, SideRiskPolicy, Phase5CalibrationStatus
+
+    usd, _ = Asset.objects.get_or_create(code="USD", name="US Dollar", asset_type=AssetType.FIAT)
+    xau, _ = Asset.objects.get_or_create(code="XAU", name="Gold Spot", asset_type=AssetType.COMMODITY)
+    xauusd, _ = Instrument.objects.get_or_create(
+        base_asset=xau,
+        quote_asset=usd,
+        instrument_type=InstrumentType.SPOT,
+        defaults={"role": InstrumentRole.GOLD_REFERENCE, "is_active": True},
+    )
+
+    prim_listing, _ = MarketListing.objects.get_or_create(
+        instrument=xauusd,
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        defaults={"provider": "producer_prim_feed", "status": ListingStatus.ACTIVE, "provider_symbol": "XAUUSD"},
+    )
+
+    user = User.objects.create_user(username="producer_ws_user", password="password123")
+    session = SessionStore()
+    session[SESSION_KEY] = str(user.pk)
+    session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+    session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+    session.save()
+
+    now_utc = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=now_utc)
+
+    # Seed 30 historical candles
+    for i in range(30):
+        ts = now_utc - timedelta(minutes=15 * (30 - i))
+        MarketCandle.objects.get_or_create(
+            instrument=xauusd,
+            timeframe="15m",
+            timestamp_open=ts,
+            timestamp_close=ts + timedelta(minutes=15),
+            defaults={
+                "open": Decimal("2650.00"),
+                "high": Decimal("2655.00"),
+                "low": Decimal("2648.00"),
+                "close": Decimal("2652.00"),
+                "volume": Decimal("1000.0"),
+                "is_closed": True,
+                "source": "producer_prim_feed",
+            },
+        )
+
+    prof = Phase4SignalProfile(
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        short_direction=SideDirectionPolicy(15.0, 10.0, 10.0, 10.0, 20.0, 15.0, 10.0, 10.0),
+        long_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        short_timing=SideTimingPolicy(25.0, 25.0, 20.0, 20.0, 10.0),
+        long_gate=SideGatePolicy(25.0, 30.0, 50.0, 35.0, 55.0),
+        short_gate=SideGatePolicy(50.0, 60.0, 60.0, 70.0, 70.0),
+    )
+    risk_prof = XauUsdRiskProfile(
+        name="PRODUCER_RISK_PROFILE",
+        calibration_status=Phase5CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_risk_policy=SideRiskPolicy(structure_buffer=Decimal("0.50"), atr_multiplier=Decimal("1.5"), max_stop_distance_atr=Decimal("10.0"), min_rr_tp1=Decimal("0.5")),
+        short_risk_policy=SideRiskPolicy(structure_buffer=Decimal("0.50"), atr_multiplier=Decimal("1.5"), max_stop_distance_atr=Decimal("10.0"), min_rr_tp1=Decimal("0.5")),
+    )
+    macro_ctx = MacroEventContext(is_in_blackout=False, is_feed_healthy=True, active_event_name="Normal", minutes_to_next_event=120)
+
+    async def _test_flow():
+        sent_frames = []
+        recv_q = asyncio.Queue()
+        scope = {
+            "type": "websocket",
+            "headers": [(b"cookie", f"sessionid={session.session_key}".encode("latin1"))],
+            "path": "/live/ws/",
+            "query_string": b"symbol=XAUUSD",
+        }
+        t = asyncio.create_task(application(scope, lambda: recv_q.get(), lambda m: sent_frames.append(m)))
+        await asyncio.sleep(0.05)
+
+        # 1. Producer execution of LiveQuoteService.process_quote inside transaction
+        def _produce_quote():
+            from django.db import transaction
+            with transaction.atomic():
+                q_evt = LiveQuoteEvent(
+                    event_id="PROD_Q_01",
+                    instrument="XAUUSD",
+                    provider="producer_prim_feed",
+                    bid=Decimal("2651.00"),
+                    ask=Decimal("2651.50"),
+                    source_timestamp=now_utc,
+                    received_timestamp=now_utc,
+                    sequence_number=888,
+                )
+                LiveQuoteService.process_quote(q_evt, max_staleness_seconds=60.0)
+
+                # Broadcast an XAUT/USDT quote to ensure isolation
+                LiveEventBroadcaster.broadcast({
+                    "event_id": "XAUT_SHOULD_BE_IGNORED",
+                    "event_type": "quote_update",
+                    "instrument": "XAUT/USDT",
+                    "data": {"bid": "2500.00", "ask": "2501.00"},
+                })
+
+        await sync_to_async(_produce_quote)()
+        await asyncio.sleep(0.05)
+
+        # 2. Producer execution of XauUsdLiveDecisionPipelineService.process_closed_candle inside transaction
+        def _produce_decision():
+            from django.db import transaction
+            with transaction.atomic():
+                c_evt = CandleClosedEvent(
+                    event_id="PROD_C_01",
+                    instrument="XAUUSD",
+                    timeframe="15m",
+                    timestamp_open=now_utc - timedelta(minutes=15),
+                    timestamp_close=now_utc,
+                    open=Decimal("2650.00"),
+                    high=Decimal("2655.00"),
+                    low=Decimal("2649.00"),
+                    close=Decimal("2654.00"),
+                    volume=Decimal("1500.0"),
+                    is_closed=True,
+                    source="producer_prim_feed",
+                )
+                XauUsdLiveDecisionPipelineService.process_closed_candle(
+                    event=c_evt,
+                    code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
+                    signal_profile=prof,
+                    risk_profile=risk_prof,
+                    macro_context=macro_ctx,
+                    is_feed_stale=False,
+                )
+                LiveEventBroadcaster.broadcast(
+                    LiveEventBroadcaster.format_feed_health_update(
+                        instrument="XAUUSD",
+                        feed_health={
+                            "xauusd_primary_status": "HEALTHY",
+                            "is_feed_stale": False,
+                            "is_macro_blackout": False,
+                        },
+                    )
+                )
+
+
+
+        await sync_to_async(_produce_decision)()
+        await asyncio.sleep(0.05)
+
+        received = [
+            json.loads(m["text"]) for m in sent_frames
+            if m.get("type") == "websocket.send" and "text" in m
+        ]
+
+        # Verify XAUT frames are strictly absent
+        assert not any(f.get("instrument") == "XAUT/USDT" for f in received)
+
+        # Verify XAUUSD producer frames
+        q_frames = [f for f in received if f.get("event_type") == "quote_update" and f.get("instrument") == "XAUUSD"]
+        sig_frames = [f for f in received if f.get("event_type") == "signal_update" and f.get("instrument") == "XAUUSD"]
+        risk_frames = [f for f in received if f.get("event_type") == "risk_plan_update" and f.get("instrument") == "XAUUSD"]
+        health_frames = [f for f in received if f.get("event_type") == "feed_health_update" and f.get("instrument") == "XAUUSD"]
+
+        assert len(q_frames) >= 1
+        assert len(sig_frames) >= 1
+        assert len(risk_frames) >= 1
+        assert len(health_frames) >= 1
+
+        # Verify frame data contents
+        assert Decimal(q_frames[0]["data"]["bid"]) == Decimal("2651.00")
+        assert sig_frames[0]["data"]["candidate_state"] in ("BUY_WINDOW", "NO_TRADE")
+        assert sig_frames[0]["data"]["published_user_decision"] == "WAIT"
+
+
+        await recv_q.put({"type": "websocket.disconnect"})
+        await t
+
+    asyncio.run(_test_flow())
+
+
