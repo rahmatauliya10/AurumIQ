@@ -65,21 +65,27 @@ class XauUsdDataReadinessReport:
     dataset_hash: str
     generated_at: str
     candle_gate_passed: bool = False
+    primary_provider: str = "twelve_data_xauusd"
+    primary_symbol: str = "XAU/USD"
+    listing_status: str = "ACTIVE"
+    listing_role: str = "PRIMARY_XAUUSD_SPOT"
+    coverage_complete: bool = False
 
     def to_manifest_dict(self, code_revision: str = "HEAD") -> Dict[str, Any]:
         """Format as machine-readable manifest JSON dictionary."""
         return {
             "instrument": "XAUUSD",
-            "primary_provider": "xauusd_primary",
-            "primary_symbol": "XAUUSD",
-            "listing_status": "ACTIVE",
-            "listing_role": "PRIMARY_XAUUSD_SPOT",
+            "primary_provider": self.primary_provider,
+            "primary_symbol": self.primary_symbol,
+            "listing_status": self.listing_status,
+            "listing_role": self.listing_role,
             "data_start": self.earliest_timestamp.isoformat() if self.earliest_timestamp else None,
             "data_end": self.latest_timestamp.isoformat() if self.latest_timestamp else None,
             "timeframe_counts": self.timeframe_counts,
-            "source_identity": "PRIMARY_XAUUSD_SPOT (xauusd_primary)",
+            "source_identity": f"{self.listing_role} ({self.primary_provider})",
             "code_revision": code_revision,
             "dataset_fingerprint": self.dataset_hash,
+            "historical_coverage_complete": self.coverage_complete,
             "missing_data_statistics": {
                 "expected_duration_days": self.duration_days,
                 "actual_duration_days": self.duration_days,
@@ -131,11 +137,11 @@ class XauUsdDataReadinessReport:
         return f"""# AurumIQ — XAUUSD Data Readiness Audit Report
 
 > **Governance Level:** Evidence-Driven Empirical Calibration Campaign (Post Phase 7 / Pre Phase 8)  
-> **Authoritative Baseline SHA:** `{baseline_sha}`  
-> **Code Revision:** `{code_revision}`  
-> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)  
-> **Authoritative Analytical Market Source:** `ListingRole.PRIMARY_XAUUSD_SPOT`  
-> **Audit Date:** {self.generated_at[:10]}  
+> **Authoritative Baseline SHA:** `{baseline_sha}`<br>
+> **Code Revision:** `{code_revision}`<br>
+> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)<br>
+> **Authoritative Analytical Market Source:** `{self.listing_role}`<br>
+> **Audit Date:** {self.generated_at[:10]}<br>
 > **Audit Status:** {status_icon} **{self.decision}**
 
 ---
@@ -165,10 +171,10 @@ Decision: **`{self.decision}`**
 | Field | Value | Governance Requirement | Compliance |
 | :--- | :--- | :--- | :--- |
 | **Instrument** | `XAU/USD` | Spot Gold denominated in USD | ✅ PASS |
-| **Listing Role** | `ListingRole.PRIMARY_XAUUSD_SPOT` | Primary analytical source | ✅ PASS |
-| **Provider ID** | `xauusd_primary` | Spot provider registry binding | ✅ PASS |
-| **Provider Symbol** | `XAUUSD` | Explicit spot symbol | ✅ PASS |
-| **Listing Status** | `ListingStatus.ACTIVE` | Active provider registry | ✅ PASS |
+| **Listing Role** | `{self.listing_role}` | Primary analytical source | ✅ PASS |
+| **Provider ID** | `{self.primary_provider}` | Spot provider registry binding | ✅ PASS |
+| **Provider Symbol** | `{self.primary_symbol}` | Explicit spot symbol | ✅ PASS |
+| **Listing Status** | `{self.listing_status}` | Active provider registry | ✅ PASS |
 
 ---
 
@@ -218,13 +224,15 @@ class XauUsdDataReadinessEvaluator:
     def evaluate(
         cls,
         instrument: Optional[Instrument] = None,
-        primary_provider: str = "xauusd_primary",
+        primary_provider: Optional[str] = None,
         timeframes: Sequence[str] = REQUIRED_TIMEFRAMES,
         override_candles: Optional[Sequence[Any]] = None,
         technical_only: bool = False,
         override_macro_count: Optional[int] = None,
         override_quote_count: Optional[int] = None,
         override_friction_status: Optional[str] = None,
+        expected_coverage_start: Optional[datetime] = None,
+        expected_coverage_end: Optional[datetime] = None,
     ) -> XauUsdDataReadinessReport:
         """Execute full deterministic audit across persisted database records or provided candles."""
         reasons: List[str] = []
@@ -234,6 +242,25 @@ class XauUsdDataReadinessEvaluator:
             instrument = Instrument.objects.filter(
                 base_asset__code="XAU", quote_asset__code="USD"
             ).first()
+
+        primary_listing = None
+        if instrument:
+            primary_listing = MarketListing.objects.filter(
+                instrument=instrument,
+                listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+                status=ListingStatus.ACTIVE,
+            ).first()
+
+        if primary_provider is not None:
+            resolved_primary_provider = primary_provider
+        elif primary_listing is not None:
+            resolved_primary_provider = primary_listing.provider
+        else:
+            resolved_primary_provider = "twelve_data_xauusd"
+
+        resolved_primary_symbol = primary_listing.provider_symbol if primary_listing else "XAU/USD"
+        resolved_listing_status = primary_listing.status if primary_listing else "ACTIVE"
+        resolved_listing_role = primary_listing.listing_role if primary_listing else "PRIMARY_XAUUSD_SPOT"
 
         if not instrument:
             return XauUsdDataReadinessReport(
@@ -264,32 +291,38 @@ class XauUsdDataReadinessEvaluator:
                 dataset_hash=EMPTY_DATASET_HASH,
                 generated_at=now_str,
                 candle_gate_passed=False,
+                primary_provider=resolved_primary_provider,
+                primary_symbol=resolved_primary_symbol,
+                listing_status=resolved_listing_status,
+                listing_role=resolved_listing_role,
+                coverage_complete=False,
             )
 
         # 1. Check Primary Listing
-        primary_listing = MarketListing.objects.filter(
-            instrument=instrument,
-            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
-            status=ListingStatus.ACTIVE,
-        ).first()
-
         if not primary_listing:
             reasons.append("CRITICAL: Active PRIMARY_XAUUSD_SPOT MarketListing not found.")
-        elif primary_listing.provider != primary_provider:
-            reasons.append(f"WARNING: Primary listing provider '{primary_listing.provider}' differs from expected '{primary_provider}'.")
+        elif primary_listing.provider != resolved_primary_provider:
+            reasons.append(f"WARNING: Primary listing provider '{primary_listing.provider}' differs from expected '{resolved_primary_provider}'.")
 
-        # 2. Query All Candles for this Instrument or use override
+        # 2. Query Authoritative Primary Dataset Candles for this Instrument or use override
         if override_candles is not None:
-            all_candles_list = list(override_candles)
+            all_candles_list = [
+                c for c in override_candles
+                if getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
+            ]
             total_candles = len(all_candles_list)
             tf_counts = {tf: sum(1 for c in all_candles_list if getattr(c, "timeframe", "") == tf) for tf in timeframes}
-            contamination_count = sum(1 for c in all_candles_list if getattr(c, "source", getattr(c, "source_id", "")) != primary_provider)
+            contamination_count = len(override_candles) - total_candles
         else:
-            all_candles_qs = MarketCandle.objects.filter(instrument=instrument)
-            total_candles = all_candles_qs.count()
-            tf_counts = {tf: all_candles_qs.filter(timeframe=tf).count() for tf in timeframes}
-            contamination_count = all_candles_qs.exclude(source=primary_provider).count()
-            all_candles_list = list(all_candles_qs)
+            primary_candles_qs = MarketCandle.objects.filter(
+                instrument=instrument,
+                source=resolved_primary_provider,
+            )
+            total_candles = primary_candles_qs.count()
+            tf_counts = {tf: primary_candles_qs.filter(timeframe=tf).count() for tf in timeframes}
+            contamination_count = MarketCandle.objects.filter(instrument=instrument).exclude(source=resolved_primary_provider).count()
+            all_candles_list = list(primary_candles_qs)
+
         if contamination_count > 0:
             reasons.append(f"CONTAMINATION: Found {contamination_count} candles with non-primary source ID.")
 
@@ -324,7 +357,7 @@ class XauUsdDataReadinessEvaluator:
 
         candles_15m_orm = [
             c for c in all_candles_list
-            if getattr(c, "timeframe", "") == "15m" and getattr(c, "source", getattr(c, "source_id", "")) == primary_provider
+            if getattr(c, "timeframe", "") == "15m" and getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
         ]
         candles_15m_orm.sort(key=_safe_dt_sort)
         warmup_15m_bars = len(candles_15m_orm)
@@ -415,7 +448,7 @@ class XauUsdDataReadinessEvaluator:
                     close=c.close,
                     volume=c.volume,
                     is_closed=c.is_closed,
-                    source_id=getattr(c, "source", getattr(c, "source_id", "xauusd_primary")),
+                    source_id=getattr(c, "source", getattr(c, "source_id", resolved_primary_provider)),
                     quote_rate=getattr(c, "quote_rate", Decimal("1.000000")),
                     close_usd=getattr(c, "close_usd", c.close),
                     volume_evidence=CoreVolumeEvidenceType(getattr(c, "volume_evidence", "UNAVAILABLE")) if getattr(c, "volume_evidence", None) in [e.value for e in CoreVolumeEvidenceType] else CoreVolumeEvidenceType.UNAVAILABLE,
@@ -436,6 +469,21 @@ class XauUsdDataReadinessEvaluator:
                 f"Empty dataset hash '{EMPTY_DATASET_HASH}' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness."
             )
 
+        # Historical Coverage Gate
+        coverage_complete = False
+        if expected_coverage_start and expected_coverage_end:
+            if earliest_dt and latest_dt:
+                start_covered = earliest_dt <= expected_coverage_start + timedelta(days=3)
+                end_covered = latest_dt >= expected_coverage_end - timedelta(days=3)
+                coverage_complete = bool(start_covered and end_covered)
+                if not coverage_complete:
+                    reasons.append(
+                        f"HISTORICAL_COVERAGE_INCOMPLETE: Persisted dataset coverage [{earliest_dt.strftime('%Y-%m-%d')} to {latest_dt.strftime('%Y-%m-%d')}] "
+                        f"does not cover required full calibration window [{expected_coverage_start.strftime('%Y-%m-%d')} to {expected_coverage_end.strftime('%Y-%m-%d')}]."
+                    )
+            else:
+                reasons.append("HISTORICAL_COVERAGE_INCOMPLETE: Zero candles present to evaluate coverage.")
+
         # Final Hard Gate Decision
         # Needs: >= 20 bars of 15m, total_candles > 0, 0 ohlc errors, 0 duplicates, 0 naive timestamps, 0 source contamination
         is_empty = (total_candles == 0 or dataset_hash in KNOWN_EMPTY_DATASET_HASHES)
@@ -452,6 +500,9 @@ class XauUsdDataReadinessEvaluator:
         )
 
         if not candle_gate_passed:
+            decision = "CALIBRATION_DATA_NOT_READY"
+            passed = False
+        elif (expected_coverage_start and expected_coverage_end) and not coverage_complete:
             decision = "CALIBRATION_DATA_NOT_READY"
             passed = False
         elif technical_only:
@@ -502,4 +553,9 @@ class XauUsdDataReadinessEvaluator:
             dataset_hash=dataset_hash,
             generated_at=now_str,
             candle_gate_passed=candle_gate_passed,
+            primary_provider=resolved_primary_provider,
+            primary_symbol=resolved_primary_symbol,
+            listing_status=resolved_listing_status,
+            listing_role=resolved_listing_role,
+            coverage_complete=coverage_complete,
         )

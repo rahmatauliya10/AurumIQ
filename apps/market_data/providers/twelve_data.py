@@ -109,7 +109,7 @@ class TwelveDataProvider(MarketDataProvider):
         self,
         api_key: Optional[str] = None,
         base_url: str = "https://api.twelvedata.com",
-        timeout: float = 15.0,
+        timeout: float = 45.0,
     ):
         self._api_key = api_key or _get_setting_or_env("TWELVE_DATA_API_KEY")
         self._base_url = base_url.rstrip("/")
@@ -248,6 +248,125 @@ class TwelveDataProvider(MarketDataProvider):
         if raw_values is None or not isinstance(raw_values, list):
             raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'values' array in response.")
 
+        return self._parse_candle_rows(
+            raw_values=raw_values,
+            timeframe=timeframe,
+            interval_delta=interval_delta,
+            only_closed=only_closed,
+            end_date_utc=end_utc,
+        )
+
+    def fetch_historical_page(
+        self,
+        symbol: str,
+        timeframe: str,
+        end: datetime,
+        outputsize: int = 4900,
+    ) -> list[RawCandle]:
+        """
+        Fetch a bounded historical page of closed candles ending at or before 'end'.
+
+        Guarantees:
+        - Max outputsize <= 5000 (default 4900 for safety margin)
+        - Strictly UTC-aware end datetime
+        - Direct Decimal string parsing
+        - Strict OHLC geometry enforcement
+        - Closed candles only
+        - Chronologically ascending sort
+        - Fail-closed on 429, timeout, error payloads
+        """
+        if not self.is_configured():
+            logger.error("twelve_data_not_configured")
+            raise RuntimeError(
+                "TWELVE_DATA_API_KEY_NOT_CONFIGURED: Twelve Data API key is not configured in environment/.env."
+            )
+
+        if outputsize <= 0 or outputsize > 5000:
+            raise ValueError(f"INVALID_OUTPUTSIZE: outputsize must be between 1 and 5000, got {outputsize}.")
+
+        provider_symbol = self._validate_symbol(symbol)
+        provider_interval = self.map_timeframe(timeframe)
+        interval_delta = self.TIMEFRAME_DELTAS[timeframe.lower().strip()]
+
+        end_utc = _normalize_to_utc_aware(end, "end")
+        end_str = end_utc.strftime("%Y-%m-%d") if timeframe.lower().strip() == "1d" else end_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+        params = {
+            "symbol": provider_symbol,
+            "interval": provider_interval,
+            "end_date": end_str,
+            "outputsize": outputsize,
+            "timezone": "UTC",
+            "order": "ASC",
+            "apikey": self._api_key,
+        }
+
+        url = f"{self._base_url}/time_series"
+        try:
+            resp = requests.get(url, params=params, timeout=self._timeout)
+        except requests.exceptions.Timeout as e:
+            logger.error("twelve_data_request_timeout")
+            raise RuntimeError("TWELVE_DATA_TIMEOUT: Twelve Data request timed out.") from e
+        except requests.exceptions.RequestException as e:
+            sanitized = _sanitize_secret(str(e), self._api_key)
+            logger.error("twelve_data_http_failure", error=sanitized)
+            raise RuntimeError(f"TWELVE_DATA_HTTP_FAILURE: {sanitized}") from e
+
+        if resp.status_code == 429:
+            logger.error("twelve_data_rate_limit_429")
+            raise RuntimeError("TWELVE_DATA_RATE_LIMIT_EXCEEDED: HTTP 429 received from Twelve Data.")
+
+        if resp.status_code != 200:
+            sanitized_body = _sanitize_secret(resp.text[:200], self._api_key)
+            raise RuntimeError(f"TWELVE_DATA_HTTP_ERROR: HTTP {resp.status_code} — {sanitized_body}")
+
+        try:
+            payload = resp.json()
+        except Exception as e:
+            raise RuntimeError("TWELVE_DATA_INVALID_JSON: Failed to parse JSON response from Twelve Data.") from e
+
+        status = payload.get("status")
+        if status == "error":
+            err_msg = _sanitize_secret(payload.get("message", "Unknown API error"), self._api_key)
+            raise RuntimeError(f"TWELVE_DATA_API_ERROR: {err_msg}")
+
+        meta = payload.get("meta")
+        if not meta or not isinstance(meta, dict):
+            raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'meta' field in response.")
+
+        returned_symbol = meta.get("symbol")
+        if returned_symbol != provider_symbol:
+            raise ValueError(
+                f"TWELVE_DATA_SYMBOL_MISMATCH: Expected meta.symbol '{provider_symbol}', got '{returned_symbol}'."
+            )
+
+        returned_interval = meta.get("interval")
+        if returned_interval != provider_interval:
+            raise ValueError(
+                f"TWELVE_DATA_INTERVAL_MISMATCH: Expected meta.interval '{provider_interval}', got '{returned_interval}'."
+            )
+
+        raw_values = payload.get("values")
+        if raw_values is None or not isinstance(raw_values, list):
+            raise RuntimeError("TWELVE_DATA_MALFORMED_PAYLOAD: Missing or invalid 'values' array in response.")
+
+        return self._parse_candle_rows(
+            raw_values=raw_values,
+            timeframe=timeframe,
+            interval_delta=interval_delta,
+            only_closed=True,
+            end_date_utc=end_utc,
+        )
+
+    def _parse_candle_rows(
+        self,
+        raw_values: list,
+        timeframe: str,
+        interval_delta: timedelta,
+        only_closed: bool = True,
+        end_date_utc: Optional[datetime] = None,
+    ) -> list[RawCandle]:
+        """Parse raw Twelve Data candle rows into strictly validated, chronologically sorted RawCandle objects."""
         now_utc = self._get_now_utc()
         candles: list[RawCandle] = []
 
@@ -270,6 +389,10 @@ class TwelveDataProvider(MarketDataProvider):
                 raise ValueError(f"TWELVE_DATA_INVALID_TIMESTAMP: Invalid timestamp format '{dt_str}'.") from e
 
             dt_close = dt_open + interval_delta
+
+            # Bounded window filter: discard any candle starting at or after end_date_utc if requested
+            if end_date_utc is not None and dt_open > end_date_utc:
+                continue
 
             # Parse Decimal directly from string — float conversion strictly prohibited
             try:
@@ -320,6 +443,7 @@ class TwelveDataProvider(MarketDataProvider):
                 )
             )
 
+        candles.sort(key=lambda c: c.timestamp_open)
         return candles
 
     def fetch_ticker(self, symbol: str) -> Optional[TickerSnapshot]:
@@ -383,3 +507,50 @@ class TwelveDataProvider(MarketDataProvider):
                 checked_at=now,
                 error_message=clean_err,
             )
+
+    def get_api_usage(self) -> Dict[str, Any]:
+        """
+        Query Twelve Data /api_usage endpoint to obtain current plan limits and daily credits used.
+
+        Returns dictionary with:
+        - daily_usage: int (credits consumed today UTC)
+        - plan_daily_limit: int (e.g. 800 for basic)
+        - current_usage: int (per-minute usage)
+        - plan_limit: int (per-minute limit)
+        - plan_category: str (e.g. 'basic')
+
+        Raises RuntimeError on network failure, 429, or non-200 responses.
+        API key is strictly sanitized from all error messages.
+        """
+        if not self.is_configured():
+            raise RuntimeError("TWELVE_DATA_UNCONFIGURED: API key is not configured.")
+
+        url = f"{self._base_url}/api_usage"
+        try:
+            resp = requests.get(url, params={"apikey": self._api_key}, timeout=self._timeout)
+        except requests.exceptions.RequestException as e:
+            sanitized = _sanitize_secret(str(e), self._api_key)
+            logger.error("twelve_data_api_usage_http_failure", error=sanitized)
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_HTTP_FAILURE: {sanitized}") from e
+
+        if resp.status_code == 429:
+            logger.warning("twelve_data_rate_limited", status=429)
+            raise RuntimeError("TWELVE_DATA_RATE_LIMITED: 429 Too Many Requests")
+
+        if resp.status_code != 200:
+            sanitized = _sanitize_secret(resp.text, self._api_key)
+            logger.error("twelve_data_api_usage_error", status_code=resp.status_code, response=sanitized)
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_ERROR: HTTP {resp.status_code} - {sanitized}")
+
+        try:
+            data = resp.json()
+        except Exception as e:
+            raise RuntimeError(f"TWELVE_DATA_API_USAGE_INVALID_JSON: {e}") from e
+
+        return {
+            "daily_usage": int(data.get("daily_usage", 0)),
+            "plan_daily_limit": int(data.get("plan_daily_limit", 800)),
+            "current_usage": int(data.get("current_usage", 0)),
+            "plan_limit": int(data.get("plan_limit", 8)),
+            "plan_category": str(data.get("plan_category", "basic")),
+        }

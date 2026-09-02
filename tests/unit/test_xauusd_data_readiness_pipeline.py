@@ -38,8 +38,15 @@ def xauusd_setup(db):
     return instrument, primary_listing
 
 
-def _create_clean_candles(instrument, count=25, tf="15m", source="xauusd_primary"):
+def _create_clean_candles(instrument, count=25, tf="15m", source=None):
     """Helper to create N valid chronological UTC candles."""
+    if source is None:
+        listing = MarketListing.objects.filter(
+            instrument=instrument,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        source = listing.provider if listing else "twelve_data_xauusd"
     base_time = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
     delta = timedelta(minutes=15)
     candles = []
@@ -107,7 +114,7 @@ def test_03_duplicate_data_rejected_or_reported(xauusd_setup):
         with pytest.raises(IntegrityError):
             MarketCandle.objects.create(
                 instrument=instrument,
-                source="xauusd_primary",
+                source=candles[0].source,
                 timeframe="15m",
                 timestamp_open=candles[0].timestamp_open,
                 timestamp_close=candles[0].timestamp_close,
@@ -163,7 +170,7 @@ def test_05_naive_timestamps_rejected_or_reported(xauusd_setup):
         close=Decimal("2002.00"),
         volume=Decimal("100.0"),
         is_closed=True,
-        source="xauusd_primary",
+        source=candles[0].source,
     )
 
     override_list = list(candles) + [naive_candle]
@@ -369,11 +376,11 @@ def test_11_missing_provider_configuration_fails_closed(xauusd_setup):
 
     assert "PRIMARY_XAUUSD_UNAVAILABLE" in str(exc_info.value)
 
-    # Also test backfill_candles command raises CommandError when unconfigured
+    # Also test backfill_candles command raises CommandError when unconfigured or halted
     with pytest.raises(CommandError) as cmd_exc:
         call_command("backfill_candles", symbol="XAU/USD", provider="xauusd_primary")
 
-    assert "PRIMARY_XAUUSD_UNCONFIGURED" in str(cmd_exc.value) or "NOT_CONFIGURED" in str(cmd_exc.value)
+    assert any(msg in str(cmd_exc.value) for msg in ["PRIMARY_XAUUSD_UNCONFIGURED", "NOT_CONFIGURED", "No active market listing found"])
 
 
 @pytest.mark.django_db

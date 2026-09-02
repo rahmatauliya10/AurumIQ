@@ -1,26 +1,27 @@
 {
   "instrument": "XAUUSD",
-  "primary_provider": "xauusd_primary",
-  "primary_symbol": "XAUUSD",
+  "primary_provider": "twelve_data_xauusd",
+  "primary_symbol": "XAU/USD",
   "listing_status": "ACTIVE",
   "listing_role": "PRIMARY_XAUUSD_SPOT",
-  "data_start": null,
-  "data_end": null,
+  "data_start": "2026-06-01T00:00:00+00:00",
+  "data_end": "2026-09-01T00:00:00+00:00",
   "timeframe_counts": {
-    "15m": 0,
-    "1h": 0,
-    "4h": 0,
-    "1d": 0,
-    "5m": 0,
-    "1m": 0
+    "15m": 8832,
+    "1h": 2208,
+    "4h": 552,
+    "1d": 92,
+    "5m": 26496,
+    "1m": 132480
   },
-  "source_identity": "PRIMARY_XAUUSD_SPOT (xauusd_primary)",
+  "source_identity": "PRIMARY_XAUUSD_SPOT (twelve_data_xauusd)",
   "code_revision": "HEAD",
-  "dataset_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "dataset_fingerprint": "d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749",
+  "historical_coverage_complete": false,
   "missing_data_statistics": {
-    "expected_duration_days": 0.0,
-    "actual_duration_days": 0.0,
-    "total_persisted_candles": 0,
+    "expected_duration_days": 92.0,
+    "actual_duration_days": 92.0,
+    "total_persisted_candles": 170660,
     "duplicate_count": 0,
     "missing_expected_intervals": "100.0%",
     "largest_gap_seconds": 0,
@@ -30,13 +31,13 @@
     "source_contamination_count": 0
   },
   "15m_feature_readiness": {
-    "warm_up_coverage": "0/20 bars",
-    "is_feature_warm_up_satisfied": false,
+    "warm_up_coverage": "8832/20 bars",
+    "is_feature_warm_up_satisfied": true,
     "volume_evidence_distribution": {
       "REAL_VOLUME": 0,
       "TICK_VOLUME": 0,
       "PROXY_VOLUME": 0,
-      "UNAVAILABLE": 0
+      "UNAVAILABLE": 170660
     },
     "volume_classification": "UNAVAILABLE"
   },
@@ -61,10 +62,8 @@
     "passed": false,
     "decision": "CALIBRATION_DATA_NOT_READY",
     "reasons": [
-      "Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.",
-      "Insufficient 15m feature warm-up bars (0/20 bars required).",
-      "Empty dataset hash 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness."
+      "HISTORICAL_COVERAGE_INCOMPLETE: Persisted dataset coverage [2026-06-01 to 2026-09-01] does not cover required full calibration window [2020-04-07 to 2026-09-01]."
     ]
   },
-  "generated_at": "2026-09-02T10:26:25Z"
+  "generated_at": "2026-09-02T17:12:05Z"
 }

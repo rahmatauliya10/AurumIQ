@@ -1,11 +1,11 @@
 # AurumIQ — XAUUSD Data Readiness Audit Report
 
 > **Governance Level:** Evidence-Driven Empirical Calibration Campaign (Post Phase 7 / Pre Phase 8)  
-> **Authoritative Baseline SHA:** `57f6de1405d0df8548182a166d245f1a3173363d`  
-> **Code Revision:** `HEAD`  
-> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)  
-> **Authoritative Analytical Market Source:** `ListingRole.PRIMARY_XAUUSD_SPOT`  
-> **Audit Date:** 2026-09-02  
+> **Authoritative Baseline SHA:** `57f6de1405d0df8548182a166d245f1a3173363d`<br>
+> **Code Revision:** `HEAD`<br>
+> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)<br>
+> **Authoritative Analytical Market Source:** `PRIMARY_XAUUSD_SPOT`<br>
+> **Audit Date:** 2026-09-02<br>
 > **Audit Status:** ❌ **CALIBRATION_DATA_NOT_READY**
 
 ---
@@ -15,8 +15,8 @@
 In accordance with Sections 0, 4, 5, and 6 of the AurumIQ XAUUSD Empirical Calibration Campaign Protocol, a complete point-in-time audit of all persisted market data, provider listings, and auxiliary evidence was conducted prior to parameter optimization or search.
 
 **Findings:**
-1. **Total Persisted Candles:** 0 across all standard analytical and intrabar timeframes.
-2. **15m Usable Feature Warm-Up:** 0 / 20 required bars (FAIL).
+1. **Total Persisted Candles:** 170660 across all standard analytical and intrabar timeframes.
+2. **15m Usable Feature Warm-Up:** 8832 / 20 required bars (PASS).
 3. **Volume Evidence Classification:** `UNAVAILABLE`.
 4. **Data Contamination:** 0 foreign or cross-asset records detected.
 5. **Auxiliary Coverage:** Macro events: 0, Historical Quotes: 0.
@@ -26,9 +26,7 @@ In accordance with Sections 0, 4, 5, and 6 of the AurumIQ XAUUSD Empirical Calib
 Decision: **`CALIBRATION_DATA_NOT_READY`**
 
 ### Decision Rationale & Missing Dependencies:
-- Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.
-- Insufficient 15m feature warm-up bars (0/20 bars required).
-- Empty dataset hash 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' is valid only as the deterministic identity of an empty dataset and must never pass calibration readiness.
+- HISTORICAL_COVERAGE_INCOMPLETE: Persisted dataset coverage [2026-06-01 to 2026-09-01] does not cover required full calibration window [2020-04-07 to 2026-09-01].
 
 ---
 
@@ -37,10 +35,10 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 | Field | Value | Governance Requirement | Compliance |
 | :--- | :--- | :--- | :--- |
 | **Instrument** | `XAU/USD` | Spot Gold denominated in USD | ✅ PASS |
-| **Listing Role** | `ListingRole.PRIMARY_XAUUSD_SPOT` | Primary analytical source | ✅ PASS |
-| **Provider ID** | `xauusd_primary` | Spot provider registry binding | ✅ PASS |
-| **Provider Symbol** | `XAUUSD` | Explicit spot symbol | ✅ PASS |
-| **Listing Status** | `ListingStatus.ACTIVE` | Active provider registry | ✅ PASS |
+| **Listing Role** | `PRIMARY_XAUUSD_SPOT` | Primary analytical source | ✅ PASS |
+| **Provider ID** | `twelve_data_xauusd` | Spot provider registry binding | ✅ PASS |
+| **Provider Symbol** | `XAU/USD` | Explicit spot symbol | ✅ PASS |
+| **Listing Status** | `ACTIVE` | Active provider registry | ✅ PASS |
 
 ---
 
@@ -48,12 +46,12 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 
 | Timeframe | Candle Count | Missing Intervals | Naive Timestamps | Invalid OHLC | Contamination |
 | :---: | :---: | :---: | :---: | :---: | :---: |
-| **1m** | 0 | N/A | 0 | 0 | 0 |
-| **5m** | 0 | N/A | 0 | 0 | 0 |
-| **15m** | 0 | N/A | 0 | 0 | 0 |
-| **1h** | 0 | N/A | 0 | 0 | 0 |
-| **4h** | 0 | N/A | 0 | 0 | 0 |
-| **1d** | 0 | N/A | 0 | 0 | 0 |
+| **1m** | 132480 | N/A | 0 | 0 | 0 |
+| **5m** | 26496 | N/A | 0 | 0 | 0 |
+| **15m** | 8832 | N/A | 0 | 0 | 0 |
+| **1h** | 2208 | N/A | 0 | 0 | 0 |
+| **4h** | 552 | N/A | 0 | 0 | 0 |
+| **1d** | 92 | N/A | 0 | 0 | 0 |
 
 ---
 
@@ -62,13 +60,13 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 - `REAL_VOLUME`: 0
 - `TICK_VOLUME`: 0
 - `PROXY_VOLUME`: 0
-- `UNAVAILABLE`: 0
+- `UNAVAILABLE`: 170660
 - **Classification:** `UNAVAILABLE`
 
 ---
 
 ## 5. Dataset Fingerprint
-- **Canonical Dataset SHA-256:** `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+- **Canonical Dataset SHA-256:** `d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749`
 
 ---
 

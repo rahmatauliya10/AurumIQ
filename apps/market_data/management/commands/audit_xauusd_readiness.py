@@ -33,15 +33,47 @@ class Command(BaseCommand):
             default="HEAD",
             help="Current working branch Git SHA or ref",
         )
+        parser.add_argument(
+            "--expected-start",
+            type=str,
+            default="2020-04-07T00:00:00Z",
+            help="Expected calibration start ISO timestamp (default: 2020-04-07T00:00:00Z)",
+        )
+        parser.add_argument(
+            "--expected-end",
+            type=str,
+            default="2026-09-01T00:00:00Z",
+            help="Expected calibration end ISO timestamp (default: 2026-09-01T00:00:00Z)",
+        )
+        parser.add_argument(
+            "--no-coverage-check",
+            action="store_true",
+            help="Skip full historical coverage window check (useful for isolated candle quality checks).",
+        )
 
     def handle(self, *args, **options):
         manifest_path = options["output_manifest"]
         report_path = options["output_report"]
         baseline_sha = options["baseline_sha"]
         code_rev = options["code_revision"]
+        expected_start_str = options["expected_start"]
+        expected_end_str = options["expected_end"]
+        no_coverage_check = options["no_coverage_check"]
+
+        exp_start = None
+        exp_end = None
+        if not no_coverage_check:
+            from datetime import datetime, timezone
+            if expected_start_str:
+                exp_start = datetime.fromisoformat(expected_start_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+            if expected_end_str:
+                exp_end = datetime.fromisoformat(expected_end_str.replace("Z", "+00:00")).astimezone(timezone.utc)
 
         self.stdout.write("Auditing XAUUSD persisted dataset readiness...")
-        report = XauUsdDataReadinessEvaluator.evaluate()
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            expected_coverage_start=exp_start,
+            expected_coverage_end=exp_end,
+        )
 
         # Write manifest
         if manifest_path:
