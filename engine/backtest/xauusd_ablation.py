@@ -225,11 +225,20 @@ class XauUsdAblationEngine:
                     snap.macro_event,
                     is_in_blackout=False,
                 ) if snap.macro_event else None
+
+                # Recompute Phase 3A cycle score using production formula from preserved components
+                sess_score = snap.session.expectancy_score if snap.session else 0.0
+                swing_score = snap.swing_duration.maturity_score if snap.swing_duration else 0.0
+                cal_score = snap.calendar.seasonality_score if snap.calendar else 0.0
+                macro_bonus = 0.0
+                new_cycle_score = float(round(sess_score + swing_score + cal_score + macro_bonus, 2))
+
                 ablated_cycles.append(
                     replace(
                         snap,
                         macro_event=new_macro,
                         is_blocked_by_event=False,
+                        cycle_score_3a=new_cycle_score,
                     )
                 )
 

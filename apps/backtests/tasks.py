@@ -170,11 +170,9 @@ def resolve_xauusd_research_profiles(
     sig_prof: Optional[Phase4SignalProfile] = None
     risk_prof: Optional[XauUsdRiskProfile] = None
 
-    if signal_profile_id in ("CALIBRATED", "XAUUSD_CALIBRATED_DEFAULT", "CALIB-2026-V1") or calibration_artifact_id == "CALIB-2026-V1":
-        # Calibrated default research profile
-        from engine.signals.profile import calibrated_xauusd_signal_profile
-        sig_prof = calibrated_xauusd_signal_profile()
-    elif signal_profile_dict:
+    # Server-side ID resolution requires a real persisted empirical calibration artifact.
+    # When no empirical artifact exists, unknown / default IDs return None, failing closed.
+    if signal_profile_dict:
         # Reconstruct from validated dictionary
         from engine.signals.profile import (
             Phase4CalibrationStatus,
@@ -205,10 +203,7 @@ def resolve_xauusd_research_profiles(
             details=signal_profile_dict.get("details", {}),
         )
 
-    if risk_profile_id in ("CALIBRATED", "XAUUSD_CALIBRATED_DEFAULT", "CALIB-2026-V1") or calibration_artifact_id == "CALIB-2026-V1":
-        from engine.risk.xauusd_policy import default_xauusd_risk_profile
-        risk_prof = default_xauusd_risk_profile()
-    elif risk_profile_dict:
+    if risk_profile_dict:
         from engine.risk.xauusd_policy import (
             SideRiskPolicy,
             XauUsdExecutionPolicy,

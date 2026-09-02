@@ -137,18 +137,25 @@ class XauUsdPointInTimeReplay:
             macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
             cycle_3a_snap = self.dataset.get_cycle_3a(as_of=t_utc)
 
+            # Derive macro feed health and blackout state strictly from PIT evidence
+            macro_health = FeedHealthStatus.MISSING
             is_blackout = False
-            if macro_ctx and macro_ctx.is_in_blackout:
-                is_blackout = True
-            elif cycle_3a_snap and cycle_3a_snap.macro_event and cycle_3a_snap.macro_event.is_in_blackout:
-                is_blackout = True
+
+            if macro_ctx is not None:
+                macro_health = FeedHealthStatus.HEALTHY if macro_ctx.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+                if macro_ctx.is_in_blackout:
+                    is_blackout = True
+            elif cycle_3a_snap is not None and cycle_3a_snap.macro_event is not None:
+                macro_health = FeedHealthStatus.HEALTHY if cycle_3a_snap.macro_event.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+                if cycle_3a_snap.macro_event.is_in_blackout:
+                    is_blackout = True
 
             rfh = RuntimeFeedHealth(
                 primary_15m=FeedHealthStatus.HEALTHY if closed_15m else FeedHealthStatus.MISSING,
                 primary_1h=FeedHealthStatus.HEALTHY if closed_1h else FeedHealthStatus.MISSING,
                 primary_4h=FeedHealthStatus.HEALTHY if closed_4h else FeedHealthStatus.MISSING,
                 primary_1d=FeedHealthStatus.HEALTHY if closed_1d else FeedHealthStatus.MISSING,
-                macro_blackout_feed=FeedHealthStatus.HEALTHY,
+                macro_blackout_feed=macro_health,
                 is_macro_blackout=is_blackout,
                 phase3a=FeedHealthStatus.HEALTHY if cycle_3a_snap else FeedHealthStatus.MISSING,
                 is_unclosed_candle=has_unclosed_le_t,

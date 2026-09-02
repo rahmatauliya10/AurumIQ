@@ -203,9 +203,9 @@ HISTORICAL POINT-IN-TIME REPLAY PIPELINE
 
 | Test ID | Test Name | Gate Criteria | Status |
 |---|---|---|:---:|
-| **XAU-P6-01** | Historical LONG PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 LONG execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED ON FEATURE BRANCH — PASS / PENDING FINAL MERGE VERIFICATION |
-| **XAU-P6-02** | Historical SHORT PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 SHORT execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED ON FEATURE BRANCH — PASS / PENDING FINAL MERGE VERIFICATION |
-| **XAU-P6-03** | Combined Side-Aware Parity, Walk-Forward Purge/Embargo & Ablation | Side-aware metric parity, chronological fold purging, post-boundary embargo, and component ablation immutability | 🟢 IMPLEMENTED ON FEATURE BRANCH — PASS / PENDING FINAL MERGE VERIFICATION |
+| **XAU-P6-01** | Historical LONG PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 LONG execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
+| **XAU-P6-02** | Historical SHORT PIT Replay, Risk Parity, Execution & Normalized R | Single Phase 4 & 5 SHORT execution parity, deterministic planned risk $R$, intrabar resolution, and published decision `WAIT` | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
+| **XAU-P6-03** | Combined Side-Aware Parity, Walk-Forward Purge/Embargo & Ablation | Side-aware metric parity, chronological fold purging, post-boundary embargo, and component ablation immutability | 🟢 IMPLEMENTED — PASS / PENDING FINAL MERGE VERIFICATION |
 | **P6-01** | PIT Candle Filtering | `timestamp_close <= as_of` & `is_closed == True` | ✅ PASS |
 | **P6-02** | Future Mutation Safety | Mutating $> T$ / $> \text{exit}$ preserves historical outputs | ✅ PASS |
 | **P6-03** | Closed Candle Only | Unclosed candle at $T$ rejected from decision set | ✅ PASS |

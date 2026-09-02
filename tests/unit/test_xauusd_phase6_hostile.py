@@ -21,6 +21,7 @@ from engine.backtest.xauusd_types import (
     XauUsdSimulatedTrade,
     XauUsdTradeOutcome,
     XauUsdWalkForwardConfig,
+    XauUsdAblationType,
 )
 from engine.backtest.xauusd_walkforward import XauUsdChronologicalFoldGenerator
 import engine.backtest.xauusd_outcomes as xauusd_outcomes_mod
@@ -31,6 +32,7 @@ from engine.core.types import (
     Cycle3ASnapshot,
     DualSideSignalSnapshot,
     EntryExecutionPolicy,
+    FeedHealthStatus,
     IntrabarPolicy,
     MacroEventContext,
     QuoteData,
@@ -922,5 +924,138 @@ def test_hostile_celery_json_serialization_safety():
     res_serialized = json.dumps(res)
     assert res_serialized is not None
     assert res["status"] in ("COMPLETED", "SUCCESS")
+
+
+def test_hostile_unknown_risk_profile_id_fails_closed_without_import_error():
+    """Prove unknown or non-existent risk_profile_id does not raise ImportError and returns CALIBRATION_REQUIRED."""
+    from apps.backtests.tasks import resolve_xauusd_research_profiles, run_xauusd_backtest_task
+
+    sig_prof, risk_prof = resolve_xauusd_research_profiles(
+        risk_profile_id="NON_EXISTENT_PROFILE_ID_999",
+        signal_profile_id="NON_EXISTENT_SIG_ID_999",
+    )
+    assert sig_prof is None
+    assert risk_prof is None
+
+    res = run_xauusd_backtest_task(
+        start_time_iso="2026-09-01T10:00:00+00:00",
+        end_time_iso="2026-09-01T14:00:00+00:00",
+        dataset_hash="ds_hash",
+        code_revision="rev_test",
+        cost_scenario="IDEALIZED",
+        holding_horizon_bars_15m=5,
+        max_fill_wait_bars_15m=2,
+        risk_profile_id="UNKNOWN_RISK_ID",
+    )
+    assert res["status"] == "CALIBRATION_REQUIRED"
+
+
+def test_hostile_macro_feed_health_fail_closed_parity(calibrated_signal_profile):
+    """
+    Test macro feed health derivation and hard gating:
+    - missing macro evidence -> macro feed MISSING -> critical gate WAIT
+    - unhealthy macro evidence -> UNHEALTHY -> WAIT
+    - healthy clear macro evidence -> HEALTHY
+    - healthy blackout evidence -> HEALTHY + is_macro_blackout=True -> WAIT
+    """
+    eval_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    c_15m = [CandleData(eval_t - timedelta(minutes=15 * (25 - i)), eval_t - timedelta(minutes=15 * (24 - i)), Decimal("2600.00") + Decimal(str(i)), Decimal("2605.00") + Decimal(str(i)), Decimal("2595.00") + Decimal(str(i)), Decimal("2600.00") + Decimal(str(i)), Decimal("100"), is_closed=True) for i in range(25)]
+
+    sig_engine = XauUsdSignalEngine(engine_version="4.0.0-xauusd", code_revision="rev_test")
+
+    # 1. Missing macro evidence -> MISSING -> WAIT
+    rfh_missing = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        macro_blackout_feed=FeedHealthStatus.MISSING,
+        is_macro_blackout=False,
+    )
+    sig_m = sig_engine.analyze(
+        closed_candles_15m=c_15m,
+        runtime_health=rfh_missing,
+        profile=calibrated_signal_profile,
+        as_of=eval_t,
+    )
+    assert sig_m.candidate_user_decision == UserDecision.WAIT
+
+    # 2. Unhealthy macro evidence -> UNHEALTHY -> WAIT
+    rfh_unhealthy = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        macro_blackout_feed=FeedHealthStatus.UNHEALTHY,
+        is_macro_blackout=False,
+    )
+    sig_u = sig_engine.analyze(
+        closed_candles_15m=c_15m,
+        runtime_health=rfh_unhealthy,
+        profile=calibrated_signal_profile,
+        as_of=eval_t,
+    )
+    assert sig_u.candidate_user_decision == UserDecision.WAIT
+
+    # 3. Healthy clear macro evidence -> HEALTHY
+    rfh_healthy = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        macro_blackout_feed=FeedHealthStatus.HEALTHY,
+        is_macro_blackout=False,
+    )
+    assert rfh_healthy.macro_blackout_feed == FeedHealthStatus.HEALTHY
+    assert rfh_healthy.is_macro_blackout is False
+
+    # 4. Healthy blackout evidence -> HEALTHY + is_macro_blackout=True -> WAIT
+    rfh_blackout = RuntimeFeedHealth(
+        primary_15m=FeedHealthStatus.HEALTHY,
+        macro_blackout_feed=FeedHealthStatus.HEALTHY,
+        is_macro_blackout=True,
+    )
+    sig_b = sig_engine.analyze(
+        closed_candles_15m=c_15m,
+        runtime_health=rfh_blackout,
+        profile=calibrated_signal_profile,
+        as_of=eval_t,
+    )
+    assert sig_b.candidate_user_decision == UserDecision.WAIT
+
+
+def test_hostile_ablation_no_macro_blackout_recomputes_counterfactual_score():
+    """
+    NO_MACRO_BLACKOUT must:
+    - remove macro blackout and unblock event
+    - preserve session, swing, and calendar
+    - recompute cycle_score_3a using Phase 3A production formula
+    - prove: baseline blocked score (0.0) != counterfactual non-blackout score (> 0.0)
+    """
+    from engine.backtest.xauusd_ablation import XauUsdAblationEngine
+
+    eval_t = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+    dataset = PointInTimeDataset()
+
+    # Blocked baseline snapshot (blackout active -> score forced to 0.0)
+    blocked_snap = Cycle3ASnapshot(
+        timestamp=eval_t,
+        session=SessionContext(SessionType.LONDON, 0.5, True, {}, 20.0),
+        swing_duration=SwingDurationContext(10, 2.5, 10, 2.5, 60.0, True, 15.0),
+        macro_event=MacroEventContext(is_in_blackout=True, active_event_name="FOMC", is_feed_healthy=True),
+        calendar=None,
+        is_blocked_by_event=True,
+        cycle_score_3a=0.0,
+    )
+    dataset.add_cycle_3a(blocked_snap)
+    dataset.add_macro_context(eval_t, MacroEventContext(is_in_blackout=True, active_event_name="FOMC", is_feed_healthy=True))
+
+    engine = XauUsdAblationEngine()
+    abl_dataset = engine._create_ablated_dataset(dataset, XauUsdAblationType.NO_MACRO_BLACKOUT)
+
+    abl_snap = abl_dataset.get_cycle_3a(as_of=eval_t)
+    assert abl_snap is not None
+    assert abl_snap.is_blocked_by_event is False
+    assert abl_snap.macro_event.is_in_blackout is False
+    # Preserved session & swing
+    assert abl_snap.session.expectancy_score == 20.0
+    assert abl_snap.swing_duration.maturity_score == 15.0
+    # Recomputed score: 20.0 + 15.0 = 35.0
+    assert abl_snap.cycle_score_3a == 35.0
+    # Proves baseline blocked score != counterfactual non-blackout score
+    assert blocked_snap.cycle_score_3a != abl_snap.cycle_score_3a
+    assert blocked_snap.cycle_score_3a == 0.0
+    assert abl_snap.cycle_score_3a > 0.0
 
 
