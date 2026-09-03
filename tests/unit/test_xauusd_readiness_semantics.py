@@ -5,6 +5,8 @@ Verifies strict fail-closed generic backfill guard, per-timeframe independent co
 real gap statistics, dual fingerprint separation (Phase 6 15m vs Readiness 6-TF),
 immutable provenance, and calibration boundary invariants.
 """
+import os
+import json
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import pytest
@@ -23,6 +25,8 @@ from apps.market_data.readiness import (
     XauUsdDataReadinessEvaluator,
     XauUsdDataReadinessReport,
     compute_xauusd_readiness_fingerprint,
+    compute_xauusd_readiness_fingerprint_from_qs,
+    format_canonical_ohlc_decimal,
     evaluate_timeframe_coverage_and_gaps,
     EMPTY_DATASET_HASH,
 )
@@ -359,7 +363,11 @@ def test_scenario_l_sealed_manifest_rejects_literal_head(xauusd_test_env):
     instrument, listing = xauusd_test_env
     report = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=[])
 
-    for invalid_rev in ("HEAD", "head", "main", "MASTER", "", "   ", "abc"):
+    for invalid_rev in (
+        "HEAD", "head", "main", "MASTER", "", "   ", "abc",
+        "research/xauusd-data-readiness", "feature/foo", "abcdefg", "1234567",
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    ):
         with pytest.raises(ValueError) as exc:
             report.to_manifest_dict(code_revision=invalid_rev)
         assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
@@ -479,3 +487,173 @@ def test_scenario_r_existing_pilot_remains_calibration_data_not_ready(xauusd_tes
     assert report.passed is False
     assert report.coverage_complete is False
     assert any("HISTORICAL_COVERAGE_INCOMPLETE" in r for r in report.reasons)
+
+
+# =====================================================================
+# Hostile Test Suite: Provenance Hardening & 8-Decimal Precision (A-L)
+# =====================================================================
+@pytest.mark.django_db
+class TestProvenanceHardeningScenarios:
+    """Comprehensive test suite for sealed SHA validation, decimal precision, and provenance."""
+
+    def test_a_head_rejected(self, xauusd_test_env):
+        with pytest.raises(CommandError) as exc:
+            call_command("audit_xauusd_readiness", code_revision="HEAD")
+        assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
+
+    def test_b_research_branch_rejected(self, xauusd_test_env):
+        with pytest.raises(CommandError) as exc:
+            call_command("audit_xauusd_readiness", code_revision="research/xauusd-data-readiness")
+        assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
+
+    def test_c_feature_branch_rejected(self, xauusd_test_env):
+        with pytest.raises(CommandError) as exc:
+            call_command("audit_xauusd_readiness", code_revision="feature/foo")
+        assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
+
+    def test_d_seven_char_short_sha_rejected(self, xauusd_test_env):
+        for short_sha in ("1234567", "abcdefg", "a960342"):
+            with pytest.raises(CommandError) as exc:
+                call_command("audit_xauusd_readiness", code_revision=short_sha)
+            assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
+
+    def test_e_forty_char_non_hex_rejected(self, xauusd_test_env):
+        non_hex_40 = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        with pytest.raises(CommandError) as exc:
+            call_command("audit_xauusd_readiness", code_revision=non_hex_40)
+        assert "IMMUTABLE_CODE_REVISION_REQUIRED" in str(exc.value)
+
+    def test_f_exact_forty_char_hex_sha_accepted(self, xauusd_test_env):
+        exact_sha = "a960342886fbd49a1eea01558b0f1b8b057e6ae1"
+        out_m = "artifacts/test_manifest_tmp.json"
+        out_r = "artifacts/test_report_tmp.md"
+        try:
+            call_command(
+                "audit_xauusd_readiness",
+                code_revision=exact_sha,
+                output_manifest=out_m,
+                output_report=out_r,
+            )
+            assert os.path.exists(out_m)
+            with open(out_m, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            assert data["audit_code_revision"] == exact_sha
+        finally:
+            if os.path.exists(out_m):
+                os.remove(out_m)
+            if os.path.exists(out_r):
+                os.remove(out_r)
+
+    def test_g_allow_mutable_revision_preserves_development_mode(self, xauusd_test_env):
+        out_m = "artifacts/test_manifest_tmp.json"
+        out_r = "artifacts/test_report_tmp.md"
+        try:
+            call_command(
+                "audit_xauusd_readiness",
+                code_revision="HEAD",
+                allow_mutable_revision=True,
+                output_manifest=out_m,
+                output_report=out_r,
+            )
+            assert os.path.exists(out_m)
+            with open(out_m, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            assert data["audit_code_revision"] == "HEAD"
+        finally:
+            if os.path.exists(out_m):
+                os.remove(out_m)
+            if os.path.exists(out_r):
+                os.remove(out_r)
+
+    def test_h_identical_six_tf_evidence_produces_identical_fingerprint(self):
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        candles = [
+            MockCandle("1m", t0, t0 + timedelta(minutes=1), close=Decimal("2345.12345678")),
+            MockCandle("5m", t0, t0 + timedelta(minutes=5), open=Decimal("2345.11112222")),
+            MockCandle("15m", t0, t0 + timedelta(minutes=15)),
+            MockCandle("1h", t0, t0 + timedelta(hours=1)),
+            MockCandle("4h", t0, t0 + timedelta(hours=4)),
+            MockCandle("1d", t0, t0 + timedelta(days=1)),
+        ]
+        fp1 = compute_xauusd_readiness_fingerprint(candles)
+        fp2 = compute_xauusd_readiness_fingerprint(candles)
+        assert fp1 == fp2
+        assert len(fp1) == 64
+
+    def test_i_changing_one_1m_ohlc_by_1e8_changes_readiness_fingerprint(self):
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        c1 = MockCandle("1m", t0, t0 + timedelta(minutes=1), close=Decimal("2345.12345671"))
+        c1_mutated = MockCandle("1m", t0, t0 + timedelta(minutes=1), close=Decimal("2345.12345672"))
+
+        fp_orig = compute_xauusd_readiness_fingerprint([c1])
+        fp_mut = compute_xauusd_readiness_fingerprint([c1_mutated])
+        assert fp_orig != fp_mut
+
+    def test_j_changing_one_5m_ohlc_by_1e8_changes_readiness_fingerprint(self):
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        c5 = MockCandle("5m", t0, t0 + timedelta(minutes=5), open=Decimal("2345.12345671"))
+        c5_mutated = MockCandle("5m", t0, t0 + timedelta(minutes=5), open=Decimal("2345.12345672"))
+
+        fp_orig = compute_xauusd_readiness_fingerprint([c5])
+        fp_mut = compute_xauusd_readiness_fingerprint([c5_mutated])
+        assert fp_orig != fp_mut
+
+    def test_k_in_memory_and_queryset_fingerprint_use_same_canonical_decimal_serialization(self, xauusd_test_env):
+        instrument, listing = xauusd_test_env
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        src = "test_qs_match_source"
+
+        created_candles = []
+        for i, tf in enumerate(["1m", "5m", "15m", "1h", "4h", "1d"]):
+            c = MarketCandle.objects.create(
+                instrument=instrument,
+                source=src,
+                timeframe=tf,
+                timestamp_open=t0 + timedelta(hours=i),
+                timestamp_close=t0 + timedelta(hours=i + 1),
+                open=Decimal("2345.12345671"),
+                high=Decimal("2350.87654321"),
+                low=Decimal("2340.00000005"),
+                close=Decimal("2348.99999999"),
+                volume=Decimal("0.00000000"),
+                is_closed=True,
+                volume_evidence=VolumeEvidenceType.UNAVAILABLE,
+            )
+            created_candles.append(c)
+
+        qs = MarketCandle.objects.filter(source=src)
+        fp_qs = compute_xauusd_readiness_fingerprint_from_qs(qs)
+        fp_mem = compute_xauusd_readiness_fingerprint(created_candles)
+
+        assert fp_qs == fp_mem
+        assert fp_qs != EMPTY_DATASET_HASH
+
+    def test_l_phase6_15m_fingerprint_contract_remains_unchanged(self, xauusd_test_env):
+        from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity
+        from engine.core.types import CandleData
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        t_end = datetime(2026, 6, 1, 1, 0, tzinfo=timezone.utc)
+        candles = [
+            CandleData(
+                timestamp_open=t0 + i * timedelta(minutes=15),
+                timestamp_close=t0 + (i + 1) * timedelta(minutes=15),
+                open=Decimal("2000.00"),
+                high=Decimal("2010.00"),
+                low=Decimal("1995.00"),
+                close=Decimal("2005.00"),
+                volume=Decimal("100"),
+                is_closed=True,
+                source_id="twelve_data_xauusd",
+            )
+            for i in range(4)
+        ]
+        fp1 = compute_xauusd_dataset_identity(candles_15m=candles, start_time=t0, end_time=t_end)
+        fp2 = compute_xauusd_dataset_identity(candles_15m=candles, start_time=t0, end_time=t_end)
+        assert fp1 == fp2
+        assert len(fp1) == 64
+
+        instrument, _ = xauusd_test_env
+        mock_c = MockCandle("15m", t0, t0 + timedelta(minutes=15))
+        rep = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=[mock_c])
+        assert rep.phase6_15m_dataset_fingerprint != ""
+        assert rep.phase6_15m_dataset_fingerprint != EMPTY_DATASET_HASH

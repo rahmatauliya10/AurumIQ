@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import hashlib
 import json
+import re
 
 from apps.instruments.models import Instrument, MarketListing, ListingRole, ListingStatus
 from apps.market_data.models import MarketCandle, CandleQualityFlag, VolumeEvidenceType
@@ -76,6 +77,13 @@ TF_INTERVAL_SECONDS = {
     "1d": 86400,
 }
 
+GIT_SHA_40_REGEX = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def format_canonical_ohlc_decimal(val: Any) -> str:
+    """Lossless canonical 8-decimal representation matching MarketCandle.decimal_places=8."""
+    return f"{Decimal(str(val if val is not None else 0)):.8f}"
+
 
 def compute_xauusd_readiness_fingerprint(candles: Sequence[Any]) -> str:
     """
@@ -90,6 +98,7 @@ def compute_xauusd_readiness_fingerprint(candles: Sequence[Any]) -> str:
 
     Bound payload per candle:
       timeframe | timestamp_open_iso | timestamp_close_iso | open | high | low | close | source | is_closed | volume_evidence
+      where OHLC decimals are serialized losslessly with full 8-decimal precision.
     """
     if not candles:
         return EMPTY_DATASET_HASH
@@ -113,10 +122,10 @@ def compute_xauusd_readiness_fingerprint(candles: Sequence[Any]) -> str:
         t_close = getattr(c, "timestamp_close", None)
         t_open_iso = t_open.astimezone(timezone.utc).isoformat() if isinstance(t_open, datetime) else str(t_open)
         t_close_iso = t_close.astimezone(timezone.utc).isoformat() if isinstance(t_close, datetime) else str(t_close)
-        o = f"{Decimal(str(getattr(c, 'open', 0))):.6f}"
-        h = f"{Decimal(str(getattr(c, 'high', 0))):.6f}"
-        l = f"{Decimal(str(getattr(c, 'low', 0))):.6f}"
-        cl = f"{Decimal(str(getattr(c, 'close', 0))):.6f}"
+        o = format_canonical_ohlc_decimal(getattr(c, "open", 0))
+        h = format_canonical_ohlc_decimal(getattr(c, "high", 0))
+        l = format_canonical_ohlc_decimal(getattr(c, "low", 0))
+        cl = format_canonical_ohlc_decimal(getattr(c, "close", 0))
         src = str(getattr(c, "source", getattr(c, "source_id", "")))
         is_closed = str(bool(getattr(c, "is_closed", True)))
         ve = getattr(c, "volume_evidence", "UNAVAILABLE")
@@ -142,10 +151,10 @@ def compute_xauusd_readiness_fingerprint_from_qs(qs) -> str:
             tf_val, t_open, t_close, o, h, l, cl, src, is_closed, ve = row
             t_open_iso = t_open.astimezone(timezone.utc).isoformat() if isinstance(t_open, datetime) else str(t_open)
             t_close_iso = t_close.astimezone(timezone.utc).isoformat() if isinstance(t_close, datetime) else str(t_close)
-            o_s = f"{Decimal(str(o)):.6f}"
-            h_s = f"{Decimal(str(h)):.6f}"
-            l_s = f"{Decimal(str(l)):.6f}"
-            c_s = f"{Decimal(str(cl)):.6f}"
+            o_s = format_canonical_ohlc_decimal(o)
+            h_s = format_canonical_ohlc_decimal(h)
+            l_s = format_canonical_ohlc_decimal(l)
+            c_s = format_canonical_ohlc_decimal(cl)
             is_closed_s = str(bool(is_closed))
             ve_s = str(ve or "UNAVAILABLE")
             line = f"{tf_val}|{t_open_iso}|{t_close_iso}|{o_s}|{h_s}|{l_s}|{c_s}|{src}|{is_closed_s}|{ve_s}\n"
@@ -312,13 +321,11 @@ class XauUsdDataReadinessReport:
     ) -> Dict[str, Any]:
         """Format as machine-readable manifest JSON dictionary with immutable provenance."""
         if not allow_mutable_revision and (
-            not code_revision
-            or code_revision.strip().upper() in ("HEAD", "MAIN", "MASTER")
-            or len(code_revision.strip()) < 7
+            not code_revision or not GIT_SHA_40_REGEX.match(code_revision.strip())
         ):
             raise ValueError(
-                f"IMMUTABLE_CODE_REVISION_REQUIRED: A valid immutable Git commit SHA is required for sealed evidence artifacts, got '{code_revision}'. "
-                f"Literal 'HEAD' or branch names are forbidden."
+                f"IMMUTABLE_CODE_REVISION_REQUIRED: A valid 40-character hexadecimal Git commit SHA is required for sealed evidence artifacts, got '{code_revision}'. "
+                f"Literal 'HEAD', branch names, short SHAs, or non-hex values are forbidden unless allow_mutable_revision=True."
             )
 
         internal_gap_cnt = sum(g.get("internal_gap_count", 0) for g in self.gap_statistics_by_timeframe.values())

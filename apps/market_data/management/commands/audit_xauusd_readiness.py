@@ -2,7 +2,7 @@
 import os
 import json
 from django.core.management.base import BaseCommand, CommandError
-from apps.market_data.readiness import XauUsdDataReadinessEvaluator
+from apps.market_data.readiness import XauUsdDataReadinessEvaluator, GIT_SHA_40_REGEX
 
 
 class Command(BaseCommand):
@@ -90,10 +90,10 @@ class Command(BaseCommand):
 
         # Sealed manifest requires an immutable, non-empty explicit Git SHA
         if not allow_mutable:
-            if not code_rev or code_rev.strip().upper() in ("HEAD", "MAIN", "MASTER") or len(code_rev.strip()) < 7:
+            if not code_rev or not GIT_SHA_40_REGEX.match(code_rev.strip()):
                 raise CommandError(
-                    f"IMMUTABLE_CODE_REVISION_REQUIRED: A valid immutable Git commit SHA is required for sealed evidence artifacts, got '{code_rev}'. "
-                    f"Literal 'HEAD' or branch names are forbidden unless --allow-mutable-revision is explicitly passed."
+                    f"IMMUTABLE_CODE_REVISION_REQUIRED: A valid 40-character hexadecimal Git commit SHA is required for sealed evidence artifacts, got '{code_rev}'. "
+                    f"Literal 'HEAD', branch names, short SHAs, or non-hex values are forbidden unless --allow-mutable-revision is explicitly passed."
                 )
 
         self.stdout.write("Auditing XAUUSD persisted dataset readiness...")
