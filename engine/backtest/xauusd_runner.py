@@ -1,5 +1,6 @@
 """High-level deterministic backtest runner and execution orchestrator for XAUUSD."""
 from datetime import datetime
+import hashlib
 from typing import List, Optional, Sequence, Tuple
 
 from engine.backtest.clock import ReplayClock
@@ -57,6 +58,17 @@ class XauUsdBacktestRunner:
         # 1. Enforce strict dataset identity verification
         from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
         computed_ds_hash = compute_xauusd_dataset_identity_from_dataset(dataset, spec.start_time, spec.end_time)
+
+        empty_hashes = {
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            hashlib.sha256(b"EMPTY_DATASET").hexdigest(),
+        }
+        if spec.dataset_hash in empty_hashes or computed_ds_hash in empty_hashes:
+            raise ValueError(
+                f"Empty dataset hash '{spec.dataset_hash or computed_ds_hash}' cannot be calibrated. "
+                "Dataset must contain valid historical market evidence before calibration or backtesting."
+            )
+
         if spec.dataset_hash and spec.dataset_hash != computed_ds_hash:
             raise ValueError(f"dataset_hash mismatch: expected '{spec.dataset_hash}', computed '{computed_ds_hash}'")
         elif not spec.dataset_hash:

@@ -20,8 +20,8 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 | [**PHASE 3B: Experimental Cycles**](./PHASE_3B_EXPERIMENTAL_TIME_CYCLE.md) | Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🧪 `IMPLEMENTED / RESEARCH ONLY (PRODUCTION WEIGHT = 0.0)` |
 | [**PHASE 4: State Machine**](./PHASE_4_DIRECTION_TIMING_STATE_MACHINE.md) | Direction/Timing Scores, State Machine, Fingerprint | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (SEALED PHASE 4 BASELINE)` |
 | [**PHASE 5: Risk Engine**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Risk Planning, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
-| [**PHASE 6: Backtest Validation & Ablation**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | 🟡 `NOT STARTED (PIT BACKTEST + WALK-FORWARD + ABLATION REQUIRED)` |
-| [**PHASE 7: LiveMonitor & Alerts**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ⏸️ `PRODUCT COMPLETION PAUSED / ADAPTATION PENDING` |
+| [**PHASE 6: Backtest Validation & Ablation**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #14 @ dab3b6f)` |
+| [**PHASE 7: LiveMonitor & Alerts**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
 | [**PHASE 8: Live Paper Observation**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
 | [**PHASE 9: ML Meta-Filter**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
 

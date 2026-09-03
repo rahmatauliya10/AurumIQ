@@ -105,12 +105,12 @@ class Command(BaseCommand):
                     "fallback_priority": 0,
                 },
             )
-            # Primary Spot Gold XAU/USD
-            MarketListing.objects.get_or_create(
+            # Twelve Data Primary Spot Gold XAU/USD (Authoritative Qualified Primary)
+            MarketListing.objects.update_or_create(
                 instrument=xau_usd,
-                provider="xauusd_primary",
+                provider="twelve_data_xauusd",
                 defaults={
-                    "provider_symbol": "XAUUSD",
+                    "provider_symbol": "XAU/USD",
                     "listing_role": ListingRole.PRIMARY_XAUUSD_SPOT,
                     "status": ListingStatus.ACTIVE,
                     "tick_size": Decimal("0.01"),
@@ -118,8 +118,32 @@ class Command(BaseCommand):
                     "fallback_priority": 0,
                 },
             )
+            # Legacy placeholder xauusd_primary - preserved as dormant / halted generic listing
+            MarketListing.objects.update_or_create(
+                instrument=xau_usd,
+                provider="xauusd_primary",
+                defaults={
+                    "provider_symbol": "XAUUSD",
+                    "listing_role": ListingRole.GENERIC,
+                    "status": ListingStatus.HALTED,
+                    "tick_size": Decimal("0.01"),
+                    "lot_size": Decimal("0.0001"),
+                    "fallback_priority": 99,
+                },
+            )
+            # Ensure exactly one active PRIMARY_XAUUSD_SPOT listing for canonical XAUUSD
+            MarketListing.objects.filter(
+                instrument=xau_usd,
+                listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            ).exclude(
+                provider="twelve_data_xauusd"
+            ).update(
+                listing_role=ListingRole.GENERIC,
+                status=ListingStatus.HALTED,
+                fallback_priority=99,
+            )
             # Secondary Independent Spot Gold XAU/USD
-            MarketListing.objects.get_or_create(
+            MarketListing.objects.update_or_create(
                 instrument=xau_usd,
                 provider="xauusd_secondary",
                 defaults={
