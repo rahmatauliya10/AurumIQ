@@ -2,7 +2,7 @@
 
 > **Governance Level:** Evidence-Driven Empirical Calibration Campaign (Post Phase 7 / Pre Phase 8)  
 > **Authoritative Baseline SHA:** `57f6de1405d0df8548182a166d245f1a3173363d`<br>
-> **Audit Code Revision:** `4773f44a8baab65908f3a5ec7a7464e6dd974ac2`<br>
+> **Audit Code Revision:** `da09745d2160a065ebde6716c3b0c10052b7756b`<br>
 > **Data Acquisition Code Revision:** `UNRESOLVED_PRECOMMIT_WORKTREE`<br>
 > **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)<br>
 > **Authoritative Analytical Market Source:** `PRIMARY_XAUUSD_SPOT`<br>
@@ -80,10 +80,10 @@ Decision: **`CALIBRATION_DATA_NOT_READY`**
 
 ## 5. Dataset Provenance & Fingerprints
 
-- **Audit Code Revision:** `4773f44a8baab65908f3a5ec7a7464e6dd974ac2`
+- **Audit Code Revision:** `da09745d2160a065ebde6716c3b0c10052b7756b`
 - **Data Acquisition Code Revision:** `UNRESOLVED_PRECOMMIT_WORKTREE`
 - **Phase 6 15m Dataset Fingerprint:** `d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749`
-- **Readiness Evidence Fingerprint (6-TF):** `7fef21312410f2b1b70c648990a2f519fb2ca13ed62ce1a9a16b8ed90cb8a878`
+- **Readiness Evidence Fingerprint (6-TF):** `0dcacedf50dd818499bd7a23af159b96153da14122ee6e29897cab89d3efed56`
 - **Readiness Fingerprint Reproducible:** `PASS`
 
 ---

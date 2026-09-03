@@ -21,11 +21,11 @@
     "1m": 132480
   },
   "source_identity": "PRIMARY_XAUUSD_SPOT (twelve_data_xauusd)",
-  "audit_code_revision": "4773f44a8baab65908f3a5ec7a7464e6dd974ac2",
+  "audit_code_revision": "da09745d2160a065ebde6716c3b0c10052b7756b",
   "data_acquisition_code_revision": "UNRESOLVED_PRECOMMIT_WORKTREE",
-  "code_revision": "4773f44a8baab65908f3a5ec7a7464e6dd974ac2",
+  "code_revision": "da09745d2160a065ebde6716c3b0c10052b7756b",
   "phase6_15m_dataset_fingerprint": "d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749",
-  "readiness_evidence_fingerprint": "7fef21312410f2b1b70c648990a2f519fb2ca13ed62ce1a9a16b8ed90cb8a878",
+  "readiness_evidence_fingerprint": "0dcacedf50dd818499bd7a23af159b96153da14122ee6e29897cab89d3efed56",
   "dataset_fingerprint": "d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749",
   "historical_coverage_complete": false,
   "coverage_by_timeframe": {
@@ -185,5 +185,5 @@
       "HISTORICAL_COVERAGE_INCOMPLETE: Required calibration window [2020-04-07 to 2026-09-01] is incomplete for timeframe(s): 15m, 1h, 4h, 1d, 5m, 1m."
     ]
   },
-  "generated_at": "2026-09-03T01:38:29Z"
+  "generated_at": "2026-09-03T02:38:07Z"
 }
