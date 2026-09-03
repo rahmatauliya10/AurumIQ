@@ -4,6 +4,12 @@
   "primary_symbol": "XAU/USD",
   "listing_status": "ACTIVE",
   "listing_role": "PRIMARY_XAUUSD_SPOT",
+  "required_coverage_start": "2020-04-07T00:00:00+00:00",
+  "required_coverage_end_exclusive": "2026-09-01T00:00:00+00:00",
+  "required_duration_days": 2338.0,
+  "actual_global_start": "2026-06-01T00:00:00+00:00",
+  "actual_global_end": "2026-09-01T00:00:00+00:00",
+  "actual_observed_span_days": 92.0,
   "data_start": "2026-06-01T00:00:00+00:00",
   "data_end": "2026-09-01T00:00:00+00:00",
   "timeframe_counts": {
@@ -15,15 +21,129 @@
     "1m": 132480
   },
   "source_identity": "PRIMARY_XAUUSD_SPOT (twelve_data_xauusd)",
-  "code_revision": "HEAD",
+  "audit_code_revision": "4773f44a8baab65908f3a5ec7a7464e6dd974ac2",
+  "data_acquisition_code_revision": "UNRESOLVED_PRECOMMIT_WORKTREE",
+  "code_revision": "4773f44a8baab65908f3a5ec7a7464e6dd974ac2",
+  "phase6_15m_dataset_fingerprint": "d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749",
+  "readiness_evidence_fingerprint": "7fef21312410f2b1b70c648990a2f519fb2ca13ed62ce1a9a16b8ed90cb8a878",
   "dataset_fingerprint": "d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749",
   "historical_coverage_complete": false,
+  "coverage_by_timeframe": {
+    "15m": {
+      "count": 8832,
+      "earliest_timestamp_open": "2026-06-01T00:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T00:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    },
+    "1h": {
+      "count": 2208,
+      "earliest_timestamp_open": "2026-06-01T00:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T00:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    },
+    "4h": {
+      "count": 552,
+      "earliest_timestamp_open": "2026-06-01T01:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T01:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    },
+    "1d": {
+      "count": 92,
+      "earliest_timestamp_open": "2026-06-01T00:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T00:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    },
+    "5m": {
+      "count": 26496,
+      "earliest_timestamp_open": "2026-06-01T00:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T00:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    },
+    "1m": {
+      "count": 132480,
+      "earliest_timestamp_open": "2026-06-01T00:00:00+00:00",
+      "latest_timestamp_close": "2026-09-01T00:00:00+00:00",
+      "coverage_start_satisfied": false,
+      "coverage_end_satisfied": true,
+      "coverage_complete": false
+    }
+  },
+  "gap_statistics_by_timeframe": {
+    "15m": {
+      "status": "EVALUATED",
+      "observed_count": 8832,
+      "expected_interval_seconds": 900,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    },
+    "1h": {
+      "status": "EVALUATED",
+      "observed_count": 2208,
+      "expected_interval_seconds": 3600,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    },
+    "4h": {
+      "status": "EVALUATED",
+      "observed_count": 552,
+      "expected_interval_seconds": 14400,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    },
+    "1d": {
+      "status": "EVALUATED",
+      "observed_count": 92,
+      "expected_interval_seconds": 86400,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    },
+    "5m": {
+      "status": "EVALUATED",
+      "observed_count": 26496,
+      "expected_interval_seconds": 300,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    },
+    "1m": {
+      "status": "EVALUATED",
+      "observed_count": 132480,
+      "expected_interval_seconds": 60,
+      "internal_gap_count": 0,
+      "missing_interval_count": 0,
+      "missing_intervals_pct": "0.00%",
+      "largest_gap_seconds": 0
+    }
+  },
   "missing_data_statistics": {
-    "expected_duration_days": 92.0,
+    "required_duration_days": 2338.0,
+    "actual_observed_span_days": 92.0,
+    "expected_duration_days": 2338.0,
     "actual_duration_days": 92.0,
     "total_persisted_candles": 170660,
     "duplicate_count": 0,
-    "missing_expected_intervals": "100.0%",
+    "internal_gap_count": 0,
+    "missing_expected_intervals": "0 intervals",
+    "missing_interval_count": 0,
     "largest_gap_seconds": 0,
     "naive_timestamp_count": 0,
     "invalid_ohlc_count": 0,
@@ -62,8 +182,8 @@
     "passed": false,
     "decision": "CALIBRATION_DATA_NOT_READY",
     "reasons": [
-      "HISTORICAL_COVERAGE_INCOMPLETE: Persisted dataset coverage [2026-06-01 to 2026-09-01] does not cover required full calibration window [2020-04-07 to 2026-09-01]."
+      "HISTORICAL_COVERAGE_INCOMPLETE: Required calibration window [2020-04-07 to 2026-09-01] is incomplete for timeframe(s): 15m, 1h, 4h, 1d, 5m, 1m."
     ]
   },
-  "generated_at": "2026-09-02T17:12:05Z"
+  "generated_at": "2026-09-03T01:38:29Z"
 }

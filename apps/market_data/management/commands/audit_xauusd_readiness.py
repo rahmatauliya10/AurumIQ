@@ -34,6 +34,17 @@ class Command(BaseCommand):
             help="Current working branch Git SHA or ref",
         )
         parser.add_argument(
+            "--allow-mutable-revision",
+            action="store_true",
+            help="Allow non-immutable code revisions (HEAD, branch names) during development.",
+        )
+        parser.add_argument(
+            "--data-acquisition-code-revision",
+            type=str,
+            default="UNRESOLVED_PRECOMMIT_WORKTREE",
+            help="Code revision active when the pilot dataset was acquired.",
+        )
+        parser.add_argument(
             "--expected-start",
             type=str,
             default="2020-04-07T00:00:00Z",
@@ -56,6 +67,8 @@ class Command(BaseCommand):
         report_path = options["output_report"]
         baseline_sha = options["baseline_sha"]
         code_rev = options["code_revision"]
+        allow_mutable = options.get("allow_mutable_revision", False)
+        acq_code_rev = options.get("data_acquisition_code_revision", "UNRESOLVED_PRECOMMIT_WORKTREE")
         expected_start_str = options["expected_start"]
         expected_end_str = options["expected_end"]
         no_coverage_check = options["no_coverage_check"]
@@ -75,6 +88,14 @@ class Command(BaseCommand):
                 except Exception as e:
                     raise CommandError(f"INVALID_EXPECTED_END: {e}") from e
 
+        # Sealed manifest requires an immutable, non-empty explicit Git SHA
+        if not allow_mutable:
+            if not code_rev or code_rev.strip().upper() in ("HEAD", "MAIN", "MASTER") or len(code_rev.strip()) < 7:
+                raise CommandError(
+                    f"IMMUTABLE_CODE_REVISION_REQUIRED: A valid immutable Git commit SHA is required for sealed evidence artifacts, got '{code_rev}'. "
+                    f"Literal 'HEAD' or branch names are forbidden unless --allow-mutable-revision is explicitly passed."
+                )
+
         self.stdout.write("Auditing XAUUSD persisted dataset readiness...")
         report = XauUsdDataReadinessEvaluator.evaluate(
             expected_coverage_start=exp_start,
@@ -85,14 +106,24 @@ class Command(BaseCommand):
         if manifest_path:
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
             with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(report.to_manifest_dict(code_revision=code_rev), f, indent=2)
+                manifest_dict = report.to_manifest_dict(
+                    code_revision=code_rev,
+                    data_acquisition_code_revision=acq_code_rev,
+                    allow_mutable_revision=allow_mutable,
+                )
+                json.dump(manifest_dict, f, indent=2)
             self.stdout.write(self.style.SUCCESS(f"Manifest written to {manifest_path}"))
 
         # Write report
         if report_path:
             os.makedirs(os.path.dirname(report_path), exist_ok=True)
             with open(report_path, "w", encoding="utf-8") as f:
-                f.write(report.to_markdown_report(baseline_sha=baseline_sha, code_revision=code_rev))
+                report_md = report.to_markdown_report(
+                    baseline_sha=baseline_sha,
+                    code_revision=code_rev,
+                    data_acquisition_code_revision=acq_code_rev,
+                )
+                f.write(report_md)
             self.stdout.write(self.style.SUCCESS(f"Audit report written to {report_path}"))
 
         self.stdout.write(f"Audit Complete. Decision: {report.decision} (Passed: {report.passed})")

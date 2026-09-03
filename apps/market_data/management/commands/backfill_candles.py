@@ -10,9 +10,15 @@ from apps.market_data.providers.registry import registry
 from apps.market_data.normalization import QuoteNormalizer
 
 
-def parse_iso_or_none(val: Optional[str]) -> Optional[datetime]:
+def parse_iso_or_none(val: Optional[str], strict_tz: bool = False) -> Optional[datetime]:
     if not val:
         return None
+    if strict_tz:
+        from apps.market_data.readiness import parse_strict_iso_datetime
+        try:
+            return parse_strict_iso_datetime(val)
+        except ValueError as e:
+            raise CommandError(f"INVALID_TIMESTAMP: {e}") from e
     cleaned = val.strip().replace("Z", "+00:00")
     dt = datetime.fromisoformat(cleaned)
     if dt.tzinfo is None:
@@ -60,6 +66,15 @@ class Command(BaseCommand):
         if not instrument:
             raise CommandError(f"Instrument '{raw_symbol}' not found in database. Run seed_instruments first.")
 
+        is_canonical_xauusd = (parts[0] == "XAU" and parts[1] == "USD")
+
+        # Determine time boundaries with strict timezone validation for canonical XAUUSD
+        end_time = parse_iso_or_none(options["end"], strict_tz=is_canonical_xauusd) or datetime.now(timezone.utc)
+        start_time = parse_iso_or_none(options["start"], strict_tz=is_canonical_xauusd) or (end_time - timedelta(days=options["days"]))
+
+        if start_time >= end_time:
+            raise CommandError(f"Start time ({start_time.isoformat()}) must be before end time ({end_time.isoformat()}).")
+
         tfs = [t.strip() for t in options["timeframes"].split(",") if t.strip()]
         days = options["days"]
         chosen_provider = options["provider"]
@@ -68,7 +83,7 @@ class Command(BaseCommand):
         qs = MarketListing.objects.filter(instrument=instrument, status=ListingStatus.ACTIVE)
         if chosen_provider:
             listing = qs.filter(provider=chosen_provider.lower()).first()
-        elif parts[0] == "XAU" and parts[1] == "USD":
+        elif is_canonical_xauusd:
             # Spot Gold must resolve PRIMARY_XAUUSD_SPOT
             listing = qs.filter(listing_role=ListingRole.PRIMARY_XAUUSD_SPOT).first() or qs.order_by("fallback_priority").first()
         else:
@@ -77,7 +92,14 @@ class Command(BaseCommand):
         if not listing:
             raise CommandError(f"No active market listing found for {raw_symbol}.")
 
-        # 2. Check provider configuration
+        # 2. FAIL CLOSED: Canonical XAU/USD with Twelve Data requires specialized backfill engine
+        if is_canonical_xauusd and listing.provider == "twelve_data_xauusd":
+            raise CommandError(
+                "CANONICAL_XAUUSD_TWELVE_DATA_REQUIRES_SPECIALIZED_BACKFILL: "
+                "Use `python manage.py backfill_xauusd_twelve_data` for authoritative Twelve Data XAUUSD acquisition."
+            )
+
+        # 3. Check provider configuration
         try:
             provider = registry.get(listing.provider)
         except KeyError:
@@ -90,13 +112,6 @@ class Command(BaseCommand):
                     "Please configure XAUUSD_PRIMARY_FEED_URL and optionally XAUUSD_PRIMARY_API_KEY in your environment."
                 )
             raise CommandError(f"Market data provider '{listing.provider}' is NOT_CONFIGURED.")
-
-        # 3. Determine time boundaries
-        end_time = parse_iso_or_none(options["end"]) or datetime.now(timezone.utc)
-        start_time = parse_iso_or_none(options["start"]) or (end_time - timedelta(days=days))
-
-        if start_time >= end_time:
-            raise CommandError(f"Start time ({start_time.isoformat()}) must be before end time ({end_time.isoformat()}).")
 
         # 4. Determine quote normalization
         is_direct_usd = (instrument.quote_asset.code == "USD")

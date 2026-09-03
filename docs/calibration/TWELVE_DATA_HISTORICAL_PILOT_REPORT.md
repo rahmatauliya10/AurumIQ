@@ -99,11 +99,15 @@ All 170,660 pilot candles were acquired within the historical request budget, pe
 
 ---
 
-## 7. Dataset Cryptographic Fingerprint
+## 7. Dataset Cryptographic Fingerprints & Provenance
 
-- **Canonical Dataset SHA-256:**  
+- **Phase 6 15m Dataset Fingerprint:**  
   `d5a97bfed92a97fe96bcb2ec1b9d02fd20f027ad8d17ed9f5b9c824a525fe749`
-- **Fingerprint Reproducibility:** ✅ **PASS** (Re-evaluated on local database, producing the exact identical hash).
+- **Readiness Evidence Fingerprint (6-TF):**  
+  `7fef21312410f2b1b70c648990a2f519fb2ca13ed62ce1a9a16b8ed90cb8a878`
+- **Audit Code Revision:** `4773f44a8baab65908f3a5ec7a7464e6dd974ac2`
+- **Data Acquisition Code Revision:** `UNRESOLVED_PRECOMMIT_WORKTREE`
+- **Fingerprint Reproducibility:** ✅ **PASS** (Re-evaluated on local database, producing the exact identical hash across 170,660 candles).
 
 ---
 
