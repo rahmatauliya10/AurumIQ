@@ -1,7 +1,7 @@
 """Canonical expected-event set reconciliation and coverage evaluator."""
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 def get_canonical_expected_cpi_keys() -> Set[str]:
@@ -86,12 +86,23 @@ class CanonicalCoverageReport:
     is_complete: bool
     missing_keys: List[str]
     unexpected_keys: List[str]
+    published_count: int = 0
+    published_late_or_bundled_count: int = 0
+    officially_not_published_count: int = 0
+    missing_unexplained_count: int = 0
+    lifecycle_coverage_complete: bool = False
+    schedule_coverage_complete: bool = False
+    observation_coverage_complete: bool = False
+    provenance_coverage_complete: bool = False
 
 
 def evaluate_canonical_macro_coverage(
     family: str,
     observed_keys: List[str],
     invalid_keys: Optional[List[str]] = None,
+    observation_status_map: Optional[Dict[str, str]] = None,
+    numeric_values_map: Optional[Dict[str, Any]] = None,
+    provenance_map: Optional[Dict[str, bool]] = None,
 ) -> CanonicalCoverageReport:
     """
     Evaluate coverage strictly using set reconciliation:
@@ -101,6 +112,11 @@ def evaluate_canonical_macro_coverage(
     - Extra unexpected keys (O \\ E) are flagged and NEVER raise coverage.
     - Duplicate keys are tracked and must be 0 for is_complete=True.
     - Invalid records are tracked and must be 0 for is_complete=True.
+    - Dimensions evaluated:
+      * Event lifecycle: All canonical keys represented.
+      * Observation status: PUBLISHED, PUBLISHED_LATE_OR_BUNDLED, OFFICIALLY_NOT_PUBLISHED.
+      * Missing unexplained and invalid records fail is_complete.
+      * Fabricated numeric observations for officially-not-published events fail as INVALID.
     """
     if family == "US_CPI":
         expected_set = get_canonical_expected_cpi_keys()
@@ -112,7 +128,23 @@ def evaluate_canonical_macro_coverage(
         raise ValueError(f"Unknown macro family: {family}")
 
     invalid_set = set(invalid_keys or [])
-    
+    status_map = observation_status_map or {}
+    num_map = numeric_values_map or {}
+    prov_map = provenance_map or {}
+
+    # Validation: CPI October 2025 must NEVER contain a numeric observation
+    if family == "US_CPI" and "US_CPI_2025_10" in observed_keys:
+        val = num_map.get("US_CPI_2025_10")
+        if val is not None and str(val).strip() not in ("", "None", "OFFICIALLY_NOT_PUBLISHED", "N/A"):
+            # Fabricated numeric value detected! Must fail closed as INVALID
+            invalid_set.add("US_CPI_2025_10")
+
+    # Validation: OFFICIALLY_NOT_PUBLISHED must have defensible provenance
+    for k, status in status_map.items():
+        if status == "OFFICIALLY_NOT_PUBLISHED":
+            if prov_map.get(k) is False:
+                invalid_set.add(k)
+
     # Calculate duplicates
     seen = set()
     duplicates = set()
@@ -134,6 +166,19 @@ def evaluate_canonical_macro_coverage(
     unexpected_cnt = len(unexpected_set)
     invalid_cnt = len(invalid_set)
 
+    # Count observation statuses among matched keys
+    pub_cnt = 0
+    late_cnt = 0
+    not_pub_cnt = 0
+    for k in matched_set:
+        st = status_map.get(k, "PUBLISHED")
+        if st == "PUBLISHED_LATE_OR_BUNDLED":
+            late_cnt += 1
+        elif st == "OFFICIALLY_NOT_PUBLISHED":
+            not_pub_cnt += 1
+        else:
+            pub_cnt += 1
+
     coverage_pct = (matched_cnt / expected_cnt) * 100.0 if expected_cnt > 0 else 0.0
 
     # Hard gate criteria: 100.0% coverage, 0 missing, 0 invalid, 0 duplicate, 0 extra unexpected
@@ -144,6 +189,8 @@ def evaluate_canonical_macro_coverage(
         and duplicate_count == 0
         and unexpected_cnt == 0
     )
+
+    prov_complete = (invalid_cnt == 0 and all(prov_map.get(k, True) for k in matched_set))
 
     return CanonicalCoverageReport(
         family=family,
@@ -158,4 +205,13 @@ def evaluate_canonical_macro_coverage(
         is_complete=is_complete,
         missing_keys=sorted(list(missing_set)),
         unexpected_keys=sorted(list(unexpected_set)),
+        published_count=pub_cnt,
+        published_late_or_bundled_count=late_cnt,
+        officially_not_published_count=not_pub_cnt,
+        missing_unexplained_count=missing_cnt,
+        lifecycle_coverage_complete=(matched_cnt == expected_cnt and unexpected_cnt == 0),
+        schedule_coverage_complete=(matched_cnt == expected_cnt),
+        observation_coverage_complete=is_complete,
+        provenance_coverage_complete=prov_complete,
     )
+

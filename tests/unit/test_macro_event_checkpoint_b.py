@@ -20,6 +20,7 @@ Covers non-negotiable governance requirements:
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
 from apps.market_data.macro.coverage import (
@@ -35,6 +36,7 @@ from apps.market_data.models import (
     MacroEventIdentity,
     MacroObservationVintage,
     MacroScheduleVintage,
+    PublicationStatus,
     ScheduleStatus,
     SourceSnapshot,
 )
@@ -584,4 +586,489 @@ def test_readiness_gate_fails_closed_when_macro_incomplete(xauusd_setup):
     assert report.passed is False
     assert report.decision == "CANDLES_READY_MACRO_MISSING"
     assert any("Canonical macro coverage incomplete" in r or "Point-in-time macro event coverage is 0" in r for r in report.reasons)
+
+
+# ==============================================================================
+# CHECKPOINT B REMEDIATION HOSTILE TESTS (Section 13)
+# ==============================================================================
+
+# 1. Cancelled CPI is not treated as unexplained missing
+def test_remediation_01_cancelled_cpi_not_unexplained_missing():
+    """Cancelled October 2025 CPI with OFFICIALLY_NOT_PUBLISHED status is not treated as missing unexplained."""
+    keys = list(get_canonical_expected_cpi_keys())
+    st_map = {"US_CPI_2025_10": "OFFICIALLY_NOT_PUBLISHED"}
+    num_map = {"US_CPI_2025_10": None}
+    prov_map = {"US_CPI_2025_10": True}
+
+    report = evaluate_canonical_macro_coverage(
+        "US_CPI",
+        keys,
+        observation_status_map=st_map,
+        numeric_values_map=num_map,
+        provenance_map=prov_map,
+    )
+    assert report.is_complete is True
+    assert report.officially_not_published_count == 1
+    assert report.missing_unexplained_count == 0
+    assert report.missing_count == 0
+    assert report.published_count == 76
+
+
+# 2. CPI October 2025 contains no numeric observation
+@pytest.mark.django_db
+def test_remediation_02_cpi_october_2025_no_numeric_observation(macro_identities, source_snapshot_fixture):
+    """CPI October 2025 persistent observation has publication_status=OFFICIALLY_NOT_PUBLISHED and level_value=None."""
+    cpi = macro_identities["US_CPI"]
+    sched = MacroScheduleVintage.objects.create(
+        vintage_id="sched_cpi_2025_10_v0_test",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    obs = MacroObservationVintage.objects.create(
+        vintage_id="obs_cpi_2025_10_v0_test",
+        event=cpi,
+        schedule_vintage=sched,
+        reference_period="2025-10",
+        revision_number=0,
+        publication_status=PublicationStatus.OFFICIALLY_NOT_PUBLISHED,
+        non_publication_reason="2025_LAPSE_IN_APPROPRIATIONS",
+        observation_date=date(2025, 10, 1),
+        vintage_date=date(2025, 12, 18),
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2025, 12, 18, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc),
+        raw_value="OFFICIALLY_NOT_PUBLISHED",
+        level_value=None,
+        derived_change_value=None,
+        unit="PERCENT_MOM",
+        source_snapshot=source_snapshot_fixture,
+    )
+    assert obs.level_value is None
+    assert obs.derived_change_value is None
+    assert obs.publication_status == PublicationStatus.OFFICIALLY_NOT_PUBLISHED
+    assert obs.non_publication_reason == "2025_LAPSE_IN_APPROPRIATIONS"
+
+
+# 3. Fabricated CPI October value is rejected
+def test_remediation_03_fabricated_cpi_october_value_rejected():
+    """Any attempt to provide a synthetic numeric value for October 2025 CPI fails validation as INVALID."""
+    keys = list(get_canonical_expected_cpi_keys())
+    st_map = {"US_CPI_2025_10": "OFFICIALLY_NOT_PUBLISHED"}
+    # Hostile synthetic value
+    num_map = {"US_CPI_2025_10": Decimal("315.421")}
+    prov_map = {"US_CPI_2025_10": True}
+
+    report = evaluate_canonical_macro_coverage(
+        "US_CPI",
+        keys,
+        observation_status_map=st_map,
+        numeric_values_map=num_map,
+        provenance_map=prov_map,
+    )
+    assert report.is_complete is False
+    assert report.invalid_count >= 1
+    assert "US_CPI_2025_10" in report.missing_keys
+
+
+# 4. Before cancellation known_at, original schedule remains visible
+@pytest.mark.django_db
+def test_remediation_04_before_cancellation_known_at_original_schedule_visible(macro_identities, source_snapshot_fixture):
+    """Before cancellation known_at, original scheduled event is visible in point-in-time replay."""
+    cpi = macro_identities["US_CPI"]
+
+    # Schedule v0: Scheduled (known at 2024-12-01)
+    s_v0 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_cpi_2025_10_v0",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.SCHEDULED,
+        known_at=datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    # Schedule v1: Cancelled (known at 2025-11-20 13:30)
+    MacroScheduleVintage.objects.create(
+        vintage_id="sched_cpi_2025_10_v1",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        supersedes_vintage=s_v0,
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    # Replay as of 2025-11-10 (before cancellation known_at)
+    events = resolve_macro_events_as_of(
+        as_of=datetime(2025, 11, 10, 0, 0, tzinfo=timezone.utc),
+        event_families=["US_CPI"],
+    )
+    cpi_event = next((e for e in events if "2025-10" in e.event_id), None)
+    assert cpi_event is not None
+    assert cpi_event.scheduled_at == datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc)
+    assert cpi_event.released_at is None
+
+
+# 5. After cancellation known_at, future blackout from cancelled release disappears
+@pytest.mark.django_db
+def test_remediation_05_after_cancellation_known_at_blackout_disappears(macro_identities, source_snapshot_fixture):
+    """After cancellation known_at, cancelled release is excluded from replay so future blackout disappears."""
+    cpi = macro_identities["US_CPI"]
+
+    s_v0 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_cpi_2025_10_v0",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.SCHEDULED,
+        known_at=datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    MacroScheduleVintage.objects.create(
+        vintage_id="sched_cpi_2025_10_v1",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        supersedes_vintage=s_v0,
+        source_snapshot=source_snapshot_fixture,
+    )
+    # Observation is OFFICIALLY_NOT_PUBLISHED
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_cpi_2025_10_v0",
+        event=cpi,
+        schedule_vintage=s_v0,
+        reference_period="2025-10",
+        revision_number=0,
+        publication_status=PublicationStatus.OFFICIALLY_NOT_PUBLISHED,
+        observation_date=date(2025, 10, 1),
+        vintage_date=date(2025, 12, 18),
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2025, 12, 18, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc),
+        raw_value="OFFICIALLY_NOT_PUBLISHED",
+        level_value=None,
+        derived_change_value=None,
+        unit="PERCENT_MOM",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    # Replay as of 2025-11-21 (after cancellation known_at)
+    events = resolve_macro_events_as_of(
+        as_of=datetime(2025, 11, 21, 0, 0, tzinfo=timezone.utc),
+        event_families=["US_CPI"],
+    )
+    cpi_event = next((e for e in events if "2025-10" in e.event_id), None)
+    assert cpi_event is None, "Cancelled release without valid numeric observation must be excluded from replay!"
+
+
+# 6. NFP October dedicated release is represented as cancelled
+@pytest.mark.django_db
+def test_remediation_06_nfp_october_dedicated_release_cancelled(macro_identities, source_snapshot_fixture):
+    """NFP October 2025 dedicated release has a CANCELLED schedule vintage with defensible known_at."""
+    nfp = macro_identities["US_NFP"]
+    sched_cancel = MacroScheduleVintage.objects.create(
+        vintage_id="sched_nfp_2025_10_v1",
+        event=nfp,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    assert sched_cancel.schedule_status == ScheduleStatus.CANCELLED
+    assert sched_cancel.known_at == datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc)
+
+
+# 7. Delayed/bundled October PAYEMS is invisible before actual publication
+@pytest.mark.django_db
+def test_remediation_07_delayed_bundled_october_payems_invisible_before_publication(macro_identities, source_snapshot_fixture):
+    """Delayed/bundled October PAYEMS observation is invisible before its actual publication timestamp (2025-12-16T13:30:00Z)."""
+    nfp = macro_identities["US_NFP"]
+    s_v0 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_nfp_2025_10_v0",
+        event=nfp,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_nfp_2025_10_v0",
+        event=nfp,
+        schedule_vintage=s_v0,
+        reference_period="2025-10",
+        revision_number=0,
+        publication_status=PublicationStatus.PUBLISHED_LATE_OR_BUNDLED,
+        observation_date=date(2025, 10, 1),
+        vintage_date=date(2025, 12, 16),
+        scheduled_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2025, 12, 16, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        raw_value="-105K",
+        level_value=Decimal("159488"),
+        derived_change_value=Decimal("-105"),
+        unit="THOUSANDS_OF_PERSONS",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    # Replay on Dec 01 (before actual publication date of Dec 16)
+    events = resolve_macro_events_as_of(
+        as_of=datetime(2025, 12, 1, 0, 0, tzinfo=timezone.utc),
+        event_families=["US_NFP"],
+    )
+    nfp_event = next((e for e in events if "2025-10" in e.event_id), None)
+    assert nfp_event is None, "Bundled PAYEMS observation must be invisible before actual publication timestamp!"
+
+
+# 8. Original scheduled release date does not expose PAYEMS early
+@pytest.mark.django_db
+def test_remediation_08_original_scheduled_release_date_does_not_expose_payems_early(macro_identities, source_snapshot_fixture):
+    """The original Nov 7 release date does NOT expose PAYEMS early."""
+    nfp = macro_identities["US_NFP"]
+    s_v0 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_nfp_2025_10_v0",
+        event=nfp,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.SCHEDULED,
+        known_at=datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_nfp_2025_10_v0",
+        event=nfp,
+        schedule_vintage=s_v0,
+        reference_period="2025-10",
+        revision_number=0,
+        publication_status=PublicationStatus.PUBLISHED_LATE_OR_BUNDLED,
+        observation_date=date(2025, 10, 1),
+        vintage_date=date(2025, 12, 16),
+        scheduled_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2025, 12, 16, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        raw_value="-105K",
+        level_value=Decimal("159488"),
+        derived_change_value=Decimal("-105"),
+        unit="THOUSANDS_OF_PERSONS",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    # Replay on original scheduled date Nov 7 at 14:00 UTC
+    events = resolve_macro_events_as_of(
+        as_of=datetime(2025, 11, 7, 14, 0, tzinfo=timezone.utc),
+        event_families=["US_NFP"],
+    )
+    nfp_event = next((e for e in events if "2025-10" in e.event_id), None)
+    assert nfp_event is not None
+    assert nfp_event.released_at is None
+    assert nfp_event.initial_value is None, "PAYEMS must not leak on originally scheduled release date!"
+
+
+# 9. Actual later publication exposes October PAYEMS
+@pytest.mark.django_db
+def test_remediation_09_actual_later_publication_exposes_october_payems(macro_identities, source_snapshot_fixture):
+    """At actual publication timestamp (2025-12-16T13:30:00Z), October PAYEMS becomes visible."""
+    nfp = macro_identities["US_NFP"]
+    s_v0 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_nfp_2025_10_v0",
+        event=nfp,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_nfp_2025_10_v0",
+        event=nfp,
+        schedule_vintage=s_v0,
+        reference_period="2025-10",
+        revision_number=0,
+        publication_status=PublicationStatus.PUBLISHED_LATE_OR_BUNDLED,
+        observation_date=date(2025, 10, 1),
+        vintage_date=date(2025, 12, 16),
+        scheduled_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2025, 12, 16, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc),
+        raw_value="-105K",
+        level_value=Decimal("159488"),
+        derived_change_value=Decimal("-105"),
+        unit="THOUSANDS_OF_PERSONS",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    # Replay on Dec 16 at 14:00 UTC
+    events = resolve_macro_events_as_of(
+        as_of=datetime(2025, 12, 16, 14, 0, tzinfo=timezone.utc),
+        event_families=["US_NFP"],
+    )
+    nfp_event = next((e for e in events if "2025-10" in e.event_id), None)
+    assert nfp_event is not None
+    assert nfp_event.released_at == datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc)
+    assert nfp_event.initial_value == "-105K"
+
+
+# 10. Insertion of later evidence does not mutate replay before that evidence was known
+@pytest.mark.django_db
+def test_remediation_10_insertion_of_later_evidence_does_not_mutate_replay_before_known(macro_identities, source_snapshot_fixture):
+    """Inserting evidence known at T+30 does not mutate replay resolved at T."""
+    cpi = macro_identities["US_CPI"]
+
+    sched1 = MacroScheduleVintage.objects.create(
+        vintage_id="sched_mut_01",
+        event=cpi,
+        reference_period="2024-01",
+        scheduled_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.SCHEDULED,
+        known_at=datetime(2024, 1, 5, 0, 0, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_mut_01",
+        event=cpi,
+        schedule_vintage=sched1,
+        reference_period="2024-01",
+        revision_number=0,
+        observation_date=date(2024, 1, 1),
+        vintage_date=date(2024, 2, 13),
+        scheduled_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2024, 2, 13, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        raw_value="+0.3%",
+        level_value=Decimal("308.417"),
+        unit="PERCENT_MOM",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    t_eval = datetime(2024, 2, 20, 0, 0, tzinfo=timezone.utc)
+    replay_before = resolve_macro_events_as_of(t_eval, event_families=["US_CPI"])
+    assert len(replay_before) == 1
+    assert replay_before[0].initial_value == "+0.3%"
+    assert replay_before[0].revised_value is None
+
+    # Insert later revision published and known at T+30 (2024-03-12)
+    MacroObservationVintage.objects.create(
+        vintage_id="obs_mut_02",
+        event=cpi,
+        schedule_vintage=sched1,
+        reference_period="2024-01",
+        revision_number=1,
+        observation_date=date(2024, 1, 1),
+        vintage_date=date(2024, 3, 12),
+        scheduled_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2024, 3, 12, 12, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2024, 3, 12, 12, 35, tzinfo=timezone.utc),
+        known_at=datetime(2024, 3, 12, 12, 30, tzinfo=timezone.utc),
+        raw_value="+0.4%",
+        level_value=Decimal("308.700"),
+        unit="PERCENT_MOM",
+        source_snapshot=source_snapshot_fixture,
+    )
+
+    replay_after = resolve_macro_events_as_of(t_eval, event_families=["US_CPI"])
+    assert len(replay_after) == 1
+    assert replay_after[0].initial_value == "+0.3%"
+    assert replay_after[0].revised_value is None, "Replay at T must not be mutated by later revision!"
+
+
+# 11. OFFICIALLY_NOT_PUBLISHED without authoritative provenance fails
+def test_remediation_11_officially_not_published_without_authoritative_provenance_fails():
+    """OFFICIALLY_NOT_PUBLISHED status lacking authoritative provenance fails as INVALID."""
+    keys = list(get_canonical_expected_cpi_keys())
+    st_map = {"US_CPI_2025_10": "OFFICIALLY_NOT_PUBLISHED"}
+    num_map = {"US_CPI_2025_10": None}
+    prov_map = {"US_CPI_2025_10": False}  # Missing provenance!
+
+    report = evaluate_canonical_macro_coverage(
+        "US_CPI",
+        keys,
+        observation_status_map=st_map,
+        numeric_values_map=num_map,
+        provenance_map=prov_map,
+    )
+    assert report.is_complete is False
+    assert report.invalid_count >= 1
+
+
+# 12. Fake cancellation without SourceSnapshot fails
+@pytest.mark.django_db
+def test_remediation_12_fake_cancellation_without_source_snapshot_fails(macro_identities):
+    """A cancellation schedule vintage without an authoritative SourceSnapshot fails clean() validation and coverage."""
+    cpi = macro_identities["US_CPI"]
+    fake_sched = MacroScheduleVintage(
+        vintage_id="sched_fake_cancel",
+        event=cpi,
+        reference_period="2025-10",
+        scheduled_at=datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc),
+        schedule_status=ScheduleStatus.CANCELLED,
+        known_at=datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=None,
+    )
+    with pytest.raises(ValidationError):
+        fake_sched.clean()
+
+    # And coverage set reconciliation fails closed when provenance is missing
+    keys = list(get_canonical_expected_cpi_keys())
+    report = evaluate_canonical_macro_coverage(
+        "US_CPI",
+        keys,
+        observation_status_map={"US_CPI_2025_10": "OFFICIALLY_NOT_PUBLISHED"},
+        provenance_map={"US_CPI_2025_10": False},
+    )
+    assert report.is_complete is False
+    assert report.invalid_count >= 1
+
+
+# 13. Duplicate canonical lifecycle fails
+def test_remediation_13_duplicate_canonical_lifecycle_fails():
+    """Duplicate canonical keys in observed list fail coverage evaluation."""
+    keys = list(get_canonical_expected_cpi_keys())
+    keys.append("US_CPI_2025_10")  # Duplicate!
+
+    report = evaluate_canonical_macro_coverage("US_CPI", keys)
+    assert report.is_complete is False
+    assert report.duplicate_count == 1
+
+
+# 14. Naive timestamps fail
+def test_remediation_14_naive_timestamps_fail():
+    """Attempting to parse a naive ISO timestamp without timezone designator fails strict validation."""
+    with pytest.raises(ValueError):
+        parse_strict_iso_datetime("2024-02-13T13:30:00")  # Missing Z or offset
+
+
+# 15. Unexplained missing event fails
+def test_remediation_15_unexplained_missing_event_fails():
+    """Missing any canonical event without an approved non-publication reason fails is_complete."""
+    keys = [k for k in get_canonical_expected_cpi_keys() if k != "US_CPI_2022_06"]
+    report = evaluate_canonical_macro_coverage("US_CPI", keys)
+    assert report.is_complete is False
+    assert report.missing_count == 1
+    assert "US_CPI_2022_06" in report.missing_keys
+
+
+# 16. Extra events do not increase canonical coverage
+def test_remediation_16_extra_events_do_not_increase_canonical_coverage():
+    """Extra unexpected events (O \\ E) are flagged and do not raise coverage or permit is_complete."""
+    keys = [k for k in get_canonical_expected_cpi_keys() if k != "US_CPI_2022_06"]
+    keys.append("US_CPI_2099_01")  # Unexpected extra event
+
+    report = evaluate_canonical_macro_coverage("US_CPI", keys)
+    assert report.is_complete is False
+    assert report.unexpected_extra_count == 1
+    assert "US_CPI_2099_01" in report.unexpected_keys
+    assert report.coverage_pct < 100.0
 

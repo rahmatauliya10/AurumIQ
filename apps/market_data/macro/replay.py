@@ -59,10 +59,6 @@ def resolve_macro_events_as_of(
 
     # 2. For each active schedule, resolve corresponding point-in-time observation
     for (event_id, ref_period), sched in sorted(latest_schedules.items()):
-        # If the latest schedule known as of T is CANCELLED, do not emit event
-        if sched.schedule_status == ScheduleStatus.CANCELLED:
-            continue
-
         event_ident = sched.event
         impact_enum = getattr(EventImpact, event_ident.impact, EventImpact.HIGH)
         composite_event_id = f"{event_id}_{ref_period}"
@@ -80,8 +76,44 @@ def resolve_macro_events_as_of(
 
         observations = list(obs_qs)
 
+        # Filter out observations that are OFFICIALLY_NOT_PUBLISHED from numeric releases
+        valid_numeric_obs = [
+            o for o in observations
+            if getattr(o, "publication_status", "PUBLISHED") != "OFFICIALLY_NOT_PUBLISHED"
+            and (o.level_value is not None or o.derived_change_value is not None or (o.raw_value and o.raw_value != "OFFICIALLY_NOT_PUBLISHED"))
+        ]
+
+        # If schedule is CANCELLED:
+        if sched.schedule_status == ScheduleStatus.CANCELLED:
+            # If no valid numeric observation has been published as of as_of_utc, exclude from replay
+            if not valid_numeric_obs:
+                continue
+            # If a late/bundled observation has become known and published as of as_of_utc, emit it as an observed release
+            init_obs = valid_numeric_obs[0]
+            init_val = init_obs.raw_value or (str(init_obs.derived_change_value) if init_obs.derived_change_value is not None else str(init_obs.level_value))
+            rev_at = None
+            rev_val = None
+            if len(valid_numeric_obs) > 1:
+                latest_rev = valid_numeric_obs[-1]
+                rev_at = latest_rev.source_published_at or latest_rev.known_at
+                rev_val = latest_rev.raw_value or (str(latest_rev.derived_change_value) if latest_rev.derived_change_value is not None else str(latest_rev.level_value))
+
+            resolved_events.append(
+                MacroEvent(
+                    event_id=composite_event_id,
+                    name=f"{event_ident.name} ({ref_period})",
+                    scheduled_at=init_obs.scheduled_at or sched.scheduled_at,
+                    released_at=init_obs.source_published_at or init_obs.known_at,
+                    initial_value=init_val,
+                    revised_at=rev_at,
+                    revised_value=rev_val,
+                    impact=impact_enum,
+                )
+            )
+            continue
+
         # Case A: Scheduled event where official release is in the future relative to as_of
-        if not observations:
+        if not valid_numeric_obs:
             resolved_events.append(
                 MacroEvent(
                     event_id=composite_event_id,
@@ -97,7 +129,7 @@ def resolve_macro_events_as_of(
             continue
 
         # Case B: Initial release is known and observed at as_of
-        init_obs = observations[0]
+        init_obs = valid_numeric_obs[0]
         init_val = init_obs.raw_value
         if not init_val and init_obs.derived_change_value is not None:
             init_val = str(init_obs.derived_change_value)
@@ -108,8 +140,8 @@ def resolve_macro_events_as_of(
         rev_val: Optional[str] = None
 
         # Case C: Check if subsequent revisions exist and were known/published as of as_of
-        if len(observations) > 1:
-            latest_rev = observations[-1]
+        if len(valid_numeric_obs) > 1:
+            latest_rev = valid_numeric_obs[-1]
             rev_at = latest_rev.source_published_at or latest_rev.known_at
             rev_val = latest_rev.raw_value
             if not rev_val and latest_rev.derived_change_value is not None:

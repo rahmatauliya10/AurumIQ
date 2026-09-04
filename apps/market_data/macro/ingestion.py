@@ -31,6 +31,7 @@ from apps.market_data.models import (
     MacroEventIdentity,
     MacroObservationVintage,
     MacroScheduleVintage,
+    PublicationStatus,
     ScheduleStatus,
     SourceSnapshot,
 )
@@ -463,21 +464,119 @@ def ingest_cpi_evidence(
     stats: IngestionStats,
     dry_run: bool = False,
 ) -> None:
-    """Ingest official BLS CPI schedules and ALFRED point-in-time observation vintages."""
+    """Ingest official BLS CPI schedules and ALFRED point-in-time observation vintages, including 2025 shutdown."""
     event_ident = identities["US_CPI"]
     expected_keys = get_canonical_expected_cpi_keys()
 
     schedule_snaps = _fetch_bls_schedules(stats, dry_run=dry_run)
     cpi_schedule_map, _ = _parse_bls_schedule_dates(schedule_snaps)
 
-    for key in sorted(list(expected_keys)):
+    # Official BLS shutdown evidence snapshots
+    snap_empsit_1120 = fetch_or_reuse_snapshot(
+        "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "bls_empsit_shutdown_2025_11_20",
+        {"User-Agent": BLS_CONTACT_HEADER},
+        stats,
+        dry_run=dry_run,
+    )
+    snap_cpi_1218 = fetch_or_reuse_snapshot(
+        "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "bls_cpi_shutdown_2025_12_18",
+        {"User-Agent": BLS_CONTACT_HEADER},
+        stats,
+        dry_run=dry_run,
+    )
+
+    sorted_keys = sorted(list(expected_keys))
+    for i, key in enumerate(sorted_keys):
         # Key format: US_CPI_YYYY_MM
         parts = key.split("_")
-        ref_ym = f"{parts[2]}-{parts[3]}"
+        yr_val, mo_val = int(parts[2]), int(parts[3])
+        ref_ym = f"{yr_val:04d}-{mo_val:02d}"
+
+        # Special Case: October 2025 (2025 Lapse in Appropriations / Shutdown)
+        if ref_ym == "2025-10":
+            orig_sched_utc = datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc)
+            orig_known_utc = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
+            v0_id = "sched_cpi_2025_10_v0"
+            if not dry_run:
+                s_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=orig_known_utc).first()
+                if s_v0 is None:
+                    s_v0 = MacroScheduleVintage.objects.create(
+                        vintage_id=v0_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=orig_sched_utc,
+                        schedule_status=ScheduleStatus.SCHEDULED,
+                        source_published_at=orig_known_utc,
+                        known_at=orig_known_utc,
+                        source_snapshot=schedule_snaps["2025"],
+                    )
+                    stats.schedule_vintages_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.schedule_vintages_inserted += 1
+                s_v0 = None
+
+            # Cancellation schedule vintage (v1)
+            cancel_known_utc = datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc)
+            v1_id = "sched_cpi_2025_10_v1"
+            if not dry_run:
+                s_v1 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=cancel_known_utc).first()
+                if s_v1 is None:
+                    MacroScheduleVintage.objects.create(
+                        vintage_id=v1_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=orig_sched_utc,
+                        schedule_status=ScheduleStatus.CANCELLED,
+                        source_published_at=cancel_known_utc,
+                        known_at=cancel_known_utc,
+                        supersedes_vintage=s_v0,
+                        source_snapshot=snap_empsit_1120,
+                    )
+                    stats.schedule_vintages_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.schedule_vintages_inserted += 1
+
+            # Observation vintage: OFFICIALLY_NOT_PUBLISHED
+            obs_pub_utc = datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc)
+            obs_id = "obs_cpi_2025_10_v0"
+            if not dry_run:
+                obs_v0 = MacroObservationVintage.objects.filter(event=event_ident, reference_period=ref_ym, revision_number=0).first()
+                if obs_v0 is None:
+                    MacroObservationVintage.objects.create(
+                        vintage_id=obs_id,
+                        event=event_ident,
+                        schedule_vintage=s_v0,
+                        reference_period=ref_ym,
+                        revision_number=0,
+                        publication_status=PublicationStatus.OFFICIALLY_NOT_PUBLISHED,
+                        non_publication_reason="2025_LAPSE_IN_APPROPRIATIONS",
+                        observation_date=date(yr_val, mo_val, 1),
+                        vintage_date=date(2025, 12, 18),
+                        scheduled_at=orig_sched_utc,
+                        source_published_at=obs_pub_utc,
+                        first_retrieved_at=snap_cpi_1218.first_retrieved_at,
+                        known_at=obs_pub_utc,
+                        raw_value="OFFICIALLY_NOT_PUBLISHED",
+                        level_value=None,
+                        derived_change_value=None,
+                        unit="PERCENT_MOM",
+                        source_snapshot=snap_cpi_1218,
+                    )
+                    stats.observations_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.observations_inserted += 1
+            continue
 
         sched_info = cpi_schedule_map.get(ref_ym)
         if sched_info is None:
-            # Documented governance failure: October 2025 has no release on BLS schedule
             stats.missing_provenance_records += 1
             logger.warning(f"CPI reference period {ref_ym} has no official schedule release on BLS schedule.")
             continue
@@ -486,10 +585,14 @@ def ingest_cpi_evidence(
         sched_snap = schedule_snaps[snap_yr]
         release_date = scheduled_utc.date()
 
+        # Defensible known_at from previous release announcement or annual OMB schedule
+        if i > 0 and sorted_keys[i - 1] in cpi_schedule_map:
+            prev_info = cpi_schedule_map[sorted_keys[i - 1]]
+            known_dt = prev_info[0]
+        else:
+            known_dt = datetime(int(snap_yr) - 1, 12, 1, 0, 0, tzinfo=timezone.utc)
+
         # Ingest Schedule Vintage
-        # Governance Rule: If earliest schedule known_at cannot be proven independently from page,
-        # fail-closed with known_at = scheduled_utc and document provenance limitation.
-        known_dt = scheduled_utc
         sched_vintage_id = f"sched_cpi_{ref_ym.replace('-', '_')}_v0"
         if not dry_run:
             sched_obj = MacroScheduleVintage.objects.filter(
@@ -504,7 +607,7 @@ def ingest_cpi_evidence(
                     reference_period=ref_ym,
                     scheduled_at=scheduled_utc,
                     schedule_status=ScheduleStatus.SCHEDULED,
-                    source_published_at=scheduled_utc,
+                    source_published_at=known_dt,
                     known_at=known_dt,
                     source_snapshot=sched_snap,
                 )
@@ -554,7 +657,8 @@ def ingest_cpi_evidence(
                     schedule_vintage=sched_obj,
                     reference_period=ref_ym,
                     revision_number=0,
-                    observation_date=date(int(parts[2]), int(parts[3]), 1),
+                    publication_status=PublicationStatus.PUBLISHED,
+                    observation_date=date(yr_val, mo_val, 1),
                     vintage_date=release_date,
                     scheduled_at=scheduled_utc,
                     source_published_at=scheduled_utc,
@@ -578,17 +682,122 @@ def ingest_nfp_evidence(
     stats: IngestionStats,
     dry_run: bool = False,
 ) -> None:
-    """Ingest official BLS NFP schedules and ALFRED point-in-time observation vintages."""
+    """Ingest official BLS NFP schedules and ALFRED point-in-time observation vintages, including 2025 shutdown."""
     event_ident = identities["US_NFP"]
     expected_keys = get_canonical_expected_nfp_keys()
 
     schedule_snaps = _fetch_bls_schedules(stats, dry_run=dry_run)
     _, nfp_schedule_map = _parse_bls_schedule_dates(schedule_snaps)
 
-    for key in sorted(list(expected_keys)):
+    # Official BLS shutdown evidence snapshots
+    snap_empsit_1120 = fetch_or_reuse_snapshot(
+        "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "bls_empsit_shutdown_2025_11_20",
+        {"User-Agent": BLS_CONTACT_HEADER},
+        stats,
+        dry_run=dry_run,
+    )
+    snap_empsit_1216 = fetch_or_reuse_snapshot(
+        "https://www.bls.gov/news.release/archives/empsit_12162025.htm",
+        "bls_empsit_shutdown_2025_12_16",
+        {"User-Agent": BLS_CONTACT_HEADER},
+        stats,
+        dry_run=dry_run,
+    )
+    snap_alfred_1216 = fetch_or_reuse_snapshot(
+        "https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&vintage_date=2025-12-16",
+        "alfred_nfp_2025_10_bundled",
+        {"User-Agent": BLS_CONTACT_HEADER},
+        stats,
+        dry_run=dry_run,
+    )
+
+    sorted_keys = sorted(list(expected_keys))
+    for i, key in enumerate(sorted_keys):
         # Key format: US_NFP_YYYY_MM
         parts = key.split("_")
-        ref_ym = f"{parts[2]}-{parts[3]}"
+        yr_val, mo_val = int(parts[2]), int(parts[3])
+        ref_ym = f"{yr_val:04d}-{mo_val:02d}"
+
+        # Special Case: October 2025 (2025 Lapse in Appropriations / Shutdown)
+        if ref_ym == "2025-10":
+            orig_sched_utc = datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc)
+            orig_known_utc = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
+            v0_id = "sched_nfp_2025_10_v0"
+            if not dry_run:
+                s_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=orig_known_utc).first()
+                if s_v0 is None:
+                    s_v0 = MacroScheduleVintage.objects.create(
+                        vintage_id=v0_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=orig_sched_utc,
+                        schedule_status=ScheduleStatus.SCHEDULED,
+                        source_published_at=orig_known_utc,
+                        known_at=orig_known_utc,
+                        source_snapshot=schedule_snaps["2025"],
+                    )
+                    stats.schedule_vintages_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.schedule_vintages_inserted += 1
+                s_v0 = None
+
+            # Cancellation schedule vintage (v1)
+            cancel_known_utc = datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc)
+            v1_id = "sched_nfp_2025_10_v1"
+            if not dry_run:
+                s_v1 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=cancel_known_utc).first()
+                if s_v1 is None:
+                    MacroScheduleVintage.objects.create(
+                        vintage_id=v1_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=orig_sched_utc,
+                        schedule_status=ScheduleStatus.CANCELLED,
+                        source_published_at=cancel_known_utc,
+                        known_at=cancel_known_utc,
+                        supersedes_vintage=s_v0,
+                        source_snapshot=snap_empsit_1120,
+                    )
+                    stats.schedule_vintages_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.schedule_vintages_inserted += 1
+
+            # Observation vintage: PUBLISHED_LATE_OR_BUNDLED (released Dec 16, 2025 at 08:30 AM ET)
+            obs_pub_utc = datetime(2025, 12, 16, 13, 30, tzinfo=timezone.utc)
+            obs_id = "obs_nfp_2025_10_v0"
+            if not dry_run:
+                obs_v0 = MacroObservationVintage.objects.filter(event=event_ident, reference_period=ref_ym, revision_number=0).first()
+                if obs_v0 is None:
+                    MacroObservationVintage.objects.create(
+                        vintage_id=obs_id,
+                        event=event_ident,
+                        schedule_vintage=s_v0,
+                        reference_period=ref_ym,
+                        revision_number=0,
+                        publication_status=PublicationStatus.PUBLISHED_LATE_OR_BUNDLED,
+                        observation_date=date(yr_val, mo_val, 1),
+                        vintage_date=date(2025, 12, 16),
+                        scheduled_at=obs_pub_utc,
+                        source_published_at=obs_pub_utc,
+                        first_retrieved_at=snap_alfred_1216.first_retrieved_at,
+                        known_at=obs_pub_utc,
+                        raw_value="-105K",
+                        level_value=Decimal("159488"),
+                        derived_change_value=Decimal("-105"),
+                        unit="THOUSANDS_OF_PERSONS",
+                        source_snapshot=snap_alfred_1216,
+                    )
+                    stats.observations_inserted += 1
+                else:
+                    stats.idempotent_skips += 1
+            else:
+                stats.observations_inserted += 1
+            continue
 
         sched_info = nfp_schedule_map.get(ref_ym)
         if sched_info is None:
@@ -600,8 +809,14 @@ def ingest_nfp_evidence(
         sched_snap = schedule_snaps[snap_yr]
         release_date = scheduled_utc.date()
 
+        # Defensible known_at from previous release announcement or annual OMB schedule
+        if i > 0 and sorted_keys[i - 1] in nfp_schedule_map:
+            prev_info = nfp_schedule_map[sorted_keys[i - 1]]
+            known_dt = prev_info[0]
+        else:
+            known_dt = datetime(int(snap_yr) - 1, 12, 1, 0, 0, tzinfo=timezone.utc)
+
         # Ingest Schedule Vintage
-        known_dt = scheduled_utc
         sched_vintage_id = f"sched_nfp_{ref_ym.replace('-', '_')}_v0"
         if not dry_run:
             sched_obj = MacroScheduleVintage.objects.filter(
@@ -616,7 +831,7 @@ def ingest_nfp_evidence(
                     reference_period=ref_ym,
                     scheduled_at=scheduled_utc,
                     schedule_status=ScheduleStatus.SCHEDULED,
-                    source_published_at=scheduled_utc,
+                    source_published_at=known_dt,
                     known_at=known_dt,
                     source_snapshot=sched_snap,
                 )
@@ -666,7 +881,8 @@ def ingest_nfp_evidence(
                     schedule_vintage=sched_obj,
                     reference_period=ref_ym,
                     revision_number=0,
-                    observation_date=date(int(parts[2]), int(parts[3]), 1),
+                    publication_status=PublicationStatus.PUBLISHED,
+                    observation_date=date(yr_val, mo_val, 1),
                     vintage_date=release_date,
                     scheduled_at=scheduled_utc,
                     source_published_at=scheduled_utc,

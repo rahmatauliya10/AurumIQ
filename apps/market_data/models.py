@@ -1,6 +1,7 @@
 """Market data storage models: MarketCandle, DataQualitySnapshot, and QuarantineRecord."""
 from decimal import Decimal
-from django.db import models
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, models
 from apps.instruments.models import Instrument, MarketListing
 
 
@@ -187,6 +188,15 @@ class ScheduleStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+class PublicationStatus(models.TextChoices):
+    PUBLISHED = "PUBLISHED", "Published"
+    PUBLISHED_LATE_OR_BUNDLED = "PUBLISHED_LATE_OR_BUNDLED", "Published Late or Bundled"
+    OFFICIALLY_NOT_PUBLISHED = "OFFICIALLY_NOT_PUBLISHED", "Officially Not Published"
+    MISSING_UNEXPLAINED = "MISSING_UNEXPLAINED", "Missing Unexplained"
+    INVALID = "INVALID", "Invalid"
+
+
+
 class MacroEventIdentity(models.Model):
     """Canonical registry of macroeconomic event families."""
     identity_id = models.CharField(max_length=64, primary_key=True)
@@ -285,6 +295,11 @@ class MacroScheduleVintage(models.Model):
             models.Index(fields=["known_at"]),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.schedule_status == ScheduleStatus.CANCELLED and not self.source_snapshot_id:
+            raise ValidationError("Cancellation schedule vintage requires authoritative source_snapshot.")
+
     def save(self, *args, **kwargs):
         if self.pk and MacroScheduleVintage.objects.filter(pk=self.pk).exists():
             raise ValueError("MacroScheduleVintage is immutable and append-only.")
@@ -335,6 +350,16 @@ class MacroObservationVintage(models.Model):
         on_delete=models.PROTECT,
         related_name="observations",
     )
+    publication_status = models.CharField(
+        max_length=32,
+        choices=PublicationStatus.choices,
+        default=PublicationStatus.PUBLISHED,
+        db_index=True,
+    )
+    non_publication_reason = models.CharField(
+        max_length=128,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -351,6 +376,11 @@ class MacroObservationVintage(models.Model):
             models.Index(fields=["event", "reference_period", "revision_number"]),
             models.Index(fields=["known_at", "source_published_at"]),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.publication_status == PublicationStatus.OFFICIALLY_NOT_PUBLISHED and not self.source_snapshot_id:
+            raise ValidationError("Officially not published observation requires authoritative source_snapshot.")
 
     def save(self, *args, **kwargs):
         if self.pk and MacroObservationVintage.objects.filter(pk=self.pk).exists():

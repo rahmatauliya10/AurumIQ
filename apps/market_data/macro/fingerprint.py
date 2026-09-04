@@ -40,10 +40,12 @@ def compute_macro_evidence_fingerprint() -> str:
         snap_sha = o.source_snapshot.raw_payload_bytes_sha256 if o.source_snapshot else "NO_SNAPSHOT"
         pub_iso = o.source_published_at.isoformat() if o.source_published_at else ""
         known_iso = o.known_at.isoformat() if o.known_at else ""
+        pub_status = getattr(o, "publication_status", "PUBLISHED")
+        reason = getattr(o, "non_publication_reason", "") or ""
         raw_v = o.raw_value or ""
         lvl_v = f"{o.level_value:.4f}" if o.level_value is not None else ""
         chg_v = f"{o.derived_change_value:.4f}" if o.derived_change_value is not None else ""
-        line = f"OBS|{o.event.event_family}|{o.event_id}|{o.reference_period}|{o.revision_number}|{pub_iso}|{known_iso}|{raw_v}|{lvl_v}|{chg_v}|{snap_sha}"
+        line = f"OBS|{o.event.event_family}|{o.event_id}|{o.reference_period}|{o.revision_number}|{pub_status}|{reason}|{pub_iso}|{known_iso}|{raw_v}|{lvl_v}|{chg_v}|{snap_sha}"
         lines.append(line)
 
     if not lines:

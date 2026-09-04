@@ -1,59 +1,154 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "instrument": "XAUUSD",
   "coverage_start": "2020-04-07T00:00:00Z",
   "coverage_end": "2026-09-01T00:00:00Z",
-  "generated_at": "2026-09-04T11:07:41.377493+00:00",
+  "generated_at": "2026-09-04T11:41:55.283120+00:00",
   "required_event_families": [
     "FOMC_RATE",
     "US_NFP",
     "US_CPI"
   ],
-  "expected_count_by_family": {
-    "FOMC_RATE": 51,
-    "US_NFP": 76,
-    "US_CPI": 77,
-    "TOTAL": 204
+  "event_lifecycle_coverage": {
+    "FOMC_RATE": {
+      "expected": 51,
+      "complete": 51,
+      "incomplete": 0
+    },
+    "US_NFP": {
+      "expected": 76,
+      "complete": 76,
+      "incomplete": 0
+    },
+    "US_CPI": {
+      "expected": 77,
+      "complete": 77,
+      "incomplete": 0
+    },
+    "TOTAL": {
+      "expected": 204,
+      "complete": 204,
+      "incomplete": 0
+    }
   },
-  "observed_count_by_family": {
-    "FOMC_RATE": 51,
-    "US_NFP": 75,
-    "US_CPI": 76,
-    "TOTAL": 202
+  "schedule_coverage": {
+    "FOMC_RATE": {
+      "scheduled": 51,
+      "rescheduled": 0,
+      "cancelled": 0,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "US_NFP": {
+      "scheduled": 76,
+      "rescheduled": 0,
+      "cancelled": 1,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "US_CPI": {
+      "scheduled": 77,
+      "rescheduled": 0,
+      "cancelled": 1,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "TOTAL": {
+      "scheduled": 204,
+      "rescheduled": 0,
+      "cancelled": 2
+    }
   },
-  "matched_count_by_family": {
-    "FOMC_RATE": 51,
-    "US_NFP": 75,
-    "US_CPI": 76,
-    "TOTAL": 202
+  "observation_coverage": {
+    "FOMC_RATE": {
+      "published": 51,
+      "published_late_or_bundled": 0,
+      "officially_not_published": 0,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "US_NFP": {
+      "published": 75,
+      "published_late_or_bundled": 1,
+      "officially_not_published": 0,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "US_CPI": {
+      "published": 76,
+      "published_late_or_bundled": 0,
+      "officially_not_published": 1,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "TOTAL": {
+      "published": 202,
+      "published_late_or_bundled": 1,
+      "officially_not_published": 1,
+      "missing_unexplained": 0,
+      "invalid": 0
+    }
   },
-  "missing_count_by_family": {
-    "FOMC_RATE": 0,
-    "US_NFP": 1,
-    "US_CPI": 1,
-    "TOTAL": 2
+  "provenance_coverage": {
+    "unknown_known_at": 0,
+    "missing_snapshots": 0,
+    "duplicates": 0,
+    "unexpected_extras": 0
   },
-  "coverage_pct_by_family": {
-    "FOMC_RATE": "100.00%",
-    "US_NFP": "98.68%",
-    "US_CPI": "98.70%"
+  "shutdown_2025_chronology": {
+    "US_CPI_2025_10": {
+      "original_schedule": {
+        "scheduled_at": "2025-11-13T13:30:00+00:00",
+        "known_at": "2024-12-01T00:00:00+00:00",
+        "status": "SCHEDULED",
+        "source_url": "https://www.bls.gov/schedule/2025/home.htm",
+        "source_sha256": "3ef4c8dee4db6a88a1ccc9a7f67715adac973a46ff6288483367e46895aa9607"
+      },
+      "cancellation": {
+        "scheduled_at": "2025-11-13T13:30:00+00:00",
+        "known_at": "2025-11-20T13:30:00+00:00",
+        "status": "CANCELLED",
+        "source_url": "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "source_sha256": "32423903015128e72093392cfaf331a097db1aeb2e8e7d300bec15eef9b6dd8e"
+      },
+      "observation": {
+        "publication_status": "OFFICIALLY_NOT_PUBLISHED",
+        "non_publication_reason": "2025_LAPSE_IN_APPROPRIATIONS",
+        "source_published_at": "2025-12-18T13:30:00+00:00",
+        "known_at": "2025-12-18T13:30:00+00:00",
+        "numeric_level_value": null,
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "source_sha256": "85627e2f11db4d58fbdebc5877b27e71022c0ef17db77ddfb04497c4e33105b5"
+      }
+    },
+    "US_NFP_2025_10": {
+      "original_schedule": {
+        "scheduled_at": "2025-11-07T13:30:00+00:00",
+        "known_at": "2024-12-01T00:00:00+00:00",
+        "status": "SCHEDULED",
+        "source_url": "https://www.bls.gov/schedule/2025/home.htm",
+        "source_sha256": "3ef4c8dee4db6a88a1ccc9a7f67715adac973a46ff6288483367e46895aa9607"
+      },
+      "cancellation": {
+        "scheduled_at": "2025-11-07T13:30:00+00:00",
+        "known_at": "2025-11-20T13:30:00+00:00",
+        "status": "CANCELLED",
+        "source_url": "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "source_sha256": "32423903015128e72093392cfaf331a097db1aeb2e8e7d300bec15eef9b6dd8e"
+      },
+      "observation": {
+        "publication_status": "PUBLISHED_LATE_OR_BUNDLED",
+        "source_published_at": "2025-12-16T13:30:00+00:00",
+        "known_at": "2025-12-16T13:30:00+00:00",
+        "raw_value": "-105K",
+        "level_value": "159488.0000",
+        "derived_change_value": "-105.0000",
+        "source_url": "https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&vintage_date=2025-12-16",
+        "source_sha256": "c449c146f4e381de6199f27ccd9a742a4a3210e924f936333f74af68885b1281"
+      }
+    }
   },
-  "duplicates": 0,
-  "unexpected_events": 0,
-  "invalid_records": 0,
-  "quarantined_records": 0,
-  "source_conflicts": 0,
-  "schedule_provenance_status": {
-    "FOMC_RATE": "COMPLETE_GOVERNMENT_PRESS_RELEASES",
-    "US_CPI": "BLS_ANNUAL_SCHEDULE_ACCESSIBLE_PROVENANCE_FAIL_CLOSED",
-    "US_NFP": "BLS_ANNUAL_SCHEDULE_ACCESSIBLE_PROVENANCE_FAIL_CLOSED"
-  },
-  "observation_provenance_status": {
-    "FOMC_RATE": "COMPLETE_FRB_STATEMENTS_AND_FRED_TARGET_RANGE",
-    "US_CPI": "COMPLETE_ALFRED_POINT_IN_TIME_VINTAGES",
-    "US_NFP": "COMPLETE_ALFRED_POINT_IN_TIME_VINTAGES"
-  },
-  "macro_evidence_fingerprint": "88dd8ecb30d4dc3bcbb2a8018072c7c172b55248d814ae656027515db0bf0725",
+  "macro_evidence_fingerprint": "08581dfc56575ec98d48d9d005218657204a5fe7d4c4cb9453598e40d7d63f3a",
   "candle_total": 3096312,
   "phase6_15m_dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
   "readiness_evidence_fingerprint": "d5d8f7a20cf820f177ccafb99d60d09cf503e5a80eee95a89bc7cf02334764b9",
@@ -63,20 +158,19 @@
     "schedule_vintages_inserted": 0,
     "observations_inserted": 0,
     "revisions_inserted": 0,
-    "idempotent_skips": 631,
+    "idempotent_skips": 642,
     "duplicates": 0,
     "conflicts": 0,
     "quarantined": 0,
     "rejected": 0,
     "invalid_timestamp_records": 0,
-    "missing_provenance_records": 2
+    "missing_provenance_records": 0
   },
   "hard_macro_readiness_gate": {
     "passed": false,
-    "decision": "CANDLES_READY_MACRO_MISSING",
+    "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
     "reasons": [
-      "US_CPI coverage incomplete: 76/77 matched (missing: 1: US_CPI_2025_10).",
-      "US_NFP coverage incomplete: 75/76 matched (missing: 1: US_NFP_2025_10)."
+      "Point-in-time macroeconomic evidence complete. Awaiting empirical friction configuration."
     ]
   }
 }
