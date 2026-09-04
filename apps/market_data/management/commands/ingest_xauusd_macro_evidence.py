@@ -9,14 +9,17 @@ from apps.market_data.macro.coverage import (
     get_canonical_expected_cpi_keys,
     get_canonical_expected_fomc_keys,
     get_canonical_expected_nfp_keys,
+    get_effective_schedule_provenance,
     validate_schedule_vintage_provenance,
 )
 from apps.market_data.macro.fingerprint import compute_macro_evidence_fingerprint
 from apps.market_data.macro.ingestion import ingest_xauusd_macro_evidence
 from apps.market_data.models import (
     MacroObservationVintage,
+    MacroScheduleProvenanceAssertion,
     MacroScheduleVintage,
     ScheduleProvenanceType,
+    ScheduleStatus,
     SourceSnapshot,
 )
 
@@ -136,7 +139,7 @@ class Command(BaseCommand):
         nfp_sched = _sched_stats("US_NFP")
         fomc_sched = _sched_stats("FOMC_RATE")
 
-        # 3. Direct DB Provenance Reconciliation (Prompt §12)
+        # 3. Direct DB Provenance Reconciliation (Prompt §7, §12, §13)
         bls_schedules_total = MacroScheduleVintage.objects.filter(event_id__in=["US_CPI", "US_NFP"]).count()
         bls_prev_release_count = MacroScheduleVintage.objects.filter(
             event_id__in=["US_CPI", "US_NFP"],
@@ -159,6 +162,31 @@ class Command(BaseCommand):
         assert bls_schedules_total == reconciled_sum, (
             f"Provenance reconciliation mismatch: total {bls_schedules_total} != sum {reconciled_sum}"
         )
+
+        # Active required schedules vs superseded historical vintages
+        active_sched_ids = set()
+        for fam in ["US_CPI", "US_NFP", "FOMC_RATE"]:
+            seen_refs = set()
+            for s in MacroScheduleVintage.objects.filter(event_id=fam).order_by("reference_period", "-known_at"):
+                if s.reference_period not in seen_refs:
+                    seen_refs.add(s.reference_period)
+                    active_sched_ids.add(s.pk)
+
+        total_schedule_vintages_count = MacroScheduleVintage.objects.count()
+        active_schedules_count = len(active_sched_ids)
+        superseded_schedules_count = total_schedule_vintages_count - active_schedules_count
+        total_assertions_count = MacroScheduleProvenanceAssertion.objects.count()
+
+        active_unknown_count = 0
+        for s in MacroScheduleVintage.objects.filter(pk__in=active_sched_ids):
+            eff = get_effective_schedule_provenance(s)
+            if eff["provenance_type"] == ScheduleProvenanceType.UNKNOWN:
+                active_unknown_count += 1
+
+        superseded_unknown_count = MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP", "FOMC_RATE"],
+            provenance_type=ScheduleProvenanceType.UNKNOWN,
+        ).exclude(pk__in=active_sched_ids).count()
 
         sample_prev_cpi = list(MacroScheduleVintage.objects.filter(
             event_id="US_CPI",
@@ -244,28 +272,48 @@ class Command(BaseCommand):
                 reasons.append(f"Active macro schedule provenance incomplete: {active_invalid_prov_count} active schedules have invalid/unknown provenance.")
             gate_reasons = reasons
 
-        # Extract 2025 Shutdown Evidence Chronology
-        cpi_2025_10_scheds = list(MacroScheduleVintage.objects.filter(event_id="US_CPI", reference_period="2025-10").order_by("vintage_id"))
+        # Extract 2025 Shutdown Evidence Chronology (Prompt §8)
+        # Active original schedule is the latest SCHEDULED vintage for October 2025
+        cpi_2025_10_sched = (
+            MacroScheduleVintage.objects.filter(event_id="US_CPI", reference_period="2025-10", schedule_status=ScheduleStatus.SCHEDULED)
+            .order_by("-known_at")
+            .first()
+        )
+        # Active cancellation schedule is the latest CANCELLED vintage for October 2025
+        cpi_2025_10_cancel = (
+            MacroScheduleVintage.objects.filter(event_id="US_CPI", reference_period="2025-10", schedule_status=ScheduleStatus.CANCELLED)
+            .order_by("-known_at")
+            .first()
+        )
         cpi_2025_10_obs = MacroObservationVintage.objects.filter(event_id="US_CPI", reference_period="2025-10").first()
 
-        nfp_2025_10_scheds = list(MacroScheduleVintage.objects.filter(event_id="US_NFP", reference_period="2025-10").order_by("vintage_id"))
+        nfp_2025_10_sched = (
+            MacroScheduleVintage.objects.filter(event_id="US_NFP", reference_period="2025-10", schedule_status=ScheduleStatus.SCHEDULED)
+            .order_by("-known_at")
+            .first()
+        )
+        nfp_2025_10_cancel = (
+            MacroScheduleVintage.objects.filter(event_id="US_NFP", reference_period="2025-10", schedule_status=ScheduleStatus.CANCELLED)
+            .order_by("-known_at")
+            .first()
+        )
         nfp_2025_10_obs = MacroObservationVintage.objects.filter(event_id="US_NFP", reference_period="2025-10").first()
 
         shutdown_chronology = {
             "US_CPI_2025_10": {
                 "original_schedule": {
-                    "scheduled_at": cpi_2025_10_scheds[0].scheduled_at.isoformat() if cpi_2025_10_scheds else None,
-                    "known_at": cpi_2025_10_scheds[0].known_at.isoformat() if cpi_2025_10_scheds else None,
-                    "status": cpi_2025_10_scheds[0].schedule_status if cpi_2025_10_scheds else None,
-                    "source_url": cpi_2025_10_scheds[0].source_snapshot.source_url if cpi_2025_10_scheds and cpi_2025_10_scheds[0].source_snapshot else None,
-                    "source_sha256": cpi_2025_10_scheds[0].source_snapshot.raw_payload_bytes_sha256 if cpi_2025_10_scheds and cpi_2025_10_scheds[0].source_snapshot else None,
+                    "scheduled_at": cpi_2025_10_sched.scheduled_at.isoformat() if cpi_2025_10_sched else None,
+                    "known_at": cpi_2025_10_sched.known_at.isoformat() if cpi_2025_10_sched else None,
+                    "status": cpi_2025_10_sched.schedule_status if cpi_2025_10_sched else None,
+                    "source_url": cpi_2025_10_sched.source_snapshot.source_url if cpi_2025_10_sched and cpi_2025_10_sched.source_snapshot else None,
+                    "source_sha256": cpi_2025_10_sched.source_snapshot.raw_payload_bytes_sha256 if cpi_2025_10_sched and cpi_2025_10_sched.source_snapshot else None,
                 },
                 "cancellation": {
-                    "scheduled_at": cpi_2025_10_scheds[1].scheduled_at.isoformat() if len(cpi_2025_10_scheds) > 1 else None,
-                    "known_at": cpi_2025_10_scheds[1].known_at.isoformat() if len(cpi_2025_10_scheds) > 1 else None,
-                    "status": cpi_2025_10_scheds[1].schedule_status if len(cpi_2025_10_scheds) > 1 else None,
-                    "source_url": cpi_2025_10_scheds[1].source_snapshot.source_url if len(cpi_2025_10_scheds) > 1 and cpi_2025_10_scheds[1].source_snapshot else None,
-                    "source_sha256": cpi_2025_10_scheds[1].source_snapshot.raw_payload_bytes_sha256 if len(cpi_2025_10_scheds) > 1 and cpi_2025_10_scheds[1].source_snapshot else None,
+                    "scheduled_at": cpi_2025_10_cancel.scheduled_at.isoformat() if cpi_2025_10_cancel else None,
+                    "known_at": cpi_2025_10_cancel.known_at.isoformat() if cpi_2025_10_cancel else None,
+                    "status": cpi_2025_10_cancel.schedule_status if cpi_2025_10_cancel else None,
+                    "source_url": cpi_2025_10_cancel.source_snapshot.source_url if cpi_2025_10_cancel and cpi_2025_10_cancel.source_snapshot else None,
+                    "source_sha256": cpi_2025_10_cancel.source_snapshot.raw_payload_bytes_sha256 if cpi_2025_10_cancel and cpi_2025_10_cancel.source_snapshot else None,
                 },
                 "observation": {
                     "publication_status": cpi_2025_10_obs.publication_status if cpi_2025_10_obs else None,
@@ -279,18 +327,18 @@ class Command(BaseCommand):
             },
             "US_NFP_2025_10": {
                 "original_schedule": {
-                    "scheduled_at": nfp_2025_10_scheds[0].scheduled_at.isoformat() if nfp_2025_10_scheds else None,
-                    "known_at": nfp_2025_10_scheds[0].known_at.isoformat() if nfp_2025_10_scheds else None,
-                    "status": nfp_2025_10_scheds[0].schedule_status if nfp_2025_10_scheds else None,
-                    "source_url": nfp_2025_10_scheds[0].source_snapshot.source_url if nfp_2025_10_scheds and nfp_2025_10_scheds[0].source_snapshot else None,
-                    "source_sha256": nfp_2025_10_scheds[0].source_snapshot.raw_payload_bytes_sha256 if nfp_2025_10_scheds and nfp_2025_10_scheds[0].source_snapshot else None,
+                    "scheduled_at": nfp_2025_10_sched.scheduled_at.isoformat() if nfp_2025_10_sched else None,
+                    "known_at": nfp_2025_10_sched.known_at.isoformat() if nfp_2025_10_sched else None,
+                    "status": nfp_2025_10_sched.schedule_status if nfp_2025_10_sched else None,
+                    "source_url": nfp_2025_10_sched.source_snapshot.source_url if nfp_2025_10_sched and nfp_2025_10_sched.source_snapshot else None,
+                    "source_sha256": nfp_2025_10_sched.source_snapshot.raw_payload_bytes_sha256 if nfp_2025_10_sched and nfp_2025_10_sched.source_snapshot else None,
                 },
                 "cancellation": {
-                    "scheduled_at": nfp_2025_10_scheds[1].scheduled_at.isoformat() if len(nfp_2025_10_scheds) > 1 else None,
-                    "known_at": nfp_2025_10_scheds[1].known_at.isoformat() if len(nfp_2025_10_scheds) > 1 else None,
-                    "status": nfp_2025_10_scheds[1].schedule_status if len(nfp_2025_10_scheds) > 1 else None,
-                    "source_url": nfp_2025_10_scheds[1].source_snapshot.source_url if len(nfp_2025_10_scheds) > 1 and nfp_2025_10_scheds[1].source_snapshot else None,
-                    "source_sha256": nfp_2025_10_scheds[1].source_snapshot.raw_payload_bytes_sha256 if len(nfp_2025_10_scheds) > 1 and nfp_2025_10_scheds[1].source_snapshot else None,
+                    "scheduled_at": nfp_2025_10_cancel.scheduled_at.isoformat() if nfp_2025_10_cancel else None,
+                    "known_at": nfp_2025_10_cancel.known_at.isoformat() if nfp_2025_10_cancel else None,
+                    "status": nfp_2025_10_cancel.schedule_status if nfp_2025_10_cancel else None,
+                    "source_url": nfp_2025_10_cancel.source_snapshot.source_url if nfp_2025_10_cancel and nfp_2025_10_cancel.source_snapshot else None,
+                    "source_sha256": nfp_2025_10_cancel.source_snapshot.raw_payload_bytes_sha256 if nfp_2025_10_cancel and nfp_2025_10_cancel.source_snapshot else None,
                 },
                 "observation": {
                     "publication_status": nfp_2025_10_obs.publication_status if nfp_2025_10_obs else None,
@@ -392,6 +440,13 @@ class Command(BaseCommand):
                 "sample_other_first_party": sample_other_first_party,
                 "unknown_records": unknown_records,
             },
+            "schedule_vintage_breakdown": {
+                "active_required_schedules": active_schedules_count,
+                "superseded_historical_vintages": superseded_schedules_count,
+                "provenance_assertions": total_assertions_count,
+                "active_unknown": active_unknown_count,
+                "superseded_unknown": superseded_unknown_count,
+            },
             "shutdown_2025_chronology": shutdown_chronology,
             "macro_evidence_fingerprint": macro_fingerprint,
             "candle_total": total_candles,
@@ -412,7 +467,7 @@ class Command(BaseCommand):
 
         # Write Human-Readable Audit Report
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        report_md = f"""# XAUUSD Macroeconomic Event Evidence Audit Report (Checkpoint B Remediation)
+        report_md = f"""# XAUUSD Macroeconomic Event Evidence Audit Report (Checkpoint B Final Seal)
 
 **Generated At:** {manifest_data['generated_at']}
 **Calibration Window:** {start_str} to {end_str}
@@ -434,7 +489,18 @@ class Command(BaseCommand):
 
 ---
 
-## 2. Separate Coverage Dimensions
+## 2. Schedule Vintages & Provenance Breakdown (Prompt §7, §13)
+| Category | Count | Status |
+| :--- | :---: | :---: |
+| **ACTIVE REQUIRED SCHEDULES** | **{active_schedules_count}** | VALIDATED ACTIVE |
+| **SUPERSEDED HISTORICAL VINTAGES** | **{superseded_schedules_count}** | PRESERVED HISTORICAL |
+| **PROVENANCE ASSERTIONS** | **{total_assertions_count}** | APPEND-ONLY |
+| **ACTIVE_UNKNOWN** | **{active_unknown_count}** | {"0 (CLEAN)" if active_unknown_count == 0 else "DEFECT"} |
+| **SUPERSEDED_UNKNOWN** | **{superseded_unknown_count}** | PRESERVED HISTORICAL |
+
+---
+
+## 3. Separate Coverage Dimensions
 
 ### A. Event Lifecycle Coverage
 | Family | Expected Lifecycles | Complete | Incomplete | Status |
@@ -466,7 +532,7 @@ class Command(BaseCommand):
 
 ---
 
-## 3. BLS Schedule Provenance Reconciliation (Rebuilt from Database)
+## 4. BLS Schedule Provenance Reconciliation (Rebuilt from Database)
 | Provenance Type | Count | Proportion | Status |
 | :--- | :---: | :---: | :---: |
 | **BLS_PREVIOUS_RELEASE_ANNOUNCEMENT** | {bls_prev_release_count} | {bls_prev_release_count / bls_schedules_total * 100:.1f}% | VALIDATED |
@@ -495,7 +561,7 @@ class Command(BaseCommand):
 
 ---
 
-## 4. 2025 Shutdown Lifecycle Chronology
+## 5. 2025 Shutdown Lifecycle Chronology
 
 ### US_CPI_2025_10
 * **Original Schedule:** {shutdown_chronology['US_CPI_2025_10']['original_schedule']['scheduled_at']} (known at: {shutdown_chronology['US_CPI_2025_10']['original_schedule']['known_at']})
@@ -516,7 +582,7 @@ class Command(BaseCommand):
 
 ---
 
-## 5. Ingestion Execution Statistics
+## 6. Ingestion Execution Statistics
 ```json
 {json.dumps(stats.to_dict(), indent=2)}
 ```

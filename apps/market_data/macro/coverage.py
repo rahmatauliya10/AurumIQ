@@ -110,6 +110,38 @@ def get_previous_canonical_ref_period(
         return f"{yr:04d}-{mo - 1:02d}"
 
 
+def get_effective_schedule_provenance(s: Any) -> Dict[str, Any]:
+    """Resolve effective provenance attributes from latest active MacroScheduleProvenanceAssertion or vintage fields."""
+    from apps.market_data.models import ScheduleProvenanceType
+    assertions_rel = getattr(s, "provenance_assertions", None)
+    latest_assertion = None
+    if assertions_rel is not None:
+        try:
+            latest_assertion = assertions_rel.order_by("-asserted_at").first()
+        except Exception:
+            if isinstance(assertions_rel, list) and assertions_rel:
+                latest_assertion = sorted(assertions_rel, key=lambda a: getattr(a, "asserted_at", None) or datetime.min)[-1]
+
+    if latest_assertion:
+        return {
+            "provenance_type": latest_assertion.provenance_type,
+            "source_snapshot": latest_assertion.source_snapshot or getattr(s, "source_snapshot", None),
+            "announcing_release_url": latest_assertion.announcing_release_url,
+            "announcing_release_timestamp": latest_assertion.announcing_release_timestamp,
+            "parser_rule_version": latest_assertion.parser_rule_version,
+            "assertion": latest_assertion,
+        }
+
+    return {
+        "provenance_type": getattr(s, "provenance_type", None) or ScheduleProvenanceType.UNKNOWN,
+        "source_snapshot": getattr(s, "source_snapshot", None),
+        "announcing_release_url": getattr(s, "announcing_release_url", None),
+        "announcing_release_timestamp": getattr(s, "announcing_release_timestamp", None),
+        "parser_rule_version": getattr(s, "parser_rule_version", "BLS_PREVIOUS_RELEASE_V1"),
+        "assertion": None,
+    }
+
+
 def validate_schedule_vintage_provenance(s: Any) -> Tuple[bool, Optional[str]]:
     """
     Validate quality and defensibility of schedule provenance (Spec §33, §34, Prompt §7, §8).
@@ -117,11 +149,12 @@ def validate_schedule_vintage_provenance(s: Any) -> Tuple[bool, Optional[str]]:
     """
     from apps.market_data.models import ScheduleProvenanceType, ScheduleStatus
 
-    prov_type = getattr(s, "provenance_type", None) or ScheduleProvenanceType.UNKNOWN
+    eff = get_effective_schedule_provenance(s)
+    prov_type = eff["provenance_type"]
     if prov_type == ScheduleProvenanceType.UNKNOWN:
         return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} has UNKNOWN provenance type."
 
-    snap = getattr(s, "source_snapshot", None)
+    snap = eff["source_snapshot"]
     if not snap:
         return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} lacks supporting SourceSnapshot."
 
@@ -141,8 +174,8 @@ def validate_schedule_vintage_provenance(s: Any) -> Tuple[bool, Optional[str]]:
 
     # Type-specific validation
     if prov_type == ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT:
-        ann_url = getattr(s, "announcing_release_url", None)
-        ann_ts = getattr(s, "announcing_release_timestamp", None)
+        ann_url = eff["announcing_release_url"]
+        ann_ts = eff["announcing_release_timestamp"]
         if not ann_url:
             return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} missing announcing_release_url."
         if not ann_ts:

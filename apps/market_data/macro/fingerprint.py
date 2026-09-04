@@ -22,15 +22,31 @@ def compute_macro_evidence_fingerprint() -> str:
     # 1. Schedules
     schedules = (
         MacroScheduleVintage.objects.select_related("event", "source_snapshot")
+        .prefetch_related("provenance_assertions__source_snapshot")
         .order_by("event__event_family", "event_id", "reference_period", "known_at", "scheduled_at", "vintage_id")
     )
     for s in schedules:
-        snap_sha = s.source_snapshot.raw_payload_bytes_sha256 if s.source_snapshot else "NO_SNAPSHOT"
         sched_iso = s.scheduled_at.isoformat() if s.scheduled_at else ""
         known_iso = s.known_at.isoformat() if s.known_at else ""
-        prov_type = getattr(s, "provenance_type", "UNKNOWN") or "UNKNOWN"
-        ann_url = getattr(s, "announcing_release_url", "") or ""
-        line = f"SCHED|{s.event.event_family}|{s.event_id}|{s.reference_period}|{s.schedule_status}|{sched_iso}|{known_iso}|{prov_type}|{ann_url}|{snap_sha}"
+
+        # Check latest provenance assertion if present
+        latest_assertion = s.provenance_assertions.order_by("-asserted_at").first()
+        if latest_assertion:
+            prov_type = latest_assertion.provenance_type
+            ann_url = latest_assertion.announcing_release_url or ""
+            ann_ts_iso = latest_assertion.announcing_release_timestamp.isoformat() if latest_assertion.announcing_release_timestamp else ""
+            rule_ver = latest_assertion.parser_rule_version or ""
+            snap = latest_assertion.source_snapshot or s.source_snapshot
+            snap_sha = snap.raw_payload_bytes_sha256 if snap else "NO_SNAPSHOT"
+        else:
+            prov_type = getattr(s, "provenance_type", "UNKNOWN") or "UNKNOWN"
+            ann_url = getattr(s, "announcing_release_url", "") or ""
+            ann_ts = getattr(s, "announcing_release_timestamp", None)
+            ann_ts_iso = ann_ts.isoformat() if ann_ts else ""
+            rule_ver = getattr(s, "parser_rule_version", "") or ""
+            snap_sha = s.source_snapshot.raw_payload_bytes_sha256 if s.source_snapshot else "NO_SNAPSHOT"
+
+        line = f"SCHED|{s.event.event_family}|{s.event_id}|{s.reference_period}|{s.schedule_status}|{sched_iso}|{known_iso}|{prov_type}|{ann_url}|{ann_ts_iso}|{rule_ver}|{snap_sha}"
         lines.append(line)
 
     # 2. Observations

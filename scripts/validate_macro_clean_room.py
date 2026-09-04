@@ -26,6 +26,7 @@ from apps.market_data.models import (
     MacroEventIdentity,
     MacroScheduleVintage,
     MacroObservationVintage,
+    MacroScheduleProvenanceAssertion,
     SourceSnapshot,
 )
 from apps.market_data.macro.ingestion import ingest_xauusd_macro_evidence
@@ -83,11 +84,13 @@ def run_clean_room_validation():
         fp1 = compute_macro_evidence_fingerprint()
         sched_count_1 = MacroScheduleVintage.objects.count()
         obs_count_1 = MacroObservationVintage.objects.count()
+        assertion_count_1 = MacroScheduleProvenanceAssertion.objects.count()
 
         print(f"   Run 1 duration: {(t1 - t0).total_seconds():.2f}s")
         print(f"   Run 1 stats: {stats1.to_dict()}")
         print(f"   Run 1 schedule vintages: {sched_count_1}")
         print(f"   Run 1 observation vintages: {obs_count_1}")
+        print(f"   Run 1 provenance assertions: {assertion_count_1}")
         print(f"   Run 1 macro fingerprint: {fp1}")
 
         print("\n5. Executing RUN 2 (Idempotent rerun)...")
@@ -97,11 +100,13 @@ def run_clean_room_validation():
         fp2 = compute_macro_evidence_fingerprint()
         sched_count_2 = MacroScheduleVintage.objects.count()
         obs_count_2 = MacroObservationVintage.objects.count()
+        assertion_count_2 = MacroScheduleProvenanceAssertion.objects.count()
 
         print(f"   Run 2 duration: {(t3 - t2).total_seconds():.2f}s")
         print(f"   Run 2 stats: {stats2.to_dict()}")
         print(f"   Run 2 schedule vintages: {sched_count_2}")
         print(f"   Run 2 observation vintages: {obs_count_2}")
+        print(f"   Run 2 provenance assertions: {assertion_count_2}")
         print(f"   Run 2 macro fingerprint: {fp2}")
 
         print("\n6. Validating Clean-Room Assertions...")
@@ -115,8 +120,12 @@ def run_clean_room_validation():
         assert obs_count_1 == obs_count_2, f"Observation count mutated! Run 1: {obs_count_1} != Run 2: {obs_count_2}"
         print(f"   [PASS] Observation vintage invariance: {obs_count_1} == {obs_count_2}")
 
+        assert assertion_count_1 == assertion_count_2, f"Assertion count mutated! Run 1: {assertion_count_1} != Run 2: {assertion_count_2}"
+        print(f"   [PASS] Provenance assertion invariance: {assertion_count_1} == {assertion_count_2}")
+
         assert stats2.schedule_vintages_inserted == 0, f"Run 2 inserted new schedules: {stats2.schedule_vintages_inserted}"
         assert stats2.observations_inserted == 0, f"Run 2 inserted new observations: {stats2.observations_inserted}"
+        assert stats2.provenance_assertions_inserted == 0, f"Run 2 inserted new assertions: {stats2.provenance_assertions_inserted}"
         assert stats2.idempotent_skips > 0, "Run 2 reported 0 idempotent skips!"
         print(f"   [PASS] Run 2 strictly skipped existing records (skips: {stats2.idempotent_skips})")
 

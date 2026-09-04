@@ -223,6 +223,24 @@ class MacroEventIdentity(models.Model):
         return f"{self.identity_id} ({self.name})"
 
 
+class ImmutableQuerySet(models.QuerySet):
+    """QuerySet that strictly enforces append-only immutability at the database level."""
+
+    def update(self, **kwargs):
+        raise PermissionError(f"{self.model.__name__} is immutable; QuerySet.update() is prohibited.")
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise PermissionError(f"{self.model.__name__} is immutable; QuerySet.bulk_update() is prohibited.")
+
+    def delete(self):
+        raise PermissionError(f"{self.model.__name__} is append-only; QuerySet.delete() is prohibited.")
+
+
+class ImmutableManager(models.Manager.from_queryset(ImmutableQuerySet)):
+    """Manager enforcing append-only immutability for governed evidence tables."""
+    pass
+
+
 class SourceSnapshot(models.Model):
     """Immutable audit snapshot of raw HTTP response payloads."""
     snapshot_id = models.CharField(max_length=64, primary_key=True)
@@ -237,6 +255,8 @@ class SourceSnapshot(models.Model):
     raw_content = models.BinaryField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = ImmutableManager()
+
     class Meta:
         ordering = ["-first_retrieved_at"]
         verbose_name = "Source Snapshot"
@@ -244,6 +264,9 @@ class SourceSnapshot(models.Model):
         indexes = [
             models.Index(fields=["source_name", "first_retrieved_at"]),
         ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("SourceSnapshot is append-only and cannot be deleted.")
 
     def save(self, *args, **kwargs):
         if self.pk and SourceSnapshot.objects.filter(pk=self.pk).exists():
@@ -296,6 +319,8 @@ class MacroScheduleVintage(models.Model):
     parser_rule_version = models.CharField(max_length=64, default="BLS_PREVIOUS_RELEASE_V1")
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = ImmutableManager()
+
     class Meta:
         ordering = ["-known_at", "-vintage_id"]
         verbose_name = "Macro Schedule Vintage"
@@ -326,6 +351,9 @@ class MacroScheduleVintage(models.Model):
             raise ValidationError(f"Provenanced schedule vintage ({self.provenance_type}) requires authoritative source_snapshot.")
         if self.provenance_type == ScheduleProvenanceType.OMB_PFEI_SCHEDULE and not self.source_published_at:
             raise ValidationError("OMB PFEI Schedule provenance requires a defensible source publication date.")
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("MacroScheduleVintage is append-only and cannot be deleted.")
 
     def save(self, *args, **kwargs):
         if self.pk and MacroScheduleVintage.objects.filter(pk=self.pk).exists():
@@ -389,6 +417,8 @@ class MacroObservationVintage(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = ImmutableManager()
+
     class Meta:
         ordering = ["-known_at", "-revision_number"]
         verbose_name = "Macro Observation Vintage"
@@ -409,6 +439,9 @@ class MacroObservationVintage(models.Model):
         if self.publication_status == PublicationStatus.OFFICIALLY_NOT_PUBLISHED and not self.source_snapshot_id:
             raise ValidationError("Officially not published observation requires authoritative source_snapshot.")
 
+    def delete(self, *args, **kwargs):
+        raise PermissionError("MacroObservationVintage is append-only and cannot be deleted.")
+
     def save(self, *args, **kwargs):
         if self.pk and MacroObservationVintage.objects.filter(pk=self.pk).exists():
             raise ValueError("MacroObservationVintage is immutable and append-only.")
@@ -416,4 +449,67 @@ class MacroObservationVintage(models.Model):
 
     def __str__(self) -> str:
         return f"Obs {self.event_id} [{self.reference_period}] rev={self.revision_number} val={self.raw_value}"
+
+
+class MacroScheduleProvenanceAssertion(models.Model):
+    """Append-only audit assertion validating the provenance of a macro schedule vintage."""
+    assertion_id = models.CharField(max_length=64, primary_key=True)
+    schedule_vintage = models.ForeignKey(
+        MacroScheduleVintage,
+        on_delete=models.PROTECT,
+        related_name="provenance_assertions",
+    )
+    provenance_type = models.CharField(
+        max_length=48,
+        choices=ScheduleProvenanceType.choices,
+        default=ScheduleProvenanceType.UNKNOWN,
+        db_index=True,
+    )
+    source_snapshot = models.ForeignKey(
+        SourceSnapshot,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="provenance_assertions",
+    )
+    announcing_release_url = models.URLField(max_length=1024, null=True, blank=True)
+    announcing_release_timestamp = models.DateTimeField(null=True, blank=True)
+    parser_rule_version = models.CharField(max_length=64, default="PROVENANCE_RULE_V1")
+    asserted_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    supersedes_assertion = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="superseded_by",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-asserted_at", "-assertion_id"]
+        verbose_name = "Macro Schedule Provenance Assertion"
+        verbose_name_plural = "Macro Schedule Provenance Assertions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["schedule_vintage", "provenance_type", "source_snapshot"],
+                name="unique_schedule_provenance_assertion",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["schedule_vintage", "provenance_type"]),
+            models.Index(fields=["asserted_at"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("MacroScheduleProvenanceAssertion is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and MacroScheduleProvenanceAssertion.objects.filter(pk=self.pk).exists():
+            raise ValueError("MacroScheduleProvenanceAssertion is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Assertion {self.assertion_id[:12]} for {self.schedule_vintage_id} ({self.provenance_type})"
 

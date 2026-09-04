@@ -3,7 +3,7 @@
   "instrument": "XAUUSD",
   "coverage_start": "2020-04-07T00:00:00Z",
   "coverage_end": "2026-09-01T00:00:00Z",
-  "generated_at": "2026-09-04T15:32:38.410607+00:00",
+  "generated_at": "2026-09-04T16:26:36.847601+00:00",
   "required_event_families": [
     "FOMC_RATE",
     "US_NFP",
@@ -769,21 +769,28 @@
       ]
     ]
   },
+  "schedule_vintage_breakdown": {
+    "active_required_schedules": 204,
+    "superseded_historical_vintages": 156,
+    "provenance_assertions": 206,
+    "active_unknown": 0,
+    "superseded_unknown": 154
+  },
   "shutdown_2025_chronology": {
     "US_CPI_2025_10": {
       "original_schedule": {
         "scheduled_at": "2025-11-13T13:30:00+00:00",
-        "known_at": "2024-12-01T00:00:00+00:00",
+        "known_at": "2025-10-24T12:30:00+00:00",
         "status": "SCHEDULED",
-        "source_url": "https://www.bls.gov/schedule/2025/home.htm",
-        "source_sha256": "3ef4c8dee4db6a88a1ccc9a7f67715adac973a46ff6288483367e46895aa9607"
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_10242025.htm",
+        "source_sha256": "ab7e0e431246f6f983575529cf4eae509706963fa893b6156576a2c320556397"
       },
       "cancellation": {
         "scheduled_at": "2025-11-13T13:30:00+00:00",
-        "known_at": "2025-11-20T13:30:00+00:00",
+        "known_at": "2025-12-18T13:30:00+00:00",
         "status": "CANCELLED",
-        "source_url": "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
-        "source_sha256": "32423903015128e72093392cfaf331a097db1aeb2e8e7d300bec15eef9b6dd8e"
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "source_sha256": "85627e2f11db4d58fbdebc5877b27e71022c0ef17db77ddfb04497c4e33105b5"
       },
       "observation": {
         "publication_status": "OFFICIALLY_NOT_PUBLISHED",
@@ -798,10 +805,10 @@
     "US_NFP_2025_10": {
       "original_schedule": {
         "scheduled_at": "2025-11-07T13:30:00+00:00",
-        "known_at": "2024-12-01T00:00:00+00:00",
+        "known_at": "2025-09-05T12:30:00+00:00",
         "status": "SCHEDULED",
-        "source_url": "https://www.bls.gov/schedule/2025/home.htm",
-        "source_sha256": "3ef4c8dee4db6a88a1ccc9a7f67715adac973a46ff6288483367e46895aa9607"
+        "source_url": "https://www.bls.gov/news.release/archives/empsit_09052025.htm",
+        "source_sha256": "ca6186dccc99238b7a30b671c931cef474d4ed4484d6bb8e0d425e2f9a04713a"
       },
       "cancellation": {
         "scheduled_at": "2025-11-07T13:30:00+00:00",
@@ -822,7 +829,7 @@
       }
     }
   },
-  "macro_evidence_fingerprint": "41a9416023fbbfb35288d485d5f351155e979efb0f27c3751f51d09f5edca680",
+  "macro_evidence_fingerprint": "d9d2ebb4c6ec11fafc4ffce35090d64a5eaa05a3e024da4148b3900cf6370823",
   "candle_total": 3096312,
   "phase6_15m_dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
   "readiness_evidence_fingerprint": "d5d8f7a20cf820f177ccafb99d60d09cf503e5a80eee95a89bc7cf02334764b9",
@@ -830,9 +837,10 @@
     "source_snapshots_inserted": 0,
     "identities_inserted": 0,
     "schedule_vintages_inserted": 0,
+    "provenance_assertions_inserted": 0,
     "observations_inserted": 0,
     "revisions_inserted": 0,
-    "idempotent_skips": 795,
+    "idempotent_skips": 1001,
     "duplicates": 0,
     "conflicts": 0,
     "quarantined": 0,
