@@ -28,6 +28,8 @@ from apps.market_data.readiness import (
     compute_xauusd_readiness_fingerprint_from_qs,
     format_canonical_ohlc_decimal,
     evaluate_timeframe_coverage_and_gaps,
+    evaluate_timeframe_coverage_and_gaps_from_qs,
+    TWELVE_DATA_XAUUSD_PROVIDER_NATIVE_STARTS,
     EMPTY_DATASET_HASH,
 )
 
@@ -657,3 +659,300 @@ class TestProvenanceHardeningScenarios:
         rep = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=[mock_c])
         assert rep.phase6_15m_dataset_fingerprint != ""
         assert rep.phase6_15m_dataset_fingerprint != EMPTY_DATASET_HASH
+
+
+# =====================================================================
+# Scenario M: Provider-Native Full-History Semantics (Mandates A through K)
+# =====================================================================
+class TestProviderNativeFullHistoryReadinessSemantics:
+    """
+    Mandatory hostile unit tests verifying explicit provider-native start boundaries,
+    neutral gap semantics, DB streaming query efficiency, fingerprint separation,
+    and governance invariants.
+    """
+
+    def test_mandate_a_4h_earliest_0100_with_native_start_0100_passes(self, xauusd_test_env):
+        """A. 4h earliest 01:00 with configured native start 01:00 => PASS start boundary."""
+        instrument, _ = xauusd_test_env
+        t_global = datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc)
+        t_end = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
+        native_starts = {
+            "1m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "5m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "15m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "1h": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "4h": datetime(2020, 4, 7, 1, 0, tzinfo=timezone.utc),
+            "1d": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+        }
+        candles = [
+            MockCandle("4h", datetime(2020, 4, 7, 1, 0, tzinfo=timezone.utc), datetime(2020, 4, 7, 5, 0, tzinfo=timezone.utc)),
+            MockCandle("4h", datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc), datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc)),
+        ]
+        # Satisfy 15m warm-up
+        for i in range(25):
+            t_o = t_global + i * timedelta(minutes=15)
+            candles.append(MockCandle("15m", t_o, t_o + timedelta(minutes=15)))
+        candles.append(MockCandle("15m", t_end - timedelta(minutes=15), t_end))
+
+        for tf in ("1m", "5m", "1h", "1d"):
+            candles.append(MockCandle(tf, t_global, t_global + timedelta(minutes=15)))
+            candles.append(MockCandle(tf, t_end - timedelta(minutes=15), t_end))
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=candles,
+            expected_coverage_start=t_global,
+            expected_coverage_end=t_end,
+            expected_coverage_start_by_timeframe=native_starts,
+        )
+        cov_4h = report.coverage_by_timeframe["4h"]
+        assert cov_4h["coverage_start_satisfied"] is True
+        assert cov_4h["coverage_end_satisfied"] is True
+        assert cov_4h["coverage_complete"] is True
+        assert cov_4h["provider_native_required_start"] == "2020-04-07T01:00:00+00:00"
+        assert cov_4h["analytical_required_start"] == "2020-04-07T00:00:00+00:00"
+        assert report.coverage_complete is True
+
+    def test_mandate_b_4h_earliest_0500_with_native_start_0100_fails(self, xauusd_test_env):
+        """B. 4h earliest 05:00 with configured native start 01:00 => FAIL start boundary."""
+        instrument, _ = xauusd_test_env
+        t_global = datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc)
+        t_end = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
+        native_starts = {
+            "1m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "5m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "15m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "1h": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "4h": datetime(2020, 4, 7, 1, 0, tzinfo=timezone.utc),
+            "1d": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+        }
+        candles = [
+            # Earliest is 05:00, missing the 01:00 native bar
+            MockCandle("4h", datetime(2020, 4, 7, 5, 0, tzinfo=timezone.utc), datetime(2020, 4, 7, 9, 0, tzinfo=timezone.utc)),
+            MockCandle("4h", datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc), datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc)),
+        ]
+        for i in range(25):
+            t_o = t_global + i * timedelta(minutes=15)
+            candles.append(MockCandle("15m", t_o, t_o + timedelta(minutes=15)))
+        candles.append(MockCandle("15m", t_end - timedelta(minutes=15), t_end))
+
+        for tf in ("1m", "5m", "1h", "1d"):
+            candles.append(MockCandle(tf, t_global, t_global + timedelta(minutes=15)))
+            candles.append(MockCandle(tf, t_end - timedelta(minutes=15), t_end))
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=candles,
+            expected_coverage_start=t_global,
+            expected_coverage_end=t_end,
+            expected_coverage_start_by_timeframe=native_starts,
+        )
+        cov_4h = report.coverage_by_timeframe["4h"]
+        assert cov_4h["coverage_start_satisfied"] is False
+        assert cov_4h["coverage_complete"] is False
+        assert report.coverage_complete is False
+
+    def test_mandate_c_other_tf_earliest_later_than_native_start_fails(self, xauusd_test_env):
+        """C. Other TF earliest later than their native required start => FAIL."""
+        instrument, _ = xauusd_test_env
+        t_global = datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc)
+        t_end = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
+        native_starts = {
+            "1m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "5m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "15m": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "1h": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+            "4h": datetime(2020, 4, 7, 1, 0, tzinfo=timezone.utc),
+            "1d": datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc),
+        }
+        candles = []
+        # 1h starts late at 02:00
+        candles.append(MockCandle("1h", datetime(2020, 4, 7, 2, 0, tzinfo=timezone.utc), datetime(2020, 4, 7, 3, 0, tzinfo=timezone.utc)))
+        candles.append(MockCandle("1h", t_end - timedelta(hours=1), t_end))
+
+        for tf in ("1m", "5m", "15m", "4h", "1d"):
+            start = native_starts[tf]
+            candles.append(MockCandle(tf, start, start + timedelta(minutes=15)))
+            candles.append(MockCandle(tf, t_end - timedelta(minutes=15), t_end))
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=candles,
+            expected_coverage_start=t_global,
+            expected_coverage_end=t_end,
+            expected_coverage_start_by_timeframe=native_starts,
+        )
+        assert report.coverage_by_timeframe["1h"]["coverage_start_satisfied"] is False
+        assert report.coverage_complete is False
+
+    def test_mandate_d_no_per_tf_map_supplied_preserves_old_global_expected_start(self, xauusd_test_env):
+        """D. No per-TF map supplied => old global expected_start behavior preserved."""
+        instrument, _ = xauusd_test_env
+        t_global = datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc)
+        t_end = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
+        candles = [
+            MockCandle("4h", datetime(2020, 4, 7, 1, 0, tzinfo=timezone.utc), datetime(2020, 4, 7, 5, 0, tzinfo=timezone.utc)),
+            MockCandle("4h", datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc), datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc)),
+        ]
+        for tf in ("1m", "5m", "15m", "1h", "1d"):
+            candles.append(MockCandle(tf, t_global, t_global + timedelta(minutes=15)))
+            candles.append(MockCandle(tf, t_end - timedelta(minutes=15), t_end))
+
+        # Without per-TF map, 4h starting at 01:00 fails because 01:00 > 00:00
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=candles,
+            expected_coverage_start=t_global,
+            expected_coverage_end=t_end,
+            expected_coverage_start_by_timeframe=None,
+        )
+        assert report.coverage_by_timeframe["4h"]["coverage_start_satisfied"] is False
+        assert report.coverage_complete is False
+
+    def test_mandate_e_raw_internal_gap_still_counted_with_neutral_semantics(self):
+        """E. Raw internal gap still counted even though described with neutral provider semantics."""
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        candles = [
+            MockCandle("1m", t0, t0 + timedelta(minutes=1)),
+            MockCandle("1m", t0 + timedelta(minutes=2), t0 + timedelta(minutes=3)),
+        ]
+        cov, gaps = evaluate_timeframe_coverage_and_gaps("1m", candles, expected_start=t0, expected_end=t0 + timedelta(minutes=3))
+        assert gaps["internal_gap_count"] == 1
+        assert gaps["missing_interval_count"] == 1
+        assert gaps["gap_semantics"] == "OBSERVATIONAL_PROVIDER_CONTINUITY"
+        assert gaps["gap_readiness_gate_applied"] is False
+
+    def test_mandate_f_session_gaps_not_auto_whitelisted(self):
+        """F. 3600/3660/3720 gaps are NOT globally auto-whitelisted."""
+        t0 = datetime(2026, 6, 1, 21, 0, tzinfo=timezone.utc)
+        # Gap of 3600 seconds
+        candles_3600 = [
+            MockCandle("1m", t0, t0 + timedelta(minutes=1)),
+            MockCandle("1m", t0 + timedelta(seconds=3660), t0 + timedelta(seconds=3720)),
+        ]
+        cov, gaps = evaluate_timeframe_coverage_and_gaps("1m", candles_3600, expected_start=t0, expected_end=t0 + timedelta(hours=2))
+        assert gaps["internal_gap_count"] == 1
+        assert gaps["missing_interval_count"] == 60
+        assert gaps["largest_gap_seconds"] == 3600
+        assert gaps["missing_intervals_pct"] != "0.00%"
+
+    @pytest.mark.django_db
+    def test_mandate_g_streaming_db_evaluator_matches_in_memory_evaluator(self, xauusd_test_env):
+        """G. Streaming DB evaluator matches bounded in-memory evaluator for coverage/gap numbers."""
+        instrument, listing = xauusd_test_env
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        src = "twelve_data_xauusd"
+        candles_db = []
+        for i in range(10):
+            if i == 4:
+                continue
+            c = MarketCandle.objects.create(
+                instrument=instrument,
+                source=src,
+                timeframe="15m",
+                timestamp_open=t0 + i * timedelta(minutes=15),
+                timestamp_close=t0 + (i + 1) * timedelta(minutes=15),
+                open=Decimal("2000.00"),
+                high=Decimal("2010.00"),
+                low=Decimal("1990.00"),
+                close=Decimal("2005.00"),
+                volume=Decimal("100"),
+                is_closed=True,
+                volume_evidence=VolumeEvidenceType.REAL_VOLUME,
+            )
+            candles_db.append(c)
+
+        qs = MarketCandle.objects.filter(instrument=instrument, source=src)
+        cov_qs, gaps_qs = evaluate_timeframe_coverage_and_gaps_from_qs(
+            "15m", qs, expected_start=t0, expected_end=t0 + 10 * timedelta(minutes=15), analytical_start=t0
+        )
+        cov_mem, gaps_mem = evaluate_timeframe_coverage_and_gaps(
+            "15m", candles_db, expected_start=t0, expected_end=t0 + 10 * timedelta(minutes=15), analytical_start=t0
+        )
+
+        assert cov_qs["count"] == cov_mem["count"] == 9
+        assert cov_qs["coverage_complete"] == cov_mem["coverage_complete"] is True
+        assert gaps_qs["internal_gap_count"] == gaps_mem["internal_gap_count"] == 1
+        assert gaps_qs["missing_interval_count"] == gaps_mem["missing_interval_count"] == 1
+        assert gaps_qs["largest_gap_seconds"] == gaps_mem["largest_gap_seconds"] == 900
+        assert gaps_qs["missing_intervals_pct"] == gaps_mem["missing_intervals_pct"]
+
+    @pytest.mark.django_db
+    def test_mandate_h_persisted_db_path_does_not_convert_complete_qs_into_list(self, xauusd_test_env):
+        """H. Persisted DB path does not require converting complete primary queryset into one Python list."""
+        instrument, listing = xauusd_test_env
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        src = "twelve_data_xauusd"
+        for tf in ("1m", "5m", "15m", "1h", "4h", "1d"):
+            for i in range(25):
+                MarketCandle.objects.create(
+                    instrument=instrument,
+                    source=src,
+                    timeframe=tf,
+                    timestamp_open=t0 + i * timedelta(hours=1),
+                    timestamp_close=t0 + (i + 1) * timedelta(hours=1),
+                    open=Decimal("2000.00"),
+                    high=Decimal("2010.00"),
+                    low=Decimal("1990.00"),
+                    close=Decimal("2005.00"),
+                    volume=Decimal("100"),
+                    is_closed=True,
+                    volume_evidence=VolumeEvidenceType.REAL_VOLUME,
+                )
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=None,
+            expected_coverage_start=t0,
+            expected_coverage_end=t0 + 25 * timedelta(hours=1),
+        )
+        assert report.total_candles == 150
+        assert report.candle_gate_passed is True
+
+    def test_mandate_i_phase6_15m_fingerprint_remains_unchanged(self, xauusd_test_env):
+        """I. Phase6 15m fingerprint remains unchanged for identical 15m evidence."""
+        instrument, _ = xauusd_test_env
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        candles = [
+            MockCandle("15m", t0 + i * timedelta(minutes=15), t0 + (i + 1) * timedelta(minutes=15))
+            for i in range(25)
+        ]
+        rep1 = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=candles)
+        rep2 = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=candles)
+        assert rep1.phase6_15m_dataset_fingerprint == rep2.phase6_15m_dataset_fingerprint
+        assert len(rep1.phase6_15m_dataset_fingerprint) == 64
+
+    def test_mandate_j_six_tf_readiness_fingerprint_deterministic(self, xauusd_test_env):
+        """J. 6-TF readiness fingerprint remains deterministic."""
+        instrument, _ = xauusd_test_env
+        t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        candles = []
+        for tf in ("1m", "5m", "15m", "1h", "4h", "1d"):
+            candles.append(MockCandle(tf, t0, t0 + timedelta(minutes=15)))
+        rep1 = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=candles)
+        rep2 = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_candles=candles)
+        assert rep1.readiness_evidence_fingerprint == rep2.readiness_evidence_fingerprint
+        assert rep1.readiness_evidence_fingerprint != rep1.phase6_15m_dataset_fingerprint
+
+    def test_mandate_k_production_authorization_remains_false_published_wait(self, xauusd_test_env):
+        """K. Production authorization remains FALSE / published WAIT contracts unaffected."""
+        instrument, _ = xauusd_test_env
+        t0 = datetime(2020, 4, 7, 0, 0, tzinfo=timezone.utc)
+        candles = [
+            MockCandle("15m", t0 + i * timedelta(minutes=15), t0 + (i + 1) * timedelta(minutes=15))
+            for i in range(25)
+        ]
+        rep = XauUsdDataReadinessEvaluator.evaluate(
+            instrument=instrument,
+            override_candles=candles,
+            technical_only=True,
+        )
+        manifest = rep.to_manifest_dict(code_revision="a960342886fbd49a1eea01558b0f1b8b057e6ae1")
+        assert manifest.get("production_authority", False) is False
+        md_report = rep.to_markdown_report(
+            baseline_sha="c5c521c03c1f4e18da8f2dd7039af998d599d78c",
+            code_revision="a960342886fbd49a1eea01558b0f1b8b057e6ae1",
+        )
+        assert "Production Authority:** `FALSE`" in md_report
+        assert "Published Decision:** `WAIT`" in md_report
+        assert "Phase 8 Status:** `HOLD`" in md_report
