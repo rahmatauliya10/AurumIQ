@@ -173,3 +173,190 @@ class QuarantineRecord(models.Model):
     def __str__(self) -> str:
         active_str = "ACTIVE" if self.is_active else "RELEASED"
         return f"Quarantine: {self.provider} ({self.symbol}) - {active_str} [{self.reason[:40]}]"
+
+
+class MacroEventFamily(models.TextChoices):
+    US_CPI = "US_CPI", "US Consumer Price Index"
+    US_NFP = "US_NFP", "US Nonfarm Payrolls"
+    FOMC_RATE = "FOMC_RATE", "Federal Open Market Committee Rate Decision"
+
+
+class ScheduleStatus(models.TextChoices):
+    SCHEDULED = "SCHEDULED", "Scheduled"
+    RESCHEDULED = "RESCHEDULED", "Rescheduled"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class MacroEventIdentity(models.Model):
+    """Canonical registry of macroeconomic event families."""
+    identity_id = models.CharField(max_length=64, primary_key=True)
+    event_family = models.CharField(max_length=32, choices=MacroEventFamily.choices, db_index=True)
+    name = models.CharField(max_length=128)
+    country = models.CharField(max_length=8, default="US")
+    impact = models.CharField(max_length=16, default="HIGH")
+    reporting_agency = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["identity_id"]
+        verbose_name = "Macro Event Identity"
+        verbose_name_plural = "Macro Event Identities"
+
+    def __str__(self) -> str:
+        return f"{self.identity_id} ({self.name})"
+
+
+class SourceSnapshot(models.Model):
+    """Immutable audit snapshot of raw HTTP response payloads."""
+    snapshot_id = models.CharField(max_length=64, primary_key=True)
+    source_url = models.URLField(max_length=1024)
+    source_name = models.CharField(max_length=64, db_index=True)
+    first_retrieved_at = models.DateTimeField(db_index=True)
+    http_status = models.IntegerField(default=200)
+    content_type = models.CharField(max_length=128, blank=True)
+    etag = models.CharField(max_length=256, blank=True)
+    last_modified_header = models.CharField(max_length=128, blank=True)
+    raw_payload_bytes_sha256 = models.CharField(max_length=64, db_index=True)
+    raw_content = models.BinaryField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-first_retrieved_at"]
+        verbose_name = "Source Snapshot"
+        verbose_name_plural = "Source Snapshots"
+        indexes = [
+            models.Index(fields=["source_name", "first_retrieved_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and SourceSnapshot.objects.filter(pk=self.pk).exists():
+            raise ValueError("SourceSnapshot is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Snapshot {self.snapshot_id[:8]} ({self.source_name} @ {self.first_retrieved_at.isoformat()})"
+
+
+class MacroScheduleVintage(models.Model):
+    """Point-in-time publication of event scheduled release times (append-only)."""
+    vintage_id = models.CharField(max_length=64, primary_key=True)
+    event = models.ForeignKey(
+        MacroEventIdentity,
+        on_delete=models.PROTECT,
+        related_name="schedules",
+    )
+    reference_period = models.CharField(max_length=32, db_index=True)
+    scheduled_at = models.DateTimeField(db_index=True)
+    schedule_status = models.CharField(
+        max_length=32,
+        choices=ScheduleStatus.choices,
+        default=ScheduleStatus.SCHEDULED,
+    )
+    source_published_at = models.DateTimeField(null=True, blank=True)
+    known_at = models.DateTimeField(db_index=True)
+    supersedes_vintage = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="superseded_by",
+    )
+    source_snapshot = models.ForeignKey(
+        SourceSnapshot,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="schedules",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-known_at", "-vintage_id"]
+        verbose_name = "Macro Schedule Vintage"
+        verbose_name_plural = "Macro Schedule Vintages"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "reference_period", "known_at"],
+                name="unique_macro_schedule_vintage",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["event", "reference_period", "known_at"]),
+            models.Index(fields=["known_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and MacroScheduleVintage.objects.filter(pk=self.pk).exists():
+            raise ValueError("MacroScheduleVintage is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Sched {self.event_id} [{self.reference_period}] @ {self.scheduled_at.isoformat()} ({self.schedule_status})"
+
+
+class MacroObservationVintage(models.Model):
+    """Point-in-time macroeconomic observation release and revisions (append-only)."""
+    vintage_id = models.CharField(max_length=64, primary_key=True)
+    event = models.ForeignKey(
+        MacroEventIdentity,
+        on_delete=models.PROTECT,
+        related_name="observations",
+    )
+    schedule_vintage = models.ForeignKey(
+        MacroScheduleVintage,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="observations",
+    )
+    reference_period = models.CharField(max_length=32, db_index=True)
+    revision_number = models.IntegerField(default=0, db_index=True)
+    revises_vintage = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="revisions",
+    )
+    observation_date = models.DateField(null=True, blank=True)
+    vintage_date = models.DateField(null=True, blank=True, db_index=True)
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    source_published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    first_retrieved_at = models.DateTimeField(null=True, blank=True)
+    known_at = models.DateTimeField(db_index=True)
+    raw_value = models.CharField(max_length=64, blank=True)
+    level_value = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    derived_change_value = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    unit = models.CharField(max_length=32, blank=True)
+    source_snapshot = models.ForeignKey(
+        SourceSnapshot,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="observations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-known_at", "-revision_number"]
+        verbose_name = "Macro Observation Vintage"
+        verbose_name_plural = "Macro Observation Vintages"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "reference_period", "revision_number"],
+                name="unique_macro_observation_revision",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["event", "reference_period", "revision_number"]),
+            models.Index(fields=["known_at", "source_published_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and MacroObservationVintage.objects.filter(pk=self.pk).exists():
+            raise ValueError("MacroObservationVintage is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Obs {self.event_id} [{self.reference_period}] rev={self.revision_number} val={self.raw_value}"
+

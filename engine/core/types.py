@@ -405,8 +405,8 @@ class MacroEvent:
     event_id: str
     name: str
     scheduled_at: datetime
-    released_at: datetime
-    initial_value: Optional[str]
+    released_at: Optional[datetime] = None
+    initial_value: Optional[str] = None
     revised_at: Optional[datetime] = None
     revised_value: Optional[str] = None
     impact: EventImpact = EventImpact.HIGH
