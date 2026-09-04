@@ -1,0 +1,74 @@
+{
+  "manifest_schema_version": "3.0.0",
+  "venue": "EXNESS",
+  "account_tier": "STANDARD",
+  "symbol": "XAUUSD",
+  "audit_timestamp": "2026-09-04T17:25:27Z",
+  "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
+  "hard_readiness_gate": {
+    "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
+    "passed": false,
+    "is_production_authorized": false,
+    "phase3b_production_weight": 0.0,
+    "published_decision": "WAIT"
+  },
+  "evidence_inventory": {
+    "legal_entity_scope": {
+      "status": "LEGAL_ENTITY_EVIDENCE_MISSING",
+      "legal_entity_code": null,
+      "regulator": null,
+      "license_number": null
+    },
+    "contract_geometry": {
+      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
+      "digits": 2,
+      "point_size": "0.01",
+      "trade_tick_size": "0.01",
+      "trade_tick_value": "1.00",
+      "contract_size": "100.0",
+      "volume_min": "0.01",
+      "volume_max": "200.0",
+      "volume_step": "0.01"
+    },
+    "commission_policy": {
+      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
+      "account_tier": "STANDARD",
+      "native_commission_usd_per_lot_per_side": "0.0000",
+      "commission_formula": "DYNAMIC_NOTIONAL_BPS",
+      "illustrative_fee_bps_at_2500_gold": "0.0000 (NON_GATING_ILLUSTRATIVE_EXAMPLE)"
+    },
+    "financing_policy": {
+      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
+      "swap_long_points": "-34.80",
+      "swap_short_points": "12.40",
+      "rollover_schedule": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0",
+      "triple_swap_weekday": "WEDNESDAY",
+      "swap_free_available_for_account_type": true,
+      "actual_account_swap_free_status": false
+    },
+    "bid_ask_spread_distribution": {
+      "status": "SPREAD_EMPIRICAL_EVIDENCE_MISSING",
+      "source_file": null,
+      "raw_sha256": null,
+      "sample_count": 0,
+      "distinct_trading_dates": 0,
+      "sessions": [
+        "ASIAN",
+        "LONDON",
+        "NEW_YORK",
+        "ROLLOVER"
+      ]
+    },
+    "execution_slippage_telemetry": {
+      "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+      "source_file": null,
+      "sample_count": 0
+    }
+  },
+  "blocking_reasons": [
+    "Legal entity provenance: LEGAL_ENTITY_EVIDENCE_MISSING",
+    "Quote spread empirical dataset: SPREAD_EMPIRICAL_EVIDENCE_MISSING",
+    "Execution slippage telemetry: SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+    "Friction readiness fails closed: No fabricated observations allowed."
+  ]
+}

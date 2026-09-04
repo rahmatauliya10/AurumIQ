@@ -513,3 +513,420 @@ class MacroScheduleProvenanceAssertion(models.Model):
     def __str__(self) -> str:
         return f"Assertion {self.assertion_id[:12]} for {self.schedule_vintage_id} ({self.provenance_type})"
 
+
+# =============================================================================
+# EMPIRICAL FRICTION EVIDENCE MODELS (Pre-Phase-8 Calibration Governance)
+# =============================================================================
+
+class FrictionComponentType(models.TextChoices):
+    SPREAD = "SPREAD", "Spread"
+    SLIPPAGE = "SLIPPAGE", "Slippage"
+    COMMISSION = "COMMISSION", "Commission"
+    FINANCING = "FINANCING", "Financing / Swap"
+    CONTRACT_SPEC = "CONTRACT_SPEC", "Contract Specification"
+
+
+class FrictionConditionType(models.TextChoices):
+    NORMAL = "NORMAL", "Normal Conditions"
+    STRESSED = "STRESSED", "Stressed / Volatile Conditions"
+    MACRO_BLACKOUT = "MACRO_BLACKOUT", "Macroeconomic Blackout Window"
+    ALL = "ALL", "All Conditions"
+
+
+class FrictionSessionType(models.TextChoices):
+    ASIAN = "ASIAN", "Asian Session"
+    LONDON = "LONDON", "London Session"
+    NEW_YORK = "NEW_YORK", "New York Session"
+    ROLLOVER = "ROLLOVER", "Daily Rollover Window"
+    ALL = "ALL", "All Sessions Combined"
+
+
+class FrictionBindingRole(models.TextChoices):
+    PRIMARY_SPREAD_SAMPLE = "PRIMARY_SPREAD_SAMPLE", "Primary Spread Sample Dataset"
+    STRESS_SPREAD_SAMPLE = "STRESS_SPREAD_SAMPLE", "Stress Spread Sample Dataset"
+    TELEMETRY_SAMPLE = "TELEMETRY_SAMPLE", "Execution Telemetry Sample Dataset"
+    NORMAL_SPREAD_DISTRIBUTION = "NORMAL_SPREAD_DISTRIBUTION", "Normal Spread Distribution Summary"
+    STRESS_SPREAD_DISTRIBUTION = "STRESS_SPREAD_DISTRIBUTION", "Stress Spread Distribution Summary"
+    SLIPPAGE_DISTRIBUTION = "SLIPPAGE_DISTRIBUTION", "Slippage Distribution Summary"
+
+
+class FrictionActivationStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Active Calibration Model"
+    SUPERSEDED = "SUPERSEDED", "Superseded by Newer Calibration Model"
+    REJECTED = "REJECTED", "Rejected by Governance Evaluation"
+    RETIRED = "RETIRED", "Retired"
+
+
+class FrictionSourceSnapshot(models.Model):
+    """Immutable audit snapshot of raw broker / venue evidence payloads (append-only)."""
+    snapshot_id = models.CharField(max_length=64, primary_key=True)
+    source_url = models.URLField(max_length=1024)
+    source_name = models.CharField(max_length=64, db_index=True)
+    venue = models.CharField(max_length=32, db_index=True)
+    symbol = models.CharField(max_length=32, db_index=True)
+    account_tier = models.CharField(max_length=32, db_index=True)
+    retrieved_at = models.DateTimeField(db_index=True)
+    known_at = models.DateTimeField(db_index=True)
+    effective_from = models.DateTimeField(null=True, blank=True)
+    effective_to = models.DateTimeField(null=True, blank=True)
+    http_status = models.IntegerField(default=200)
+    raw_payload_bytes_sha256 = models.CharField(max_length=64, db_index=True)
+    raw_content = models.BinaryField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-known_at", "-snapshot_id"]
+        verbose_name = "Friction Source Snapshot"
+        verbose_name_plural = "Friction Source Snapshots"
+        indexes = [
+            models.Index(fields=["venue", "symbol", "account_tier"]),
+            models.Index(fields=["raw_payload_bytes_sha256"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionSourceSnapshot is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionSourceSnapshot.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionSourceSnapshot is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"FrictionSnapshot {self.snapshot_id[:12]} ({self.source_name} @ {self.venue})"
+
+
+class FrictionEvidenceDataset(models.Model):
+    """Immutable metadata and temporal envelope for an empirical sample dataset (append-only)."""
+    dataset_id = models.CharField(max_length=64, primary_key=True)
+    source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="datasets",
+    )
+    venue = models.CharField(max_length=32, db_index=True)
+    account_tier = models.CharField(max_length=32, db_index=True)
+    symbol = models.CharField(max_length=32, db_index=True)
+    sample_start = models.DateTimeField(db_index=True)
+    sample_end = models.DateTimeField(db_index=True)
+    sample_count = models.IntegerField()
+    distinct_trading_days = models.IntegerField(default=1)
+    session_counts = models.JSONField(default=dict, blank=True)
+    source_units = models.CharField(max_length=32)
+    raw_dataset_sha256 = models.CharField(max_length=64, db_index=True)
+    collection_methodology = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-sample_end", "-dataset_id"]
+        verbose_name = "Friction Evidence Dataset"
+        verbose_name_plural = "Friction Evidence Datasets"
+        indexes = [
+            models.Index(fields=["venue", "symbol", "account_tier"]),
+            models.Index(fields=["raw_dataset_sha256"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionEvidenceDataset is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionEvidenceDataset.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionEvidenceDataset is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Dataset {self.dataset_id[:12]} ({self.symbol} N={self.sample_count})"
+
+
+class FrictionDistributionSummary(models.Model):
+    """Immutable statistical distribution summary derived from a sample dataset (append-only)."""
+    summary_id = models.CharField(max_length=64, primary_key=True)
+    evidence_dataset = models.ForeignKey(
+        FrictionEvidenceDataset,
+        on_delete=models.PROTECT,
+        related_name="distributions",
+    )
+    component_type = models.CharField(max_length=32, choices=FrictionComponentType.choices, db_index=True)
+    condition = models.CharField(
+        max_length=32,
+        choices=FrictionConditionType.choices,
+        default=FrictionConditionType.ALL,
+    )
+    session = models.CharField(
+        max_length=32,
+        choices=FrictionSessionType.choices,
+        default=FrictionSessionType.ALL,
+    )
+    unit = models.CharField(max_length=32, default="BPS")
+    sample_count = models.IntegerField()
+    stat_min = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_p50 = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_p75 = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_p90 = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_p95 = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_p99 = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_max = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_mean = models.DecimalField(max_digits=12, decimal_places=6)
+    stat_std = models.DecimalField(max_digits=12, decimal_places=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-created_at", "-summary_id"]
+        verbose_name = "Friction Distribution Summary"
+        verbose_name_plural = "Friction Distribution Summaries"
+        indexes = [
+            models.Index(fields=["component_type", "condition", "session"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionDistributionSummary is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionDistributionSummary.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionDistributionSummary is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Summary {self.summary_id[:12]} ({self.component_type} p75={self.stat_p75} {self.unit})"
+
+
+class FrictionModelVersion(models.Model):
+    """Immutable bound calibration friction model version (append-only)."""
+    model_version_id = models.CharField(max_length=64, primary_key=True)
+    venue = models.CharField(max_length=32, db_index=True)
+    symbol = models.CharField(max_length=32, db_index=True)
+    account_tier = models.CharField(max_length=32, db_index=True)
+
+    # Legal Entity Provenance (Directive 1)
+    legal_entity_code = models.CharField(max_length=64, db_index=True)
+    legal_entity_name = models.CharField(max_length=128)
+    regulator = models.CharField(max_length=64)
+    license_number = models.CharField(max_length=64)
+    legal_entity_source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="legal_entity_models",
+    )
+    contract_spec_source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="contract_spec_models",
+        null=True,
+        blank=True,
+    )
+    fee_schedule_source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="fee_schedule_models",
+        null=True,
+        blank=True,
+    )
+    swap_spec_source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="swap_spec_models",
+        null=True,
+        blank=True,
+    )
+
+    # Contract Geometry & Tick Specifications (Directive 4: point vs tick_size separate)
+    digits = models.IntegerField(default=2)
+    point_size = models.DecimalField(max_digits=10, decimal_places=5, default=Decimal("0.01"))
+    trade_tick_size = models.DecimalField(max_digits=10, decimal_places=5, default=Decimal("0.01"))
+    trade_tick_value = models.DecimalField(max_digits=12, decimal_places=6, default=Decimal("1.00"))
+    contract_size = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("100.0"))
+    volume_min = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0.01"))
+    volume_max = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("200.0"))
+    volume_step = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0.01"))
+
+    # Commission Policy (Directives 3, 6, 8)
+    native_commission_usd_per_lot_per_side = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal("0.0000"),
+    )
+    commission_formula = models.CharField(max_length=64, default="DYNAMIC_NOTIONAL_BPS")
+
+    # Financing / Swap Policy (Directive 11)
+    swap_long_points = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    swap_short_points = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    rollover_summer_utc_hour = models.IntegerField(default=21)
+    rollover_winter_utc_hour = models.IntegerField(default=22)
+    triple_swap_weekday = models.CharField(max_length=16, default="WEDNESDAY")
+    swap_free_available_for_account_type = models.BooleanField(default=False)
+    actual_account_swap_free_status = models.BooleanField(default=False)
+
+    # Spread & Slippage Parameters (Directive 11: renamed fields)
+    base_spread_bps = models.DecimalField(max_digits=8, decimal_places=4)
+    stress_spread_bps = models.DecimalField(max_digits=8, decimal_places=4)
+    base_slippage_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    stress_slippage_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+
+    # Semantic Governance & Fingerprint (Directive 7)
+    friction_policy_schema_version = models.CharField(max_length=32, default="1.0.0")
+    distribution_algorithm_version = models.CharField(max_length=32, default="1.0.0")
+    normalization_version = models.CharField(max_length=32, default="1.0.0")
+    commission_formula_version = models.CharField(max_length=32, default="1.0.0")
+    financing_rule_version = models.CharField(max_length=32, default="1.0.0")
+    empirical_friction_evidence_fingerprint = models.CharField(max_length=64, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-created_at", "-model_version_id"]
+        verbose_name = "Friction Model Version"
+        verbose_name_plural = "Friction Model Versions"
+        indexes = [
+            models.Index(fields=["venue", "symbol", "account_tier"]),
+            models.Index(fields=["empirical_friction_evidence_fingerprint"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionModelVersion is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionModelVersion.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionModelVersion is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"FrictionModel {self.model_version_id} ({self.venue} {self.symbol} {self.account_tier})"
+
+
+class FrictionModelDatasetBinding(models.Model):
+    """Immutable explicit link binding an empirical dataset to a sealed model version (Directive 6)."""
+    binding_id = models.CharField(max_length=64, primary_key=True)
+    friction_model_version = models.ForeignKey(
+        FrictionModelVersion,
+        on_delete=models.PROTECT,
+        related_name="dataset_bindings",
+    )
+    evidence_dataset = models.ForeignKey(
+        FrictionEvidenceDataset,
+        on_delete=models.PROTECT,
+        related_name="model_bindings",
+    )
+    binding_role = models.CharField(max_length=32, choices=FrictionBindingRole.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-created_at", "-binding_id"]
+        verbose_name = "Friction Model Dataset Binding"
+        verbose_name_plural = "Friction Model Dataset Bindings"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["friction_model_version", "evidence_dataset", "binding_role"],
+                name="unique_friction_model_dataset_binding",
+            ),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionModelDatasetBinding is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionModelDatasetBinding.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionModelDatasetBinding is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Binding {self.binding_id[:12]} ({self.binding_role})"
+
+
+class FrictionModelSummaryBinding(models.Model):
+    """Immutable explicit link binding a distribution summary to a sealed model version (Directive 6)."""
+    binding_id = models.CharField(max_length=64, primary_key=True)
+    friction_model_version = models.ForeignKey(
+        FrictionModelVersion,
+        on_delete=models.PROTECT,
+        related_name="summary_bindings",
+    )
+    distribution_summary = models.ForeignKey(
+        FrictionDistributionSummary,
+        on_delete=models.PROTECT,
+        related_name="model_bindings",
+    )
+    binding_role = models.CharField(max_length=32, choices=FrictionBindingRole.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-created_at", "-binding_id"]
+        verbose_name = "Friction Model Summary Binding"
+        verbose_name_plural = "Friction Model Summary Bindings"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["friction_model_version", "distribution_summary", "binding_role"],
+                name="unique_friction_model_summary_binding",
+            ),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionModelSummaryBinding is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionModelSummaryBinding.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionModelSummaryBinding is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"SummaryBinding {self.binding_id[:12]} ({self.binding_role})"
+
+
+class FrictionModelActivation(models.Model):
+    """Append-only activation history for point-in-time friction model resolution (Directive 5)."""
+    activation_id = models.CharField(max_length=64, primary_key=True)
+    friction_model_version = models.ForeignKey(
+        FrictionModelVersion,
+        on_delete=models.PROTECT,
+        related_name="activations",
+    )
+    known_at = models.DateTimeField(db_index=True)
+    effective_from = models.DateTimeField(db_index=True)
+    effective_to = models.DateTimeField(null=True, blank=True)
+    activation_status = models.CharField(
+        max_length=32,
+        choices=FrictionActivationStatus.choices,
+        default=FrictionActivationStatus.ACTIVE,
+    )
+    source_or_reason = models.TextField()
+    supersedes_activation = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="superseded_by",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-effective_from", "-activation_id"]
+        verbose_name = "Friction Model Activation"
+        verbose_name_plural = "Friction Model Activations"
+        indexes = [
+            models.Index(fields=["activation_status", "effective_from"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionModelActivation is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionModelActivation.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionModelActivation is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Activation {self.activation_id[:12]} ({self.friction_model_version_id} -> {self.activation_status})"
+
+
