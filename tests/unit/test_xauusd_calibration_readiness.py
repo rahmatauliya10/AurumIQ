@@ -32,7 +32,7 @@ def test_phase3b_production_weight_strictly_zero():
 
 
 def test_data_readiness_manifest_integrity():
-    """Verify machine-readable manifest exists, is valid JSON, and records CALIBRATION_DATA_NOT_READY."""
+    """Verify machine-readable manifest exists, is valid JSON, and records fail-closed calibration gate."""
     manifest_path = os.path.join("artifacts", "calibration", "xauusd_data_manifest.json")
     assert os.path.exists(manifest_path), f"Manifest missing at {manifest_path}"
 
@@ -43,7 +43,10 @@ def test_data_readiness_manifest_integrity():
     assert manifest["primary_provider"] == "twelve_data_xauusd"
     assert manifest["listing_role"] == "PRIMARY_XAUUSD_SPOT"
     assert manifest["hard_data_readiness_gate"]["passed"] is False
-    assert manifest["hard_data_readiness_gate"]["decision"] == "CALIBRATION_DATA_NOT_READY"
+    assert (
+        manifest["hard_data_readiness_gate"]["decision"]
+        == "CANDLES_READY_MACRO_MISSING"
+    )
     assert manifest["timeframe_counts"]["15m"] >= 0
     assert manifest["empirical_friction_evidence"]["status"] == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
     assert len(manifest["dataset_fingerprint"]) == 64
