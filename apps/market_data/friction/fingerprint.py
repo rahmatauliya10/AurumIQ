@@ -1,10 +1,25 @@
 """Deterministic semantic fingerprinting for XAUUSD empirical friction models.
 
-Adheres strictly to Pre-Phase-8 Calibration Governance:
-- Excludes all instance identifiers: DB IDs, row IDs, auto-increments, timestamps, arbitrary version IDs.
-- Includes semantic schema versions, contract geometry, legal entity code, source hashes, dataset hashes,
-  distribution percentiles, calibrated parameters, commission formulas, and financing policies.
-- Identical semantic evidence + identical calibration policy produces the EXACT SAME fingerprint.
+Adheres strictly to Pre-Phase-8 Calibration Hardening Governance (Directive 11):
+- Excludes all instance identifiers: DB IDs, row IDs, auto-increments, timestamps, version IDs.
+- Binds all material semantics:
+  * legal entity source SHA
+  * contract source SHA
+  * commission source SHA
+  * financing source SHA
+  * spread raw dataset SHA
+  * slippage raw dataset SHA
+  * spread distribution
+  * slippage distribution
+  * contract geometry
+  * commission policy
+  * financing policy
+  * sample sufficiency policy version
+  * slippage-mandatory policy version
+  * normal/stress selection policy
+  * binding roles
+  * venue, symbol, account_tier, legal_entity_code
+- Identical semantic evidence and policy produces the EXACT SAME fingerprint.
 - Any mutation of evidence, distributions, or policy produces a completely DIFFERENT fingerprint.
 """
 import hashlib
@@ -13,10 +28,10 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 
-def _serialize_decimal(val: Any) -> str:
+def _serialize_decimal(val: Any) -> Optional[str]:
     """Format Decimal values consistently for canonical hashing across differing DB column precisions."""
     if val is None:
-        return "null"
+        return None
     if isinstance(val, (int, float, Decimal)):
         d = Decimal(str(val))
         s = f"{d:f}"
@@ -44,18 +59,17 @@ def compute_empirical_friction_fingerprint(
     bound_binding_roles: Optional[List[str]] = None,
 ) -> str:
     """Compute deterministic 64-character SHA-256 fingerprint for a friction model."""
-    # Ensure all hash lists are sorted deterministically
-    sorted_source_hashes = sorted(source_snapshot_hashes)
-    sorted_dataset_hashes = sorted(dataset_hashes)
-    sorted_binding_roles = sorted(bound_binding_roles or [])
+    sorted_source_hashes = sorted(set(source_snapshot_hashes))
+    sorted_dataset_hashes = sorted(set(dataset_hashes))
+    sorted_binding_roles = sorted(set(bound_binding_roles or []))
 
-    # Sort distribution summaries deterministically by component_type, condition, session
     sorted_summaries = sorted(
         distribution_summaries,
         key=lambda s: (
             str(s.get("component_type")),
             str(s.get("condition")),
             str(s.get("session")),
+            str(s.get("unit")),
         ),
     )
 
@@ -66,6 +80,9 @@ def compute_empirical_friction_fingerprint(
             "normalization_version": str(semantic_versions.get("normalization_version", "1.0.0")),
             "commission_formula_version": str(semantic_versions.get("commission_formula_version", "1.0.0")),
             "financing_rule_version": str(semantic_versions.get("financing_rule_version", "1.0.0")),
+            "sample_sufficiency_policy_version": str(semantic_versions.get("sample_sufficiency_policy_version", "1.0.0")),
+            "slippage_mandatory_policy_version": str(semantic_versions.get("slippage_mandatory_policy_version", "GOVERNED_MANDATORY_V1")),
+            "selection_policy_version": str(semantic_versions.get("selection_policy_version", "BASE_P75_STRESS_P95_V1")),
         },
         "venue_and_identity": {
             "venue": str(venue).upper(),
@@ -74,7 +91,7 @@ def compute_empirical_friction_fingerprint(
             "symbol": str(symbol).upper(),
         },
         "contract_geometry": {
-            "digits": int(contract_geometry.get("digits", 2)),
+            "digits": None if contract_geometry.get("digits") is None else int(contract_geometry.get("digits")),
             "point_size": _serialize_decimal(contract_geometry.get("point_size")),
             "trade_tick_size": _serialize_decimal(contract_geometry.get("trade_tick_size")),
             "trade_tick_value": _serialize_decimal(contract_geometry.get("trade_tick_value")),
@@ -114,15 +131,15 @@ def compute_empirical_friction_fingerprint(
             "native_commission_usd_per_lot_per_side": _serialize_decimal(
                 commission_policy.get("native_commission_usd_per_lot_per_side")
             ),
-            "commission_formula": str(commission_policy.get("commission_formula")),
+            "commission_formula": None if commission_policy.get("commission_formula") is None else str(commission_policy.get("commission_formula")),
         },
         "financing_policy": {
             "swap_long_points": _serialize_decimal(financing_policy.get("swap_long_points")),
             "swap_short_points": _serialize_decimal(financing_policy.get("swap_short_points")),
-            "rollover_summer_utc_hour": int(financing_policy.get("rollover_summer_utc_hour", 21)),
-            "rollover_winter_utc_hour": int(financing_policy.get("rollover_winter_utc_hour", 22)),
-            "triple_swap_weekday": str(financing_policy.get("triple_swap_weekday")),
-            "actual_account_swap_free_status": bool(financing_policy.get("actual_account_swap_free_status", False)),
+            "rollover_summer_utc_hour": None if financing_policy.get("rollover_summer_utc_hour") is None else int(financing_policy.get("rollover_summer_utc_hour")),
+            "rollover_winter_utc_hour": None if financing_policy.get("rollover_winter_utc_hour") is None else int(financing_policy.get("rollover_winter_utc_hour")),
+            "triple_swap_weekday": None if financing_policy.get("triple_swap_weekday") is None else str(financing_policy.get("triple_swap_weekday")),
+            "actual_account_swap_free_status": None if financing_policy.get("actual_account_swap_free_status") is None else bool(financing_policy.get("actual_account_swap_free_status")),
         },
         "bound_binding_roles": sorted_binding_roles,
     }

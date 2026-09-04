@@ -1,13 +1,12 @@
 """Management command for XAUUSD Empirical Friction Evidence Checkpoint.
 
-Governed strictly under Pre-Phase-8 Calibration Protocol (Directives 1-15):
-- Binds models strictly to venue, legal entity, account tier, symbol, and contract geometry.
-- Separates point_size from trade_tick_size independently.
-- Dynamic notional commission conversion (Standard = $0.00, Raw Spread = $3.50/lot/side). Zero fixed reference price.
-- Time-aware rollover (Summer 21:00 / Winter 22:00 UTC, Wednesday triple swap).
-- Append-only entities (FrictionSourceSnapshot, FrictionEvidenceDataset, FrictionDistributionSummary,
-  FrictionModelDatasetBinding, FrictionModelSummaryBinding, FrictionModelVersion, FrictionModelActivation).
-- Strictly fail-closed if actual legal entity, tick spread, or slippage telemetry is missing.
+Governed strictly under Pre-Phase-8 Calibration Hardening Protocol (Directives 1-18):
+- Eliminates all hard-coded contract geometry, fee, swap, and entity defaults (Directives 2, 3, 4, 5).
+- Sockets real MT5 tick parser and execution telemetry parser (Directives 6, 7).
+- Enforces mandatory slippage telemetry (Directive 8).
+- Prohibits incomplete models from activating as ACTIVE (Directive 9).
+- Binds models strictly to venue, legal entity, account tier, and symbol.
+- Strictly fail-closed if any evidence source is missing or insufficient.
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -31,7 +30,10 @@ from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
+    ingest_friction_telemetry_dataset,
 )
+from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
+from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 from apps.market_data.models import (
     FrictionActivationStatus,
     FrictionBindingRole,
@@ -73,6 +75,24 @@ class Command(BaseCommand):
             help="Path to authoritative account agreement or Personal Area metadata snapshot.",
         )
         parser.add_argument(
+            "--contract-spec-file",
+            type=str,
+            default=None,
+            help="Path to authoritative MT5 contract specification export JSON/file.",
+        )
+        parser.add_argument(
+            "--fee-schedule-file",
+            type=str,
+            default=None,
+            help="Path to authoritative broker fee schedule / commission evidence snapshot.",
+        )
+        parser.add_argument(
+            "--swap-spec-file",
+            type=str,
+            default=None,
+            help="Path to authoritative broker financing / swap rates evidence snapshot.",
+        )
+        parser.add_argument(
             "--tick-file",
             type=str,
             default=None,
@@ -107,6 +127,9 @@ class Command(BaseCommand):
         account_tier = options["account_tier"].upper()
         symbol = "XAUUSD"
         legal_file = options["legal_entity_file"]
+        contract_file = options["contract_spec_file"]
+        fee_file = options["fee_schedule_file"]
+        swap_file = options["swap_spec_file"]
         tick_file = options["tick_file"]
         slippage_file = options["slippage_file"]
         dry_run = options["dry_run"]
@@ -118,8 +141,9 @@ class Command(BaseCommand):
         ))
 
         now_utc = datetime.now(timezone.utc)
+        reasons: List[str] = []
 
-        # 1. Audit Legal Entity Provenance (Directive 1)
+        # 1. Audit Legal Entity Provenance (Directive 10)
         legal_entity_info: Optional[Dict[str, str]] = None
         legal_entity_snapshot: Optional[FrictionSourceSnapshot] = None
         legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
@@ -127,7 +151,6 @@ class Command(BaseCommand):
         if legal_file and os.path.isfile(legal_file):
             with open(legal_file, "rb") as f:
                 content = f.read()
-            # If valid JSON metadata provided
             try:
                 data = json.loads(content.decode("utf-8"))
                 legal_entity_info = {
@@ -150,95 +173,255 @@ class Command(BaseCommand):
                             raw_content=content,
                             metadata=legal_entity_info,
                         )
+                else:
+                    reasons.append("Legal entity file missing required fields.")
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse legal entity file: {e}"))
-
-        # 2. Official Contract Geometry (Directive 4)
-        contract_geometry = {
-            "digits": 2,
-            "point_size": Decimal("0.01"),
-            "trade_tick_size": Decimal("0.01"),
-            "trade_tick_value": Decimal("1.00"),
-            "contract_size": Decimal("100.0"),
-            "volume_min": Decimal("0.01"),
-            "volume_max": Decimal("200.0"),
-            "volume_step": Decimal("0.01"),
-        }
-
-        # 3. Commission Policy (Directives 3, 6, 8)
-        if account_tier == "STANDARD":
-            native_comm = Decimal("0.0000")
+                reasons.append(f"Legal entity parse failure: {e}")
         else:
-            native_comm = Decimal("3.5000")  # USD per lot per side
+            reasons.append("Legal entity evidence snapshot missing (--legal-entity-file is None).")
 
-        commission_policy = {
-            "native_commission_usd_per_lot_per_side": native_comm,
-            "commission_formula": "DYNAMIC_NOTIONAL_BPS",
-        }
+        # 2. Official Contract Geometry (Directive 4 - Zero defaults)
+        contract_geometry: Optional[Dict[str, Any]] = None
+        contract_spec_snapshot: Optional[FrictionSourceSnapshot] = None
+        contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
 
-        # 4. Financing Policy (Directive 11)
-        financing_policy = {
-            "swap_long_points": Decimal("-34.80"),
-            "swap_short_points": Decimal("12.40"),
-            "rollover_summer_utc_hour": 21,
-            "rollover_winter_utc_hour": 22,
-            "triple_swap_weekday": "WEDNESDAY",
-            "swap_free_available_for_account_type": (account_tier == "STANDARD"),
-            "actual_account_swap_free_status": False,
-        }
+        if contract_file and os.path.isfile(contract_file):
+            with open(contract_file, "rb") as f:
+                content = f.read()
+            try:
+                data = json.loads(content.decode("utf-8"))
+                contract_geometry = {
+                    "digits": int(data["digits"]),
+                    "point_size": Decimal(str(data["point_size"])),
+                    "trade_tick_size": Decimal(str(data["trade_tick_size"])),
+                    "trade_tick_value": Decimal(str(data["trade_tick_value"])),
+                    "contract_size": Decimal(str(data["contract_size"])),
+                    "volume_min": Decimal(str(data["volume_min"])),
+                    "volume_max": Decimal(str(data["volume_max"])),
+                    "volume_step": Decimal(str(data["volume_step"])),
+                }
+                contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                if not dry_run:
+                    contract_spec_snapshot, _ = ingest_friction_source_snapshot(
+                        source_url=f"file://{os.path.abspath(contract_file)}",
+                        source_name="EXNESS_CONTRACT_SPEC",
+                        venue=venue,
+                        symbol=symbol,
+                        account_tier=account_tier,
+                        retrieved_at=now_utc,
+                        known_at=now_utc,
+                        raw_content=content,
+                        metadata=contract_geometry,
+                    )
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not parse contract spec file: {e}"))
+                reasons.append(f"Contract specification parse failure: {e}")
+        else:
+            reasons.append("Contract specification evidence snapshot missing (--contract-spec-file is None).")
 
-        # 5. Spread Evidence (Directive 2, 9)
+        # 3. Commission Policy (Directive 5 - Zero defaults)
+        commission_policy: Optional[Dict[str, Any]] = None
+        fee_schedule_snapshot: Optional[FrictionSourceSnapshot] = None
+        commission_status = "COMMISSION_EVIDENCE_MISSING"
+
+        if fee_file and os.path.isfile(fee_file):
+            with open(fee_file, "rb") as f:
+                content = f.read()
+            try:
+                data = json.loads(content.decode("utf-8"))
+                commission_policy = {
+                    "native_commission_usd_per_lot_per_side": Decimal(str(data["native_commission_usd_per_lot_per_side"])),
+                    "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
+                }
+                commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                if not dry_run:
+                    fee_schedule_snapshot, _ = ingest_friction_source_snapshot(
+                        source_url=f"file://{os.path.abspath(fee_file)}",
+                        source_name="EXNESS_FEE_SCHEDULE",
+                        venue=venue,
+                        symbol=symbol,
+                        account_tier=account_tier,
+                        retrieved_at=now_utc,
+                        known_at=now_utc,
+                        raw_content=content,
+                        metadata=commission_policy,
+                    )
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not parse fee schedule file: {e}"))
+                reasons.append(f"Fee schedule parse failure: {e}")
+        else:
+            reasons.append("Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).")
+
+        # 4. Financing Policy (Directive 3 - Zero hard-coded defaults)
+        financing_policy: Optional[Dict[str, Any]] = None
+        swap_spec_snapshot: Optional[FrictionSourceSnapshot] = None
+        financing_status = "FINANCING_EVIDENCE_MISSING"
+
+        if swap_file and os.path.isfile(swap_file):
+            with open(swap_file, "rb") as f:
+                content = f.read()
+            try:
+                data = json.loads(content.decode("utf-8"))
+                financing_policy = {
+                    "swap_long_points": Decimal(str(data["swap_long_points"])),
+                    "swap_short_points": Decimal(str(data["swap_short_points"])),
+                    "rollover_summer_utc_hour": int(data["rollover_summer_utc_hour"]),
+                    "rollover_winter_utc_hour": int(data["rollover_winter_utc_hour"]),
+                    "triple_swap_weekday": str(data["triple_swap_weekday"]),
+                    "actual_account_swap_free_status": bool(data.get("actual_account_swap_free_status", False)),
+                }
+                financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                if not dry_run:
+                    swap_spec_snapshot, _ = ingest_friction_source_snapshot(
+                        source_url=f"file://{os.path.abspath(swap_file)}",
+                        source_name="EXNESS_SWAP_SPEC",
+                        venue=venue,
+                        symbol=symbol,
+                        account_tier=account_tier,
+                        retrieved_at=now_utc,
+                        known_at=now_utc,
+                        raw_content=content,
+                        metadata=financing_policy,
+                    )
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not parse swap spec file: {e}"))
+                reasons.append(f"Financing swap spec parse failure: {e}")
+        else:
+            reasons.append("Financing/swap specification evidence snapshot missing (--swap-spec-file is None).")
+
+        # 5. Spread Evidence (Directive 6 - Real MT5 tick ingestion)
         spread_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
         spread_dataset: Optional[FrictionEvidenceDataset] = None
-        spread_stats: Optional[Dict[str, Any]] = None
+        spread_ticks: Optional[List[Dict[str, Any]]] = None
 
         if tick_file and os.path.isfile(tick_file):
             self.stdout.write(f"Inspecting raw tick export: {tick_file}...")
-            # If a real tick file is supplied, parse and validate
-            # (Fails closed if sufficiency not met)
-            pass
+            with open(tick_file, "rb") as f:
+                tick_bytes = f.read()
+            try:
+                ticks_data, summary_meta = parse_mt5_tick_export(tick_bytes, expected_symbol=symbol)
+                spread_ticks = ticks_data
+                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                if not dry_run:
+                    snap, _ = ingest_friction_source_snapshot(
+                        source_url=f"file://{os.path.abspath(tick_file)}",
+                        source_name="EXNESS_MT5_TICKS",
+                        venue=venue,
+                        symbol=symbol,
+                        account_tier=account_tier,
+                        retrieved_at=now_utc,
+                        known_at=now_utc,
+                        raw_content=tick_bytes,
+                        metadata=summary_meta,
+                    )
+                    spread_dataset, _ = ingest_friction_evidence_dataset(
+                        source_snapshot=snap,
+                        venue=venue,
+                        account_tier=account_tier,
+                        symbol=symbol,
+                        sample_start=summary_meta["sample_start"],
+                        sample_end=summary_meta["sample_end"],
+                        ticks_data=ticks_data,
+                    )
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not parse tick file: {e}"))
+                reasons.append(f"MT5 tick export parse failure: {e}")
         else:
-            self.stdout.write(self.style.WARNING(
-                "No MT5 tick export dataset provided (--tick-file is None). "
-                "Classifying: SPREAD_EMPIRICAL_EVIDENCE_MISSING."
-            ))
+            self.stdout.write(self.style.WARNING("No MT5 tick export dataset provided (--tick-file is None)."))
+            reasons.append("MT5 tick export dataset missing (--tick-file is None).")
 
-        # 6. Slippage Telemetry (Directive 10)
+        # 6. Slippage Telemetry (Directive 7 & 8 - Real MT5 telemetry ingestion, MANDATORY)
         slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"
+        telemetry_dataset: Optional[FrictionEvidenceDataset] = None
+        telemetry_records: Optional[List[Dict[str, Any]]] = None
+
         if slippage_file and os.path.isfile(slippage_file):
             self.stdout.write(f"Inspecting execution telemetry: {slippage_file}...")
+            with open(slippage_file, "rb") as f:
+                telem_bytes = f.read()
+            try:
+                telemetry_data, summary_meta = parse_mt5_execution_telemetry(
+                    telem_bytes,
+                    expected_venue=venue,
+                    expected_symbol=symbol,
+                    expected_account_tier=account_tier,
+                )
+                telemetry_records = telemetry_data
+                slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                if not dry_run:
+                    snap, _ = ingest_friction_source_snapshot(
+                        source_url=f"file://{os.path.abspath(slippage_file)}",
+                        source_name="EXNESS_MT5_TELEMETRY",
+                        venue=venue,
+                        symbol=symbol,
+                        account_tier=account_tier,
+                        retrieved_at=now_utc,
+                        known_at=now_utc,
+                        raw_content=telem_bytes,
+                        metadata=summary_meta,
+                    )
+                    telemetry_dataset, _ = ingest_friction_telemetry_dataset(
+                        source_snapshot=snap,
+                        venue=venue,
+                        account_tier=account_tier,
+                        symbol=symbol,
+                        sample_start=summary_meta["sample_start"],
+                        sample_end=summary_meta["sample_end"],
+                        telemetry_records=telemetry_data,
+                    )
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not parse slippage telemetry file: {e}"))
+                reasons.append(f"Execution telemetry parse failure: {e}")
         else:
-            self.stdout.write(self.style.WARNING(
-                "No execution telemetry fills provided (--slippage-file is None). "
-                "Classifying: SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING."
-            ))
+            self.stdout.write(self.style.WARNING("No execution telemetry provided (--slippage-file is None)."))
+            reasons.append("Execution slippage telemetry missing (--slippage-file is None).")
 
-        # 7. Evaluate Evidence Completeness & Gate Status (Directives 12, 13)
+        # 7. Evidence Completeness & Gate Evaluation (Directives 8, 9, 10)
         is_evidence_complete = (
             legal_entity_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and spread_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+            and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
         )
 
-        if not is_evidence_complete:
+        model_ver: Optional[FrictionModelVersion] = None
+        if is_evidence_complete and not dry_run:
+            spread_bps_list = [t["spread_bps"] for t in (spread_ticks or [])]
+            slip_bps_list = [r["signed_slippage_bps"] for r in (telemetry_records or [])]
+
+            model_ver, _ = build_and_bind_friction_model_version(
+                legal_entity_snapshot=legal_entity_snapshot,
+                contract_spec_snapshot=contract_spec_snapshot,
+                fee_schedule_snapshot=fee_schedule_snapshot,
+                swap_spec_snapshot=swap_spec_snapshot,
+                evidence_dataset=spread_dataset,
+                spread_ticks_bps=spread_bps_list,
+                legal_entity_info=legal_entity_info,
+                contract_geometry=contract_geometry,
+                commission_policy=commission_policy,
+                financing_policy=financing_policy,
+                telemetry_dataset=telemetry_dataset,
+                slippage_records_bps=slip_bps_list,
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+            )
+            overall_status = "EMPIRICAL_FRICTION_CONFIGURED"
+            gate_decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
+            reasons = ["All empirical friction evidence verified and active model sealed."]
+        else:
             overall_status = "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
             gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
-            reasons = [
-                f"Legal entity provenance: {legal_entity_status}",
-                f"Quote spread empirical dataset: {spread_status}",
-                f"Execution slippage telemetry: {slippage_status}",
-                "Friction readiness fails closed: No fabricated observations allowed.",
-            ]
             self.stdout.write(self.style.ERROR(
                 f"Audit Result: {overall_status} (Gate: {gate_decision})"
             ))
-        else:
-            overall_status = "EMPIRICAL_FRICTION_CONFIGURED"
-            gate_decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
-            reasons = ["All empirical friction evidence verified."]
 
         # 8. Generate Machine-Readable Manifest
         manifest = {
-            "manifest_schema_version": "3.0.0",
+            "manifest_schema_version": "3.1.0",
             "venue": venue,
             "account_tier": account_tier,
             "symbol": symbol,
@@ -259,50 +442,39 @@ class Command(BaseCommand):
                     "license_number": legal_entity_info["license_number"] if legal_entity_info else None,
                 },
                 "contract_geometry": {
-                    "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
-                    "digits": contract_geometry["digits"],
-                    "point_size": str(contract_geometry["point_size"]),
-                    "trade_tick_size": str(contract_geometry["trade_tick_size"]),
-                    "trade_tick_value": str(contract_geometry["trade_tick_value"]),
-                    "contract_size": str(contract_geometry["contract_size"]),
-                    "volume_min": str(contract_geometry["volume_min"]),
-                    "volume_max": str(contract_geometry["volume_max"]),
-                    "volume_step": str(contract_geometry["volume_step"]),
+                    "status": contract_status,
+                    "digits": contract_geometry["digits"] if contract_geometry else None,
+                    "point_size": str(contract_geometry["point_size"]) if contract_geometry else None,
+                    "trade_tick_size": str(contract_geometry["trade_tick_size"]) if contract_geometry else None,
+                    "trade_tick_value": str(contract_geometry["trade_tick_value"]) if contract_geometry else None,
+                    "contract_size": str(contract_geometry["contract_size"]) if contract_geometry else None,
+                    "volume_min": str(contract_geometry["volume_min"]) if contract_geometry else None,
+                    "volume_max": str(contract_geometry["volume_max"]) if contract_geometry else None,
+                    "volume_step": str(contract_geometry["volume_step"]) if contract_geometry else None,
                 },
                 "commission_policy": {
-                    "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
+                    "status": commission_status,
                     "account_tier": account_tier,
-                    "native_commission_usd_per_lot_per_side": str(commission_policy["native_commission_usd_per_lot_per_side"]),
-                    "commission_formula": commission_policy["commission_formula"],
-                    "illustrative_fee_bps_at_2500_gold": str(
-                        calculate_dynamic_fee_bps(
-                            commission_usd_per_lot_per_side=commission_policy["native_commission_usd_per_lot_per_side"],
-                            contract_size=contract_geometry["contract_size"],
-                            execution_price=Decimal("2500.00"),
-                        )
-                    ) + " (NON_GATING_ILLUSTRATIVE_EXAMPLE)",
+                    "native_commission_usd_per_lot_per_side": str(commission_policy["native_commission_usd_per_lot_per_side"]) if commission_policy else None,
+                    "commission_formula": commission_policy["commission_formula"] if commission_policy else None,
                 },
                 "financing_policy": {
-                    "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
-                    "swap_long_points": str(financing_policy["swap_long_points"]),
-                    "swap_short_points": str(financing_policy["swap_short_points"]),
-                    "rollover_schedule": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0",
-                    "triple_swap_weekday": financing_policy["triple_swap_weekday"],
-                    "swap_free_available_for_account_type": financing_policy["swap_free_available_for_account_type"],
-                    "actual_account_swap_free_status": financing_policy["actual_account_swap_free_status"],
+                    "status": financing_status,
+                    "swap_long_points": str(financing_policy["swap_long_points"]) if financing_policy else None,
+                    "swap_short_points": str(financing_policy["swap_short_points"]) if financing_policy else None,
+                    "rollover_schedule": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0" if financing_policy else None,
+                    "triple_swap_weekday": financing_policy["triple_swap_weekday"] if financing_policy else None,
+                    "actual_account_swap_free_status": financing_policy["actual_account_swap_free_status"] if financing_policy else None,
                 },
                 "bid_ask_spread_distribution": {
                     "status": spread_status,
                     "source_file": tick_file,
-                    "raw_sha256": None,
-                    "sample_count": 0,
-                    "distinct_trading_dates": 0,
-                    "sessions": ["ASIAN", "LONDON", "NEW_YORK", "ROLLOVER"],
+                    "sample_count": len(spread_ticks) if spread_ticks else 0,
                 },
                 "execution_slippage_telemetry": {
                     "status": slippage_status,
                     "source_file": slippage_file,
-                    "sample_count": 0,
+                    "sample_count": len(telemetry_records) if telemetry_records else 0,
                 },
             },
             "blocking_reasons": reasons,
@@ -313,10 +485,10 @@ class Command(BaseCommand):
             json.dump(manifest, f, indent=2)
         self.stdout.write(self.style.SUCCESS(f"Saved manifest: {manifest_path}"))
 
-        # 9. Generate Human-Readable Markdown Audit Report
+        # 9. Generate Markdown Audit Report
         report_md = f"""# AURUMIQ — XAUUSD EMPIRICAL FRICTION EVIDENCE AUDIT REPORT
 
-> **Protocol Version:** Calibration Plan V3 Final Seal  
+> **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal  
 > **Target Venue:** `{venue}`  
 > **Account Tier:** `{account_tier}`  
 > **Symbol:** `{symbol}`  
@@ -329,11 +501,17 @@ class Command(BaseCommand):
 
 ## 1. Executive Summary
 
-In accordance with Pre-Phase-8 Empirical Friction Calibration Governance (Directives 1-15), execution frictions for `{symbol}` under target venue `{venue}` have been evaluated strictly against genuine, persisted evidence.
+In accordance with Pre-Phase-8 Empirical Friction Calibration Hardening Governance (Directives 1-18), execution frictions for `{symbol}` under target venue `{venue}` have been evaluated strictly against genuine, persisted evidence with **ZERO silent defaults**.
 
-The architecture eliminates all hard-coded legal entity assumptions, separates MT5 point size from trade tick size, replaces fixed reference-price fees with native notional conversions, enforces append-only models and bindings, and validates sample sufficiency across multiple sessions and distinct trading dates.
+The architecture closes all evidence-completeness loopholes:
+- Removes all silent fallback defaults for contract geometry, commissions, and swap points.
+- Enforces genuine source snapshots for legal entity, contract spec, commission schedules, and financing policies.
+- Integrates production parsers for MT5 tick exports and MT5 execution telemetry.
+- Enforces **MANDATORY execution slippage telemetry** (`SLIPPAGE_IS_MANDATORY = TRUE`).
+- Prohibits incomplete models from receiving `ACTIVE` activation (downgraded to `DRAFT`).
+- Enforces point-in-time activation resolution with scope validation.
 
-Because genuine MT5 tick history exports and account-specific legal agreements have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:
+Because genuine MT5 tick history exports, telemetry fills, and account-specific legal agreements have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:
 
 ```text
 STATUS:   EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED
@@ -348,31 +526,16 @@ DECISION: WAIT
 
 | Component | Target Metric | Status Classification | Governance Rule & Finding |
 | :--- | :--- | :---: | :--- |
-| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `{legal_entity_status}` | Directive 1: No generic assumptions. Sourced only from account agreement or Personal Area metadata. |
-| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directive 4: `point_size=0.01` and `trade_tick_size=0.01` stored independently. Contract size = 100 oz. |
-| **Commission Policy** | `commission_usd_per_lot_per_side` | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directives 3, 6, 8: Standard = $0.00/lot. Raw Spread = $3.50/lot/side. Converted dynamically via execution notional. |
-| **Financing Policy** | Swap points, rollover schedule | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directive 11: Long = -34.80, Short = +12.40. Triple Wednesday. Rollover Summer 21:00 / Winter 22:00 UTC. Swap-free separated from tier. |
-| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `{spread_status}` | Directives 2, 9: Requires verified MT5 tick export ($N \\ge 1000$, $\\ge 5$ distinct dates, 4 sessions). Absent -> fail closed. |
-| **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `{slippage_status}` | Directive 10: Directional slippage requires live/paper execution telemetry. Absent -> fail closed. |
+| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `{legal_entity_status}` | Directive 10: Sourced strictly from verified account snapshot. |
+| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `{contract_status}` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
+| **Commission Policy** | `commission_usd_per_lot_per_side` | `{commission_status}` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
+| **Financing Policy** | Swap points, rollover schedule | `{financing_status}` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
+| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `{spread_status}` | Directive 6: Requires verified MT5 tick export ($N \\ge 1000$, $\\ge 5$ distinct dates, 4 sessions). |
+| **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `{slippage_status}` | Directives 7 & 8: Directional slippage telemetry is MANDATORY ($N \\ge 30$). |
 
 ---
 
-## 3. Dynamic Commission Conversion Formulation
-
-Native commission is persisted strictly in USD per lot per side:
-
-$$\\text{{notional\\_usd}} = \\text{{volume\\_lots}} \\times \\text{{contract\\_size}} \\times P_{{\\text{{execution}}}}$$
-$$\\text{{fee\\_usd}} = \\text{{volume\\_lots}} \\times \\text{{commission\\_usd\\_per\\_lot\\_per\\_side}}$$
-$$\\text{{fee\\_bps}} = \\left( \\frac{{\\text{{fee\\_usd}}}}{{\\text{{notional\\_usd}}}} \\right) \\times 10{{,}}000 = \\left( \\frac{{\\text{{commission\\_usd\\_per\\_lot\\_per\\_side}}}}{{\\text{{contract\\_size}} \\times P_{{\\text{{execution}}}}}} \\right) \\times 10{{,}}000$$
-
-- **Standard Account Tier:**
-  $$\\text{{commission}} = \\$0.00 \\implies \\text{{fee\\_bps}} = 0.0000\\text{{ bps}}$$
-- **Raw Spread Account Tier (Illustrative at \\$2,500 Gold):**
-  $$\\text{{fee\\_bps}} = \\left( \\frac{{3.50}}{{100 \\times 2500}} \\right) \\times 10{{,}}000 = 0.1400\\text{{ bps per side (NON\\_GATING\\_ILLUSTRATIVE\\_EXAMPLE)}}$$
-
----
-
-## 4. Prior Evidence Invariance Verification
+## 3. Prior Evidence Invariance Verification
 
 Prior frozen evidence remains 100% bit-for-bit invariant:
 - **Macro Fingerprint:** `d9d2ebb4c6ec11fafc4ffce35090d64a5eaa05a3e024da4148b3900cf6370823`
@@ -382,12 +545,15 @@ Prior frozen evidence remains 100% bit-for-bit invariant:
 
 ---
 
-## 5. Next Steps for Unblocking
+## 4. Next Steps for Unblocking
 
 To advance from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` to `CANDLES_READY_QUOTE_EVIDENCE_MISSING`:
 1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
-2. Provide authentic Exness MT5 tick history export covering $\\ge 5$ distinct trading days and all 4 sessions.
-3. Run `python manage.py ingest_xauusd_empirical_friction --legal-entity-file <path> --tick-file <path>`.
+2. Provide authoritative MT5 contract specification snapshot.
+3. Provide authoritative MT5 fee schedule snapshot.
+4. Provide authoritative MT5 financing swap schedule snapshot.
+5. Provide authentic Exness MT5 tick history export covering $\\ge 5$ distinct trading days and all 4 sessions.
+6. Provide authentic Exness MT5 execution telemetry fills ($N \\ge 30$).
 """
 
         os.makedirs(os.path.dirname(report_path), exist_ok=True)

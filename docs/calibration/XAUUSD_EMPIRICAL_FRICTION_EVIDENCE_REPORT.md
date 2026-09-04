@@ -1,10 +1,10 @@
 # AURUMIQ — XAUUSD EMPIRICAL FRICTION EVIDENCE AUDIT REPORT
 
-> **Protocol Version:** Calibration Plan V3 Final Seal  
+> **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal  
 > **Target Venue:** `EXNESS`  
 > **Account Tier:** `STANDARD`  
 > **Symbol:** `XAUUSD`  
-> **Audit Timestamp:** `2026-09-04 17:25:27 UTC`  
+> **Audit Timestamp:** `2026-09-04 17:54:48 UTC`  
 > **Overall Friction Decision:** `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`  
 > **Hard Readiness Gate:** `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`  
 > **Production Authority:** `FALSE / 0.0 / WAIT`  
@@ -13,11 +13,17 @@
 
 ## 1. Executive Summary
 
-In accordance with Pre-Phase-8 Empirical Friction Calibration Governance (Directives 1-15), execution frictions for `XAUUSD` under target venue `EXNESS` have been evaluated strictly against genuine, persisted evidence.
+In accordance with Pre-Phase-8 Empirical Friction Calibration Hardening Governance (Directives 1-18), execution frictions for `XAUUSD` under target venue `EXNESS` have been evaluated strictly against genuine, persisted evidence with **ZERO silent defaults**.
 
-The architecture eliminates all hard-coded legal entity assumptions, separates MT5 point size from trade tick size, replaces fixed reference-price fees with native notional conversions, enforces append-only models and bindings, and validates sample sufficiency across multiple sessions and distinct trading dates.
+The architecture closes all evidence-completeness loopholes:
+- Removes all silent fallback defaults for contract geometry, commissions, and swap points.
+- Enforces genuine source snapshots for legal entity, contract spec, commission schedules, and financing policies.
+- Integrates production parsers for MT5 tick exports and MT5 execution telemetry.
+- Enforces **MANDATORY execution slippage telemetry** (`SLIPPAGE_IS_MANDATORY = TRUE`).
+- Prohibits incomplete models from receiving `ACTIVE` activation (downgraded to `DRAFT`).
+- Enforces point-in-time activation resolution with scope validation.
 
-Because genuine MT5 tick history exports and account-specific legal agreements have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:
+Because genuine MT5 tick history exports, telemetry fills, and account-specific legal agreements have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:
 
 ```text
 STATUS:   EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED
@@ -32,31 +38,16 @@ DECISION: WAIT
 
 | Component | Target Metric | Status Classification | Governance Rule & Finding |
 | :--- | :--- | :---: | :--- |
-| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `LEGAL_ENTITY_EVIDENCE_MISSING` | Directive 1: No generic assumptions. Sourced only from account agreement or Personal Area metadata. |
-| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directive 4: `point_size=0.01` and `trade_tick_size=0.01` stored independently. Contract size = 100 oz. |
-| **Commission Policy** | `commission_usd_per_lot_per_side` | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directives 3, 6, 8: Standard = $0.00/lot. Raw Spread = $3.50/lot/side. Converted dynamically via execution notional. |
-| **Financing Policy** | Swap points, rollover schedule | `OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE` | Directive 11: Long = -34.80, Short = +12.40. Triple Wednesday. Rollover Summer 21:00 / Winter 22:00 UTC. Swap-free separated from tier. |
-| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `SPREAD_EMPIRICAL_EVIDENCE_MISSING` | Directives 2, 9: Requires verified MT5 tick export ($N \ge 1000$, $\ge 5$ distinct dates, 4 sessions). Absent -> fail closed. |
-| **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING` | Directive 10: Directional slippage requires live/paper execution telemetry. Absent -> fail closed. |
+| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `LEGAL_ENTITY_EVIDENCE_MISSING` | Directive 10: Sourced strictly from verified account snapshot. |
+| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `CONTRACT_SPEC_EVIDENCE_MISSING` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
+| **Commission Policy** | `commission_usd_per_lot_per_side` | `COMMISSION_EVIDENCE_MISSING` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
+| **Financing Policy** | Swap points, rollover schedule | `FINANCING_EVIDENCE_MISSING` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
+| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `SPREAD_EMPIRICAL_EVIDENCE_MISSING` | Directive 6: Requires verified MT5 tick export ($N \ge 1000$, $\ge 5$ distinct dates, 4 sessions). |
+| **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING` | Directives 7 & 8: Directional slippage telemetry is MANDATORY ($N \ge 30$). |
 
 ---
 
-## 3. Dynamic Commission Conversion Formulation
-
-Native commission is persisted strictly in USD per lot per side:
-
-$$\text{notional\_usd} = \text{volume\_lots} \times \text{contract\_size} \times P_{\text{execution}}$$
-$$\text{fee\_usd} = \text{volume\_lots} \times \text{commission\_usd\_per\_lot\_per\_side}$$
-$$\text{fee\_bps} = \left( \frac{\text{fee\_usd}}{\text{notional\_usd}} \right) \times 10{,}000 = \left( \frac{\text{commission\_usd\_per\_lot\_per\_side}}{\text{contract\_size} \times P_{\text{execution}}} \right) \times 10{,}000$$
-
-- **Standard Account Tier:**
-  $$\text{commission} = \$0.00 \implies \text{fee\_bps} = 0.0000\text{ bps}$$
-- **Raw Spread Account Tier (Illustrative at \$2,500 Gold):**
-  $$\text{fee\_bps} = \left( \frac{3.50}{100 \times 2500} \right) \times 10{,}000 = 0.1400\text{ bps per side (NON\_GATING\_ILLUSTRATIVE\_EXAMPLE)}$$
-
----
-
-## 4. Prior Evidence Invariance Verification
+## 3. Prior Evidence Invariance Verification
 
 Prior frozen evidence remains 100% bit-for-bit invariant:
 - **Macro Fingerprint:** `d9d2ebb4c6ec11fafc4ffce35090d64a5eaa05a3e024da4148b3900cf6370823`
@@ -66,9 +57,12 @@ Prior frozen evidence remains 100% bit-for-bit invariant:
 
 ---
 
-## 5. Next Steps for Unblocking
+## 4. Next Steps for Unblocking
 
 To advance from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` to `CANDLES_READY_QUOTE_EVIDENCE_MISSING`:
 1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
-2. Provide authentic Exness MT5 tick history export covering $\ge 5$ distinct trading days and all 4 sessions.
-3. Run `python manage.py ingest_xauusd_empirical_friction --legal-entity-file <path> --tick-file <path>`.
+2. Provide authoritative MT5 contract specification snapshot.
+3. Provide authoritative MT5 fee schedule snapshot.
+4. Provide authoritative MT5 financing swap schedule snapshot.
+5. Provide authentic Exness MT5 tick history export covering $\ge 5$ distinct trading days and all 4 sessions.
+6. Provide authentic Exness MT5 execution telemetry fills ($N \ge 30$).

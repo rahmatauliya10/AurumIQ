@@ -1175,16 +1175,18 @@ class XauUsdDataReadinessEvaluator:
                 FrictionModelActivation,
                 FrictionActivationStatus,
                 FrictionBindingRole,
+                FrictionComponentType,
             )
             from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 
             now_utc = datetime.now(timezone.utc)
             activation = FrictionModelActivation.objects.filter(
-                effective_from__lte=now_utc,
                 activation_status=FrictionActivationStatus.ACTIVE,
+                known_at__lte=now_utc,
+                effective_from__lte=now_utc,
             ).filter(
                 models.Q(effective_to__isnull=True) | models.Q(effective_to__gt=now_utc)
-            ).order_by("-effective_from").first()
+            ).order_by("-effective_from", "-known_at").first()
 
             if not activation:
                 friction_status = "EMPIRICAL_FRICTION_NOT_CONFIGURED"
@@ -1196,15 +1198,130 @@ class XauUsdDataReadinessEvaluator:
                 friction_model_id = model_ver.model_version_id
                 friction_fingerprint = model_ver.empirical_friction_evidence_fingerprint
 
+                # 1. Scope Validation (Directive 10)
                 if model_ver.venue != "EXNESS" or model_ver.symbol != "XAUUSD":
                     friction_status = "EMPIRICAL_FRICTION_INVALID"
                     friction_report_reasons.append(
                         f"Auxiliary evidence mismatch: Model venue/symbol '{model_ver.venue}:{model_ver.symbol}' does not match target 'EXNESS:XAUUSD'."
                     )
+                # 2. Legal Entity Provenance (Directive 10)
                 elif not model_ver.legal_entity_source_snapshot or not model_ver.legal_entity_code:
                     friction_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
                     friction_report_reasons.append(
-                        "Auxiliary evidence incomplete: Legal entity provenance is missing."
+                        "Auxiliary evidence incomplete: Legal entity provenance snapshot is missing."
+                    )
+                elif (
+                    model_ver.legal_entity_source_snapshot.venue != model_ver.venue
+                    or model_ver.legal_entity_source_snapshot.symbol != model_ver.symbol
+                    or model_ver.legal_entity_source_snapshot.account_tier != model_ver.account_tier
+                ):
+                    friction_status = "EMPIRICAL_FRICTION_INVALID"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence scope mismatch: Legal entity snapshot scope does not match model scope."
+                    )
+                elif (
+                    not model_ver.legal_entity_name
+                    or not model_ver.regulator
+                    or not model_ver.license_number
+                    or not model_ver.legal_entity_source_snapshot.raw_content
+                    or hashlib.sha256(model_ver.legal_entity_source_snapshot.raw_content).hexdigest()
+                    != model_ver.legal_entity_source_snapshot.raw_payload_bytes_sha256
+                ):
+                    friction_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence invalid: Legal entity fields or payload SHA-256 verification failed."
+                    )
+                # 3. Contract Specification Provenance (Directive 4 & 10)
+                elif not model_ver.contract_spec_source_snapshot:
+                    friction_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Contract specification source snapshot is missing."
+                    )
+                elif (
+                    model_ver.contract_spec_source_snapshot.venue != model_ver.venue
+                    or model_ver.contract_spec_source_snapshot.symbol != model_ver.symbol
+                    or model_ver.contract_spec_source_snapshot.account_tier != model_ver.account_tier
+                ):
+                    friction_status = "EMPIRICAL_FRICTION_INVALID"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence scope mismatch: Contract specification snapshot scope does not match model scope."
+                    )
+                elif (
+                    any(
+                        x is None
+                        for x in (
+                            model_ver.digits,
+                            model_ver.point_size,
+                            model_ver.trade_tick_size,
+                            model_ver.trade_tick_value,
+                            model_ver.contract_size,
+                            model_ver.volume_min,
+                            model_ver.volume_max,
+                            model_ver.volume_step,
+                        )
+                    )
+                    or not model_ver.contract_spec_source_snapshot.raw_content
+                    or hashlib.sha256(model_ver.contract_spec_source_snapshot.raw_content).hexdigest()
+                    != model_ver.contract_spec_source_snapshot.raw_payload_bytes_sha256
+                ):
+                    friction_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Contract geometry parameters or snapshot payload SHA-256 verification failed."
+                    )
+                # 4. Commission Provenance (Directive 5 & 10)
+                elif not model_ver.fee_schedule_source_snapshot:
+                    friction_status = "COMMISSION_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Fee schedule source snapshot is missing."
+                    )
+                elif (
+                    model_ver.fee_schedule_source_snapshot.venue != model_ver.venue
+                    or model_ver.fee_schedule_source_snapshot.symbol != model_ver.symbol
+                    or model_ver.fee_schedule_source_snapshot.account_tier != model_ver.account_tier
+                ):
+                    friction_status = "EMPIRICAL_FRICTION_INVALID"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence scope mismatch: Fee schedule snapshot scope does not match model scope."
+                    )
+                elif (
+                    model_ver.native_commission_usd_per_lot_per_side is None
+                    or not model_ver.commission_formula
+                    or not model_ver.fee_schedule_source_snapshot.raw_content
+                    or hashlib.sha256(model_ver.fee_schedule_source_snapshot.raw_content).hexdigest()
+                    != model_ver.fee_schedule_source_snapshot.raw_payload_bytes_sha256
+                ):
+                    friction_status = "COMMISSION_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Commission parameters or fee schedule payload SHA-256 verification failed."
+                    )
+                # 5. Financing / Swap Provenance (Directive 3 & 10)
+                elif not model_ver.swap_spec_source_snapshot:
+                    friction_status = "FINANCING_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Financing/swap specification source snapshot is missing."
+                    )
+                elif (
+                    model_ver.swap_spec_source_snapshot.venue != model_ver.venue
+                    or model_ver.swap_spec_source_snapshot.symbol != model_ver.symbol
+                    or model_ver.swap_spec_source_snapshot.account_tier != model_ver.account_tier
+                ):
+                    friction_status = "EMPIRICAL_FRICTION_INVALID"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence scope mismatch: Swap specification snapshot scope does not match model scope."
+                    )
+                elif (
+                    model_ver.swap_long_points is None
+                    or model_ver.swap_short_points is None
+                    or model_ver.rollover_summer_utc_hour is None
+                    or model_ver.rollover_winter_utc_hour is None
+                    or not model_ver.triple_swap_weekday
+                    or not model_ver.swap_spec_source_snapshot.raw_content
+                    or hashlib.sha256(model_ver.swap_spec_source_snapshot.raw_content).hexdigest()
+                    != model_ver.swap_spec_source_snapshot.raw_payload_bytes_sha256
+                ):
+                    friction_status = "FINANCING_EVIDENCE_MISSING"
+                    friction_report_reasons.append(
+                        "Auxiliary evidence incomplete: Financing parameters or swap payload SHA-256 verification failed."
                     )
                 else:
                     dataset_bindings = list(model_ver.dataset_bindings.select_related("evidence_dataset__source_snapshot").all())
@@ -1215,127 +1332,232 @@ class XauUsdDataReadinessEvaluator:
                         friction_report_reasons.append(
                             "Auxiliary evidence incomplete: Friction model has no bound datasets or distribution summaries."
                         )
+                    # Check dataset scope consistency (Directive 10)
+                    elif any(
+                        db.evidence_dataset.venue != model_ver.venue
+                        or db.evidence_dataset.symbol != model_ver.symbol
+                        or db.evidence_dataset.account_tier != model_ver.account_tier
+                        for db in dataset_bindings
+                    ):
+                        friction_status = "EMPIRICAL_FRICTION_INVALID"
+                        friction_report_reasons.append(
+                            "Auxiliary evidence mismatch: Bound dataset venue/symbol/account_tier does not match model."
+                        )
                     else:
                         primary_ds_binding = next(
                             (b for b in dataset_bindings if b.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE),
                             None,
                         )
-                        if not primary_ds_binding or primary_ds_binding.evidence_dataset.sample_count < 1000 or primary_ds_binding.evidence_dataset.distinct_trading_days < 5:
+                        primary_summary_binding = next(
+                            (b for b in summary_bindings if b.binding_role == FrictionBindingRole.NORMAL_SPREAD_DISTRIBUTION),
+                            None,
+                        )
+
+                        # 6. Spread Dataset Sufficiency (Directive 6 & 10)
+                        if not primary_ds_binding or not primary_summary_binding:
                             friction_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
                             friction_report_reasons.append(
-                                "Auxiliary evidence incomplete: Spread sample sufficiency not met (< 1,000 samples or < 5 distinct days)."
-                            )
-                        elif model_ver.base_spread_bps <= Decimal("0"):
-                            friction_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                            friction_report_reasons.append(
-                                "Auxiliary evidence invalid: Base spread bps must be strictly positive."
+                                "Auxiliary evidence incomplete: Primary spread sample dataset or normal spread distribution summary binding missing."
                             )
                         else:
-                            source_hashes = [
-                                model_ver.legal_entity_source_snapshot.raw_payload_bytes_sha256,
-                            ]
-                            if model_ver.contract_spec_source_snapshot:
-                                source_hashes.append(model_ver.contract_spec_source_snapshot.raw_payload_bytes_sha256)
-                            if model_ver.fee_schedule_source_snapshot:
-                                source_hashes.append(model_ver.fee_schedule_source_snapshot.raw_payload_bytes_sha256)
-                            if model_ver.swap_spec_source_snapshot:
-                                source_hashes.append(model_ver.swap_spec_source_snapshot.raw_payload_bytes_sha256)
-                            for db_bind in dataset_bindings:
-                                s_hash = db_bind.evidence_dataset.source_snapshot.raw_payload_bytes_sha256
-                                if s_hash not in source_hashes:
-                                    source_hashes.append(s_hash)
+                            spread_ds = primary_ds_binding.evidence_dataset
+                            spread_sum = primary_summary_binding.distribution_summary
+                            session_counts = spread_ds.session_counts or {}
 
-                            ds_hashes = [b.evidence_dataset.raw_dataset_sha256 for b in dataset_bindings]
-                            roles = [b.binding_role for b in dataset_bindings] + [b.binding_role for b in summary_bindings]
-                            summaries_dict = [
-                                {
-                                    "component_type": str(sb.distribution_summary.component_type),
-                                    "condition": str(sb.distribution_summary.condition),
-                                    "session": str(sb.distribution_summary.session),
-                                    "unit": str(sb.distribution_summary.unit),
-                                    "sample_count": sb.distribution_summary.sample_count,
-                                    "stat_min": sb.distribution_summary.stat_min,
-                                    "stat_p50": sb.distribution_summary.stat_p50,
-                                    "stat_p75": sb.distribution_summary.stat_p75,
-                                    "stat_p90": sb.distribution_summary.stat_p90,
-                                    "stat_p95": sb.distribution_summary.stat_p95,
-                                    "stat_p99": sb.distribution_summary.stat_p99,
-                                    "stat_max": sb.distribution_summary.stat_max,
-                                    "stat_mean": sb.distribution_summary.stat_mean,
-                                    "stat_std": sb.distribution_summary.stat_std,
-                                }
-                                for sb in summary_bindings
-                            ]
-
-                            recomputed_fp = compute_empirical_friction_fingerprint(
-                                semantic_versions={
-                                    "friction_policy_schema_version": model_ver.friction_policy_schema_version,
-                                    "distribution_algorithm_version": model_ver.distribution_algorithm_version,
-                                    "normalization_version": model_ver.normalization_version,
-                                    "commission_formula_version": model_ver.commission_formula_version,
-                                    "financing_rule_version": model_ver.financing_rule_version,
-                                },
-                                venue=model_ver.venue,
-                                legal_entity_code=model_ver.legal_entity_code,
-                                account_tier=model_ver.account_tier,
-                                symbol=model_ver.symbol,
-                                contract_geometry={
-                                    "digits": model_ver.digits,
-                                    "point_size": model_ver.point_size,
-                                    "trade_tick_size": model_ver.trade_tick_size,
-                                    "trade_tick_value": model_ver.trade_tick_value,
-                                    "contract_size": model_ver.contract_size,
-                                    "volume_min": model_ver.volume_min,
-                                    "volume_max": model_ver.volume_max,
-                                    "volume_step": model_ver.volume_step,
-                                },
-                                source_snapshot_hashes=source_hashes,
-                                dataset_hashes=ds_hashes,
-                                distribution_summaries=summaries_dict,
-                                calibrated_parameters={
-                                    "base_spread_bps": model_ver.base_spread_bps,
-                                    "stress_spread_bps": model_ver.stress_spread_bps,
-                                    "base_slippage_bps": model_ver.base_slippage_bps,
-                                    "stress_slippage_bps": model_ver.stress_slippage_bps,
-                                },
-                                commission_policy={
-                                    "native_commission_usd_per_lot_per_side": model_ver.native_commission_usd_per_lot_per_side,
-                                    "commission_formula": model_ver.commission_formula,
-                                },
-                                financing_policy={
-                                    "swap_long_points": model_ver.swap_long_points,
-                                    "swap_short_points": model_ver.swap_short_points,
-                                    "rollover_summer_utc_hour": model_ver.rollover_summer_utc_hour,
-                                    "rollover_winter_utc_hour": model_ver.rollover_winter_utc_hour,
-                                    "triple_swap_weekday": model_ver.triple_swap_weekday,
-                                    "actual_account_swap_free_status": model_ver.actual_account_swap_free_status,
-                                },
-                                bound_binding_roles=roles,
-                            )
-
-                            if recomputed_fp != model_ver.empirical_friction_evidence_fingerprint:
-                                friction_status = "FINGERPRINT_INTEGRITY_VIOLATION"
+                            if (
+                                spread_ds.sample_count < 1000
+                                or spread_ds.distinct_trading_days < 5
+                                or not session_counts
+                                or session_counts.get("ASIAN", 0) < 100
+                                or session_counts.get("LONDON", 0) < 100
+                                or session_counts.get("NEW_YORK", 0) < 100
+                                or session_counts.get("ROLLOVER", 0) < 30
+                            ):
+                                friction_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
                                 friction_report_reasons.append(
-                                    f"Fingerprint integrity failure: stored '{model_ver.empirical_friction_evidence_fingerprint}' != recomputed '{recomputed_fp}'."
+                                    "Auxiliary evidence incomplete: Spread sample sufficiency not met (requires >= 1,000 samples, >= 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)."
+                                )
+                            # 7. Spread Summary Validation (Directive 10)
+                            elif (
+                                spread_sum.component_type != FrictionComponentType.SPREAD
+                                or spread_sum.unit != "BPS"
+                                or spread_sum.sample_count != spread_ds.sample_count
+                                or spread_sum.stat_p75 <= Decimal("0")
+                                or spread_sum.stat_p95 < spread_sum.stat_p75
+                                or model_ver.base_spread_bps is None
+                                or model_ver.stress_spread_bps is None
+                                or model_ver.base_spread_bps <= Decimal("0")
+                                or model_ver.base_spread_bps != spread_sum.stat_p75
+                                or model_ver.stress_spread_bps != spread_sum.stat_p95
+                            ):
+                                friction_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                                friction_report_reasons.append(
+                                    "Auxiliary evidence invalid: Spread summary percentiles/units mismatch or base_spread_bps non-positive."
                                 )
                             else:
-                                friction_status = "EMPIRICAL_FRICTION_CONFIGURED"
-                                friction_manifest_details = {
-                                    "status": "EMPIRICAL_FRICTION_CONFIGURED",
-                                    "model_version_id": model_ver.model_version_id,
-                                    "venue": model_ver.venue,
-                                    "legal_entity_code": model_ver.legal_entity_code,
-                                    "account_tier": model_ver.account_tier,
-                                    "base_spread_bps": str(model_ver.base_spread_bps),
-                                    "stress_spread_bps": str(model_ver.stress_spread_bps),
-                                    "base_slippage_bps": str(model_ver.base_slippage_bps) if model_ver.base_slippage_bps is not None else None,
-                                    "stress_slippage_bps": str(model_ver.stress_slippage_bps) if model_ver.stress_slippage_bps is not None else None,
-                                    "native_commission_usd_per_lot_per_side": str(model_ver.native_commission_usd_per_lot_per_side),
-                                    "commission_formula": model_ver.commission_formula,
-                                    "swap_long_points": str(model_ver.swap_long_points),
-                                    "swap_short_points": str(model_ver.swap_short_points),
-                                    "empirical_friction_evidence_fingerprint": friction_fingerprint,
-                                }
+                                # 8. Execution Slippage Telemetry Validation (Directives 7, 8 & 10 - MANDATORY)
+                                telemetry_binding = next(
+                                    (
+                                        b
+                                        for b in dataset_bindings
+                                        if b.binding_role
+                                        in (
+                                            FrictionBindingRole.TELEMETRY_SAMPLE,
+                                            FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE,
+                                        )
+                                    ),
+                                    None,
+                                )
+                                slippage_summary_binding = next(
+                                    (
+                                        b
+                                        for b in summary_bindings
+                                        if b.binding_role
+                                        in (
+                                            FrictionBindingRole.SLIPPAGE_DISTRIBUTION,
+                                            FrictionBindingRole.NORMAL_SLIPPAGE_DISTRIBUTION,
+                                        )
+                                    ),
+                                    None,
+                                )
+
+                                if not telemetry_binding or not slippage_summary_binding:
+                                    friction_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"
+                                    friction_report_reasons.append(
+                                        "Auxiliary evidence incomplete: Execution telemetry dataset or slippage distribution summary binding missing (MANDATORY per Pre-Phase-8 Governance)."
+                                    )
+                                else:
+                                    telem_ds = telemetry_binding.evidence_dataset
+                                    slip_sum = slippage_summary_binding.distribution_summary
+
+                                    if (
+                                        telem_ds.sample_count < 30
+                                        or model_ver.base_slippage_bps is None
+                                        or model_ver.stress_slippage_bps is None
+                                    ):
+                                        friction_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"
+                                        friction_report_reasons.append(
+                                            "Auxiliary evidence incomplete: Telemetry sample count < 30 or model slippage bps is None."
+                                        )
+                                    elif (
+                                        slip_sum.component_type != FrictionComponentType.SLIPPAGE
+                                        or slip_sum.unit != "BPS"
+                                        or slip_sum.sample_count != telem_ds.sample_count
+                                        or slip_sum.stat_p95 < slip_sum.stat_p75
+                                        or model_ver.base_slippage_bps != slip_sum.stat_p75
+                                        or model_ver.stress_slippage_bps != slip_sum.stat_p95
+                                    ):
+                                        friction_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+                                        friction_report_reasons.append(
+                                            "Auxiliary evidence invalid: Slippage distribution summary unit, percentiles, or model alignment invalid."
+                                        )
+                                    else:
+                                        # 9. Fingerprint Integrity Verification (Directives 10 & 11)
+                                        source_hashes = [
+                                            model_ver.legal_entity_source_snapshot.raw_payload_bytes_sha256,
+                                            model_ver.contract_spec_source_snapshot.raw_payload_bytes_sha256,
+                                            model_ver.fee_schedule_source_snapshot.raw_payload_bytes_sha256,
+                                            model_ver.swap_spec_source_snapshot.raw_payload_bytes_sha256,
+                                        ]
+                                        for db_bind in dataset_bindings:
+                                            s_hash = db_bind.evidence_dataset.source_snapshot.raw_payload_bytes_sha256
+                                            if s_hash not in source_hashes:
+                                                source_hashes.append(s_hash)
+
+                                        ds_hashes = [b.evidence_dataset.raw_dataset_sha256 for b in dataset_bindings]
+                                        roles = [b.binding_role for b in dataset_bindings] + [b.binding_role for b in summary_bindings]
+                                        summaries_dict = [
+                                            {
+                                                "component_type": str(sb.distribution_summary.component_type),
+                                                "condition": str(sb.distribution_summary.condition),
+                                                "session": str(sb.distribution_summary.session),
+                                                "unit": str(sb.distribution_summary.unit),
+                                                "sample_count": sb.distribution_summary.sample_count,
+                                                "stat_min": sb.distribution_summary.stat_min,
+                                                "stat_p50": sb.distribution_summary.stat_p50,
+                                                "stat_p75": sb.distribution_summary.stat_p75,
+                                                "stat_p90": sb.distribution_summary.stat_p90,
+                                                "stat_p95": sb.distribution_summary.stat_p95,
+                                                "stat_p99": sb.distribution_summary.stat_p99,
+                                                "stat_max": sb.distribution_summary.stat_max,
+                                                "stat_mean": sb.distribution_summary.stat_mean,
+                                                "stat_std": sb.distribution_summary.stat_std,
+                                            }
+                                            for sb in summary_bindings
+                                        ]
+
+                                        recomputed_fp = compute_empirical_friction_fingerprint(
+                                            semantic_versions={
+                                                "friction_policy_schema_version": model_ver.friction_policy_schema_version,
+                                                "distribution_algorithm_version": model_ver.distribution_algorithm_version,
+                                                "normalization_version": model_ver.normalization_version,
+                                                "commission_formula_version": model_ver.commission_formula_version,
+                                                "financing_rule_version": model_ver.financing_rule_version,
+                                                "sample_sufficiency_policy_version": "1.0.0",
+                                                "slippage_mandatory_policy_version": "GOVERNED_MANDATORY_V1",
+                                                "selection_policy_version": "BASE_P75_STRESS_P95_V1",
+                                            },
+                                            venue=model_ver.venue,
+                                            legal_entity_code=model_ver.legal_entity_code,
+                                            account_tier=model_ver.account_tier,
+                                            symbol=model_ver.symbol,
+                                            contract_geometry={
+                                                "digits": model_ver.digits,
+                                                "point_size": model_ver.point_size,
+                                                "trade_tick_size": model_ver.trade_tick_size,
+                                                "trade_tick_value": model_ver.trade_tick_value,
+                                                "contract_size": model_ver.contract_size,
+                                                "volume_min": model_ver.volume_min,
+                                                "volume_max": model_ver.volume_max,
+                                                "volume_step": model_ver.volume_step,
+                                            },
+                                            source_snapshot_hashes=source_hashes,
+                                            dataset_hashes=ds_hashes,
+                                            distribution_summaries=summaries_dict,
+                                            calibrated_parameters={
+                                                "base_spread_bps": model_ver.base_spread_bps,
+                                                "stress_spread_bps": model_ver.stress_spread_bps,
+                                                "base_slippage_bps": model_ver.base_slippage_bps,
+                                                "stress_slippage_bps": model_ver.stress_slippage_bps,
+                                            },
+                                            commission_policy={
+                                                "native_commission_usd_per_lot_per_side": model_ver.native_commission_usd_per_lot_per_side,
+                                                "commission_formula": model_ver.commission_formula,
+                                            },
+                                            financing_policy={
+                                                "swap_long_points": model_ver.swap_long_points,
+                                                "swap_short_points": model_ver.swap_short_points,
+                                                "rollover_summer_utc_hour": model_ver.rollover_summer_utc_hour,
+                                                "rollover_winter_utc_hour": model_ver.rollover_winter_utc_hour,
+                                                "triple_swap_weekday": model_ver.triple_swap_weekday,
+                                                "actual_account_swap_free_status": model_ver.actual_account_swap_free_status,
+                                            },
+                                            bound_binding_roles=roles,
+                                        )
+
+                                        if recomputed_fp != model_ver.empirical_friction_evidence_fingerprint:
+                                            friction_status = "FINGERPRINT_INTEGRITY_VIOLATION"
+                                            friction_report_reasons.append(
+                                                f"Fingerprint integrity failure: stored '{model_ver.empirical_friction_evidence_fingerprint}' != recomputed '{recomputed_fp}'."
+                                            )
+                                        else:
+                                            friction_status = "EMPIRICAL_FRICTION_CONFIGURED"
+                                            friction_manifest_details = {
+                                                "status": "EMPIRICAL_FRICTION_CONFIGURED",
+                                                "model_version_id": model_ver.model_version_id,
+                                                "venue": model_ver.venue,
+                                                "legal_entity_code": model_ver.legal_entity_code,
+                                                "account_tier": model_ver.account_tier,
+                                                "base_spread_bps": str(model_ver.base_spread_bps),
+                                                "stress_spread_bps": str(model_ver.stress_spread_bps),
+                                                "base_slippage_bps": str(model_ver.base_slippage_bps),
+                                                "stress_slippage_bps": str(model_ver.stress_slippage_bps),
+                                                "native_commission_usd_per_lot_per_side": str(model_ver.native_commission_usd_per_lot_per_side),
+                                                "commission_formula": model_ver.commission_formula,
+                                                "swap_long_points": str(model_ver.swap_long_points),
+                                                "swap_short_points": str(model_ver.swap_short_points),
+                                                "empirical_friction_evidence_fingerprint": friction_fingerprint,
+                                            }
 
         # 5. Dataset Fingerprint Calculations
         if total_candles > 0 and earliest_dt and latest_dt:

@@ -1,9 +1,9 @@
 {
-  "manifest_schema_version": "3.0.0",
+  "manifest_schema_version": "3.1.0",
   "venue": "EXNESS",
   "account_tier": "STANDARD",
   "symbol": "XAUUSD",
-  "audit_timestamp": "2026-09-04T17:25:27Z",
+  "audit_timestamp": "2026-09-04T17:54:48Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
@@ -20,44 +20,34 @@
       "license_number": null
     },
     "contract_geometry": {
-      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
-      "digits": 2,
-      "point_size": "0.01",
-      "trade_tick_size": "0.01",
-      "trade_tick_value": "1.00",
-      "contract_size": "100.0",
-      "volume_min": "0.01",
-      "volume_max": "200.0",
-      "volume_step": "0.01"
+      "status": "CONTRACT_SPEC_EVIDENCE_MISSING",
+      "digits": null,
+      "point_size": null,
+      "trade_tick_size": null,
+      "trade_tick_value": null,
+      "contract_size": null,
+      "volume_min": null,
+      "volume_max": null,
+      "volume_step": null
     },
     "commission_policy": {
-      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
+      "status": "COMMISSION_EVIDENCE_MISSING",
       "account_tier": "STANDARD",
-      "native_commission_usd_per_lot_per_side": "0.0000",
-      "commission_formula": "DYNAMIC_NOTIONAL_BPS",
-      "illustrative_fee_bps_at_2500_gold": "0.0000 (NON_GATING_ILLUSTRATIVE_EXAMPLE)"
+      "native_commission_usd_per_lot_per_side": null,
+      "commission_formula": null
     },
     "financing_policy": {
-      "status": "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE",
-      "swap_long_points": "-34.80",
-      "swap_short_points": "12.40",
-      "rollover_schedule": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0",
-      "triple_swap_weekday": "WEDNESDAY",
-      "swap_free_available_for_account_type": true,
-      "actual_account_swap_free_status": false
+      "status": "FINANCING_EVIDENCE_MISSING",
+      "swap_long_points": null,
+      "swap_short_points": null,
+      "rollover_schedule": null,
+      "triple_swap_weekday": null,
+      "actual_account_swap_free_status": null
     },
     "bid_ask_spread_distribution": {
       "status": "SPREAD_EMPIRICAL_EVIDENCE_MISSING",
       "source_file": null,
-      "raw_sha256": null,
-      "sample_count": 0,
-      "distinct_trading_dates": 0,
-      "sessions": [
-        "ASIAN",
-        "LONDON",
-        "NEW_YORK",
-        "ROLLOVER"
-      ]
+      "sample_count": 0
     },
     "execution_slippage_telemetry": {
       "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
@@ -66,9 +56,11 @@
     }
   },
   "blocking_reasons": [
-    "Legal entity provenance: LEGAL_ENTITY_EVIDENCE_MISSING",
-    "Quote spread empirical dataset: SPREAD_EMPIRICAL_EVIDENCE_MISSING",
-    "Execution slippage telemetry: SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
-    "Friction readiness fails closed: No fabricated observations allowed."
+    "Legal entity evidence snapshot missing (--legal-entity-file is None).",
+    "Contract specification evidence snapshot missing (--contract-spec-file is None).",
+    "Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).",
+    "Financing/swap specification evidence snapshot missing (--swap-spec-file is None).",
+    "MT5 tick export dataset missing (--tick-file is None).",
+    "Execution slippage telemetry missing (--slippage-file is None)."
   ]
 }

@@ -545,12 +545,17 @@ class FrictionBindingRole(models.TextChoices):
     PRIMARY_SPREAD_SAMPLE = "PRIMARY_SPREAD_SAMPLE", "Primary Spread Sample Dataset"
     STRESS_SPREAD_SAMPLE = "STRESS_SPREAD_SAMPLE", "Stress Spread Sample Dataset"
     TELEMETRY_SAMPLE = "TELEMETRY_SAMPLE", "Execution Telemetry Sample Dataset"
+    PRIMARY_TELEMETRY_SAMPLE = "PRIMARY_TELEMETRY_SAMPLE", "Primary Execution Telemetry Sample Dataset"
     NORMAL_SPREAD_DISTRIBUTION = "NORMAL_SPREAD_DISTRIBUTION", "Normal Spread Distribution Summary"
     STRESS_SPREAD_DISTRIBUTION = "STRESS_SPREAD_DISTRIBUTION", "Stress Spread Distribution Summary"
     SLIPPAGE_DISTRIBUTION = "SLIPPAGE_DISTRIBUTION", "Slippage Distribution Summary"
+    NORMAL_SLIPPAGE_DISTRIBUTION = "NORMAL_SLIPPAGE_DISTRIBUTION", "Normal Slippage Distribution Summary"
+    STRESS_SLIPPAGE_DISTRIBUTION = "STRESS_SLIPPAGE_DISTRIBUTION", "Stress Slippage Distribution Summary"
 
 
 class FrictionActivationStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Draft Model (Evidence Incomplete / Unsealed)"
+    CANDIDATE = "CANDIDATE", "Candidate Model Awaiting Sign-Off"
     ACTIVE = "ACTIVE", "Active Calibration Model"
     SUPERSEDED = "SUPERSEDED", "Superseded by Newer Calibration Model"
     REJECTED = "REJECTED", "Rejected by Governance Evaluation"
@@ -599,7 +604,7 @@ class FrictionSourceSnapshot(models.Model):
 
 
 class FrictionEvidenceDataset(models.Model):
-    """Immutable metadata and temporal envelope for an empirical sample dataset (append-only)."""
+    """Immutable bounded sample dataset used for empirical friction parameter derivation (append-only)."""
     dataset_id = models.CharField(max_length=64, primary_key=True)
     source_snapshot = models.ForeignKey(
         FrictionSourceSnapshot,
@@ -612,7 +617,7 @@ class FrictionEvidenceDataset(models.Model):
     sample_start = models.DateTimeField(db_index=True)
     sample_end = models.DateTimeField(db_index=True)
     sample_count = models.IntegerField()
-    distinct_trading_days = models.IntegerField(default=1)
+    distinct_trading_days = models.IntegerField()
     session_counts = models.JSONField(default=dict, blank=True)
     source_units = models.CharField(max_length=32)
     raw_dataset_sha256 = models.CharField(max_length=64, db_index=True)
@@ -654,14 +659,12 @@ class FrictionDistributionSummary(models.Model):
     condition = models.CharField(
         max_length=32,
         choices=FrictionConditionType.choices,
-        default=FrictionConditionType.ALL,
     )
     session = models.CharField(
         max_length=32,
         choices=FrictionSessionType.choices,
-        default=FrictionSessionType.ALL,
     )
-    unit = models.CharField(max_length=32, default="BPS")
+    unit = models.CharField(max_length=32)
     sample_count = models.IntegerField()
     stat_min = models.DecimalField(max_digits=12, decimal_places=6)
     stat_p50 = models.DecimalField(max_digits=12, decimal_places=6)
@@ -697,7 +700,11 @@ class FrictionDistributionSummary(models.Model):
 
 
 class FrictionModelVersion(models.Model):
-    """Immutable bound calibration friction model version (append-only)."""
+    """Immutable bound calibration friction model version (append-only).
+    
+    CRITICAL: Contains zero silent evidence defaults (Directive 2).
+    All parameters must be explicitly populated from verified evidence or set to None (UNKNOWN).
+    """
     model_version_id = models.CharField(max_length=64, primary_key=True)
     venue = models.CharField(max_length=32, db_index=True)
     symbol = models.CharField(max_length=32, db_index=True)
@@ -735,36 +742,37 @@ class FrictionModelVersion(models.Model):
         blank=True,
     )
 
-    # Contract Geometry & Tick Specifications (Directive 4: point vs tick_size separate)
-    digits = models.IntegerField(default=2)
-    point_size = models.DecimalField(max_digits=10, decimal_places=5, default=Decimal("0.01"))
-    trade_tick_size = models.DecimalField(max_digits=10, decimal_places=5, default=Decimal("0.01"))
-    trade_tick_value = models.DecimalField(max_digits=12, decimal_places=6, default=Decimal("1.00"))
-    contract_size = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("100.0"))
-    volume_min = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0.01"))
-    volume_max = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("200.0"))
-    volume_step = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0.01"))
+    # Contract Geometry & Tick Specifications (Directive 4: point vs tick_size separate, NO DEFAULTS)
+    digits = models.IntegerField(null=True, blank=True)
+    point_size = models.DecimalField(max_digits=10, decimal_places=5, null=True, blank=True)
+    trade_tick_size = models.DecimalField(max_digits=10, decimal_places=5, null=True, blank=True)
+    trade_tick_value = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    contract_size = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    volume_min = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    volume_max = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    volume_step = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
 
-    # Commission Policy (Directives 3, 6, 8)
+    # Commission Policy (Directives 3, 6, 8, NO DEFAULTS)
     native_commission_usd_per_lot_per_side = models.DecimalField(
         max_digits=10,
         decimal_places=4,
-        default=Decimal("0.0000"),
+        null=True,
+        blank=True,
     )
-    commission_formula = models.CharField(max_length=64, default="DYNAMIC_NOTIONAL_BPS")
+    commission_formula = models.CharField(max_length=64, null=True, blank=True)
 
-    # Financing / Swap Policy (Directive 11)
-    swap_long_points = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
-    swap_short_points = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
-    rollover_summer_utc_hour = models.IntegerField(default=21)
-    rollover_winter_utc_hour = models.IntegerField(default=22)
-    triple_swap_weekday = models.CharField(max_length=16, default="WEDNESDAY")
-    swap_free_available_for_account_type = models.BooleanField(default=False)
-    actual_account_swap_free_status = models.BooleanField(default=False)
+    # Financing / Swap Policy (Directive 11, NO HARD-CODED DEFAULTS)
+    swap_long_points = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    swap_short_points = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    rollover_summer_utc_hour = models.IntegerField(null=True, blank=True)
+    rollover_winter_utc_hour = models.IntegerField(null=True, blank=True)
+    triple_swap_weekday = models.CharField(max_length=16, null=True, blank=True)
+    swap_free_available_for_account_type = models.BooleanField(null=True, blank=True)
+    actual_account_swap_free_status = models.BooleanField(null=True, blank=True)
 
-    # Spread & Slippage Parameters (Directive 11: renamed fields)
-    base_spread_bps = models.DecimalField(max_digits=8, decimal_places=4)
-    stress_spread_bps = models.DecimalField(max_digits=8, decimal_places=4)
+    # Spread & Slippage Parameters (MANDATORY SLIPPAGE: null until proven, NO DEFAULTS)
+    base_spread_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    stress_spread_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
     base_slippage_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
     stress_slippage_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
 
@@ -774,7 +782,7 @@ class FrictionModelVersion(models.Model):
     normalization_version = models.CharField(max_length=32, default="1.0.0")
     commission_formula_version = models.CharField(max_length=32, default="1.0.0")
     financing_rule_version = models.CharField(max_length=32, default="1.0.0")
-    empirical_friction_evidence_fingerprint = models.CharField(max_length=64, db_index=True)
+    empirical_friction_evidence_fingerprint = models.CharField(max_length=64, db_index=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = ImmutableManager()
