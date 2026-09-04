@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import hashlib
 import json
 import re
+from django.db import models
+from django.utils import timezone as dj_timezone
 
 from apps.instruments.models import Instrument, MarketListing, ListingRole, ListingStatus
 from apps.market_data.models import MarketCandle, CandleQualityFlag, VolumeEvidenceType
@@ -75,6 +77,16 @@ TF_INTERVAL_SECONDS = {
     "1h": 3600,
     "4h": 14400,
     "1d": 86400,
+}
+
+# Explicit provider-native acquisition boundaries established by empirical acquisition
+TWELVE_DATA_XAUUSD_PROVIDER_NATIVE_STARTS: Dict[str, datetime] = {
+    "1m": parse_strict_iso_datetime("2020-04-07T00:00:00Z"),
+    "5m": parse_strict_iso_datetime("2020-04-07T00:00:00Z"),
+    "15m": parse_strict_iso_datetime("2020-04-07T00:00:00Z"),
+    "1h": parse_strict_iso_datetime("2020-04-07T00:00:00Z"),
+    "4h": parse_strict_iso_datetime("2020-04-07T01:00:00Z"),
+    "1d": parse_strict_iso_datetime("2020-04-07T00:00:00Z"),
 }
 
 GIT_SHA_40_REGEX = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -170,6 +182,7 @@ def evaluate_timeframe_coverage_and_gaps(
     candles: Sequence[Any],
     expected_start: Optional[datetime],
     expected_end: Optional[datetime],
+    analytical_start: Optional[datetime] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Evaluate independent coverage and internal gap statistics for a single timeframe.
@@ -180,6 +193,8 @@ def evaluate_timeframe_coverage_and_gaps(
     if count == 0:
         coverage_dict = {
             "count": 0,
+            "analytical_required_start": analytical_start.isoformat() if analytical_start else (expected_start.isoformat() if expected_start else None),
+            "provider_native_required_start": expected_start.isoformat() if expected_start else None,
             "earliest_timestamp_open": None,
             "latest_timestamp_close": None,
             "coverage_start_satisfied": False,
@@ -194,6 +209,9 @@ def evaluate_timeframe_coverage_and_gaps(
             "missing_interval_count": 0,
             "missing_intervals_pct": "NOT_EVALUATED",
             "largest_gap_seconds": 0,
+            "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+            "gap_readiness_gate_applied": False,
+            "naive_timestamp_count": 0,
         }
         return coverage_dict, gap_dict
 
@@ -219,12 +237,22 @@ def evaluate_timeframe_coverage_and_gaps(
 
     coverage_dict = {
         "count": count,
+        "analytical_required_start": analytical_start.isoformat() if analytical_start else (expected_start.isoformat() if expected_start else None),
+        "provider_native_required_start": expected_start.isoformat() if expected_start else None,
         "earliest_timestamp_open": earliest_open.isoformat(),
         "latest_timestamp_close": latest_close.isoformat(),
         "coverage_start_satisfied": start_satisfied,
         "coverage_end_satisfied": end_satisfied,
         "coverage_complete": coverage_complete,
     }
+
+    naive_count = sum(
+        1 for c in candles
+        if getattr(c, "timestamp_open", None) is None
+        or getattr(c, "timestamp_close", None) is None
+        or getattr(c, "timestamp_open").tzinfo is None
+        or getattr(c, "timestamp_close").tzinfo is None
+    )
 
     if count == 1:
         gap_dict = {
@@ -235,6 +263,9 @@ def evaluate_timeframe_coverage_and_gaps(
             "missing_interval_count": 0,
             "missing_intervals_pct": "0.00%",
             "largest_gap_seconds": 0,
+            "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+            "gap_readiness_gate_applied": False,
+            "naive_timestamp_count": naive_count,
         }
         return coverage_dict, gap_dict
 
@@ -265,6 +296,138 @@ def evaluate_timeframe_coverage_and_gaps(
         "missing_interval_count": missing_intervals,
         "missing_intervals_pct": pct_str,
         "largest_gap_seconds": largest_gap,
+        "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+        "gap_readiness_gate_applied": False,
+        "naive_timestamp_count": naive_count,
+    }
+
+    return coverage_dict, gap_dict
+
+
+def evaluate_timeframe_coverage_and_gaps_from_qs(
+    timeframe: str,
+    qs,
+    expected_start: Optional[datetime],
+    expected_end: Optional[datetime],
+    analytical_start: Optional[datetime] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Evaluate independent coverage and internal gap statistics for a single timeframe
+    directly from a streaming database queryset, retaining only boundary state in memory.
+    """
+    interval_s = TF_INTERVAL_SECONDS.get(timeframe, 60)
+    tf_qs = qs.filter(timeframe=timeframe).order_by("timestamp_open", "timestamp_close").values_list("timestamp_open", "timestamp_close")
+
+    count = 0
+    earliest_open: Optional[datetime] = None
+    latest_close: Optional[datetime] = None
+    prev_close: Optional[datetime] = None
+
+    internal_gaps = 0
+    missing_intervals = 0
+    largest_gap = 0
+    naive_count = 0
+
+    for t_open, t_close in tf_qs.iterator(chunk_size=10000):
+        # Timezone awareness verification
+        if not dj_timezone.is_aware(t_open):
+            naive_count += 1
+            t_open_utc = t_open.replace(tzinfo=timezone.utc)
+        else:
+            t_open_utc = t_open.astimezone(timezone.utc)
+
+        if not dj_timezone.is_aware(t_close):
+            naive_count += 1
+            t_close_utc = t_close.replace(tzinfo=timezone.utc)
+        else:
+            t_close_utc = t_close.astimezone(timezone.utc)
+
+        if count == 0:
+            earliest_open = t_open_utc
+
+        if prev_close is not None:
+            gap_s = int((t_open_utc - prev_close).total_seconds())
+            if gap_s > 0:
+                internal_gaps += 1
+                missing_in_gap = int(round(gap_s / interval_s))
+                missing_intervals += missing_in_gap
+                if gap_s > largest_gap:
+                    largest_gap = gap_s
+
+        prev_close = t_close_utc
+        latest_close = t_close_utc
+        count += 1
+
+    if count == 0:
+        coverage_dict = {
+            "count": 0,
+            "analytical_required_start": analytical_start.isoformat() if analytical_start else (expected_start.isoformat() if expected_start else None),
+            "provider_native_required_start": expected_start.isoformat() if expected_start else None,
+            "earliest_timestamp_open": None,
+            "latest_timestamp_close": None,
+            "coverage_start_satisfied": False,
+            "coverage_end_satisfied": False,
+            "coverage_complete": False,
+        }
+        gap_dict = {
+            "status": "NO_DATA",
+            "observed_count": 0,
+            "expected_interval_seconds": interval_s,
+            "internal_gap_count": 0,
+            "missing_interval_count": 0,
+            "missing_intervals_pct": "NOT_EVALUATED",
+            "largest_gap_seconds": 0,
+            "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+            "gap_readiness_gate_applied": False,
+            "naive_timestamp_count": naive_count,
+        }
+        return coverage_dict, gap_dict
+
+    start_satisfied = bool(expected_start is not None and earliest_open <= expected_start)
+    end_satisfied = bool(expected_end is not None and latest_close >= expected_end)
+    coverage_complete = bool(start_satisfied and end_satisfied and count > 0)
+
+    coverage_dict = {
+        "count": count,
+        "analytical_required_start": analytical_start.isoformat() if analytical_start else (expected_start.isoformat() if expected_start else None),
+        "provider_native_required_start": expected_start.isoformat() if expected_start else None,
+        "earliest_timestamp_open": earliest_open.isoformat(),
+        "latest_timestamp_close": latest_close.isoformat(),
+        "coverage_start_satisfied": start_satisfied,
+        "coverage_end_satisfied": end_satisfied,
+        "coverage_complete": coverage_complete,
+    }
+
+    if count == 1:
+        gap_dict = {
+            "status": "SINGLE_BAR",
+            "observed_count": 1,
+            "expected_interval_seconds": interval_s,
+            "internal_gap_count": 0,
+            "missing_interval_count": 0,
+            "missing_intervals_pct": "0.00%",
+            "largest_gap_seconds": 0,
+            "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+            "gap_readiness_gate_applied": False,
+            "naive_timestamp_count": naive_count,
+        }
+        return coverage_dict, gap_dict
+
+    span_s = int((latest_close - earliest_open).total_seconds())
+    expected_intervals = int(round(span_s / interval_s)) if interval_s > 0 else 0
+    pct_str = f"{(missing_intervals / expected_intervals * 100.0):.2f}%" if expected_intervals > 0 else "0.00%"
+
+    gap_dict = {
+        "status": "EVALUATED",
+        "observed_count": count,
+        "expected_interval_seconds": interval_s,
+        "internal_gap_count": internal_gaps,
+        "missing_interval_count": missing_intervals,
+        "missing_intervals_pct": pct_str,
+        "largest_gap_seconds": largest_gap,
+        "gap_semantics": "OBSERVATIONAL_PROVIDER_CONTINUITY",
+        "gap_readiness_gate_applied": False,
+        "naive_timestamp_count": naive_count,
     }
 
     return coverage_dict, gap_dict
@@ -307,6 +470,7 @@ class XauUsdDataReadinessReport:
     phase6_15m_dataset_fingerprint: str = EMPTY_DATASET_HASH
     readiness_evidence_fingerprint: str = EMPTY_DATASET_HASH
     required_coverage_start: Optional[str] = None
+    provider_native_required_starts: Dict[str, str] = field(default_factory=dict)
     required_coverage_end_exclusive: Optional[str] = None
     required_duration_days: float = 0.0
     actual_global_start: Optional[str] = None
@@ -339,6 +503,7 @@ class XauUsdDataReadinessReport:
             "listing_status": self.listing_status,
             "listing_role": self.listing_role,
             "required_coverage_start": self.required_coverage_start,
+            "provider_native_required_starts": self.provider_native_required_starts,
             "required_coverage_end_exclusive": self.required_coverage_end_exclusive,
             "required_duration_days": self.required_duration_days,
             "actual_global_start": self.actual_global_start,
@@ -420,11 +585,12 @@ class XauUsdDataReadinessReport:
             c_cnt = c.get("count", self.timeframe_counts.get(tf, 0))
             e_open = c.get("earliest_timestamp_open", "N/A") or "N/A"
             l_close = c.get("latest_timestamp_close", "N/A") or "N/A"
+            p_start = c.get("provider_native_required_start", c.get("analytical_required_start", self.required_coverage_start or "N/A")) or "N/A"
             s_sat = "✅ PASS" if c.get("coverage_start_satisfied") else "❌ FAIL"
             e_sat = "✅ PASS" if c.get("coverage_end_satisfied") else "❌ FAIL"
             cov_c = "✅ COMPLETE" if c.get("coverage_complete") else "❌ INCOMPLETE"
             coverage_rows.append(
-                f"| **{tf}** | {c_cnt} | `{e_open}` | `{l_close}` | {s_sat} | {e_sat} | {cov_c} |"
+                f"| **{tf}** | {c_cnt} | `{p_start}` | `{e_open}` | `{l_close}` | {s_sat} | {e_sat} | {cov_c} |"
             )
         coverage_table_md = "\n".join(coverage_rows)
 
@@ -437,9 +603,10 @@ class XauUsdDataReadinessReport:
             m_iv = g.get("missing_interval_count", 0)
             m_pct = g.get("missing_intervals_pct", "0.00%")
             l_gap = f"{g.get('largest_gap_seconds', 0)}s"
+            sem = g.get("gap_semantics", "OBSERVATIONAL_PROVIDER_CONTINUITY")
             st = g.get("status", "EVALUATED")
             gap_rows.append(
-                f"| **{tf}** | {obs} | {exp_cad} | {i_gaps} | {m_iv} | {m_pct} | {l_gap} | `{st}` |"
+                f"| **{tf}** | {obs} | {exp_cad} | {i_gaps} | {m_iv} | {m_pct} | {l_gap} | `{sem}` | `{st}` |"
             )
         gap_table_md = "\n".join(gap_rows)
 
@@ -492,13 +659,13 @@ Decision: **`{self.decision}`**
 ## 3. Historical Coverage & Timeframe Cadence
 
 ### A. Window Coverage by Timeframe
-| Timeframe | Candle Count | Earliest Timestamp Open | Latest Timestamp Close | Start Satisfied | End Satisfied | Coverage Complete |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Timeframe | Candle Count | Native Required Start | Earliest Timestamp Open | Latest Timestamp Close | Start Satisfied | End Satisfied | Coverage Complete |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 {coverage_table_md}
 
 ### B. Internal Cadence & Gap Analysis (Inside Observed Span)
-| Timeframe | Observed Count | Expected Cadence | Internal Gaps | Missing Intervals | Missing % | Largest Gap | Status |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Timeframe | Observed Count | Expected Cadence | Internal Gaps | Missing Intervals | Missing % | Largest Gap | Semantics | Status |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 {gap_table_md}
 
 ---
@@ -552,10 +719,21 @@ class XauUsdDataReadinessEvaluator:
         override_friction_status: Optional[str] = None,
         expected_coverage_start: Optional[datetime] = None,
         expected_coverage_end: Optional[datetime] = None,
+        expected_coverage_start_by_timeframe: Optional[Dict[str, datetime]] = None,
     ) -> XauUsdDataReadinessReport:
         """Execute full deterministic audit across persisted database records or provided candles."""
         reasons: List[str] = []
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Resolve provider-native required starts dictionary for metadata/manifest
+        provider_native_starts_dict: Dict[str, str] = {}
+        for tf in timeframes:
+            if expected_coverage_start_by_timeframe and tf in expected_coverage_start_by_timeframe:
+                provider_native_starts_dict[tf] = expected_coverage_start_by_timeframe[tf].isoformat()
+            elif expected_coverage_start:
+                provider_native_starts_dict[tf] = expected_coverage_start.isoformat()
+            else:
+                provider_native_starts_dict[tf] = "2020-04-07T00:00:00Z"
 
         if instrument is None:
             instrument = Instrument.objects.filter(
@@ -641,6 +819,7 @@ class XauUsdDataReadinessEvaluator:
                 phase6_15m_dataset_fingerprint=EMPTY_DATASET_HASH,
                 readiness_evidence_fingerprint=EMPTY_DATASET_HASH,
                 required_coverage_start=expected_coverage_start.isoformat() if expected_coverage_start else "2020-04-07T00:00:00Z",
+                provider_native_required_starts=provider_native_starts_dict,
                 required_coverage_end_exclusive=expected_coverage_end.isoformat() if expected_coverage_end else "2026-09-01T00:00:00Z",
                 required_duration_days=2338.0,
                 actual_global_start=None,
@@ -655,37 +834,6 @@ class XauUsdDataReadinessEvaluator:
             reasons.append(f"WARNING: Primary listing provider '{primary_listing.provider}' differs from expected '{resolved_primary_provider}'.")
 
         # 2. Query Authoritative Primary Dataset Candles for this Instrument or use override
-        if override_candles is not None:
-            all_candles_list = [
-                c for c in override_candles
-                if getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
-            ]
-            total_candles = len(all_candles_list)
-            tf_counts = {tf: sum(1 for c in all_candles_list if getattr(c, "timeframe", "") == tf) for tf in timeframes}
-            contamination_count = len(override_candles) - total_candles
-        else:
-            primary_candles_qs = MarketCandle.objects.filter(
-                instrument=instrument,
-                source=resolved_primary_provider,
-            )
-            total_candles = primary_candles_qs.count()
-            tf_counts = {tf: primary_candles_qs.filter(timeframe=tf).count() for tf in timeframes}
-            contamination_count = MarketCandle.objects.filter(instrument=instrument).exclude(source=resolved_primary_provider).count()
-            all_candles_list = list(primary_candles_qs)
-
-        if contamination_count > 0:
-            reasons.append(f"CONTAMINATION: Found {contamination_count} candles with non-primary source ID.")
-
-        # Also check if any XAUT candles are erroneously linked
-        xaut_contamination = MarketCandle.objects.filter(
-            instrument__base_asset__code="XAUT"
-        ).count()
-        # Note: XAUT candles in their own instrument are fine, but cross-referencing must not happen.
-
-        if total_candles == 0:
-            reasons.append("Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.")
-
-        # 3. Time Boundaries & Independent Per-Timeframe Coverage & Gap Statistics
         earliest_dt: Optional[datetime] = None
         latest_dt: Optional[datetime] = None
         duration_days = 0.0
@@ -696,6 +844,9 @@ class XauUsdDataReadinessEvaluator:
         duplicate_count = 0
         vol_dist = {v.value: 0 for v in VolumeEvidenceType}
 
+        coverage_by_tf: Dict[str, Dict[str, Any]] = {}
+        gap_stats_by_tf: Dict[str, Dict[str, Any]] = {}
+
         def _safe_dt_sort(c: Any) -> float:
             dt = getattr(c, "timestamp_open", None)
             if not isinstance(dt, datetime):
@@ -704,57 +855,151 @@ class XauUsdDataReadinessEvaluator:
                 return dt.replace(tzinfo=timezone.utc).timestamp()
             return dt.astimezone(timezone.utc).timestamp()
 
-        candles_15m_orm = [
-            c for c in all_candles_list
-            if getattr(c, "timeframe", "") == "15m" and getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
-        ]
-        candles_15m_orm.sort(key=_safe_dt_sort)
-        warmup_15m_bars = len(candles_15m_orm)
-        is_warmup_satisfied = warmup_15m_bars >= cls.REQUIRED_WARMUP_BARS_15M
+        if override_candles is not None:
+            all_candles_list = [
+                c for c in override_candles
+                if getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
+            ]
+            total_candles = len(all_candles_list)
+            tf_counts = {tf: sum(1 for c in all_candles_list if getattr(c, "timeframe", "") == tf) for tf in timeframes}
+            contamination_count = len(override_candles) - total_candles
 
+            candles_15m_orm = [
+                c for c in all_candles_list
+                if getattr(c, "timeframe", "") == "15m" and getattr(c, "source", getattr(c, "source_id", "")) == resolved_primary_provider
+            ]
+            candles_15m_orm.sort(key=_safe_dt_sort)
+            warmup_15m_bars = len(candles_15m_orm)
+
+            if total_candles > 0:
+                sorted_all = sorted(all_candles_list, key=_safe_dt_sort)
+                earliest_candle = sorted_all[0]
+                latest_candle = max(all_candles_list, key=lambda x: _safe_dt_sort(x) + getattr(x, "timestamp_close", getattr(x, "timestamp_open", datetime.now(timezone.utc))).second)
+                earliest_dt = earliest_candle.timestamp_open
+                latest_dt = latest_candle.timestamp_close
+                if earliest_dt and latest_dt and earliest_dt.tzinfo is not None and latest_dt.tzinfo is not None:
+                    duration_days = round((latest_dt - earliest_dt).total_seconds() / 86400.0, 2)
+                else:
+                    duration_days = 0.0
+
+                seen_keys = set()
+                for c in all_candles_list:
+                    key = (getattr(c, "source", getattr(c, "source_id", "")), getattr(c, "timeframe", ""), c.timestamp_open)
+                    if key in seen_keys:
+                        duplicate_count += 1
+                    seen_keys.add(key)
+
+                    if c.timestamp_open.tzinfo is None or c.timestamp_close.tzinfo is None:
+                        naive_timestamps += 1
+
+                    if c.open <= 0 or c.high <= 0 or c.low <= 0 or c.close <= 0:
+                        zero_or_negative += 1
+
+                    if not (c.high >= c.low and c.high >= max(c.open, c.close) and c.low <= min(c.open, c.close)):
+                        ohlc_errors += 1
+
+                    ve = getattr(c, "volume_evidence", None)
+                    if hasattr(ve, "value"):
+                        ve = ve.value
+                    ve = ve or "UNAVAILABLE"
+                    vol_dist[ve] = vol_dist.get(ve, 0) + 1
+
+            for tf in timeframes:
+                tf_candles = [c for c in all_candles_list if getattr(c, "timeframe", "") == tf]
+                tf_native_start = (
+                    expected_coverage_start_by_timeframe.get(tf, expected_coverage_start)
+                    if expected_coverage_start_by_timeframe is not None
+                    else expected_coverage_start
+                )
+                tf_cov, tf_gaps = evaluate_timeframe_coverage_and_gaps(
+                    timeframe=tf,
+                    candles=tf_candles,
+                    expected_start=tf_native_start,
+                    expected_end=expected_coverage_end,
+                    analytical_start=expected_coverage_start,
+                )
+                coverage_by_tf[tf] = tf_cov
+                gap_stats_by_tf[tf] = tf_gaps
+        else:
+            primary_candles_qs = MarketCandle.objects.filter(
+                instrument=instrument,
+                source=resolved_primary_provider,
+            )
+            total_candles = primary_candles_qs.count()
+            tf_counts_dict = {
+                row["timeframe"]: row["cnt"]
+                for row in primary_candles_qs.values("timeframe").annotate(cnt=models.Count("id"))
+            }
+            tf_counts = {tf: tf_counts_dict.get(tf, 0) for tf in timeframes}
+            contamination_count = MarketCandle.objects.filter(instrument=instrument).exclude(source=resolved_primary_provider).count()
+
+            warmup_15m_bars = tf_counts.get("15m", 0)
+
+            if total_candles > 0:
+                bounds = primary_candles_qs.aggregate(
+                    min_open=models.Min("timestamp_open"),
+                    max_close=models.Max("timestamp_close"),
+                )
+                earliest_dt = bounds["min_open"]
+                latest_dt = bounds["max_close"]
+                if earliest_dt and latest_dt and earliest_dt.tzinfo is not None and latest_dt.tzinfo is not None:
+                    duration_days = round((latest_dt - earliest_dt).total_seconds() / 86400.0, 2)
+                else:
+                    duration_days = 0.0
+
+                dup_groups = (
+                    primary_candles_qs.values("source", "timeframe", "timestamp_open")
+                    .annotate(cnt=models.Count("id"))
+                    .filter(cnt__gt=1)
+                )
+                duplicate_count = sum(g["cnt"] - 1 for g in dup_groups)
+
+                zero_or_negative = primary_candles_qs.filter(
+                    models.Q(open__lte=0) | models.Q(high__lte=0) | models.Q(low__lte=0) | models.Q(close__lte=0)
+                ).count()
+
+                ohlc_errors = primary_candles_qs.filter(
+                    models.Q(high__lt=models.F("low"))
+                    | models.Q(high__lt=models.F("open"))
+                    | models.Q(high__lt=models.F("close"))
+                    | models.Q(low__gt=models.F("open"))
+                    | models.Q(low__gt=models.F("close"))
+                ).count()
+
+                vol_rows = primary_candles_qs.values("volume_evidence").annotate(cnt=models.Count("id"))
+                for r in vol_rows:
+                    ve_val = r["volume_evidence"] or "UNAVAILABLE"
+                    vol_dist[ve_val] = r["cnt"]
+
+            for tf in timeframes:
+                tf_native_start = (
+                    expected_coverage_start_by_timeframe.get(tf, expected_coverage_start)
+                    if expected_coverage_start_by_timeframe is not None
+                    else expected_coverage_start
+                )
+                tf_cov, tf_gaps = evaluate_timeframe_coverage_and_gaps_from_qs(
+                    timeframe=tf,
+                    qs=primary_candles_qs,
+                    expected_start=tf_native_start,
+                    expected_end=expected_coverage_end,
+                    analytical_start=expected_coverage_start,
+                )
+                coverage_by_tf[tf] = tf_cov
+                gap_stats_by_tf[tf] = tf_gaps
+
+            naive_timestamps = sum(g.get("naive_timestamp_count", 0) for g in gap_stats_by_tf.values())
+
+        if contamination_count > 0:
+            reasons.append(f"CONTAMINATION: Found {contamination_count} candles with non-primary source ID.")
+
+        if total_candles == 0:
+            reasons.append("Zero historical spot XAUUSD candles persisted in the authoritative primary dataset.")
+
+        is_warmup_satisfied = warmup_15m_bars >= cls.REQUIRED_WARMUP_BARS_15M
         if not is_warmup_satisfied:
             reasons.append(
                 f"Insufficient 15m feature warm-up bars ({warmup_15m_bars}/{cls.REQUIRED_WARMUP_BARS_15M} bars required)."
             )
-
-        # Audit candles
-        if total_candles > 0:
-            sorted_all = sorted(all_candles_list, key=_safe_dt_sort)
-            earliest_candle = sorted_all[0]
-            latest_candle = max(all_candles_list, key=lambda x: _safe_dt_sort(x) + getattr(x, "timestamp_close", getattr(x, "timestamp_open", datetime.now(timezone.utc))).second)
-            earliest_dt = earliest_candle.timestamp_open
-            latest_dt = latest_candle.timestamp_close
-            if earliest_dt and latest_dt and earliest_dt.tzinfo is not None and latest_dt.tzinfo is not None:
-                duration_days = round((latest_dt - earliest_dt).total_seconds() / 86400.0, 2)
-            else:
-                duration_days = 0.0
-
-            seen_keys = set()
-            for c in all_candles_list:
-                # Duplicate check
-                key = (getattr(c, "source", getattr(c, "source_id", "")), getattr(c, "timeframe", ""), c.timestamp_open)
-                if key in seen_keys:
-                    duplicate_count += 1
-                seen_keys.add(key)
-
-                # Naive timestamp check
-                if c.timestamp_open.tzinfo is None or c.timestamp_close.tzinfo is None:
-                    naive_timestamps += 1
-
-                # Zero or negative price
-                if c.open <= 0 or c.high <= 0 or c.low <= 0 or c.close <= 0:
-                    zero_or_negative += 1
-
-                # OHLC consistency
-                if not (c.high >= c.low and c.high >= max(c.open, c.close) and c.low <= min(c.open, c.close)):
-                    ohlc_errors += 1
-
-                # Volume evidence distribution
-                ve = getattr(c, "volume_evidence", None)
-                if hasattr(ve, "value"):
-                    ve = ve.value
-                ve = ve or "UNAVAILABLE"
-                vol_dist[ve] = vol_dist.get(ve, 0) + 1
 
         if duplicate_count > 0:
             reasons.append(f"DATA_INTEGRITY: Found {duplicate_count} duplicate candle timestamps.")
@@ -784,41 +1029,46 @@ class XauUsdDataReadinessEvaluator:
         quote_count = override_quote_count if override_quote_count is not None else 0
         friction_status = override_friction_status or "EMPIRICAL_FRICTION_NOT_CONFIGURED"
 
-        # 4. Per-Timeframe Independent Coverage & Gap Evaluation
-        coverage_by_tf: Dict[str, Dict[str, Any]] = {}
-        gap_stats_by_tf: Dict[str, Dict[str, Any]] = {}
-
-        for tf in cls.REQUIRED_TIMEFRAMES:
-            tf_candles = [c for c in all_candles_list if getattr(c, "timeframe", "") == tf]
-            tf_cov, tf_gaps = evaluate_timeframe_coverage_and_gaps(
-                timeframe=tf,
-                candles=tf_candles,
-                expected_start=expected_coverage_start,
-                expected_end=expected_coverage_end,
-            )
-            coverage_by_tf[tf] = tf_cov
-            gap_stats_by_tf[tf] = tf_gaps
-
         # 5. Dataset Fingerprint Calculations
         if total_candles > 0 and earliest_dt and latest_dt:
             # 5A. Phase 6 15m deterministic identity
-            pure_candles = [
-                CandleData(
-                    timestamp_open=c.timestamp_open,
-                    timestamp_close=c.timestamp_close,
-                    open=c.open,
-                    high=c.high,
-                    low=c.low,
-                    close=c.close,
-                    volume=c.volume,
-                    is_closed=c.is_closed,
-                    source_id=getattr(c, "source", getattr(c, "source_id", resolved_primary_provider)),
-                    quote_rate=getattr(c, "quote_rate", Decimal("1.000000")),
-                    close_usd=getattr(c, "close_usd", c.close),
-                    volume_evidence=CoreVolumeEvidenceType(getattr(c, "volume_evidence", "UNAVAILABLE")) if getattr(c, "volume_evidence", None) in [e.value for e in CoreVolumeEvidenceType] else CoreVolumeEvidenceType.UNAVAILABLE,
-                )
-                for c in candles_15m_orm
-            ]
+            if override_candles is not None:
+                pure_candles = [
+                    CandleData(
+                        timestamp_open=c.timestamp_open,
+                        timestamp_close=c.timestamp_close,
+                        open=c.open,
+                        high=c.high,
+                        low=c.low,
+                        close=c.close,
+                        volume=c.volume,
+                        is_closed=c.is_closed,
+                        source_id=getattr(c, "source", getattr(c, "source_id", resolved_primary_provider)),
+                        quote_rate=getattr(c, "quote_rate", Decimal("1.000000")),
+                        close_usd=getattr(c, "close_usd", c.close),
+                        volume_evidence=CoreVolumeEvidenceType(getattr(c, "volume_evidence", "UNAVAILABLE")) if getattr(c, "volume_evidence", None) in [e.value for e in CoreVolumeEvidenceType] else CoreVolumeEvidenceType.UNAVAILABLE,
+                    )
+                    for c in candles_15m_orm
+                ]
+            else:
+                pure_candles = [
+                    CandleData(
+                        timestamp_open=c.timestamp_open,
+                        timestamp_close=c.timestamp_close,
+                        open=c.open,
+                        high=c.high,
+                        low=c.low,
+                        close=c.close,
+                        volume=c.volume,
+                        is_closed=c.is_closed,
+                        source_id=getattr(c, "source", resolved_primary_provider),
+                        quote_rate=getattr(c, "quote_rate", Decimal("1.000000")),
+                        close_usd=getattr(c, "close_usd", c.close),
+                        volume_evidence=CoreVolumeEvidenceType(getattr(c, "volume_evidence", "UNAVAILABLE")) if getattr(c, "volume_evidence", None) in [e.value for e in CoreVolumeEvidenceType] else CoreVolumeEvidenceType.UNAVAILABLE,
+                    )
+                    for c in primary_candles_qs.filter(timeframe="15m").order_by("timestamp_open").iterator(chunk_size=10000)
+                ]
+
             try:
                 phase6_15m_dataset_fingerprint = compute_xauusd_dataset_identity(
                     candles_15m=pure_candles,
@@ -846,11 +1096,11 @@ class XauUsdDataReadinessEvaluator:
         coverage_complete = False
         if expected_coverage_start and expected_coverage_end:
             coverage_complete = (
-                len(coverage_by_tf) == len(cls.REQUIRED_TIMEFRAMES)
+                len(coverage_by_tf) == len(timeframes)
                 and all(c.get("coverage_complete", False) for c in coverage_by_tf.values())
             )
             if not coverage_complete:
-                incomplete_tfs = [tf for tf in cls.REQUIRED_TIMEFRAMES if not coverage_by_tf.get(tf, {}).get("coverage_complete", False)]
+                incomplete_tfs = [tf for tf in timeframes if not coverage_by_tf.get(tf, {}).get("coverage_complete", False)]
                 reasons.append(
                     f"HISTORICAL_COVERAGE_INCOMPLETE: Required calibration window [{expected_coverage_start.strftime('%Y-%m-%d')} to {expected_coverage_end.strftime('%Y-%m-%d')}] "
                     f"is incomplete for timeframe(s): {', '.join(incomplete_tfs)}."
@@ -961,6 +1211,7 @@ class XauUsdDataReadinessEvaluator:
             phase6_15m_dataset_fingerprint=phase6_15m_dataset_fingerprint,
             readiness_evidence_fingerprint=readiness_evidence_fingerprint,
             required_coverage_start=required_coverage_start,
+            provider_native_required_starts=provider_native_starts_dict,
             required_coverage_end_exclusive=required_coverage_end_exclusive,
             required_duration_days=required_duration_days,
             actual_global_start=actual_global_start,

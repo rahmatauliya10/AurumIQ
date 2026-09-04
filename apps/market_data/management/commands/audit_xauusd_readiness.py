@@ -24,7 +24,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--baseline-sha",
             type=str,
-            default="57f6de1405d0df8548182a166d245f1a3173363d",
+            default="c5c521c03c1f4e18da8f2dd7039af998d599d78c",
             help="Authoritative main baseline Git SHA",
         )
         parser.add_argument(
@@ -57,6 +57,11 @@ class Command(BaseCommand):
             help="Expected calibration end ISO timestamp (default: 2026-09-01T00:00:00Z)",
         )
         parser.add_argument(
+            "--use-provider-native-starts",
+            action="store_true",
+            help="Apply Twelve Data provider-native timeframe start boundaries (e.g. 4h starts at 01:00 UTC).",
+        )
+        parser.add_argument(
             "--no-coverage-check",
             action="store_true",
             help="Skip full historical coverage window check (useful for isolated candle quality checks).",
@@ -72,6 +77,7 @@ class Command(BaseCommand):
         expected_start_str = options["expected_start"]
         expected_end_str = options["expected_end"]
         no_coverage_check = options["no_coverage_check"]
+        use_provider_native_starts = options.get("use_provider_native_starts", False)
 
         exp_start = None
         exp_end = None
@@ -88,6 +94,11 @@ class Command(BaseCommand):
                 except Exception as e:
                     raise CommandError(f"INVALID_EXPECTED_END: {e}") from e
 
+        native_starts = None
+        if use_provider_native_starts:
+            from apps.market_data.readiness import TWELVE_DATA_XAUUSD_PROVIDER_NATIVE_STARTS
+            native_starts = TWELVE_DATA_XAUUSD_PROVIDER_NATIVE_STARTS
+
         # Sealed manifest requires an immutable, non-empty explicit Git SHA
         if not allow_mutable:
             if not code_rev or not GIT_SHA_40_REGEX.match(code_rev.strip()):
@@ -100,6 +111,7 @@ class Command(BaseCommand):
         report = XauUsdDataReadinessEvaluator.evaluate(
             expected_coverage_start=exp_start,
             expected_coverage_end=exp_end,
+            expected_coverage_start_by_timeframe=native_starts,
         )
 
         # Write manifest
