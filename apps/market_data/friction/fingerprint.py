@@ -57,11 +57,14 @@ def compute_empirical_friction_fingerprint(
     commission_policy: Dict[str, Any],
     financing_policy: Dict[str, Any],
     bound_binding_roles: Optional[List[str]] = None,
+    source_types: Optional[List[str]] = None,
+    slippage_cost_policy_version: Optional[str] = None,
 ) -> str:
     """Compute deterministic 64-character SHA-256 fingerprint for a friction model."""
     sorted_source_hashes = sorted(set(source_snapshot_hashes))
     sorted_dataset_hashes = sorted(set(dataset_hashes))
     sorted_binding_roles = sorted(set(bound_binding_roles or []))
+    sorted_source_types = sorted([str(st).upper() for st in (source_types or [])])
 
     sorted_summaries = sorted(
         distribution_summaries,
@@ -73,6 +76,8 @@ def compute_empirical_friction_fingerprint(
         ),
     )
 
+    resolved_slip_policy = slippage_cost_policy_version or semantic_versions.get("slippage_cost_policy_version", "ADVERSE_ONLY_P75_P95_V1")
+
     canonical_payload: Dict[str, Any] = {
         "semantic_versions": {
             "friction_policy_schema_version": str(semantic_versions.get("friction_policy_schema_version", "1.0.0")),
@@ -83,6 +88,7 @@ def compute_empirical_friction_fingerprint(
             "sample_sufficiency_policy_version": str(semantic_versions.get("sample_sufficiency_policy_version", "1.0.0")),
             "slippage_mandatory_policy_version": str(semantic_versions.get("slippage_mandatory_policy_version", "GOVERNED_MANDATORY_V1")),
             "selection_policy_version": str(semantic_versions.get("selection_policy_version", "BASE_P75_STRESS_P95_V1")),
+            "slippage_cost_policy_version": str(resolved_slip_policy),
         },
         "venue_and_identity": {
             "venue": str(venue).upper(),
@@ -101,6 +107,7 @@ def compute_empirical_friction_fingerprint(
             "volume_step": _serialize_decimal(contract_geometry.get("volume_step")),
         },
         "source_snapshot_hashes": sorted_source_hashes,
+        "source_types": sorted_source_types,
         "dataset_hashes": sorted_dataset_hashes,
         "distribution_summaries": [
             {

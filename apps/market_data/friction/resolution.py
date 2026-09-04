@@ -27,9 +27,9 @@ from apps.market_data.models import (
 
 def resolve_friction_model(
     as_of: datetime,
-    venue: str = "EXNESS",
-    symbol: str = "XAUUSD",
-    account_tier: str = "STANDARD",
+    venue: Optional[str] = None,
+    symbol: Optional[str] = None,
+    account_tier: Optional[str] = None,
     legal_entity_code: Optional[str] = None,
 ) -> Optional[FrictionModelVersion]:
     """Resolve active FrictionModelVersion at point-in-time as_of for exact target scope."""
@@ -47,14 +47,25 @@ def resolve_friction_model(
 
 def resolve_friction_model_activation(
     as_of: datetime,
-    venue: str = "EXNESS",
-    symbol: str = "XAUUSD",
-    account_tier: str = "STANDARD",
+    venue: Optional[str] = None,
+    symbol: Optional[str] = None,
+    account_tier: Optional[str] = None,
     legal_entity_code: Optional[str] = None,
 ) -> Optional[Tuple[FrictionModelVersion, FrictionModelActivation]]:
-    """Resolve (model_version, activation) active at point-in-time as_of."""
+    """Resolve (model_version, activation) active at point-in-time as_of for exact target scope."""
     if as_of.tzinfo is None:
         raise ValueError(f"resolve_friction_model: Naive as_of timestamp '{as_of}' rejected. UTC required.")
+
+    from django.conf import settings
+
+    target_venue = (venue or getattr(settings, "XAUUSD_EXECUTION_VENUE", "EXNESS")).upper()
+    target_symbol = (symbol or "XAUUSD").upper()
+    target_account_tier = (account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")).upper()
+    target_legal_entity = legal_entity_code or getattr(settings, "XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", None)
+
+    # Fail closed if legal_entity_code or account_tier is not established
+    if not target_legal_entity or not target_account_tier:
+        return None
 
     utc_as_of = as_of.astimezone(timezone.utc)
 
@@ -68,18 +79,17 @@ def resolve_friction_model_activation(
         activation_status=FrictionActivationStatus.ACTIVE,
         known_at__lte=utc_as_of,
         effective_from__lte=utc_as_of,
-        friction_model_version__venue=venue.upper(),
-        friction_model_version__symbol=symbol.upper(),
-        friction_model_version__account_tier=account_tier.upper(),
+        friction_model_version__venue=target_venue,
+        friction_model_version__symbol=target_symbol,
+        friction_model_version__account_tier=target_account_tier,
+        friction_model_version__legal_entity_code=target_legal_entity.upper(),
     ).filter(
         models.Q(effective_to__isnull=True) | models.Q(effective_to__gt=utc_as_of)
     )
-
-    if legal_entity_code:
-        qs = qs.filter(friction_model_version__legal_entity_code=legal_entity_code.upper())
 
     # Newer activations supersede earlier ones without mutating old records
     activation = qs.order_by("-effective_from", "-known_at").first()
     if activation:
         return activation.friction_model_version, activation
     return None
+

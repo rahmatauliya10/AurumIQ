@@ -260,3 +260,10 @@ ALERT_WEBHOOK_URL = env("ALERT_WEBHOOK_URL", default=None)
 ALERT_TELEGRAM_BOT_TOKEN = env("ALERT_TELEGRAM_BOT_TOKEN", default=None)
 ALERT_TELEGRAM_CHAT_ID = env("ALERT_TELEGRAM_CHAT_ID", default=None)
 
+# ============================================================
+# XAUUSD Empirical Friction Execution Target Configuration
+# ============================================================
+XAUUSD_EXECUTION_VENUE = env("XAUUSD_EXECUTION_VENUE", default="EXNESS")
+XAUUSD_EXECUTION_ACCOUNT_TIER = env("XAUUSD_EXECUTION_ACCOUNT_TIER", default="STANDARD")
+XAUUSD_EXECUTION_LEGAL_ENTITY_CODE = env("XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", default=None)
+

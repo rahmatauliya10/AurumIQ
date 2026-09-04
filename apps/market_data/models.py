@@ -562,11 +562,38 @@ class FrictionActivationStatus(models.TextChoices):
     RETIRED = "RETIRED", "Retired"
 
 
+class FrictionSourceType(models.TextChoices):
+    OFFICIAL_BROKER_DOCUMENT = "OFFICIAL_BROKER_DOCUMENT", "Official Broker Document"
+    MT5_SYMBOL_INFO_EXPORT = "MT5_SYMBOL_INFO_EXPORT", "MT5 Symbol Info Export"
+    MT5_ACCOUNT_EXPORT = "MT5_ACCOUNT_EXPORT", "MT5 Account Export"
+    BROKER_PERSONAL_AREA_EXPORT = "BROKER_PERSONAL_AREA_EXPORT", "Broker Personal Area Export"
+    ACCOUNT_CLIENT_AGREEMENT = "ACCOUNT_CLIENT_AGREEMENT", "Account Client Agreement"
+    USER_PROVIDED_UNVERIFIED = "USER_PROVIDED_UNVERIFIED", "User Provided Unverified"
+
+
+QUALIFIED_FRICTION_SOURCE_TYPES = {
+    FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
+    FrictionSourceType.MT5_ACCOUNT_EXPORT.value,
+    FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+    FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+}
+
+
 class FrictionSourceSnapshot(models.Model):
     """Immutable audit snapshot of raw broker / venue evidence payloads (append-only)."""
     snapshot_id = models.CharField(max_length=64, primary_key=True)
     source_url = models.URLField(max_length=1024)
     source_name = models.CharField(max_length=64, db_index=True)
+    source_type = models.CharField(
+        max_length=64,
+        choices=FrictionSourceType.choices,
+        default=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+        db_index=True,
+    )
+    source_origin = models.CharField(max_length=255, blank=True, default="")
+    collection_methodology = models.CharField(max_length=255, blank=True, default="")
+    original_filename = models.CharField(max_length=255, blank=True, default="")
     venue = models.CharField(max_length=32, db_index=True)
     symbol = models.CharField(max_length=32, db_index=True)
     account_tier = models.CharField(max_length=32, db_index=True)
@@ -782,6 +809,7 @@ class FrictionModelVersion(models.Model):
     normalization_version = models.CharField(max_length=32, default="1.0.0")
     commission_formula_version = models.CharField(max_length=32, default="1.0.0")
     financing_rule_version = models.CharField(max_length=32, default="1.0.0")
+    slippage_cost_policy_version = models.CharField(max_length=32, default="ADVERSE_ONLY_P75_P95_V1")
     empirical_friction_evidence_fingerprint = models.CharField(max_length=64, db_index=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

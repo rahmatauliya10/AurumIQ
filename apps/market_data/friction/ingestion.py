@@ -30,6 +30,8 @@ from apps.market_data.models import (
     FrictionModelVersion,
     FrictionSessionType,
     FrictionSourceSnapshot,
+    FrictionSourceType,
+    QUALIFIED_FRICTION_SOURCE_TYPES,
 )
 from apps.market_data.friction.distribution import (
     compute_distribution_statistics,
@@ -37,6 +39,7 @@ from apps.market_data.friction.distribution import (
     validate_spread_dataset_sufficiency,
 )
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
+from apps.market_data.friction.validation import validate_friction_model_for_activation
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,10 @@ def ingest_friction_source_snapshot(
     effective_to: Optional[datetime] = None,
     http_status: int = 200,
     metadata: Optional[Dict[str, Any]] = None,
+    source_type: str = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+    source_origin: str = "",
+    collection_methodology: str = "",
+    original_filename: str = "",
 ) -> Tuple[FrictionSourceSnapshot, bool]:
     """Ingest an immutable FrictionSourceSnapshot with hardened scope-bound snapshot_id (Directive 12)."""
     raw_sha = hashlib.sha256(raw_content).hexdigest()
@@ -70,6 +77,10 @@ def ingest_friction_source_snapshot(
         snapshot_id=snapshot_id,
         source_url=source_url,
         source_name=source_name,
+        source_type=source_type,
+        source_origin=source_origin,
+        collection_methodology=collection_methodology,
+        original_filename=original_filename,
         venue=venue.upper(),
         symbol=symbol.upper(),
         account_tier=account_tier.upper(),
@@ -221,6 +232,8 @@ def build_and_bind_friction_model_version(
     model_version_id: Optional[str] = None,
     activation_reason: str = "Pre-Phase-8 Empirical Friction Calibration Baseline",
     effective_from: Optional[datetime] = None,
+    slippage_cost_policy_version: str = "ADVERSE_ONLY_P75_P95_V1",
+    known_at: Optional[datetime] = None,
 ) -> Tuple[FrictionModelVersion, FrictionModelActivation]:
     """Calculate distributions, create bindings, and resolve activation.
     
@@ -331,6 +344,7 @@ def build_and_bind_friction_model_version(
         "sample_sufficiency_policy_version": "1.0.0",
         "slippage_mandatory_policy_version": "GOVERNED_MANDATORY_V1",
         "selection_policy_version": "BASE_P75_STRESS_P95_V1",
+        "slippage_cost_policy_version": slippage_cost_policy_version,
     }
 
     calibrated_params = {
@@ -403,6 +417,16 @@ def build_and_bind_friction_model_version(
             "stat_std": slippage_summary.stat_std,
         })
 
+    source_types: List[str] = []
+    if legal_entity_snapshot:
+        source_types.append(legal_entity_snapshot.source_type)
+    if contract_spec_snapshot:
+        source_types.append(contract_spec_snapshot.source_type)
+    if fee_schedule_snapshot:
+        source_types.append(fee_schedule_snapshot.source_type)
+    if swap_spec_snapshot:
+        source_types.append(swap_spec_snapshot.source_type)
+
     fingerprint: Optional[str] = None
     if is_complete:
         fingerprint = compute_empirical_friction_fingerprint(
@@ -413,6 +437,7 @@ def build_and_bind_friction_model_version(
             symbol=symbol,
             contract_geometry=geom,
             source_snapshot_hashes=source_hashes,
+            source_types=source_types,
             dataset_hashes=dataset_hashes,
             distribution_summaries=summaries_dict,
             calibrated_parameters=calibrated_params,
@@ -480,6 +505,7 @@ def build_and_bind_friction_model_version(
             normalization_version="1.0.0",
             commission_formula_version="1.0.0",
             financing_rule_version="1.0.0",
+            slippage_cost_policy_version=slippage_cost_policy_version,
             empirical_friction_evidence_fingerprint=fingerprint,
         )
 
@@ -533,23 +559,34 @@ def build_and_bind_friction_model_version(
                 binding_role=FrictionBindingRole.NORMAL_SLIPPAGE_DISTRIBUTION,
             )
 
-    # 4. Resolve activation status (Directive 9)
-    # An ACTIVE activation can ONLY be created if all hard-gate evidence validation succeeds!
-    act_status = FrictionActivationStatus.ACTIVE if is_complete else FrictionActivationStatus.DRAFT
+    # 4. Resolve activation status using canonical validator (Directives 5 & 6)
+    target_entity = legal_info.get("legal_entity_code", "")
+    val_res = validate_friction_model_for_activation(
+        model_version=model_ver,
+        target_venue=venue,
+        target_symbol=symbol,
+        target_account_tier=account_tier,
+        target_legal_entity_code=target_entity,
+        slippage_cost_policy_version=slippage_cost_policy_version,
+    )
+
+    act_status = FrictionActivationStatus.ACTIVE if val_res.is_valid else FrictionActivationStatus.DRAFT
+    final_reason = activation_reason if val_res.is_valid else f"DRAFT: {'; '.join(val_res.reasons)}"
 
     act_id = hashlib.sha256(f"{model_ver.model_version_id}:{act_status}".encode()).hexdigest()
     activation = FrictionModelActivation.objects.filter(activation_id=act_id).first()
     if not activation:
         now_utc = datetime.now(timezone.utc)
         eff_from = effective_from or now_utc
+        k_at = known_at or eff_from
         activation = FrictionModelActivation.objects.create(
             activation_id=act_id,
             friction_model_version=model_ver,
-            known_at=now_utc,
+            known_at=k_at,
             effective_from=eff_from,
             effective_to=None,
             activation_status=act_status,
-            source_or_reason=activation_reason,
+            source_or_reason=final_reason,
         )
 
     return model_ver, activation

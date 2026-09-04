@@ -47,6 +47,8 @@ from apps.market_data.models import (
     FrictionModelVersion,
     FrictionSessionType,
     FrictionSourceSnapshot,
+    FrictionSourceType,
+    QUALIFIED_FRICTION_SOURCE_TYPES,
 )
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
@@ -105,6 +107,36 @@ class Command(BaseCommand):
             help="Path to verified MT5 execution telemetry fills CSV.",
         )
         parser.add_argument(
+            "--legal-entity-source-type",
+            type=str,
+            default=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+            help="Source provenance type for legal entity snapshot.",
+        )
+        parser.add_argument(
+            "--contract-spec-source-type",
+            type=str,
+            default=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT,
+            help="Source provenance type for contract specification snapshot.",
+        )
+        parser.add_argument(
+            "--fee-schedule-source-type",
+            type=str,
+            default=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT,
+            help="Source provenance type for fee schedule snapshot.",
+        )
+        parser.add_argument(
+            "--swap-spec-source-type",
+            type=str,
+            default=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+            help="Source provenance type for swap/financing snapshot.",
+        )
+        parser.add_argument(
+            "--slippage-cost-policy",
+            type=str,
+            default="ADVERSE_ONLY_P75_P95_V1",
+            help="Governed slippage cost policy version.",
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Execute audit without persisting database modifications.",
@@ -135,6 +167,11 @@ class Command(BaseCommand):
         dry_run = options["dry_run"]
         manifest_path = options["output_manifest"]
         report_path = options["output_report"]
+        legal_source_type = options["legal_entity_source_type"]
+        contract_source_type = options["contract_spec_source_type"]
+        fee_source_type = options["fee_schedule_source_type"]
+        swap_source_type = options["swap_spec_source_type"]
+        slippage_policy = options["slippage_cost_policy"]
 
         self.stdout.write(self.style.NOTICE(
             f"=== AURUMIQ EMPIRICAL FRICTION AUDIT: {venue} {symbol} ({account_tier}) ==="
@@ -143,7 +180,7 @@ class Command(BaseCommand):
         now_utc = datetime.now(timezone.utc)
         reasons: List[str] = []
 
-        # 1. Audit Legal Entity Provenance (Directive 10)
+        # 1. Audit Legal Entity Provenance (Directive 7, 8 & 10)
         legal_entity_info: Optional[Dict[str, str]] = None
         legal_entity_snapshot: Optional[FrictionSourceSnapshot] = None
         legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
@@ -159,7 +196,15 @@ class Command(BaseCommand):
                     "regulator": data.get("regulator", ""),
                     "license_number": data.get("license_number", ""),
                 }
-                if all(legal_entity_info.values()):
+                if not all(legal_entity_info.values()):
+                    legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
+                    reasons.append("Legal entity file missing required fields (code, name, regulator, license).")
+                elif legal_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                    legal_entity_status = "EMPIRICAL_FRICTION_INVALID"
+                    reasons.append(
+                        f"Legal entity source provenance '{legal_source_type}' is unverified; hard readiness requires qualified broker provenance."
+                    )
+                else:
                     legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         legal_entity_snapshot, _ = ingest_friction_source_snapshot(
@@ -172,16 +217,17 @@ class Command(BaseCommand):
                             known_at=now_utc,
                             raw_content=content,
                             metadata=legal_entity_info,
+                            source_type=legal_source_type,
+                            original_filename=os.path.basename(legal_file),
                         )
-                else:
-                    reasons.append("Legal entity file missing required fields.")
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse legal entity file: {e}"))
+                legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
                 reasons.append(f"Legal entity parse failure: {e}")
         else:
             reasons.append("Legal entity evidence snapshot missing (--legal-entity-file is None).")
 
-        # 2. Official Contract Geometry (Directive 4 - Zero defaults)
+        # 2. Official Contract Geometry (Directives 4, 7, 9)
         contract_geometry: Optional[Dict[str, Any]] = None
         contract_spec_snapshot: Optional[FrictionSourceSnapshot] = None
         contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
@@ -201,26 +247,35 @@ class Command(BaseCommand):
                     "volume_max": Decimal(str(data["volume_max"])),
                     "volume_step": Decimal(str(data["volume_step"])),
                 }
-                contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-                if not dry_run:
-                    contract_spec_snapshot, _ = ingest_friction_source_snapshot(
-                        source_url=f"file://{os.path.abspath(contract_file)}",
-                        source_name="EXNESS_CONTRACT_SPEC",
-                        venue=venue,
-                        symbol=symbol,
-                        account_tier=account_tier,
-                        retrieved_at=now_utc,
-                        known_at=now_utc,
-                        raw_content=content,
-                        metadata=contract_geometry,
+                if contract_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                    contract_status = "EMPIRICAL_FRICTION_INVALID"
+                    reasons.append(
+                        f"Contract specification source provenance '{contract_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
+                else:
+                    contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    if not dry_run:
+                        contract_spec_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=f"file://{os.path.abspath(contract_file)}",
+                            source_name="EXNESS_CONTRACT_SPEC",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=now_utc,
+                            known_at=now_utc,
+                            raw_content=content,
+                            metadata=contract_geometry,
+                            source_type=contract_source_type,
+                            original_filename=os.path.basename(contract_file),
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse contract spec file: {e}"))
+                contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
                 reasons.append(f"Contract specification parse failure: {e}")
         else:
             reasons.append("Contract specification evidence snapshot missing (--contract-spec-file is None).")
 
-        # 3. Commission Policy (Directive 5 - Zero defaults)
+        # 3. Commission Policy (Directives 5, 7, 10)
         commission_policy: Optional[Dict[str, Any]] = None
         fee_schedule_snapshot: Optional[FrictionSourceSnapshot] = None
         commission_status = "COMMISSION_EVIDENCE_MISSING"
@@ -234,26 +289,35 @@ class Command(BaseCommand):
                     "native_commission_usd_per_lot_per_side": Decimal(str(data["native_commission_usd_per_lot_per_side"])),
                     "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
                 }
-                commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-                if not dry_run:
-                    fee_schedule_snapshot, _ = ingest_friction_source_snapshot(
-                        source_url=f"file://{os.path.abspath(fee_file)}",
-                        source_name="EXNESS_FEE_SCHEDULE",
-                        venue=venue,
-                        symbol=symbol,
-                        account_tier=account_tier,
-                        retrieved_at=now_utc,
-                        known_at=now_utc,
-                        raw_content=content,
-                        metadata=commission_policy,
+                if fee_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                    commission_status = "EMPIRICAL_FRICTION_INVALID"
+                    reasons.append(
+                        f"Fee schedule source provenance '{fee_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
+                else:
+                    commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    if not dry_run:
+                        fee_schedule_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=f"file://{os.path.abspath(fee_file)}",
+                            source_name="EXNESS_FEE_SCHEDULE",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=now_utc,
+                            known_at=now_utc,
+                            raw_content=content,
+                            metadata=commission_policy,
+                            source_type=fee_source_type,
+                            original_filename=os.path.basename(fee_file),
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse fee schedule file: {e}"))
+                commission_status = "COMMISSION_EVIDENCE_MISSING"
                 reasons.append(f"Fee schedule parse failure: {e}")
         else:
             reasons.append("Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).")
 
-        # 4. Financing Policy (Directive 3 - Zero hard-coded defaults)
+        # 4. Financing Policy (Directives 3, 7, 10)
         financing_policy: Optional[Dict[str, Any]] = None
         swap_spec_snapshot: Optional[FrictionSourceSnapshot] = None
         financing_status = "FINANCING_EVIDENCE_MISSING"
@@ -271,113 +335,166 @@ class Command(BaseCommand):
                     "triple_swap_weekday": str(data["triple_swap_weekday"]),
                     "actual_account_swap_free_status": bool(data.get("actual_account_swap_free_status", False)),
                 }
-                financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-                if not dry_run:
-                    swap_spec_snapshot, _ = ingest_friction_source_snapshot(
-                        source_url=f"file://{os.path.abspath(swap_file)}",
-                        source_name="EXNESS_SWAP_SPEC",
-                        venue=venue,
-                        symbol=symbol,
-                        account_tier=account_tier,
-                        retrieved_at=now_utc,
-                        known_at=now_utc,
-                        raw_content=content,
-                        metadata=financing_policy,
+                if swap_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                    financing_status = "EMPIRICAL_FRICTION_INVALID"
+                    reasons.append(
+                        f"Swap specification source provenance '{swap_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
+                else:
+                    financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    if not dry_run:
+                        swap_spec_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=f"file://{os.path.abspath(swap_file)}",
+                            source_name="EXNESS_SWAP_SPEC",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=now_utc,
+                            known_at=now_utc,
+                            raw_content=content,
+                            metadata=financing_policy,
+                            source_type=swap_source_type,
+                            original_filename=os.path.basename(swap_file),
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse swap spec file: {e}"))
+                financing_status = "FINANCING_EVIDENCE_MISSING"
                 reasons.append(f"Financing swap spec parse failure: {e}")
         else:
             reasons.append("Financing/swap specification evidence snapshot missing (--swap-spec-file is None).")
 
-        # 5. Spread Evidence (Directive 6 - Real MT5 tick ingestion)
+        # 5. Spread Evidence (Directives 3, 6, 12: Strict Lifecycle FILE -> PARSED -> SCHEMA -> SUFFICIENT -> PERSISTED -> VERIFIED)
         spread_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
         spread_dataset: Optional[FrictionEvidenceDataset] = None
         spread_ticks: Optional[List[Dict[str, Any]]] = None
 
-        if tick_file and os.path.isfile(tick_file):
-            self.stdout.write(f"Inspecting raw tick export: {tick_file}...")
-            with open(tick_file, "rb") as f:
-                tick_bytes = f.read()
-            try:
-                ticks_data, summary_meta = parse_mt5_tick_export(tick_bytes, expected_symbol=symbol)
-                spread_ticks = ticks_data
-                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
-                if not dry_run:
-                    snap, _ = ingest_friction_source_snapshot(
-                        source_url=f"file://{os.path.abspath(tick_file)}",
-                        source_name="EXNESS_MT5_TICKS",
-                        venue=venue,
-                        symbol=symbol,
-                        account_tier=account_tier,
-                        retrieved_at=now_utc,
-                        known_at=now_utc,
-                        raw_content=tick_bytes,
-                        metadata=summary_meta,
-                    )
-                    spread_dataset, _ = ingest_friction_evidence_dataset(
-                        source_snapshot=snap,
-                        venue=venue,
-                        account_tier=account_tier,
-                        symbol=symbol,
-                        sample_start=summary_meta["sample_start"],
-                        sample_end=summary_meta["sample_end"],
-                        ticks_data=ticks_data,
-                    )
-            except Exception as e:
-                self.stdout.write(self.style.WARNING(f"Could not parse tick file: {e}"))
-                reasons.append(f"MT5 tick export parse failure: {e}")
+        if tick_file:
+            if not os.path.isfile(tick_file):
+                spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                reasons.append(f"Tick file does not exist: {tick_file}")
+            else:
+                self.stdout.write(f"Inspecting raw tick export: {tick_file}...")
+                with open(tick_file, "rb") as f:
+                    tick_bytes = f.read()
+                try:
+                    # PARSED + SCHEMA_VALID
+                    ticks_data, summary_meta = parse_mt5_tick_export(tick_bytes, expected_symbol=symbol)
+                    spread_ticks = ticks_data
+
+                    # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
+                    is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                    if not is_valid_spread:
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.extend(spread_errors)
+                    else:
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+                        if spread_stats["stat_p75"] <= Decimal("0") or spread_stats["stat_p95"] < spread_stats["stat_p75"]:
+                            spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                            reasons.append(f"Spread distribution invalid: p75={spread_stats['stat_p75']}, p95={spread_stats['stat_p95']}")
+                        else:
+                            if dry_run:
+                                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                            else:
+                                snap, _ = ingest_friction_source_snapshot(
+                                    source_url=f"file://{os.path.abspath(tick_file)}",
+                                    source_name="EXNESS_MT5_TICKS",
+                                    venue=venue,
+                                    symbol=symbol,
+                                    account_tier=account_tier,
+                                    retrieved_at=now_utc,
+                                    known_at=now_utc,
+                                    raw_content=tick_bytes,
+                                    metadata=summary_meta,
+                                    source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT,
+                                    original_filename=os.path.basename(tick_file),
+                                )
+                                spread_dataset, _ = ingest_friction_evidence_dataset(
+                                    source_snapshot=snap,
+                                    venue=venue,
+                                    account_tier=account_tier,
+                                    symbol=symbol,
+                                    sample_start=summary_meta["sample_start"],
+                                    sample_end=summary_meta["sample_end"],
+                                    ticks_data=ticks_data,
+                                )
+                                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse tick file: {e}"))
+                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                    reasons.append(f"MT5 tick export parse failure: {e}")
         else:
-            self.stdout.write(self.style.WARNING("No MT5 tick export dataset provided (--tick-file is None)."))
             reasons.append("MT5 tick export dataset missing (--tick-file is None).")
 
-        # 6. Slippage Telemetry (Directive 7 & 8 - Real MT5 telemetry ingestion, MANDATORY)
+        # 6. Slippage Telemetry (Directives 3, 7, 8, 11, 12: Strict Lifecycle)
         slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"
         telemetry_dataset: Optional[FrictionEvidenceDataset] = None
         telemetry_records: Optional[List[Dict[str, Any]]] = None
 
-        if slippage_file and os.path.isfile(slippage_file):
-            self.stdout.write(f"Inspecting execution telemetry: {slippage_file}...")
-            with open(slippage_file, "rb") as f:
-                telem_bytes = f.read()
-            try:
-                telemetry_data, summary_meta = parse_mt5_execution_telemetry(
-                    telem_bytes,
-                    expected_venue=venue,
-                    expected_symbol=symbol,
-                    expected_account_tier=account_tier,
-                )
-                telemetry_records = telemetry_data
-                slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
-                if not dry_run:
-                    snap, _ = ingest_friction_source_snapshot(
-                        source_url=f"file://{os.path.abspath(slippage_file)}",
-                        source_name="EXNESS_MT5_TELEMETRY",
-                        venue=venue,
-                        symbol=symbol,
-                        account_tier=account_tier,
-                        retrieved_at=now_utc,
-                        known_at=now_utc,
-                        raw_content=telem_bytes,
-                        metadata=summary_meta,
+        if slippage_file:
+            if not os.path.isfile(slippage_file):
+                slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+                reasons.append(f"Slippage file does not exist: {slippage_file}")
+            else:
+                self.stdout.write(f"Inspecting execution telemetry: {slippage_file}...")
+                with open(slippage_file, "rb") as f:
+                    telem_bytes = f.read()
+                try:
+                    # PARSED + SCHEMA_VALID
+                    telemetry_data, summary_meta = parse_mt5_execution_telemetry(
+                        telem_bytes,
+                        expected_venue=venue,
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
                     )
-                    telemetry_dataset, _ = ingest_friction_telemetry_dataset(
-                        source_snapshot=snap,
-                        venue=venue,
-                        account_tier=account_tier,
-                        symbol=symbol,
-                        sample_start=summary_meta["sample_start"],
-                        sample_end=summary_meta["sample_end"],
-                        telemetry_records=telemetry_data,
-                    )
-            except Exception as e:
-                self.stdout.write(self.style.WARNING(f"Could not parse slippage telemetry file: {e}"))
-                reasons.append(f"Execution telemetry parse failure: {e}")
+                    telemetry_records = telemetry_data
+
+                    # SAMPLE_SUFFICIENT (N >= 30)
+                    is_valid_slip, slip_errors = validate_slippage_telemetry_sufficiency(telemetry_data)
+                    if not is_valid_slip:
+                        slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.extend(slip_errors)
+                    else:
+                        slip_bps_list = [r["signed_slippage_bps"] for r in telemetry_data]
+                        slip_stats = compute_distribution_statistics(slip_bps_list)
+                        if slip_stats["stat_p75"] < Decimal("0") or slip_stats["stat_p95"] < slip_stats["stat_p75"]:
+                            slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+                            reasons.append(f"Execution slippage distribution invalid: p75={slip_stats['stat_p75']}, p95={slip_stats['stat_p95']}")
+                        else:
+                            if dry_run:
+                                slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                            else:
+                                snap, _ = ingest_friction_source_snapshot(
+                                    source_url=f"file://{os.path.abspath(slippage_file)}",
+                                    source_name="EXNESS_MT5_TELEMETRY",
+                                    venue=venue,
+                                    symbol=symbol,
+                                    account_tier=account_tier,
+                                    retrieved_at=now_utc,
+                                    known_at=now_utc,
+                                    raw_content=telem_bytes,
+                                    metadata=summary_meta,
+                                    source_type=FrictionSourceType.MT5_ACCOUNT_EXPORT,
+                                    original_filename=os.path.basename(slippage_file),
+                                )
+                                telemetry_dataset, _ = ingest_friction_telemetry_dataset(
+                                    source_snapshot=snap,
+                                    venue=venue,
+                                    account_tier=account_tier,
+                                    symbol=symbol,
+                                    sample_start=summary_meta["sample_start"],
+                                    sample_end=summary_meta["sample_end"],
+                                    telemetry_records=telemetry_data,
+                                )
+                                slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse slippage telemetry file: {e}"))
+                    slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+                    reasons.append(f"Execution telemetry parse failure: {e}")
         else:
-            self.stdout.write(self.style.WARNING("No execution telemetry provided (--slippage-file is None)."))
             reasons.append("Execution slippage telemetry missing (--slippage-file is None).")
 
-        # 7. Evidence Completeness & Gate Evaluation (Directives 8, 9, 10)
+        # 7. Evidence Completeness & Gate Evaluation (Directives 4, 6, 12)
         is_evidence_complete = (
             legal_entity_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
@@ -388,11 +505,18 @@ class Command(BaseCommand):
         )
 
         model_ver: Optional[FrictionModelVersion] = None
-        if is_evidence_complete and not dry_run:
+        if dry_run:
+            if is_evidence_complete:
+                self.stdout.write(self.style.SUCCESS("Dry-run semantic audit passed: all evidence qualified and sufficient."))
+            else:
+                self.stdout.write(self.style.WARNING("Dry-run semantic audit: evidence incomplete or insufficient."))
+            overall_status = "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+            gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        elif is_evidence_complete:
             spread_bps_list = [t["spread_bps"] for t in (spread_ticks or [])]
             slip_bps_list = [r["signed_slippage_bps"] for r in (telemetry_records or [])]
 
-            model_ver, _ = build_and_bind_friction_model_version(
+            model_ver, activation = build_and_bind_friction_model_version(
                 legal_entity_snapshot=legal_entity_snapshot,
                 contract_spec_snapshot=contract_spec_snapshot,
                 fee_schedule_snapshot=fee_schedule_snapshot,
@@ -408,10 +532,31 @@ class Command(BaseCommand):
                 venue=venue,
                 symbol=symbol,
                 account_tier=account_tier,
+                slippage_cost_policy_version=slippage_policy,
             )
-            overall_status = "EMPIRICAL_FRICTION_CONFIGURED"
-            gate_decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
-            reasons = ["All empirical friction evidence verified and active model sealed."]
+
+            # Directive 4: Inspect returned activation status AND run readiness evaluator
+            if (
+                activation is not None
+                and activation.activation_status == FrictionActivationStatus.ACTIVE
+            ):
+                eval_rep = XauUsdDataReadinessEvaluator.evaluate(
+                    execution_venue=venue,
+                    execution_account_tier=account_tier,
+                    execution_legal_entity_code=legal_entity_info.get("legal_entity_code") if legal_entity_info else None,
+                )
+                if eval_rep.decision == "CANDLES_READY_QUOTE_EVIDENCE_MISSING":
+                    overall_status = "EMPIRICAL_FRICTION_CONFIGURED"
+                    gate_decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
+                    reasons = ["All empirical friction evidence verified and active model sealed."]
+                else:
+                    overall_status = "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+                    gate_decision = eval_rep.decision
+                    reasons.extend(eval_rep.reasons)
+            else:
+                overall_status = "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+                gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+                reasons.append("Model version could not achieve ACTIVE activation status (status is DRAFT or rejected).")
         else:
             overall_status = "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
             gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"

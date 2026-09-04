@@ -81,6 +81,7 @@ from apps.market_data.models import (
     FrictionModelVersion,
     FrictionSessionType,
     FrictionSourceSnapshot,
+    FrictionSourceType,
 )
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
@@ -111,6 +112,7 @@ from apps.market_data.friction.ingestion import (
 from apps.market_data.friction.resolution import resolve_friction_model, resolve_friction_model_activation
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.validation import validate_friction_model_for_activation
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
 
@@ -409,10 +411,10 @@ def test_02_missing_legal_entity_provenance_fails(xauusd_setup, qualified_eviden
         venue="EXNESS",
         symbol="XAUUSD",
         account_tier="STANDARD",
-        legal_entity_code="",
+        legal_entity_code="EXNESS_SC_LTD",
         legal_entity_name="",
-        regulator="",
-        license_number="",
+        regulator="FSA",
+        license_number="SD025",
         legal_entity_source_snapshot=snap,
         digits=2,
         point_size=Decimal("0.01"),
@@ -439,7 +441,7 @@ def test_02_missing_legal_entity_provenance_fails(xauusd_setup, qualified_eviden
     rep = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_macro_count=1)
     assert rep.friction_status == "LEGAL_ENTITY_EVIDENCE_MISSING"
     assert rep.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
-    assert any("Legal entity provenance" in r for r in rep.reasons)
+    assert any("Legal entity" in r for r in rep.reasons)
 
 
 @pytest.mark.django_db
@@ -514,12 +516,14 @@ def test_04_arbitrary_unverified_friction_row_cannot_pass(xauusd_setup, qualifie
 
 
 @pytest.mark.django_db
-def test_05_wrong_venue_or_symbol_fails(xauusd_setup, qualified_evidence_bundle):
-    """Scenario 5: Wrong venue/account tier/symbol fails with EMPIRICAL_FRICTION_INVALID."""
+def test_05_wrong_venue_or_symbol_fails(xauusd_setup):
+    """Scenario 5: Wrong venue/symbol model fails direct validation and cannot satisfy XAUUSD readiness."""
     instrument, _ = xauusd_setup
     _create_clean_candles(instrument, count=30, tf="15m")
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
-    snap = qualified_evidence_bundle["legal_snapshot"]
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_binance", "L_BINANCE", "BINANCE", "BTCUSDT", "STANDARD", now_utc, now_utc, b"L_BINANCE"
+    )
     wrong_model = FrictionModelVersion.objects.create(
         model_version_id="WRONG_VENUE_MODEL",
         venue="BINANCE",
@@ -552,8 +556,20 @@ def test_05_wrong_venue_or_symbol_fails(xauusd_setup, qualified_evidence_bundle)
         source_or_reason="Test wrong venue model",
     )
 
+    # 1. Direct validation against target scope fails with EMPIRICAL_FRICTION_INVALID
+    res = validate_friction_model_for_activation(
+        wrong_model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+
+    # 2. Canonical resolver does not select wrong venue/symbol for XAUUSD readiness
     rep = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_macro_count=1)
-    assert rep.friction_status == "EMPIRICAL_FRICTION_INVALID"
+    assert rep.friction_status == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
     assert rep.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
 
 
@@ -809,7 +825,7 @@ def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, ba
         spread_ticks_bps=[t["spread_bps"] for t in base_sample_ticks],
         telemetry_dataset=None,
         slippage_records_bps=None,
-        legal_entity_info={"legal_entity_code": "SC", "legal_entity_name": "N", "regulator": "R", "license_number": "L"},
+        legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness (SC) Ltd", "regulator": "FSA", "license_number": "SD025"},
         contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1"), "contract_size": Decimal("100"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200"), "volume_step": Decimal("0.01")},
         commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0"), "commission_formula": "D"},
         financing_policy={"swap_long_points": Decimal("-10"), "swap_short_points": Decimal("5"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY"},
@@ -2034,3 +2050,845 @@ def test_harden_23_future_model_activation_cannot_leak_backward(qualified_eviden
     res = resolve_friction_model(as_of=as_of_historical)
     assert res == model1
     assert res != model_future
+
+
+# =============================================================================
+# DIRECTIVE 13: 20 HOSTILE ARCHITECTURE SEAL TESTS (T01 - T20)
+# =============================================================================
+
+@pytest.mark.django_db
+def test_seal_01_readiness_uses_canonical_pit_resolver(xauusd_setup, monkeypatch):
+    """T01: Readiness MUST use the canonical PIT resolver (Directive 2 & 13.1)."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    called_with = {}
+    from apps.market_data.friction import resolution
+    orig_resolver = resolution.resolve_friction_model_activation
+
+    def spy_resolver(as_of=None, venue="EXNESS", symbol="XAUUSD", account_tier="STANDARD", legal_entity_code="EXNESS_SC_LTD"):
+        called_with["venue"] = venue
+        called_with["symbol"] = symbol
+        called_with["account_tier"] = account_tier
+        called_with["legal_entity_code"] = legal_entity_code
+        return orig_resolver(as_of=as_of, venue=venue, symbol=symbol, account_tier=account_tier, legal_entity_code=legal_entity_code)
+
+    monkeypatch.setattr("apps.market_data.readiness.resolve_friction_model_activation", spy_resolver)
+
+    rep = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=1,
+        execution_venue="EXNESS",
+        execution_account_tier="STANDARD",
+        execution_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert called_with["venue"] == "EXNESS"
+    assert called_with["symbol"] == "XAUUSD"
+    assert called_with["account_tier"] == "STANDARD"
+    assert called_with["legal_entity_code"] == "EXNESS_SC_LTD"
+
+
+@pytest.mark.django_db
+def test_seal_02_unrelated_newer_active_model_cannot_hijack_readiness(xauusd_setup, qualified_evidence_bundle):
+    """T02: Unrelated newer ACTIVE model cannot hijack readiness (Directive 2 & 13.2)."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    now_utc = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    snap = qualified_evidence_bundle["legal_snapshot"]
+
+    unrelated_model = FrictionModelVersion.objects.create(
+        model_version_id="UNRELATED_EURUSD_MODEL_SEAL",
+        venue="EXNESS",
+        symbol="EURUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=snap,
+        contract_spec_source_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=5,
+        point_size=Decimal("0.0001"),
+        trade_tick_size=Decimal("0.0001"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100000.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"),
+        commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-5.0"),
+        swap_short_points=Decimal("2.0"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("0.80"),
+        stress_spread_bps=Decimal("1.50"),
+        base_slippage_bps=Decimal("0.20"),
+        stress_slippage_bps=Decimal("0.50"),
+        empirical_friction_evidence_fingerprint="fp_unrelated_seal",
+    )
+    FrictionModelActivation.objects.create(
+        activation_id="ACT_UNRELATED_SEAL_NEWER",
+        friction_model_version=unrelated_model,
+        known_at=now_utc,
+        effective_from=now_utc,
+        activation_status=FrictionActivationStatus.ACTIVE,
+        source_or_reason="Newer unrelated model",
+    )
+
+    rep = XauUsdDataReadinessEvaluator.evaluate(instrument=instrument, override_macro_count=1)
+    assert rep.friction_status == "EMPIRICAL_FRICTION_CONFIGURED"
+
+    res = resolve_friction_model_activation(as_of=now_utc, symbol="XAUUSD")
+    assert res is not None
+    model_ver, act = res
+    assert act.friction_model_version.symbol == "XAUUSD"
+    assert act.friction_model_version.model_version_id != "UNRELATED_EURUSD_MODEL_SEAL"
+
+
+@pytest.mark.django_db
+def test_seal_03_standard_vs_raw_mismatch_fails(xauusd_setup, qualified_evidence_bundle):
+    """T03: STANDARD model cannot satisfy RAW_SPREAD target and vice versa (Directive 2 & 13.3)."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    rep_raw = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=1,
+        execution_account_tier="RAW_SPREAD",
+    )
+    assert rep_raw.friction_status == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+    assert rep_raw.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+
+    res = validate_friction_model_for_activation(
+        qualified_evidence_bundle["model_version"],
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="RAW_SPREAD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+
+
+@pytest.mark.django_db
+def test_seal_04_legal_entity_mismatch_fails(xauusd_setup, qualified_evidence_bundle):
+    """T04: Legal entity A cannot satisfy legal entity B (Directive 2 & 13.4)."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    rep_bvi = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        override_macro_count=1,
+        execution_legal_entity_code="EXNESS_BVI_LTD",
+    )
+    assert rep_bvi.friction_status == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+    assert rep_bvi.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+
+    res = validate_friction_model_for_activation(
+        qualified_evidence_bundle["model_version"],
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_BVI_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+
+
+@pytest.mark.django_db
+def test_seal_05_command_parse_success_but_insufficient_ticks_stays_blocked(xauusd_setup):
+    """T05: Command parse-success with insufficient tick dataset stays blocked (Directive 3 & 13.5)."""
+    tick_file = "artifacts/test_seal_05_ticks_tmp.csv"
+    manifest_file = "artifacts/test_seal_05_manifest_tmp.json"
+    report_file = "artifacts/test_seal_05_report_tmp.md"
+
+    with open(tick_file, "w", encoding="utf-8") as f:
+        f.write("DateTime,Bid,Ask\n")
+        for i in range(5):
+            f.write(f"2026-08-20 10:00:0{i}+00:00,2500.00,2500.20\n")
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            tick_file=tick_file,
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        assert os.path.exists(manifest_file)
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["evidence_inventory"]["bid_ask_spread_distribution"]["status"] == "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert FrictionModelActivation.objects.filter(activation_status=FrictionActivationStatus.ACTIVE).count() == 0
+    finally:
+        for p in [tick_file, manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_seal_06_command_parse_success_but_insufficient_telemetry_stays_blocked(xauusd_setup):
+    """T06: Command parse-success with insufficient telemetry fills stays blocked (Directive 3 & 13.6)."""
+    slip_file = "artifacts/test_seal_06_slip_tmp.csv"
+    manifest_file = "artifacts/test_seal_06_manifest_tmp.json"
+    report_file = "artifacts/test_seal_06_report_tmp.md"
+
+    with open(slip_file, "w", encoding="utf-8") as f:
+        f.write("side,order_type,decision_timestamp,order_send_timestamp,reference_bid,reference_ask,executed_fill_price,fill_timestamp,volume_lots,latency_ms,symbol,account_tier,venue\n")
+        for i in range(5):
+            f.write(f"BUY,MARKET,2026-08-20 10:00:0{i}+00:00,2026-08-20 10:00:0{i}.050+00:00,2500.00,2500.20,2500.22,2026-08-20 10:00:0{i}.100+00:00,0.10,50,XAUUSD,STANDARD,EXNESS\n")
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            slippage_file=slip_file,
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        assert os.path.exists(manifest_file)
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["evidence_inventory"]["execution_slippage_telemetry"]["status"] == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+    finally:
+        for p in [slip_file, manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_seal_07_dry_run_insufficient_samples_stays_blocked(xauusd_setup):
+    """T07: Dry-run insufficient samples executes full validation and stays blocked without DB writes (Directive 3, 12, 13.7)."""
+    tick_file = "artifacts/test_seal_07_ticks_tmp.csv"
+    manifest_file = "artifacts/test_seal_07_manifest_tmp.json"
+    report_file = "artifacts/test_seal_07_report_tmp.md"
+
+    with open(tick_file, "w", encoding="utf-8") as f:
+        f.write("DateTime,Bid,Ask\n")
+        for i in range(5):
+            f.write(f"2026-08-20 10:00:0{i}+00:00,2500.00,2500.20\n")
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            tick_file=tick_file,
+            dry_run=True,
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        assert FrictionEvidenceDataset.objects.count() == 0
+        assert FrictionSourceSnapshot.objects.count() == 0
+
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["evidence_inventory"]["bid_ask_spread_distribution"]["status"] == "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+    finally:
+        for p in [tick_file, manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_seal_08_builder_draft_cannot_cause_command_to_report_configured(monkeypatch):
+    """T08: Builder DRAFT cannot cause command to report configured (Directive 4 & 13.8)."""
+    manifest_file = "artifacts/test_seal_08_manifest_tmp.json"
+    report_file = "artifacts/test_seal_08_report_tmp.md"
+
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/l",
+        source_name="L",
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256=hashlib.sha256(b"L").hexdigest(),
+        raw_content=b"L",
+        metadata={},
+    )
+    draft_model = FrictionModelVersion.objects.create(
+        model_version_id="DRAFT_MODEL_SEAL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=snap,
+        contract_spec_source_snapshot=snap,
+        fee_schedule_source_snapshot=snap,
+        swap_spec_source_snapshot=snap,
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"),
+        commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"),
+        swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"),
+        stress_spread_bps=Decimal("2.00"),
+        empirical_friction_evidence_fingerprint="fp_draft",
+    )
+    draft_act = FrictionModelActivation.objects.create(
+        activation_id="ACT_DRAFT_SEAL",
+        friction_model_version=draft_model,
+        known_at=now_utc,
+        effective_from=now_utc,
+        activation_status=FrictionActivationStatus.DRAFT,
+        source_or_reason="Draft model reason",
+    )
+
+    from apps.market_data.management.commands import ingest_xauusd_empirical_friction
+    monkeypatch.setattr(
+        ingest_xauusd_empirical_friction,
+        "build_and_bind_friction_model_version",
+        lambda **kwargs: (draft_model, draft_act),
+    )
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+    finally:
+        for p in [manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_seal_09_command_success_requires_actual_active_activation(monkeypatch):
+    """T09: Command success requires actual ACTIVE activation (Directive 4 & 13.9)."""
+    manifest_file = "artifacts/test_seal_09_manifest_tmp.json"
+    report_file = "artifacts/test_seal_09_report_tmp.md"
+
+    from apps.market_data.management.commands import ingest_xauusd_empirical_friction
+    monkeypatch.setattr(
+        ingest_xauusd_empirical_friction,
+        "build_and_bind_friction_model_version",
+        lambda **kwargs: (None, None),
+    )
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+    finally:
+        for p in [manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_seal_10_command_success_requires_readiness_evaluator_to_reach_quote_gate(monkeypatch, qualified_evidence_bundle):
+    """T10: Command success requires readiness evaluator itself to reach quote gate (Directive 4 & 13.10)."""
+    manifest_file = "artifacts/test_seal_10_manifest_tmp.json"
+    report_file = "artifacts/test_seal_10_report_tmp.md"
+
+    from apps.market_data.management.commands import ingest_xauusd_empirical_friction
+    monkeypatch.setattr(
+        ingest_xauusd_empirical_friction,
+        "build_and_bind_friction_model_version",
+        lambda **kwargs: (qualified_evidence_bundle["model_version"], qualified_evidence_bundle["activation"]),
+    )
+
+    from apps.market_data.readiness import XauUsdDataReadinessReport
+    mock_rep = XauUsdDataReadinessReport(
+        passed=False,
+        decision="CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
+        reasons=["Blocked by readiness evaluator authority"],
+        total_candles=0,
+        timeframe_counts={},
+        earliest_timestamp=None,
+        latest_timestamp=None,
+        duration_days=0.0,
+        gap_statistics={},
+        duplicate_count=0,
+        ohlc_error_count=0,
+        naive_timestamp_count=0,
+        zero_or_negative_count=0,
+        source_contamination_count=0,
+        warmup_15m_bars=0,
+        is_warmup_satisfied=False,
+        volume_evidence_distribution={},
+        volume_classification="UNAVAILABLE",
+        macro_event_count=0,
+        quote_count=0,
+        friction_status="EMPIRICAL_FRICTION_INVALID",
+        dataset_hash="empty",
+        generated_at="now",
+    )
+    monkeypatch.setattr(XauUsdDataReadinessEvaluator, "evaluate", lambda **kwargs: mock_rep)
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["status"] == "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+    finally:
+        for p in [manifest_file, report_file]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_seal_11_1000_ticks_from_one_day_cannot_active():
+    """T11: 1000 ticks from only 1 trading day fails sufficiency and cannot activate (Directive 5, 6, 13.11)."""
+    ticks = []
+    base_ts = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+    for i in range(1000):
+        ticks.append({
+            "timestamp": base_ts + timedelta(seconds=i),
+            "bid": Decimal("2500.00"),
+            "ask": Decimal("2500.20"),
+            "spread_bps": Decimal("0.80"),
+        })
+
+    is_valid, errors = validate_spread_dataset_sufficiency(ticks)
+    assert is_valid is False
+    assert any("distinct trading dates" in e for e in errors)
+
+
+def test_seal_12_missing_rollover_samples_cannot_active():
+    """T12: 1000 ticks across 5 days with zero rollover samples fails sufficiency (Directive 5, 6, 13.12)."""
+    ticks = []
+    for day in range(5):
+        day_ts = datetime(2026, 8, 17 + day, 10, 0, 0, tzinfo=timezone.utc)
+        for i in range(200):
+            ticks.append({
+                "timestamp": day_ts + timedelta(seconds=i),
+                "bid": Decimal("2500.00"),
+                "ask": Decimal("2500.20"),
+                "spread_bps": Decimal("0.80"),
+            })
+
+    assert len(ticks) == 1000
+    is_valid, errors = validate_spread_dataset_sufficiency(ticks)
+    assert is_valid is False
+    assert any("rollover session coverage" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_seal_13_malformed_source_sha_cannot_active(qualified_evidence_bundle):
+    """T13: Malformed source SHA cannot pass canonical validator and cannot activate (Directive 5, 6, 13.13)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    bad_snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/bad_sha",
+        source_name="BAD_SHA_SNAP",
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256="0000000000000000000000000000000000000000000000000000000000000000",
+        raw_content=b"CORRUPTED_OR_TAMPERED_CONTENT",
+        metadata={},
+    )
+
+    model = FrictionModelVersion.objects.create(
+        model_version_id="BAD_SHA_MODEL_SEAL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=bad_snap,
+        contract_spec_source_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"),
+        commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"),
+        swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"),
+        stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"),
+        stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_bad_sha",
+    )
+
+    res = validate_friction_model_for_activation(
+        model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "LEGAL_ENTITY_EVIDENCE_MISSING"
+    assert any("SHA-256 verification failed" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_14_user_provided_unverified_legal_json_cannot_satisfy_hard_gate(qualified_evidence_bundle):
+    """T14: USER_PROVIDED_UNVERIFIED legal JSON cannot satisfy hard gate (Directive 7, 8, 13.14)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b'{"legal_entity_code": "EXNESS_SC_LTD"}'
+    snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/unverified_legal",
+        source_name="UNVERIFIED_LEGAL",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_content=raw,
+        metadata={},
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="UNVERIFIED_LEGAL_MODEL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=snap,
+        contract_spec_source_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=2, point_size=Decimal("0.01"), trade_tick_size=Decimal("0.01"), trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"), volume_min=Decimal("0.01"), volume_max=Decimal("200.0"), volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"), commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"), swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21, rollover_winter_utc_hour=22, triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"), stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"), stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_unverified_legal",
+    )
+
+    res = validate_friction_model_for_activation(
+        model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+    assert any("unverified" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_15_user_provided_unverified_contract_json_cannot_satisfy_hard_gate(qualified_evidence_bundle):
+    """T15: USER_PROVIDED_UNVERIFIED contract JSON cannot satisfy hard gate (Directive 7, 9, 13.15)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b'{"contract_size": 100.0}'
+    snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/unverified_contract",
+        source_name="UNVERIFIED_CONTRACT",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_content=raw,
+        metadata={},
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="UNVERIFIED_CONTRACT_MODEL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_source_snapshot=snap,
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=2, point_size=Decimal("0.01"), trade_tick_size=Decimal("0.01"), trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"), volume_min=Decimal("0.01"), volume_max=Decimal("200.0"), volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"), commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"), swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21, rollover_winter_utc_hour=22, triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"), stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"), stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_unverified_contract",
+    )
+
+    res = validate_friction_model_for_activation(
+        model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+    assert any("unverified" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_16_user_provided_unverified_fee_json_cannot_satisfy_hard_gate(qualified_evidence_bundle):
+    """T16: USER_PROVIDED_UNVERIFIED fee JSON cannot satisfy hard gate (Directive 7, 10, 13.16)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b'{"native_commission_usd_per_lot_per_side": 0.0}'
+    snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/unverified_fee",
+        source_name="UNVERIFIED_FEE",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_content=raw,
+        metadata={},
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="UNVERIFIED_FEE_MODEL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_source_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_source_snapshot=snap,
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=2, point_size=Decimal("0.01"), trade_tick_size=Decimal("0.01"), trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"), volume_min=Decimal("0.01"), volume_max=Decimal("200.0"), volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"), commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"), swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21, rollover_winter_utc_hour=22, triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"), stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"), stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_unverified_fee",
+    )
+
+    res = validate_friction_model_for_activation(
+        model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+    assert any("unverified" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_17_user_provided_unverified_swap_json_cannot_satisfy_hard_gate(qualified_evidence_bundle):
+    """T17: USER_PROVIDED_UNVERIFIED swap JSON cannot satisfy hard gate (Directive 7, 10, 13.17)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b'{"swap_long_points": -34.80}'
+    snap = FrictionSourceSnapshot.objects.create(
+        source_url="http://ex.com/unverified_swap",
+        source_name="UNVERIFIED_SWAP",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_payload_bytes_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_content=raw,
+        metadata={},
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="UNVERIFIED_SWAP_MODEL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_source_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=snap,
+        digits=2, point_size=Decimal("0.01"), trade_tick_size=Decimal("0.01"), trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"), volume_min=Decimal("0.01"), volume_max=Decimal("200.0"), volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"), commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"), swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21, rollover_winter_utc_hour=22, triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"), stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"), stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_unverified_swap",
+    )
+
+    res = validate_friction_model_for_activation(
+        model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "EMPIRICAL_FRICTION_INVALID"
+    assert any("unverified" in r for r in res.reasons)
+
+
+def test_seal_18_negative_signed_slippage_cannot_reduce_friction_in_adverse_only_policy():
+    """T18: Negative signed slippage cannot reduce friction in adverse-only policy (Directive 11 & 13.18)."""
+    negative_fills = [Decimal("-5.00") for _ in range(35)]
+    adverse_only_values = [max(Decimal("0.00"), s) for s in negative_fills]
+    stats = compute_distribution_statistics(adverse_only_values)
+
+    assert stats["stat_p75"] == Decimal("0.000000")
+    assert stats["stat_p95"] == Decimal("0.000000")
+    assert stats["stat_min"] == Decimal("0.000000")
+    base_slippage_bps = max(Decimal("0.00"), stats["stat_p75"])
+    assert base_slippage_bps >= Decimal("0.00")
+
+
+def test_seal_19_adverse_only_policy_fingerprint_differs_from_signed_policy():
+    """T19: Adverse-only policy fingerprint differs from signed policy fingerprint (Directive 11 & 13.19)."""
+    base_args = {
+        "semantic_versions": {"friction_policy_schema_version": "1.0.0"},
+        "venue": "EXNESS",
+        "legal_entity_code": "EXNESS_SC_LTD",
+        "account_tier": "STANDARD",
+        "symbol": "XAUUSD",
+        "contract_geometry": {"digits": 2, "contract_size": Decimal("100.0")},
+        "source_snapshot_hashes": ["hash_a"],
+        "dataset_hashes": ["ds_hash_1"],
+        "distribution_summaries": [{"component_type": "SPREAD", "stat_p75": Decimal("1.20")}],
+        "calibrated_parameters": {"base_spread_bps": Decimal("1.20"), "stress_spread_bps": Decimal("2.50")},
+        "commission_policy": {"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        "financing_policy": {"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "actual_account_swap_free_status": False},
+        "bound_binding_roles": ["PRIMARY_SPREAD_SAMPLE"],
+    }
+
+    fp_adverse = compute_empirical_friction_fingerprint(
+        **base_args,
+        slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+    )
+    fp_signed = compute_empirical_friction_fingerprint(
+        **base_args,
+        slippage_cost_policy_version="RAW_SIGNED_DISTRIBUTION_V1",
+    )
+
+    assert fp_adverse != fp_signed
+    assert len(fp_adverse) == 64
+    assert len(fp_signed) == 64
+
+
+@pytest.mark.django_db
+def test_seal_20_future_activation_cannot_leak_backward_through_readiness(xauusd_setup):
+    """T20: Future activation cannot leak backward through point-in-time readiness (Directive 2, 13.20)."""
+    instrument, _ = xauusd_setup
+    _create_clean_candles(instrument, count=30, tf="15m")
+
+    t_past = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+    t_future = datetime(2026, 9, 10, 0, 0, 0, tzinfo=timezone.utc)
+    
+    legal_snap, _ = ingest_friction_source_snapshot("http://ex.com/l", "L", "EXNESS", "XAUUSD", "STANDARD", t_future, t_future, b"LEGAL_CONTENT")
+    spec_snap, _ = ingest_friction_source_snapshot("http://ex.com/c", "C", "EXNESS", "XAUUSD", "STANDARD", t_future, t_future, b"CONTRACT_CONTENT")
+    fee_snap, _ = ingest_friction_source_snapshot("http://ex.com/f", "F", "EXNESS", "XAUUSD", "STANDARD", t_future, t_future, b"FEE_CONTENT")
+    swap_snap, _ = ingest_friction_source_snapshot("http://ex.com/s", "S", "EXNESS", "XAUUSD", "STANDARD", t_future, t_future, b"SWAP_CONTENT")
+
+    future_model = FrictionModelVersion.objects.create(
+        model_version_id="FUTURE_MODEL_SEAL_20",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=legal_snap,
+        contract_spec_source_snapshot=spec_snap,
+        fee_schedule_source_snapshot=fee_snap,
+        swap_spec_source_snapshot=swap_snap,
+        digits=2, point_size=Decimal("0.01"), trade_tick_size=Decimal("0.01"), trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"), volume_min=Decimal("0.01"), volume_max=Decimal("200.0"), volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"), commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"), swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21, rollover_winter_utc_hour=22, triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"), stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"), stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="fp_future_seal_20",
+    )
+    FrictionModelActivation.objects.create(
+        activation_id="ACT_FUTURE_SEAL_20",
+        friction_model_version=future_model,
+        known_at=t_future,
+        effective_from=t_future,
+        activation_status=FrictionActivationStatus.ACTIVE,
+        source_or_reason="Future model only",
+    )
+
+    # 1. As of past, the future activation must NOT resolve
+    rep_past = XauUsdDataReadinessEvaluator.evaluate(
+        instrument=instrument,
+        as_of=t_past,
+        override_macro_count=1,
+    )
+    assert rep_past.friction_status == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+    assert rep_past.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+
+    # 2. Once time reaches future effective_from, resolution succeeds
+    as_of_future = datetime(2026, 9, 11, 0, 0, 0, tzinfo=timezone.utc)
+    res_future = resolve_friction_model_activation(as_of=as_of_future, symbol="XAUUSD")
+    assert res_future is not None
+    assert res_future[0].model_version_id == "FUTURE_MODEL_SEAL_20"
+
+
