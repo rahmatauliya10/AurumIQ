@@ -9,12 +9,14 @@ from apps.market_data.macro.coverage import (
     get_canonical_expected_cpi_keys,
     get_canonical_expected_fomc_keys,
     get_canonical_expected_nfp_keys,
+    validate_schedule_vintage_provenance,
 )
 from apps.market_data.macro.fingerprint import compute_macro_evidence_fingerprint
 from apps.market_data.macro.ingestion import ingest_xauusd_macro_evidence
 from apps.market_data.models import (
     MacroObservationVintage,
     MacroScheduleVintage,
+    ScheduleProvenanceType,
     SourceSnapshot,
 )
 
@@ -134,10 +136,51 @@ class Command(BaseCommand):
         nfp_sched = _sched_stats("US_NFP")
         fomc_sched = _sched_stats("FOMC_RATE")
 
-        # 3. Macro Evidence Fingerprint
+        # 3. Direct DB Provenance Reconciliation (Prompt §12)
+        bls_schedules_total = MacroScheduleVintage.objects.filter(event_id__in=["US_CPI", "US_NFP"]).count()
+        bls_prev_release_count = MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        ).count()
+        omb_pfei_count = MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.OMB_PFEI_SCHEDULE,
+        ).count()
+        other_first_party_count = MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.OTHER_FIRST_PARTY,
+        ).count()
+        unknown_prov_count = MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.UNKNOWN,
+        ).count()
+
+        reconciled_sum = bls_prev_release_count + omb_pfei_count + other_first_party_count + unknown_prov_count
+        assert bls_schedules_total == reconciled_sum, (
+            f"Provenance reconciliation mismatch: total {bls_schedules_total} != sum {reconciled_sum}"
+        )
+
+        sample_prev_cpi = list(MacroScheduleVintage.objects.filter(
+            event_id="US_CPI",
+            provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        ).values("reference_period", "announcing_release_url", "known_at")[:3])
+        sample_prev_nfp = list(MacroScheduleVintage.objects.filter(
+            event_id="US_NFP",
+            provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        ).values("reference_period", "announcing_release_url", "known_at")[:3])
+        sample_other_first_party = list(MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.OTHER_FIRST_PARTY,
+        ).values("event_id", "reference_period", "announcing_release_url", "known_at"))
+        unknown_records = list(MacroScheduleVintage.objects.filter(
+            event_id__in=["US_CPI", "US_NFP"],
+            provenance_type=ScheduleProvenanceType.UNKNOWN,
+        ).values_list("event_id", "reference_period"))
+
+        # 4. Macro Evidence Fingerprint
         macro_fingerprint = compute_macro_evidence_fingerprint()
 
-        # 4. Read Candle Invariant Metadata
+        # 5. Read Candle Invariant Metadata
         candle_manifest_path = "artifacts/calibration/xauusd_data_manifest.json"
         total_candles = 3096312
         p6_fingerprint = "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9"
@@ -152,14 +195,36 @@ class Command(BaseCommand):
             except Exception:
                 pass
 
-        # 5. Determine Hard Gate Status
-        # Governed rule: If macro coverage is genuinely complete across all dimensions,
-        # transition gate to CANDLES_READY_EMPIRICAL_FRICTION_MISSING.
+        # Evaluate active required schedule provenance validity
+        def _check_active_sched_provenance(fam_id: str) -> int:
+            scheds = (
+                MacroScheduleVintage.objects.filter(event_id=fam_id)
+                .select_related("source_snapshot")
+                .order_by("reference_period", "-known_at")
+            )
+            seen = set()
+            invalid_cnt = 0
+            for s in scheds:
+                if s.reference_period in seen:
+                    continue
+                seen.add(s.reference_period)
+                is_valid, _ = validate_schedule_vintage_provenance(s)
+                if not is_valid:
+                    invalid_cnt += 1
+            return invalid_cnt
+
+        cpi_active_invalid = _check_active_sched_provenance("US_CPI")
+        nfp_active_invalid = _check_active_sched_provenance("US_NFP")
+        fomc_active_invalid = _check_active_sched_provenance("FOMC_RATE")
+        active_invalid_prov_count = cpi_active_invalid + nfp_active_invalid + fomc_active_invalid
+
+        # 6. Determine Hard Gate Status
         all_complete = (
             cpi_report.is_complete and nfp_report.is_complete and fomc_report.is_complete
             and cpi_report.lifecycle_coverage_complete and nfp_report.lifecycle_coverage_complete and fomc_report.lifecycle_coverage_complete
             and cpi_report.provenance_coverage_complete and nfp_report.provenance_coverage_complete and fomc_report.provenance_coverage_complete
             and cpi_sched["unknown_known_at"] == 0 and nfp_sched["unknown_known_at"] == 0 and fomc_sched["unknown_known_at"] == 0
+            and active_invalid_prov_count == 0
         )
         if all_complete:
             gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
@@ -175,6 +240,8 @@ class Command(BaseCommand):
                 reasons.append(f"US_CPI coverage incomplete: {cpi_report.matched_count}/{cpi_report.expected_count} matched (missing: {len(cpi_report.missing_keys)}: {', '.join(cpi_report.missing_keys)}).")
             if not nfp_report.is_complete:
                 reasons.append(f"US_NFP coverage incomplete: {nfp_report.matched_count}/{nfp_report.expected_count} matched (missing: {len(nfp_report.missing_keys)}: {', '.join(nfp_report.missing_keys)}).")
+            if active_invalid_prov_count > 0:
+                reasons.append(f"Active macro schedule provenance incomplete: {active_invalid_prov_count} active schedules have invalid/unknown provenance.")
             gate_reasons = reasons
 
         # Extract 2025 Shutdown Evidence Chronology
@@ -313,6 +380,18 @@ class Command(BaseCommand):
                 "duplicates": cpi_report.duplicate_count + nfp_report.duplicate_count + fomc_report.duplicate_count,
                 "unexpected_extras": cpi_report.unexpected_extra_count + nfp_report.unexpected_extra_count + fomc_report.unexpected_extra_count,
             },
+            "provenance_reconciliation": {
+                "bls_schedules_total": bls_schedules_total,
+                "BLS_PREVIOUS_RELEASE_ANNOUNCEMENT": bls_prev_release_count,
+                "OMB_PFEI_SCHEDULE": omb_pfei_count,
+                "OTHER_FIRST_PARTY": other_first_party_count,
+                "UNKNOWN": unknown_prov_count,
+                "reconciled_sum": reconciled_sum,
+                "sample_prev_cpi": sample_prev_cpi,
+                "sample_prev_nfp": sample_prev_nfp,
+                "sample_other_first_party": sample_other_first_party,
+                "unknown_records": unknown_records,
+            },
             "shutdown_2025_chronology": shutdown_chronology,
             "macro_evidence_fingerprint": macro_fingerprint,
             "candle_total": total_candles,
@@ -329,7 +408,7 @@ class Command(BaseCommand):
         # Write Manifest
         os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
         with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest_data, f, indent=2)
+            json.dump(manifest_data, f, indent=2, default=str)
 
         # Write Human-Readable Audit Report
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -387,7 +466,36 @@ class Command(BaseCommand):
 
 ---
 
-## 3. 2025 Shutdown Lifecycle Chronology
+## 3. BLS Schedule Provenance Reconciliation (Rebuilt from Database)
+| Provenance Type | Count | Proportion | Status |
+| :--- | :---: | :---: | :---: |
+| **BLS_PREVIOUS_RELEASE_ANNOUNCEMENT** | {bls_prev_release_count} | {bls_prev_release_count / bls_schedules_total * 100:.1f}% | VALIDATED |
+| **OMB_PFEI_SCHEDULE** | {omb_pfei_count} | {omb_pfei_count / bls_schedules_total * 100:.1f}% | VALIDATED |
+| **OTHER_FIRST_PARTY** | {other_first_party_count} | {other_first_party_count / bls_schedules_total * 100:.1f}% | VALIDATED |
+| **UNKNOWN** | {unknown_prov_count} | {unknown_prov_count / bls_schedules_total * 100:.1f}% | {"NONE (0)" if unknown_prov_count == 0 else "DEFECT"} |
+| **TOTAL BLS SCHEDULES** | **{bls_schedules_total}** | **100.0%** | **{"EXACT RECONCILIATION" if bls_schedules_total == reconciled_sum else "MISMATCH"}** |
+
+### Sample Provenance Records
+* **CPI Previous Release Announcement Sample:**
+```json
+{json.dumps(sample_prev_cpi, indent=2, default=str)}
+```
+* **NFP Previous Release Announcement Sample:**
+```json
+{json.dumps(sample_prev_nfp, indent=2, default=str)}
+```
+* **Other First Party Sample (2025 Shutdown):**
+```json
+{json.dumps(sample_other_first_party, indent=2, default=str)}
+```
+* **Unknown Records:**
+```json
+{json.dumps(unknown_records, indent=2, default=str)}
+```
+
+---
+
+## 4. 2025 Shutdown Lifecycle Chronology
 
 ### US_CPI_2025_10
 * **Original Schedule:** {shutdown_chronology['US_CPI_2025_10']['original_schedule']['scheduled_at']} (known at: {shutdown_chronology['US_CPI_2025_10']['original_schedule']['known_at']})
@@ -408,7 +516,7 @@ class Command(BaseCommand):
 
 ---
 
-## 4. Ingestion Execution Statistics
+## 5. Ingestion Execution Statistics
 ```json
 {json.dumps(stats.to_dict(), indent=2)}
 ```

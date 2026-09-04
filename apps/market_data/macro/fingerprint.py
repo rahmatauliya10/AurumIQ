@@ -28,7 +28,9 @@ def compute_macro_evidence_fingerprint() -> str:
         snap_sha = s.source_snapshot.raw_payload_bytes_sha256 if s.source_snapshot else "NO_SNAPSHOT"
         sched_iso = s.scheduled_at.isoformat() if s.scheduled_at else ""
         known_iso = s.known_at.isoformat() if s.known_at else ""
-        line = f"SCHED|{s.event.event_family}|{s.event_id}|{s.reference_period}|{s.schedule_status}|{sched_iso}|{known_iso}|{snap_sha}"
+        prov_type = getattr(s, "provenance_type", "UNKNOWN") or "UNKNOWN"
+        ann_url = getattr(s, "announcing_release_url", "") or ""
+        line = f"SCHED|{s.event.event_family}|{s.event_id}|{s.reference_period}|{s.schedule_status}|{sched_iso}|{known_iso}|{prov_type}|{ann_url}|{snap_sha}"
         lines.append(line)
 
     # 2. Observations

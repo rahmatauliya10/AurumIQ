@@ -21,9 +21,11 @@ from zoneinfo import ZoneInfo
 from django.db import transaction
 
 from apps.market_data.macro.coverage import (
+    canonical_key_to_ref_period,
     get_canonical_expected_cpi_keys,
     get_canonical_expected_fomc_keys,
     get_canonical_expected_nfp_keys,
+    get_previous_canonical_ref_period,
 )
 from apps.market_data.macro.sources import convert_eastern_to_utc
 from apps.market_data.models import (
@@ -32,6 +34,7 @@ from apps.market_data.models import (
     MacroObservationVintage,
     MacroScheduleVintage,
     PublicationStatus,
+    ScheduleProvenanceType,
     ScheduleStatus,
     SourceSnapshot,
 )
@@ -321,14 +324,60 @@ def ingest_fomc_evidence(
             known_dt = datetime(2024, 8, 9, 0, 0, tzinfo=timezone.utc)
 
         # 1. Schedule Vintage
+        prov_type = ScheduleProvenanceType.OTHER_FIRST_PARTY
+        parser_rule_ver = "FRB_ANNUAL_SCHEDULE_V1"
+        ann_url = sched_snap.source_url
+        ann_ts = known_dt
+
         sched_vintage_id = f"sched_fomc_{ref_period.replace('-', '_')}_v0"
         if not dry_run:
-            sched_obj = MacroScheduleVintage.objects.filter(
-                event=event_ident,
-                reference_period=ref_period,
-                known_at=known_dt,
-            ).first()
-            if sched_obj is None:
+            existing_vintages = list(
+                MacroScheduleVintage.objects.filter(
+                    event=event_ident,
+                    reference_period=ref_period,
+                ).order_by("created_at")
+            )
+            if existing_vintages:
+                latest = existing_vintages[-1]
+                if (
+                    latest.known_at == known_dt
+                    and latest.schedule_status == ScheduleStatus.SCHEDULED
+                    and latest.provenance_type == prov_type
+                    and latest.announcing_release_url == ann_url
+                    and latest.announcing_release_timestamp == ann_ts
+                ):
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                elif latest.known_at == known_dt:
+                    MacroScheduleVintage.objects.filter(pk=latest.pk).update(
+                        provenance_type=prov_type,
+                        announcing_release_url=ann_url,
+                        announcing_release_timestamp=ann_ts,
+                        parser_rule_version=parser_rule_ver,
+                        source_snapshot=sched_snap,
+                    )
+                    latest.refresh_from_db()
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                else:
+                    new_v_id = f"sched_fomc_{ref_period.replace('-', '_')}_v{len(existing_vintages)}"
+                    sched_obj = MacroScheduleVintage.objects.create(
+                        vintage_id=new_v_id,
+                        event=event_ident,
+                        reference_period=ref_period,
+                        scheduled_at=scheduled_utc,
+                        schedule_status=ScheduleStatus.SCHEDULED,
+                        source_published_at=known_dt,
+                        known_at=known_dt,
+                        supersedes_vintage=latest,
+                        source_snapshot=sched_snap,
+                        provenance_type=prov_type,
+                        announcing_release_url=ann_url,
+                        announcing_release_timestamp=ann_ts,
+                        parser_rule_version=parser_rule_ver,
+                    )
+                    stats.schedule_vintages_inserted += 1
+            else:
                 sched_obj = MacroScheduleVintage.objects.create(
                     vintage_id=sched_vintage_id,
                     event=event_ident,
@@ -338,10 +387,12 @@ def ingest_fomc_evidence(
                     source_published_at=known_dt,
                     known_at=known_dt,
                     source_snapshot=sched_snap,
+                    provenance_type=prov_type,
+                    announcing_release_url=ann_url,
+                    announcing_release_timestamp=ann_ts,
+                    parser_rule_version=parser_rule_ver,
                 )
                 stats.schedule_vintages_inserted += 1
-            else:
-                stats.idempotent_skips += 1
         else:
             stats.schedule_vintages_inserted += 1
             sched_obj = None
@@ -497,20 +548,34 @@ def ingest_cpi_evidence(
         # Special Case: October 2025 (2025 Lapse in Appropriations / Shutdown)
         if ref_ym == "2025-10":
             orig_sched_utc = datetime(2025, 11, 13, 13, 30, tzinfo=timezone.utc)
-            orig_known_utc = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
+            orig_known_utc = datetime(2025, 10, 24, 12, 30, tzinfo=timezone.utc)
+            snap_cpi_1024 = fetch_or_reuse_snapshot(
+                "https://www.bls.gov/news.release/archives/cpi_10242025.htm",
+                "bls_cpi_announcement_2025_10_24",
+                {"User-Agent": BLS_CONTACT_HEADER},
+                stats,
+                dry_run=dry_run,
+            )
             v0_id = "sched_cpi_2025_10_v0"
             if not dry_run:
                 s_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=orig_known_utc).first()
                 if s_v0 is None:
+                    # Check if older v0 exists with synthetic date, supersede if so
+                    old_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).first()
                     s_v0 = MacroScheduleVintage.objects.create(
-                        vintage_id=v0_id,
+                        vintage_id=v0_id if not old_v0 else f"sched_cpi_2025_10_v{MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).count()}",
                         event=event_ident,
                         reference_period=ref_ym,
                         scheduled_at=orig_sched_utc,
                         schedule_status=ScheduleStatus.SCHEDULED,
                         source_published_at=orig_known_utc,
                         known_at=orig_known_utc,
-                        source_snapshot=schedule_snaps["2025"],
+                        supersedes_vintage=old_v0,
+                        source_snapshot=snap_cpi_1024,
+                        provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+                        announcing_release_url="https://www.bls.gov/news.release/archives/cpi_10242025.htm",
+                        announcing_release_timestamp=orig_known_utc,
+                        parser_rule_version="BLS_PREVIOUS_RELEASE_V1",
                     )
                     stats.schedule_vintages_inserted += 1
                 else:
@@ -519,22 +584,34 @@ def ingest_cpi_evidence(
                 stats.schedule_vintages_inserted += 1
                 s_v0 = None
 
-            # Cancellation schedule vintage (v1)
-            cancel_known_utc = datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc)
+            # Cancellation schedule vintage (backed by official BLS CPI release cpi_12182025.htm)
+            cancel_known_utc = datetime(2025, 12, 18, 13, 30, tzinfo=timezone.utc)
             v1_id = "sched_cpi_2025_10_v1"
             if not dry_run:
-                s_v1 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=cancel_known_utc).first()
+                s_v1 = MacroScheduleVintage.objects.filter(
+                    event=event_ident,
+                    reference_period=ref_ym,
+                    schedule_status=ScheduleStatus.CANCELLED,
+                    source_snapshot=snap_cpi_1218,
+                ).first()
                 if s_v1 is None:
+                    existing_scheds = list(MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).order_by("created_at"))
+                    latest_prior = existing_scheds[-1] if existing_scheds else s_v0
+                    v_cancel_id = f"sched_cpi_2025_10_v{len(existing_scheds)}" if existing_scheds else v1_id
                     MacroScheduleVintage.objects.create(
-                        vintage_id=v1_id,
+                        vintage_id=v_cancel_id,
                         event=event_ident,
                         reference_period=ref_ym,
                         scheduled_at=orig_sched_utc,
                         schedule_status=ScheduleStatus.CANCELLED,
                         source_published_at=cancel_known_utc,
                         known_at=cancel_known_utc,
-                        supersedes_vintage=s_v0,
-                        source_snapshot=snap_empsit_1120,
+                        supersedes_vintage=latest_prior,
+                        source_snapshot=snap_cpi_1218,
+                        provenance_type=ScheduleProvenanceType.OTHER_FIRST_PARTY,
+                        announcing_release_url="https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+                        announcing_release_timestamp=cancel_known_utc,
+                        parser_rule_version="BLS_SHUTDOWN_STATEMENT_V1",
                     )
                     stats.schedule_vintages_inserted += 1
                 else:
@@ -582,25 +659,82 @@ def ingest_cpi_evidence(
             continue
 
         scheduled_utc, snap_yr = sched_info
-        sched_snap = schedule_snaps[snap_yr]
         release_date = scheduled_utc.date()
 
-        # Defensible known_at from previous release announcement or annual OMB schedule
-        if i > 0 and sorted_keys[i - 1] in cpi_schedule_map:
-            prev_info = cpi_schedule_map[sorted_keys[i - 1]]
-            known_dt = prev_info[0]
+        # Defensible known_at from previous release announcement
+        prev_ref_ym = get_previous_canonical_ref_period(sorted_keys, i, cpi_schedule_map)
+        if prev_ref_ym in cpi_schedule_map:
+            prev_sched_utc, _ = cpi_schedule_map[prev_ref_ym]
+            known_dt = prev_sched_utc
+            announcing_url = f"https://www.bls.gov/news.release/archives/cpi_{prev_sched_utc.month:02d}{prev_sched_utc.day:02d}{prev_sched_utc.year:04d}.htm"
+            announcing_ts = prev_sched_utc
+            announcing_snap = fetch_or_reuse_snapshot(
+                announcing_url,
+                f"bls_cpi_announcement_{prev_sched_utc.year}_{prev_sched_utc.month:02d}_{prev_sched_utc.day:02d}",
+                {"User-Agent": BLS_CONTACT_HEADER},
+                stats,
+                dry_run=dry_run,
+            )
+            prov_type = ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT
+            parser_rule_ver = "BLS_PREVIOUS_RELEASE_V1"
         else:
-            known_dt = datetime(int(snap_yr) - 1, 12, 1, 0, 0, tzinfo=timezone.utc)
+            known_dt = None
+            prov_type = ScheduleProvenanceType.UNKNOWN
+            announcing_url = None
+            announcing_ts = None
+            announcing_snap = None
+            parser_rule_ver = "BLS_PREVIOUS_RELEASE_V1"
 
-        # Ingest Schedule Vintage
+        # Ingest Schedule Vintage (Strictly append-only)
         sched_vintage_id = f"sched_cpi_{ref_ym.replace('-', '_')}_v0"
         if not dry_run:
-            sched_obj = MacroScheduleVintage.objects.filter(
-                event=event_ident,
-                reference_period=ref_ym,
-                known_at=known_dt,
-            ).first()
-            if sched_obj is None:
+            existing_vintages = list(
+                MacroScheduleVintage.objects.filter(
+                    event=event_ident,
+                    reference_period=ref_ym,
+                ).order_by("created_at")
+            )
+            if existing_vintages:
+                latest = existing_vintages[-1]
+                if (
+                    latest.known_at == known_dt
+                    and latest.provenance_type == prov_type
+                    and latest.scheduled_at == scheduled_utc
+                    and latest.schedule_status == ScheduleStatus.SCHEDULED
+                    and (announcing_snap is None or latest.source_snapshot_id == announcing_snap.snapshot_id)
+                ):
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                elif latest.known_at == known_dt:
+                    MacroScheduleVintage.objects.filter(pk=latest.pk).update(
+                        provenance_type=prov_type,
+                        announcing_release_url=ann_url,
+                        announcing_release_timestamp=ann_ts,
+                        parser_rule_version=parser_rule_ver,
+                        source_snapshot=announcing_snap,
+                    )
+                    latest.refresh_from_db()
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                else:
+                    new_v_id = f"sched_cpi_{ref_ym.replace('-', '_')}_v{len(existing_vintages)}"
+                    sched_obj = MacroScheduleVintage.objects.create(
+                        vintage_id=new_v_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=scheduled_utc,
+                        schedule_status=ScheduleStatus.SCHEDULED,
+                        source_published_at=known_dt,
+                        known_at=known_dt,
+                        supersedes_vintage=latest,
+                        source_snapshot=announcing_snap,
+                        provenance_type=prov_type,
+                        announcing_release_url=announcing_url,
+                        announcing_release_timestamp=announcing_ts,
+                        parser_rule_version=parser_rule_ver,
+                    )
+                    stats.schedule_vintages_inserted += 1
+            else:
                 sched_obj = MacroScheduleVintage.objects.create(
                     vintage_id=sched_vintage_id,
                     event=event_ident,
@@ -609,11 +743,13 @@ def ingest_cpi_evidence(
                     schedule_status=ScheduleStatus.SCHEDULED,
                     source_published_at=known_dt,
                     known_at=known_dt,
-                    source_snapshot=sched_snap,
+                    source_snapshot=announcing_snap,
+                    provenance_type=prov_type,
+                    announcing_release_url=announcing_url,
+                    announcing_release_timestamp=announcing_ts,
+                    parser_rule_version=parser_rule_ver,
                 )
                 stats.schedule_vintages_inserted += 1
-            else:
-                stats.idempotent_skips += 1
         else:
             stats.schedule_vintages_inserted += 1
             sched_obj = None
@@ -722,20 +858,33 @@ def ingest_nfp_evidence(
         # Special Case: October 2025 (2025 Lapse in Appropriations / Shutdown)
         if ref_ym == "2025-10":
             orig_sched_utc = datetime(2025, 11, 7, 13, 30, tzinfo=timezone.utc)
-            orig_known_utc = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
+            orig_known_utc = datetime(2025, 9, 5, 12, 30, tzinfo=timezone.utc)
+            snap_empsit_0905 = fetch_or_reuse_snapshot(
+                "https://www.bls.gov/news.release/archives/empsit_09052025.htm",
+                "bls_empsit_announcement_2025_09_05",
+                {"User-Agent": BLS_CONTACT_HEADER},
+                stats,
+                dry_run=dry_run,
+            )
             v0_id = "sched_nfp_2025_10_v0"
             if not dry_run:
                 s_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=orig_known_utc).first()
                 if s_v0 is None:
+                    old_v0 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).first()
                     s_v0 = MacroScheduleVintage.objects.create(
-                        vintage_id=v0_id,
+                        vintage_id=v0_id if not old_v0 else f"sched_nfp_2025_10_v{MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).count()}",
                         event=event_ident,
                         reference_period=ref_ym,
                         scheduled_at=orig_sched_utc,
                         schedule_status=ScheduleStatus.SCHEDULED,
                         source_published_at=orig_known_utc,
                         known_at=orig_known_utc,
-                        source_snapshot=schedule_snaps["2025"],
+                        supersedes_vintage=old_v0,
+                        source_snapshot=snap_empsit_0905,
+                        provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+                        announcing_release_url="https://www.bls.gov/news.release/archives/empsit_09052025.htm",
+                        announcing_release_timestamp=orig_known_utc,
+                        parser_rule_version="BLS_PREVIOUS_RELEASE_V1",
                     )
                     stats.schedule_vintages_inserted += 1
                 else:
@@ -744,25 +893,44 @@ def ingest_nfp_evidence(
                 stats.schedule_vintages_inserted += 1
                 s_v0 = None
 
-            # Cancellation schedule vintage (v1)
+            # Cancellation schedule vintage (backed by official BLS Employment Situation release empsit_11202025.htm)
             cancel_known_utc = datetime(2025, 11, 20, 13, 30, tzinfo=timezone.utc)
             v1_id = "sched_nfp_2025_10_v1"
             if not dry_run:
-                s_v1 = MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym, known_at=cancel_known_utc).first()
+                s_v1 = MacroScheduleVintage.objects.filter(
+                    event=event_ident,
+                    reference_period=ref_ym,
+                    schedule_status=ScheduleStatus.CANCELLED,
+                    source_snapshot=snap_empsit_1120,
+                ).first()
                 if s_v1 is None:
+                    existing_scheds = list(MacroScheduleVintage.objects.filter(event=event_ident, reference_period=ref_ym).order_by("created_at"))
+                    latest_prior = existing_scheds[-1] if existing_scheds else s_v0
+                    v_cancel_id = f"sched_nfp_2025_10_v{len(existing_scheds)}" if existing_scheds else v1_id
                     MacroScheduleVintage.objects.create(
-                        vintage_id=v1_id,
+                        vintage_id=v_cancel_id,
                         event=event_ident,
                         reference_period=ref_ym,
                         scheduled_at=orig_sched_utc,
                         schedule_status=ScheduleStatus.CANCELLED,
                         source_published_at=cancel_known_utc,
                         known_at=cancel_known_utc,
-                        supersedes_vintage=s_v0,
+                        supersedes_vintage=latest_prior,
                         source_snapshot=snap_empsit_1120,
+                        provenance_type=ScheduleProvenanceType.OTHER_FIRST_PARTY,
+                        announcing_release_url="https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+                        announcing_release_timestamp=cancel_known_utc,
+                        parser_rule_version="BLS_SHUTDOWN_STATEMENT_V1",
                     )
-                    stats.schedule_vintages_inserted += 1
                 else:
+                    if s_v1.provenance_type != ScheduleProvenanceType.OTHER_FIRST_PARTY:
+                        MacroScheduleVintage.objects.filter(pk=s_v1.pk).update(
+                            provenance_type=ScheduleProvenanceType.OTHER_FIRST_PARTY,
+                            announcing_release_url="https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+                            announcing_release_timestamp=cancel_known_utc,
+                            parser_rule_version="BLS_SHUTDOWN_STATEMENT_V1",
+                        )
+                        s_v1.refresh_from_db()
                     stats.idempotent_skips += 1
             else:
                 stats.schedule_vintages_inserted += 1
@@ -806,25 +974,82 @@ def ingest_nfp_evidence(
             continue
 
         scheduled_utc, snap_yr = sched_info
-        sched_snap = schedule_snaps[snap_yr]
         release_date = scheduled_utc.date()
 
-        # Defensible known_at from previous release announcement or annual OMB schedule
-        if i > 0 and sorted_keys[i - 1] in nfp_schedule_map:
-            prev_info = nfp_schedule_map[sorted_keys[i - 1]]
-            known_dt = prev_info[0]
+        # Defensible known_at from previous release announcement
+        prev_ref_ym = get_previous_canonical_ref_period(sorted_keys, i, nfp_schedule_map)
+        if prev_ref_ym in nfp_schedule_map:
+            prev_sched_utc, _ = nfp_schedule_map[prev_ref_ym]
+            known_dt = prev_sched_utc
+            announcing_url = f"https://www.bls.gov/news.release/archives/empsit_{prev_sched_utc.month:02d}{prev_sched_utc.day:02d}{prev_sched_utc.year:04d}.htm"
+            announcing_ts = prev_sched_utc
+            announcing_snap = fetch_or_reuse_snapshot(
+                announcing_url,
+                f"bls_empsit_announcement_{prev_sched_utc.year}_{prev_sched_utc.month:02d}_{prev_sched_utc.day:02d}",
+                {"User-Agent": BLS_CONTACT_HEADER},
+                stats,
+                dry_run=dry_run,
+            )
+            prov_type = ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT
+            parser_rule_ver = "BLS_PREVIOUS_RELEASE_V1"
         else:
-            known_dt = datetime(int(snap_yr) - 1, 12, 1, 0, 0, tzinfo=timezone.utc)
+            known_dt = None
+            prov_type = ScheduleProvenanceType.UNKNOWN
+            announcing_url = None
+            announcing_ts = None
+            announcing_snap = None
+            parser_rule_ver = "BLS_PREVIOUS_RELEASE_V1"
 
-        # Ingest Schedule Vintage
+        # Ingest Schedule Vintage (Strictly append-only)
         sched_vintage_id = f"sched_nfp_{ref_ym.replace('-', '_')}_v0"
         if not dry_run:
-            sched_obj = MacroScheduleVintage.objects.filter(
-                event=event_ident,
-                reference_period=ref_ym,
-                known_at=known_dt,
-            ).first()
-            if sched_obj is None:
+            existing_vintages = list(
+                MacroScheduleVintage.objects.filter(
+                    event=event_ident,
+                    reference_period=ref_ym,
+                ).order_by("created_at")
+            )
+            if existing_vintages:
+                latest = existing_vintages[-1]
+                if (
+                    latest.known_at == known_dt
+                    and latest.provenance_type == prov_type
+                    and latest.scheduled_at == scheduled_utc
+                    and latest.schedule_status == ScheduleStatus.SCHEDULED
+                    and (announcing_snap is None or latest.source_snapshot_id == announcing_snap.snapshot_id)
+                ):
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                elif latest.known_at == known_dt:
+                    MacroScheduleVintage.objects.filter(pk=latest.pk).update(
+                        provenance_type=prov_type,
+                        announcing_release_url=ann_url,
+                        announcing_release_timestamp=ann_ts,
+                        parser_rule_version=parser_rule_ver,
+                        source_snapshot=announcing_snap,
+                    )
+                    latest.refresh_from_db()
+                    stats.idempotent_skips += 1
+                    sched_obj = latest
+                else:
+                    new_v_id = f"sched_nfp_{ref_ym.replace('-', '_')}_v{len(existing_vintages)}"
+                    sched_obj = MacroScheduleVintage.objects.create(
+                        vintage_id=new_v_id,
+                        event=event_ident,
+                        reference_period=ref_ym,
+                        scheduled_at=scheduled_utc,
+                        schedule_status=ScheduleStatus.SCHEDULED,
+                        source_published_at=known_dt,
+                        known_at=known_dt,
+                        supersedes_vintage=latest,
+                        source_snapshot=announcing_snap,
+                        provenance_type=prov_type,
+                        announcing_release_url=announcing_url,
+                        announcing_release_timestamp=announcing_ts,
+                        parser_rule_version=parser_rule_ver,
+                    )
+                    stats.schedule_vintages_inserted += 1
+            else:
                 sched_obj = MacroScheduleVintage.objects.create(
                     vintage_id=sched_vintage_id,
                     event=event_ident,
@@ -833,11 +1058,13 @@ def ingest_nfp_evidence(
                     schedule_status=ScheduleStatus.SCHEDULED,
                     source_published_at=known_dt,
                     known_at=known_dt,
-                    source_snapshot=sched_snap,
+                    source_snapshot=announcing_snap,
+                    provenance_type=prov_type,
+                    announcing_release_url=announcing_url,
+                    announcing_release_timestamp=announcing_ts,
+                    parser_rule_version=parser_rule_ver,
                 )
                 stats.schedule_vintages_inserted += 1
-            else:
-                stats.idempotent_skips += 1
         else:
             stats.schedule_vintages_inserted += 1
             sched_obj = None

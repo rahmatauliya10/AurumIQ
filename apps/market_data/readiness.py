@@ -1079,14 +1079,43 @@ class XauUsdDataReadinessEvaluator:
                 provenance_map=fomc_prov_map,
             )
 
-            cpi_sched_count = MacroScheduleVintage.objects.filter(event_id="US_CPI", source_snapshot__isnull=False, known_at__isnull=False).count()
-            nfp_sched_count = MacroScheduleVintage.objects.filter(event_id="US_NFP", source_snapshot__isnull=False, known_at__isnull=False).count()
-            fomc_sched_count = MacroScheduleVintage.objects.filter(event_id="FOMC_RATE", source_snapshot__isnull=False, known_at__isnull=False).count()
+            from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+            from apps.market_data.models import ScheduleProvenanceType
+
+            def _evaluate_schedules_provenance(fam_id: str, expected_cnt: int):
+                scheds = (
+                    MacroScheduleVintage.objects.filter(event_id=fam_id)
+                    .select_related("source_snapshot")
+                    .order_by("reference_period", "-known_at")
+                )
+                seen_refs = set()
+                valid_cnt = 0
+                unknown_cnt = 0
+                issues = []
+                for s in scheds:
+                    if s.reference_period in seen_refs:
+                        continue
+                    seen_refs.add(s.reference_period)
+                    is_valid, reason = validate_schedule_vintage_provenance(s)
+                    if is_valid:
+                        valid_cnt += 1
+                    else:
+                        issues.append(f"{s.vintage_id}: {reason}")
+                        if s.provenance_type == ScheduleProvenanceType.UNKNOWN:
+                            unknown_cnt += 1
+                return valid_cnt, unknown_cnt, issues
+
+            cpi_valid_scheds, cpi_unknown_scheds, cpi_sched_issues = _evaluate_schedules_provenance("US_CPI", cpi_cov.expected_count)
+            nfp_valid_scheds, nfp_unknown_scheds, nfp_sched_issues = _evaluate_schedules_provenance("US_NFP", nfp_cov.expected_count)
+            fomc_valid_scheds, fomc_unknown_scheds, fomc_sched_issues = _evaluate_schedules_provenance("FOMC_RATE", fomc_cov.expected_count)
 
             schedules_complete = (
-                cpi_sched_count >= cpi_cov.expected_count
-                and nfp_sched_count >= nfp_cov.expected_count
-                and fomc_sched_count >= fomc_cov.expected_count
+                cpi_valid_scheds >= cpi_cov.expected_count
+                and nfp_valid_scheds >= nfp_cov.expected_count
+                and fomc_valid_scheds >= fomc_cov.expected_count
+                and cpi_unknown_scheds == 0
+                and nfp_unknown_scheds == 0
+                and fomc_unknown_scheds == 0
             )
 
             macro_complete = (

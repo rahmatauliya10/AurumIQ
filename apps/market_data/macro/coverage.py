@@ -71,6 +71,112 @@ def get_canonical_expected_fomc_keys() -> Set[str]:
     return keys
 
 
+def canonical_key_to_ref_period(canonical_key: str) -> str:
+    """
+    Convert canonical key ('US_CPI_YYYY_MM', 'US_NFP_YYYY_MM', 'FOMC_RATE_YYYY_MM_DD')
+    to reference period key ('YYYY-MM' or 'YYYY-MM-DD').
+    """
+    pts = canonical_key.split("_")
+    if len(pts) >= 4 and pts[0] == "US":
+        return f"{int(pts[2]):04d}-{int(pts[3]):02d}"
+    if len(pts) >= 5 and pts[0] == "FOMC":
+        return f"{int(pts[2]):04d}-{int(pts[3]):02d}-{int(pts[4]):02d}"
+    return canonical_key
+
+
+def get_previous_canonical_ref_period(
+    sorted_keys: List[str],
+    i: int,
+    schedule_map: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Resolve the preceding reference period for a canonical event in 'YYYY-MM' format.
+    If i > 0, checks prior elements in sorted_keys that exist in schedule_map (skipping cancelled months).
+    If i == 0, calculates preceding calendar month.
+    """
+    if i > 0 and schedule_map:
+        for idx in range(i - 1, -1, -1):
+            cand = canonical_key_to_ref_period(sorted_keys[idx])
+            if cand in schedule_map:
+                return cand
+
+    first_key = sorted_keys[i] if i < len(sorted_keys) else sorted_keys[0]
+    ref_ym = canonical_key_to_ref_period(first_key)
+    parts = ref_ym.split("-")
+    yr, mo = int(parts[0]), int(parts[1])
+    if mo == 1:
+        return f"{yr - 1:04d}-12"
+    else:
+        return f"{yr:04d}-{mo - 1:02d}"
+
+
+def validate_schedule_vintage_provenance(s: Any) -> Tuple[bool, Optional[str]]:
+    """
+    Validate quality and defensibility of schedule provenance (Spec §33, §34, Prompt §7, §8).
+    Rejects fabricated timestamps, missing snapshots, unsupporting snapshots, or invalid provenance types.
+    """
+    from apps.market_data.models import ScheduleProvenanceType, ScheduleStatus
+
+    prov_type = getattr(s, "provenance_type", None) or ScheduleProvenanceType.UNKNOWN
+    if prov_type == ScheduleProvenanceType.UNKNOWN:
+        return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} has UNKNOWN provenance type."
+
+    snap = getattr(s, "source_snapshot", None)
+    if not snap:
+        return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} lacks supporting SourceSnapshot."
+
+    snap_sha = getattr(snap, "raw_payload_bytes_sha256", "")
+    if not snap_sha or len(snap_sha) != 64:
+        return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} SourceSnapshot has invalid SHA-256."
+
+    known_at = getattr(s, "known_at", None)
+    if not known_at:
+        return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} lacks known_at timestamp."
+
+    sched_at = getattr(s, "scheduled_at", None)
+    status = getattr(s, "schedule_status", ScheduleStatus.SCHEDULED)
+    # Hostility: schedule must not use its own future release timestamp as known_at
+    if sched_at and known_at >= sched_at and status != ScheduleStatus.CANCELLED:
+        return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} known_at ({known_at}) is >= scheduled_at ({sched_at})."
+
+    # Type-specific validation
+    if prov_type == ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT:
+        ann_url = getattr(s, "announcing_release_url", None)
+        ann_ts = getattr(s, "announcing_release_timestamp", None)
+        if not ann_url:
+            return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} missing announcing_release_url."
+        if not ann_ts:
+            return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} missing announcing_release_timestamp."
+        if known_at != ann_ts:
+            return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} known_at does not match announcing release timestamp."
+        # Content containment check if raw_content present
+        raw_bytes = getattr(snap, "raw_content", None)
+        if raw_bytes:
+            text = raw_bytes.decode("utf-8", errors="ignore").lower()
+            event_id = getattr(s, "event_id", "")
+            if event_id == "US_CPI" and "consumer price index" not in text and "cpi" not in text:
+                return False, f"SourceSnapshot for {getattr(s, 'vintage_id', 'N/A')} does not contain CPI announcement text."
+            if event_id == "US_NFP" and "employment situation" not in text and "payroll" not in text:
+                return False, f"SourceSnapshot for {getattr(s, 'vintage_id', 'N/A')} does not contain Employment Situation announcement text."
+
+    elif prov_type == ScheduleProvenanceType.OMB_PFEI_SCHEDULE:
+        src_pub = getattr(s, "source_published_at", None)
+        if not src_pub:
+            return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} with OMB provenance lacks defensible publication date."
+        raw_bytes = getattr(snap, "raw_content", None)
+        if raw_bytes:
+            text = raw_bytes.decode("utf-8", errors="ignore").lower()
+            if "principal federal economic indicators" not in text and "omb" not in text and "oira" not in text:
+                return False, f"SourceSnapshot for {getattr(s, 'vintage_id', 'N/A')} does not contain OMB PFEI schedule text."
+
+    elif prov_type == ScheduleProvenanceType.OTHER_FIRST_PARTY:
+        src_pub = getattr(s, "source_published_at", None)
+        if not src_pub and not known_at:
+            return False, f"Schedule {getattr(s, 'vintage_id', 'N/A')} lacks first-party timestamp."
+
+    return True, None
+
+
 @dataclass(frozen=True)
 class CanonicalCoverageReport:
     """Rigorous set reconciliation coverage report per family."""
@@ -117,6 +223,7 @@ def evaluate_canonical_macro_coverage(
       * Observation status: PUBLISHED, PUBLISHED_LATE_OR_BUNDLED, OFFICIALLY_NOT_PUBLISHED.
       * Missing unexplained and invalid records fail is_complete.
       * Fabricated numeric observations for officially-not-published events fail as INVALID.
+      * Incomplete or missing provenance fails as INVALID.
     """
     if family == "US_CPI":
         expected_set = get_canonical_expected_cpi_keys()
@@ -139,11 +246,10 @@ def evaluate_canonical_macro_coverage(
             # Fabricated numeric value detected! Must fail closed as INVALID
             invalid_set.add("US_CPI_2025_10")
 
-    # Validation: OFFICIALLY_NOT_PUBLISHED must have defensible provenance
-    for k, status in status_map.items():
-        if status == "OFFICIALLY_NOT_PUBLISHED":
-            if prov_map.get(k) is False:
-                invalid_set.add(k)
+    # Validation: Any event with False provenance fails as INVALID
+    for k, prov_ok in prov_map.items():
+        if prov_ok is False:
+            invalid_set.add(k)
 
     # Calculate duplicates
     seen = set()

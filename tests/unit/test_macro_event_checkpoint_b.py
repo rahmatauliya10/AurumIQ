@@ -1072,3 +1072,254 @@ def test_remediation_16_extra_events_do_not_increase_canonical_coverage():
     assert "US_CPI_2099_01" in report.unexpected_keys
     assert report.coverage_pct < 100.0
 
+
+# ==============================================================================
+# SECTION 7 & SECTION 9: HOSTILE PROVENANCE & IMMUTABILITY TESTS
+# ==============================================================================
+
+# 1. Canonical key US_CPI_YYYY_MM is correctly converted before schedule-map lookup
+def test_hostile_01_canonical_key_cpi_conversion():
+    """Canonical key US_CPI_YYYY_MM is converted to YYYY-MM and resolves previous reference period."""
+    from apps.market_data.macro.coverage import canonical_key_to_ref_period, get_previous_canonical_ref_period
+    assert canonical_key_to_ref_period("US_CPI_2024_05") == "2024-05"
+    sorted_keys = ["US_CPI_2024_04", "US_CPI_2024_05"]
+    schedule_map = {"2024-04": ("sched_dt", "2024"), "2024-05": ("sched_dt", "2024")}
+    prev = get_previous_canonical_ref_period(sorted_keys, 1, schedule_map)
+    assert prev == "2024-04"
+    assert prev in schedule_map, "Resolved previous reference period must match schedule_map key!"
+
+
+# 2. Canonical key US_NFP_YYYY_MM is correctly converted before schedule-map lookup
+def test_hostile_02_canonical_key_nfp_conversion():
+    """Canonical key US_NFP_YYYY_MM is converted to YYYY-MM and resolves previous reference period."""
+    from apps.market_data.macro.coverage import canonical_key_to_ref_period, get_previous_canonical_ref_period
+    assert canonical_key_to_ref_period("US_NFP_2024_05") == "2024-05"
+    sorted_keys = ["US_NFP_2024_04", "US_NFP_2024_05"]
+    schedule_map = {"2024-04": ("sched_dt", "2024"), "2024-05": ("sched_dt", "2024")}
+    prev = get_previous_canonical_ref_period(sorted_keys, 1, schedule_map)
+    assert prev == "2024-04"
+    assert prev in schedule_map, "Resolved previous reference period must match schedule_map key!"
+
+
+# 3. No generic December-1 fallback exists
+@pytest.mark.django_db
+def test_hostile_03_no_generic_december_1_fallback():
+    """No schedule vintage may be assigned a generic December 1 fallback date without an authoritative source."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage
+    sched = MacroScheduleVintage(
+        vintage_id="sched_synth_dec1",
+        reference_period="2025-01",
+        scheduled_at=datetime(2025, 2, 12, 13, 30, tzinfo=timezone.utc),
+        known_at=datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc),
+        provenance_type=ScheduleProvenanceType.UNKNOWN,
+        source_snapshot=None,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "UNKNOWN provenance type" in reason or "lacks supporting SourceSnapshot" in reason
+
+
+# 4. BLS previous-release schedule uses the announcing release timestamp
+@pytest.mark.django_db
+def test_hostile_04_bls_previous_release_uses_announcing_timestamp(macro_identities):
+    """BLS previous-release schedule requires known_at to match announcing release publication timestamp."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage, SourceSnapshot
+    cpi = macro_identities["US_CPI"]
+    snap = SourceSnapshot.objects.create(
+        snapshot_id="snap_cpi_prev_test",
+        source_url="https://www.bls.gov/news.release/archives/cpi_04102024.htm",
+        source_name="bls_cpi_prev_test",
+        first_retrieved_at=datetime(2024, 4, 10, 12, 35, tzinfo=timezone.utc),
+        raw_payload_bytes_sha256="a" * 64,
+        raw_content=b"consumer price index scheduled to be released",
+    )
+    ann_ts = datetime(2024, 4, 10, 12, 30, tzinfo=timezone.utc)
+    sched = MacroScheduleVintage(
+        vintage_id="sched_valid_ann",
+        event=cpi,
+        reference_period="2024-04",
+        scheduled_at=datetime(2024, 5, 15, 12, 30, tzinfo=timezone.utc),
+        known_at=ann_ts,
+        announcing_release_url="https://www.bls.gov/news.release/archives/cpi_04102024.htm",
+        announcing_release_timestamp=ann_ts,
+        provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        source_snapshot=snap,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is True, f"Expected valid, got: {reason}"
+
+    sched.known_at = datetime(2024, 5, 1, 0, 0, tzinfo=timezone.utc)
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "known_at does not match announcing release timestamp" in reason
+
+
+# 5. Schedule does NOT use its own future release timestamp as known_at
+@pytest.mark.django_db
+def test_hostile_05_schedule_cannot_use_future_release_timestamp_as_known_at(macro_identities, source_snapshot_fixture):
+    """Schedule vintage cannot use its own future release timestamp as known_at (hostility: known_at >= scheduled_at)."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage
+    cpi = macro_identities["US_CPI"]
+    rel_ts = datetime(2024, 5, 15, 12, 30, tzinfo=timezone.utc)
+    sched = MacroScheduleVintage(
+        vintage_id="sched_future_leak",
+        event=cpi,
+        reference_period="2024-04",
+        scheduled_at=rel_ts,
+        known_at=rel_ts,
+        provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        announcing_release_url="https://www.bls.gov/news.release/archives/cpi_05152024.htm",
+        announcing_release_timestamp=rel_ts,
+        source_snapshot=source_snapshot_fixture,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "is >= scheduled_at" in reason
+
+
+# 6. OMB provenance requires a real SourceSnapshot
+def test_hostile_06_omb_provenance_requires_real_sourcesnapshot():
+    """OMB PFEI schedule provenance requires a real supporting SourceSnapshot with valid SHA-256."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage
+    sched = MacroScheduleVintage(
+        vintage_id="sched_omb_no_snap",
+        reference_period="2025-01",
+        scheduled_at=datetime(2025, 2, 12, 13, 30, tzinfo=timezone.utc),
+        known_at=datetime(2024, 12, 15, 0, 0, tzinfo=timezone.utc),
+        source_published_at=datetime(2024, 12, 15, 0, 0, tzinfo=timezone.utc),
+        provenance_type=ScheduleProvenanceType.OMB_PFEI_SCHEDULE,
+        source_snapshot=None,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "lacks supporting SourceSnapshot" in reason
+
+
+# 7. OMB provenance without defensible publication date fails
+@pytest.mark.django_db
+def test_hostile_07_omb_provenance_without_defensible_publication_date_fails(source_snapshot_fixture):
+    """OMB PFEI schedule provenance without defensible publication date fails validation."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage
+    sched = MacroScheduleVintage(
+        vintage_id="sched_omb_no_pub_date",
+        reference_period="2025-01",
+        scheduled_at=datetime(2025, 2, 12, 13, 30, tzinfo=timezone.utc),
+        known_at=datetime(2024, 12, 15, 0, 0, tzinfo=timezone.utc),
+        source_published_at=None,
+        provenance_type=ScheduleProvenanceType.OMB_PFEI_SCHEDULE,
+        source_snapshot=source_snapshot_fixture,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "lacks defensible publication date" in reason
+
+
+# 8. Fake known_at with a valid-looking timestamp but no supporting source fails
+def test_hostile_08_fake_known_at_without_supporting_source_fails():
+    """A valid-looking known_at timestamp without a supporting SourceSnapshot fails provenance validation."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage
+    sched = MacroScheduleVintage(
+        vintage_id="sched_fake_timestamp",
+        reference_period="2023-05",
+        scheduled_at=datetime(2023, 6, 13, 12, 30, tzinfo=timezone.utc),
+        known_at=datetime(2023, 5, 10, 12, 30, tzinfo=timezone.utc),
+        provenance_type=ScheduleProvenanceType.UNKNOWN,
+        source_snapshot=None,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+
+
+# 9. Source snapshot whose contents do not contain/support the target schedule fails
+@pytest.mark.django_db
+def test_hostile_09_unsupporting_snapshot_content_fails_provenance(macro_identities):
+    """SourceSnapshot whose body does not contain the required release announcement text fails validation."""
+    from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+    from apps.market_data.models import ScheduleProvenanceType, MacroScheduleVintage, SourceSnapshot
+    cpi = macro_identities["US_CPI"]
+    unrelated_snap = SourceSnapshot.objects.create(
+        snapshot_id="snap_unrelated_weather",
+        source_url="https://www.noaa.gov/weather.htm",
+        source_name="noaa_weather_test",
+        first_retrieved_at=datetime(2024, 4, 10, 12, 35, tzinfo=timezone.utc),
+        raw_payload_bytes_sha256="b" * 64,
+        raw_content=b"National Weather Service severe weather bulletin.",
+    )
+    ann_ts = datetime(2024, 4, 10, 12, 30, tzinfo=timezone.utc)
+    sched = MacroScheduleVintage(
+        vintage_id="sched_unrelated_content",
+        event=cpi,
+        reference_period="2024-04",
+        scheduled_at=datetime(2024, 5, 15, 12, 30, tzinfo=timezone.utc),
+        known_at=ann_ts,
+        announcing_release_url="https://www.noaa.gov/weather.htm",
+        announcing_release_timestamp=ann_ts,
+        provenance_type=ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+        source_snapshot=unrelated_snap,
+    )
+    is_valid, reason = validate_schedule_vintage_provenance(sched)
+    assert is_valid is False
+    assert "does not contain CPI announcement text" in reason
+
+
+# 10. UNKNOWN schedule provenance keeps macro readiness fail-closed
+def test_hostile_10_unknown_provenance_keeps_macro_readiness_fail_closed():
+    """Even if counts match expected 77, if provenance_map indicates UNKNOWN, is_complete is False."""
+    keys = list(get_canonical_expected_cpi_keys())
+    prov_map = {k: True for k in keys}
+    prov_map["US_CPI_2023_08"] = False
+
+    report = evaluate_canonical_macro_coverage(
+        "US_CPI",
+        keys,
+        provenance_map=prov_map,
+    )
+    assert report.is_complete is False
+    assert report.provenance_coverage_complete is False
+    assert report.invalid_count >= 1
+
+
+# 11. Historical evidence cannot be silently deleted or overwritten
+@pytest.mark.django_db
+def test_hostile_11_historical_evidence_cannot_be_silently_overwritten(macro_identities, source_snapshot_fixture):
+    """MacroScheduleVintage and MacroObservationVintage raise ValueError on updating existing instances."""
+    cpi = macro_identities["US_CPI"]
+    sched = MacroScheduleVintage.objects.create(
+        vintage_id="sched_immutability_test",
+        event=cpi,
+        reference_period="2024-01",
+        scheduled_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        known_at=datetime(2024, 1, 11, 13, 30, tzinfo=timezone.utc),
+        source_snapshot=source_snapshot_fixture,
+    )
+    sched.scheduled_at = datetime(2024, 2, 14, 13, 30, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="immutable and append-only"):
+        sched.save()
+
+    obs = MacroObservationVintage.objects.create(
+        vintage_id="obs_immutability_test",
+        event=cpi,
+        schedule_vintage=sched,
+        reference_period="2024-01",
+        revision_number=0,
+        observation_date=date(2024, 1, 1),
+        vintage_date=date(2024, 2, 13),
+        scheduled_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        source_published_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        first_retrieved_at=datetime(2024, 2, 13, 13, 35, tzinfo=timezone.utc),
+        known_at=datetime(2024, 2, 13, 13, 30, tzinfo=timezone.utc),
+        raw_value="+0.3%",
+        level_value=Decimal("308.417"),
+        unit="PERCENT_MOM",
+        source_snapshot=source_snapshot_fixture,
+    )
+    obs.raw_value = "+0.5%"
+    with pytest.raises(ValueError, match="immutable and append-only"):
+        obs.save()
+

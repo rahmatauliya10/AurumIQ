@@ -196,6 +196,13 @@ class PublicationStatus(models.TextChoices):
     INVALID = "INVALID", "Invalid"
 
 
+class ScheduleProvenanceType(models.TextChoices):
+    BLS_PREVIOUS_RELEASE_ANNOUNCEMENT = "BLS_PREVIOUS_RELEASE_ANNOUNCEMENT", "BLS Previous Release Announcement"
+    OMB_PFEI_SCHEDULE = "OMB_PFEI_SCHEDULE", "OMB PFEI Schedule"
+    OTHER_FIRST_PARTY = "OTHER_FIRST_PARTY", "Other First Party"
+    UNKNOWN = "UNKNOWN", "Unknown"
+
+
 
 class MacroEventIdentity(models.Model):
     """Canonical registry of macroeconomic event families."""
@@ -278,6 +285,15 @@ class MacroScheduleVintage(models.Model):
         on_delete=models.PROTECT,
         related_name="schedules",
     )
+    provenance_type = models.CharField(
+        max_length=48,
+        choices=ScheduleProvenanceType.choices,
+        default=ScheduleProvenanceType.UNKNOWN,
+        db_index=True,
+    )
+    announcing_release_url = models.URLField(max_length=1024, null=True, blank=True)
+    announcing_release_timestamp = models.DateTimeField(null=True, blank=True)
+    parser_rule_version = models.CharField(max_length=64, default="BLS_PREVIOUS_RELEASE_V1")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -293,12 +309,23 @@ class MacroScheduleVintage(models.Model):
         indexes = [
             models.Index(fields=["event", "reference_period", "known_at"]),
             models.Index(fields=["known_at"]),
+            models.Index(fields=["provenance_type"]),
         ]
 
     def clean(self):
         super().clean()
         if self.schedule_status == ScheduleStatus.CANCELLED and not self.source_snapshot_id:
             raise ValidationError("Cancellation schedule vintage requires authoritative source_snapshot.")
+        if self.known_at and self.scheduled_at and self.known_at >= self.scheduled_at and self.schedule_status != ScheduleStatus.CANCELLED:
+            raise ValidationError(f"Schedule vintage known_at ({self.known_at}) must be strictly prior to scheduled_at ({self.scheduled_at}).")
+        if self.provenance_type in (
+            ScheduleProvenanceType.BLS_PREVIOUS_RELEASE_ANNOUNCEMENT,
+            ScheduleProvenanceType.OMB_PFEI_SCHEDULE,
+            ScheduleProvenanceType.OTHER_FIRST_PARTY,
+        ) and not self.source_snapshot_id:
+            raise ValidationError(f"Provenanced schedule vintage ({self.provenance_type}) requires authoritative source_snapshot.")
+        if self.provenance_type == ScheduleProvenanceType.OMB_PFEI_SCHEDULE and not self.source_published_at:
+            raise ValidationError("OMB PFEI Schedule provenance requires a defensible source publication date.")
 
     def save(self, *args, **kwargs):
         if self.pk and MacroScheduleVintage.objects.filter(pk=self.pk).exists():
