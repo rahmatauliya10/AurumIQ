@@ -1024,7 +1024,127 @@ class XauUsdDataReadinessEvaluator:
             volume_classification = "UNAVAILABLE"
 
         # Auxiliary Evidence
-        macro_count = override_macro_count if override_macro_count is not None else 0
+        if override_macro_count is not None:
+            macro_count = override_macro_count
+            macro_complete = (override_macro_count > 0)
+            macro_report_reasons = []
+        else:
+            from apps.market_data.macro.coverage import evaluate_canonical_macro_coverage
+            from apps.market_data.models import MacroObservationVintage, MacroScheduleVintage
+
+            macro_count = MacroObservationVintage.objects.count()
+            
+            cpi_rows = list(MacroObservationVintage.objects.filter(event_id="US_CPI").values(
+                "reference_period", "publication_status", "level_value", "source_snapshot_id", "known_at"
+            ))
+            cpi_keys = [f"US_CPI_{r['reference_period'].replace('-', '_')}" for r in cpi_rows]
+            cpi_status_map = {f"US_CPI_{r['reference_period'].replace('-', '_')}": r["publication_status"] for r in cpi_rows}
+            cpi_num_map = {f"US_CPI_{r['reference_period'].replace('-', '_')}": r["level_value"] for r in cpi_rows}
+            cpi_prov_map = {f"US_CPI_{r['reference_period'].replace('-', '_')}": bool(r["source_snapshot_id"] and r["known_at"]) for r in cpi_rows}
+            cpi_cov = evaluate_canonical_macro_coverage(
+                "US_CPI",
+                cpi_keys,
+                observation_status_map=cpi_status_map,
+                numeric_values_map=cpi_num_map,
+                provenance_map=cpi_prov_map,
+            )
+
+            nfp_rows = list(MacroObservationVintage.objects.filter(event_id="US_NFP").values(
+                "reference_period", "publication_status", "level_value", "source_snapshot_id", "known_at"
+            ))
+            nfp_keys = [f"US_NFP_{r['reference_period'].replace('-', '_')}" for r in nfp_rows]
+            nfp_status_map = {f"US_NFP_{r['reference_period'].replace('-', '_')}": r["publication_status"] for r in nfp_rows}
+            nfp_num_map = {f"US_NFP_{r['reference_period'].replace('-', '_')}": r["level_value"] for r in nfp_rows}
+            nfp_prov_map = {f"US_NFP_{r['reference_period'].replace('-', '_')}": bool(r["source_snapshot_id"] and r["known_at"]) for r in nfp_rows}
+            nfp_cov = evaluate_canonical_macro_coverage(
+                "US_NFP",
+                nfp_keys,
+                observation_status_map=nfp_status_map,
+                numeric_values_map=nfp_num_map,
+                provenance_map=nfp_prov_map,
+            )
+
+            fomc_rows = list(MacroObservationVintage.objects.filter(event_id="FOMC_RATE").values(
+                "reference_period", "publication_status", "level_value", "source_snapshot_id", "known_at"
+            ))
+            fomc_keys = [f"FOMC_RATE_{r['reference_period'].replace('-', '_')}" for r in fomc_rows]
+            fomc_status_map = {f"FOMC_RATE_{r['reference_period'].replace('-', '_')}": r["publication_status"] for r in fomc_rows}
+            fomc_num_map = {f"FOMC_RATE_{r['reference_period'].replace('-', '_')}": r["level_value"] for r in fomc_rows}
+            fomc_prov_map = {f"FOMC_RATE_{r['reference_period'].replace('-', '_')}": bool(r["source_snapshot_id"] and r["known_at"]) for r in fomc_rows}
+            fomc_cov = evaluate_canonical_macro_coverage(
+                "FOMC_RATE",
+                fomc_keys,
+                observation_status_map=fomc_status_map,
+                numeric_values_map=fomc_num_map,
+                provenance_map=fomc_prov_map,
+            )
+
+            from apps.market_data.macro.coverage import validate_schedule_vintage_provenance
+            from apps.market_data.models import ScheduleProvenanceType
+
+            def _evaluate_schedules_provenance(fam_id: str, expected_cnt: int):
+                scheds = (
+                    MacroScheduleVintage.objects.filter(event_id=fam_id)
+                    .select_related("source_snapshot")
+                    .order_by("reference_period", "-known_at")
+                )
+                seen_refs = set()
+                valid_cnt = 0
+                unknown_cnt = 0
+                issues = []
+                for s in scheds:
+                    if s.reference_period in seen_refs:
+                        continue
+                    seen_refs.add(s.reference_period)
+                    is_valid, reason = validate_schedule_vintage_provenance(s)
+                    if is_valid:
+                        valid_cnt += 1
+                    else:
+                        issues.append(f"{s.vintage_id}: {reason}")
+                        if s.provenance_type == ScheduleProvenanceType.UNKNOWN:
+                            unknown_cnt += 1
+                return valid_cnt, unknown_cnt, issues
+
+            cpi_valid_scheds, cpi_unknown_scheds, cpi_sched_issues = _evaluate_schedules_provenance("US_CPI", cpi_cov.expected_count)
+            nfp_valid_scheds, nfp_unknown_scheds, nfp_sched_issues = _evaluate_schedules_provenance("US_NFP", nfp_cov.expected_count)
+            fomc_valid_scheds, fomc_unknown_scheds, fomc_sched_issues = _evaluate_schedules_provenance("FOMC_RATE", fomc_cov.expected_count)
+
+            schedules_complete = (
+                cpi_valid_scheds >= cpi_cov.expected_count
+                and nfp_valid_scheds >= nfp_cov.expected_count
+                and fomc_valid_scheds >= fomc_cov.expected_count
+                and cpi_unknown_scheds == 0
+                and nfp_unknown_scheds == 0
+                and fomc_unknown_scheds == 0
+            )
+
+            macro_complete = (
+                cpi_cov.is_complete
+                and nfp_cov.is_complete
+                and fomc_cov.is_complete
+                and cpi_cov.lifecycle_coverage_complete
+                and nfp_cov.lifecycle_coverage_complete
+                and fomc_cov.lifecycle_coverage_complete
+                and cpi_cov.provenance_coverage_complete
+                and nfp_cov.provenance_coverage_complete
+                and fomc_cov.provenance_coverage_complete
+                and schedules_complete
+            )
+            macro_report_reasons = []
+            if not macro_complete:
+                missing_details = []
+                if not fomc_cov.is_complete:
+                    missing_details.append(f"FOMC_RATE {fomc_cov.matched_count}/{fomc_cov.expected_count}")
+                if not cpi_cov.is_complete:
+                    missing_details.append(f"US_CPI {cpi_cov.matched_count}/{cpi_cov.expected_count}")
+                if not nfp_cov.is_complete:
+                    missing_details.append(f"US_NFP {nfp_cov.matched_count}/{nfp_cov.expected_count}")
+                if not schedules_complete:
+                    missing_details.append("schedules incomplete or missing provenance")
+                macro_report_reasons.append(
+                    f"Auxiliary evidence incomplete: Canonical macro coverage incomplete ({', '.join(missing_details) if missing_details else 'no records'}). Macro feed remains MISSING."
+                )
+
         health_count = ProviderHealthSnapshot.objects.filter(listing__instrument=instrument).count()
         quote_count = override_quote_count if override_quote_count is not None else 0
         friction_status = override_friction_status or "EMPIRICAL_FRICTION_NOT_CONFIGURED"
@@ -1160,10 +1280,15 @@ class XauUsdDataReadinessEvaluator:
         else:
             # Holistic evidence-driven calibration readiness gate (R1-R20, Spec §33, §34)
             # Never return generic PASS if auxiliary evidence is missing.
-            if macro_count == 0:
+            if not macro_complete:
                 decision = "CANDLES_READY_MACRO_MISSING"
                 passed = False
-                reasons.append("Auxiliary evidence incomplete: Point-in-time macro event coverage is 0. Macro feed remains MISSING.")
+                if override_macro_count is not None and override_macro_count == 0:
+                    reasons.append("Auxiliary evidence incomplete: Point-in-time macro event coverage is 0. Macro feed remains MISSING.")
+                elif macro_report_reasons:
+                    reasons.extend(macro_report_reasons)
+                else:
+                    reasons.append("Auxiliary evidence incomplete: Point-in-time macro event coverage is incomplete. Macro feed remains MISSING.")
             elif friction_status != "EMPIRICAL_FRICTION_CONFIGURED":
                 decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
                 passed = False

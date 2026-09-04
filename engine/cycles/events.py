@@ -104,19 +104,20 @@ def evaluate_macro_event_risk(
                     active_event_name = f"{event.name} (Revision)"
 
         # Point-in-Time value resolution (A26)
-        rel_utc = event.released_at.astimezone(timezone.utc) if event.released_at.tzinfo else event.released_at.replace(tzinfo=timezone.utc)
-        if as_of_utc >= rel_utc:
-            effective_time = rel_utc
-            val = event.initial_value
-            if event.revised_at is not None:
-                rev_utc = event.revised_at.astimezone(timezone.utc) if event.revised_at.tzinfo else event.revised_at.replace(tzinfo=timezone.utc)
-                if as_of_utc >= rev_utc:
-                    val = event.revised_value or event.initial_value
-                    effective_time = rev_utc
+        if event.released_at is not None:
+            rel_utc = event.released_at.astimezone(timezone.utc) if event.released_at.tzinfo else event.released_at.replace(tzinfo=timezone.utc)
+            if as_of_utc >= rel_utc:
+                effective_time = rel_utc
+                val = event.initial_value
+                if event.revised_at is not None:
+                    rev_utc = event.revised_at.astimezone(timezone.utc) if event.revised_at.tzinfo else event.revised_at.replace(tzinfo=timezone.utc)
+                    if as_of_utc >= rev_utc:
+                        val = event.revised_value or event.initial_value
+                        effective_time = rev_utc
 
-            if latest_past_event_time is None or effective_time >= latest_past_event_time:
-                latest_past_event_time = effective_time
-                latest_pit_value = val
+                if latest_past_event_time is None or effective_time >= latest_past_event_time:
+                    latest_past_event_time = effective_time
+                    latest_pit_value = val
 
     return MacroEventContext(
         is_in_blackout=is_in_blackout,

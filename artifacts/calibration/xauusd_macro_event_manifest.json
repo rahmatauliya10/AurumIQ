@@ -1,0 +1,858 @@
+{
+  "schema_version": "2.0.0",
+  "instrument": "XAUUSD",
+  "coverage_start": "2020-04-07T00:00:00Z",
+  "coverage_end": "2026-09-01T00:00:00Z",
+  "generated_at": "2026-09-04T16:26:36.847601+00:00",
+  "required_event_families": [
+    "FOMC_RATE",
+    "US_NFP",
+    "US_CPI"
+  ],
+  "event_lifecycle_coverage": {
+    "FOMC_RATE": {
+      "expected": 51,
+      "complete": 51,
+      "incomplete": 0
+    },
+    "US_NFP": {
+      "expected": 76,
+      "complete": 76,
+      "incomplete": 0
+    },
+    "US_CPI": {
+      "expected": 77,
+      "complete": 77,
+      "incomplete": 0
+    },
+    "TOTAL": {
+      "expected": 204,
+      "complete": 204,
+      "incomplete": 0
+    }
+  },
+  "schedule_coverage": {
+    "FOMC_RATE": {
+      "scheduled": 51,
+      "rescheduled": 0,
+      "cancelled": 0,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "US_NFP": {
+      "scheduled": 152,
+      "rescheduled": 0,
+      "cancelled": 1,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "US_CPI": {
+      "scheduled": 154,
+      "rescheduled": 0,
+      "cancelled": 2,
+      "unknown_known_at": 0,
+      "missing_snapshot": 0
+    },
+    "TOTAL": {
+      "scheduled": 357,
+      "rescheduled": 0,
+      "cancelled": 3
+    }
+  },
+  "observation_coverage": {
+    "FOMC_RATE": {
+      "published": 51,
+      "published_late_or_bundled": 0,
+      "officially_not_published": 0,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "US_NFP": {
+      "published": 75,
+      "published_late_or_bundled": 1,
+      "officially_not_published": 0,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "US_CPI": {
+      "published": 76,
+      "published_late_or_bundled": 0,
+      "officially_not_published": 1,
+      "missing_unexplained": 0,
+      "invalid": 0
+    },
+    "TOTAL": {
+      "published": 202,
+      "published_late_or_bundled": 1,
+      "officially_not_published": 1,
+      "missing_unexplained": 0,
+      "invalid": 0
+    }
+  },
+  "provenance_coverage": {
+    "unknown_known_at": 0,
+    "missing_snapshots": 0,
+    "duplicates": 0,
+    "unexpected_extras": 0
+  },
+  "provenance_reconciliation": {
+    "bls_schedules_total": 309,
+    "BLS_PREVIOUS_RELEASE_ANNOUNCEMENT": 153,
+    "OMB_PFEI_SCHEDULE": 0,
+    "OTHER_FIRST_PARTY": 2,
+    "UNKNOWN": 154,
+    "reconciled_sum": 309,
+    "sample_prev_cpi": [
+      {
+        "reference_period": "2026-07",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/cpi_07142026.htm",
+        "known_at": "2026-07-14 12:30:00+00:00"
+      },
+      {
+        "reference_period": "2026-06",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/cpi_06102026.htm",
+        "known_at": "2026-06-10 12:30:00+00:00"
+      },
+      {
+        "reference_period": "2026-05",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/cpi_05122026.htm",
+        "known_at": "2026-05-12 12:30:00+00:00"
+      }
+    ],
+    "sample_prev_nfp": [
+      {
+        "reference_period": "2026-07",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/empsit_07022026.htm",
+        "known_at": "2026-07-02 12:30:00+00:00"
+      },
+      {
+        "reference_period": "2026-06",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/empsit_06052026.htm",
+        "known_at": "2026-06-05 12:30:00+00:00"
+      },
+      {
+        "reference_period": "2026-05",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/empsit_05082026.htm",
+        "known_at": "2026-05-08 12:30:00+00:00"
+      }
+    ],
+    "sample_other_first_party": [
+      {
+        "event_id": "US_CPI",
+        "reference_period": "2025-10",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "known_at": "2025-12-18 13:30:00+00:00"
+      },
+      {
+        "event_id": "US_NFP",
+        "reference_period": "2025-10",
+        "announcing_release_url": "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "known_at": "2025-11-20 13:30:00+00:00"
+      }
+    ],
+    "unknown_records": [
+      [
+        "US_NFP",
+        "2026-07"
+      ],
+      [
+        "US_NFP",
+        "2026-06"
+      ],
+      [
+        "US_NFP",
+        "2026-05"
+      ],
+      [
+        "US_NFP",
+        "2026-04"
+      ],
+      [
+        "US_NFP",
+        "2026-03"
+      ],
+      [
+        "US_NFP",
+        "2026-02"
+      ],
+      [
+        "US_NFP",
+        "2026-01"
+      ],
+      [
+        "US_NFP",
+        "2025-12"
+      ],
+      [
+        "US_CPI",
+        "2026-07"
+      ],
+      [
+        "US_CPI",
+        "2026-06"
+      ],
+      [
+        "US_CPI",
+        "2026-05"
+      ],
+      [
+        "US_CPI",
+        "2026-04"
+      ],
+      [
+        "US_CPI",
+        "2026-03"
+      ],
+      [
+        "US_CPI",
+        "2026-02"
+      ],
+      [
+        "US_CPI",
+        "2026-01"
+      ],
+      [
+        "US_CPI",
+        "2025-12"
+      ],
+      [
+        "US_CPI",
+        "2025-10"
+      ],
+      [
+        "US_NFP",
+        "2025-11"
+      ],
+      [
+        "US_NFP",
+        "2025-10"
+      ],
+      [
+        "US_NFP",
+        "2025-09"
+      ],
+      [
+        "US_NFP",
+        "2025-08"
+      ],
+      [
+        "US_NFP",
+        "2025-07"
+      ],
+      [
+        "US_NFP",
+        "2025-06"
+      ],
+      [
+        "US_NFP",
+        "2025-05"
+      ],
+      [
+        "US_NFP",
+        "2025-04"
+      ],
+      [
+        "US_NFP",
+        "2025-03"
+      ],
+      [
+        "US_NFP",
+        "2025-02"
+      ],
+      [
+        "US_NFP",
+        "2025-01"
+      ],
+      [
+        "US_NFP",
+        "2024-12"
+      ],
+      [
+        "US_CPI",
+        "2025-11"
+      ],
+      [
+        "US_CPI",
+        "2025-10"
+      ],
+      [
+        "US_CPI",
+        "2025-09"
+      ],
+      [
+        "US_CPI",
+        "2025-08"
+      ],
+      [
+        "US_CPI",
+        "2025-07"
+      ],
+      [
+        "US_CPI",
+        "2025-06"
+      ],
+      [
+        "US_CPI",
+        "2025-05"
+      ],
+      [
+        "US_CPI",
+        "2025-04"
+      ],
+      [
+        "US_CPI",
+        "2025-03"
+      ],
+      [
+        "US_CPI",
+        "2025-02"
+      ],
+      [
+        "US_CPI",
+        "2025-01"
+      ],
+      [
+        "US_CPI",
+        "2024-12"
+      ],
+      [
+        "US_NFP",
+        "2024-11"
+      ],
+      [
+        "US_NFP",
+        "2024-10"
+      ],
+      [
+        "US_NFP",
+        "2024-09"
+      ],
+      [
+        "US_NFP",
+        "2024-08"
+      ],
+      [
+        "US_NFP",
+        "2024-07"
+      ],
+      [
+        "US_NFP",
+        "2024-06"
+      ],
+      [
+        "US_NFP",
+        "2024-05"
+      ],
+      [
+        "US_NFP",
+        "2024-04"
+      ],
+      [
+        "US_NFP",
+        "2024-03"
+      ],
+      [
+        "US_NFP",
+        "2024-02"
+      ],
+      [
+        "US_NFP",
+        "2024-01"
+      ],
+      [
+        "US_NFP",
+        "2023-12"
+      ],
+      [
+        "US_CPI",
+        "2024-11"
+      ],
+      [
+        "US_CPI",
+        "2024-10"
+      ],
+      [
+        "US_CPI",
+        "2024-09"
+      ],
+      [
+        "US_CPI",
+        "2024-08"
+      ],
+      [
+        "US_CPI",
+        "2024-07"
+      ],
+      [
+        "US_CPI",
+        "2024-06"
+      ],
+      [
+        "US_CPI",
+        "2024-05"
+      ],
+      [
+        "US_CPI",
+        "2024-04"
+      ],
+      [
+        "US_CPI",
+        "2024-03"
+      ],
+      [
+        "US_CPI",
+        "2024-02"
+      ],
+      [
+        "US_CPI",
+        "2024-01"
+      ],
+      [
+        "US_CPI",
+        "2023-12"
+      ],
+      [
+        "US_NFP",
+        "2023-11"
+      ],
+      [
+        "US_NFP",
+        "2023-10"
+      ],
+      [
+        "US_NFP",
+        "2023-09"
+      ],
+      [
+        "US_NFP",
+        "2023-08"
+      ],
+      [
+        "US_NFP",
+        "2023-07"
+      ],
+      [
+        "US_NFP",
+        "2023-06"
+      ],
+      [
+        "US_NFP",
+        "2023-05"
+      ],
+      [
+        "US_NFP",
+        "2023-04"
+      ],
+      [
+        "US_NFP",
+        "2023-03"
+      ],
+      [
+        "US_NFP",
+        "2023-02"
+      ],
+      [
+        "US_NFP",
+        "2023-01"
+      ],
+      [
+        "US_NFP",
+        "2022-12"
+      ],
+      [
+        "US_CPI",
+        "2023-11"
+      ],
+      [
+        "US_CPI",
+        "2023-10"
+      ],
+      [
+        "US_CPI",
+        "2023-09"
+      ],
+      [
+        "US_CPI",
+        "2023-08"
+      ],
+      [
+        "US_CPI",
+        "2023-07"
+      ],
+      [
+        "US_CPI",
+        "2023-06"
+      ],
+      [
+        "US_CPI",
+        "2023-05"
+      ],
+      [
+        "US_CPI",
+        "2023-04"
+      ],
+      [
+        "US_CPI",
+        "2023-03"
+      ],
+      [
+        "US_CPI",
+        "2023-02"
+      ],
+      [
+        "US_CPI",
+        "2023-01"
+      ],
+      [
+        "US_CPI",
+        "2022-12"
+      ],
+      [
+        "US_NFP",
+        "2022-11"
+      ],
+      [
+        "US_NFP",
+        "2022-10"
+      ],
+      [
+        "US_NFP",
+        "2022-09"
+      ],
+      [
+        "US_NFP",
+        "2022-08"
+      ],
+      [
+        "US_NFP",
+        "2022-07"
+      ],
+      [
+        "US_NFP",
+        "2022-06"
+      ],
+      [
+        "US_NFP",
+        "2022-05"
+      ],
+      [
+        "US_NFP",
+        "2022-04"
+      ],
+      [
+        "US_NFP",
+        "2022-03"
+      ],
+      [
+        "US_NFP",
+        "2022-02"
+      ],
+      [
+        "US_NFP",
+        "2022-01"
+      ],
+      [
+        "US_NFP",
+        "2021-12"
+      ],
+      [
+        "US_CPI",
+        "2022-11"
+      ],
+      [
+        "US_CPI",
+        "2022-10"
+      ],
+      [
+        "US_CPI",
+        "2022-09"
+      ],
+      [
+        "US_CPI",
+        "2022-08"
+      ],
+      [
+        "US_CPI",
+        "2022-07"
+      ],
+      [
+        "US_CPI",
+        "2022-06"
+      ],
+      [
+        "US_CPI",
+        "2022-05"
+      ],
+      [
+        "US_CPI",
+        "2022-04"
+      ],
+      [
+        "US_CPI",
+        "2022-03"
+      ],
+      [
+        "US_CPI",
+        "2022-02"
+      ],
+      [
+        "US_CPI",
+        "2022-01"
+      ],
+      [
+        "US_CPI",
+        "2021-12"
+      ],
+      [
+        "US_NFP",
+        "2021-11"
+      ],
+      [
+        "US_NFP",
+        "2021-10"
+      ],
+      [
+        "US_NFP",
+        "2021-09"
+      ],
+      [
+        "US_NFP",
+        "2021-08"
+      ],
+      [
+        "US_NFP",
+        "2021-07"
+      ],
+      [
+        "US_NFP",
+        "2021-06"
+      ],
+      [
+        "US_NFP",
+        "2021-05"
+      ],
+      [
+        "US_NFP",
+        "2021-04"
+      ],
+      [
+        "US_NFP",
+        "2021-03"
+      ],
+      [
+        "US_NFP",
+        "2021-02"
+      ],
+      [
+        "US_NFP",
+        "2021-01"
+      ],
+      [
+        "US_NFP",
+        "2020-12"
+      ],
+      [
+        "US_CPI",
+        "2021-11"
+      ],
+      [
+        "US_CPI",
+        "2021-10"
+      ],
+      [
+        "US_CPI",
+        "2021-09"
+      ],
+      [
+        "US_CPI",
+        "2021-08"
+      ],
+      [
+        "US_CPI",
+        "2021-07"
+      ],
+      [
+        "US_CPI",
+        "2021-06"
+      ],
+      [
+        "US_CPI",
+        "2021-05"
+      ],
+      [
+        "US_CPI",
+        "2021-04"
+      ],
+      [
+        "US_CPI",
+        "2021-03"
+      ],
+      [
+        "US_CPI",
+        "2021-02"
+      ],
+      [
+        "US_CPI",
+        "2021-01"
+      ],
+      [
+        "US_CPI",
+        "2020-12"
+      ],
+      [
+        "US_NFP",
+        "2020-11"
+      ],
+      [
+        "US_NFP",
+        "2020-10"
+      ],
+      [
+        "US_NFP",
+        "2020-09"
+      ],
+      [
+        "US_NFP",
+        "2020-08"
+      ],
+      [
+        "US_NFP",
+        "2020-07"
+      ],
+      [
+        "US_NFP",
+        "2020-06"
+      ],
+      [
+        "US_NFP",
+        "2020-05"
+      ],
+      [
+        "US_NFP",
+        "2020-04"
+      ],
+      [
+        "US_CPI",
+        "2020-11"
+      ],
+      [
+        "US_CPI",
+        "2020-10"
+      ],
+      [
+        "US_CPI",
+        "2020-09"
+      ],
+      [
+        "US_CPI",
+        "2020-08"
+      ],
+      [
+        "US_CPI",
+        "2020-07"
+      ],
+      [
+        "US_CPI",
+        "2020-06"
+      ],
+      [
+        "US_CPI",
+        "2020-05"
+      ],
+      [
+        "US_CPI",
+        "2020-04"
+      ],
+      [
+        "US_CPI",
+        "2020-03"
+      ]
+    ]
+  },
+  "schedule_vintage_breakdown": {
+    "active_required_schedules": 204,
+    "superseded_historical_vintages": 156,
+    "provenance_assertions": 206,
+    "active_unknown": 0,
+    "superseded_unknown": 154
+  },
+  "shutdown_2025_chronology": {
+    "US_CPI_2025_10": {
+      "original_schedule": {
+        "scheduled_at": "2025-11-13T13:30:00+00:00",
+        "known_at": "2025-10-24T12:30:00+00:00",
+        "status": "SCHEDULED",
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_10242025.htm",
+        "source_sha256": "ab7e0e431246f6f983575529cf4eae509706963fa893b6156576a2c320556397"
+      },
+      "cancellation": {
+        "scheduled_at": "2025-11-13T13:30:00+00:00",
+        "known_at": "2025-12-18T13:30:00+00:00",
+        "status": "CANCELLED",
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "source_sha256": "85627e2f11db4d58fbdebc5877b27e71022c0ef17db77ddfb04497c4e33105b5"
+      },
+      "observation": {
+        "publication_status": "OFFICIALLY_NOT_PUBLISHED",
+        "non_publication_reason": "2025_LAPSE_IN_APPROPRIATIONS",
+        "source_published_at": "2025-12-18T13:30:00+00:00",
+        "known_at": "2025-12-18T13:30:00+00:00",
+        "numeric_level_value": null,
+        "source_url": "https://www.bls.gov/news.release/archives/cpi_12182025.htm",
+        "source_sha256": "85627e2f11db4d58fbdebc5877b27e71022c0ef17db77ddfb04497c4e33105b5"
+      }
+    },
+    "US_NFP_2025_10": {
+      "original_schedule": {
+        "scheduled_at": "2025-11-07T13:30:00+00:00",
+        "known_at": "2025-09-05T12:30:00+00:00",
+        "status": "SCHEDULED",
+        "source_url": "https://www.bls.gov/news.release/archives/empsit_09052025.htm",
+        "source_sha256": "ca6186dccc99238b7a30b671c931cef474d4ed4484d6bb8e0d425e2f9a04713a"
+      },
+      "cancellation": {
+        "scheduled_at": "2025-11-07T13:30:00+00:00",
+        "known_at": "2025-11-20T13:30:00+00:00",
+        "status": "CANCELLED",
+        "source_url": "https://www.bls.gov/news.release/archives/empsit_11202025.htm",
+        "source_sha256": "32423903015128e72093392cfaf331a097db1aeb2e8e7d300bec15eef9b6dd8e"
+      },
+      "observation": {
+        "publication_status": "PUBLISHED_LATE_OR_BUNDLED",
+        "source_published_at": "2025-12-16T13:30:00+00:00",
+        "known_at": "2025-12-16T13:30:00+00:00",
+        "raw_value": "-105K",
+        "level_value": "159488.0000",
+        "derived_change_value": "-105.0000",
+        "source_url": "https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=PAYEMS&vintage_date=2025-12-16",
+        "source_sha256": "c449c146f4e381de6199f27ccd9a742a4a3210e924f936333f74af68885b1281"
+      }
+    }
+  },
+  "macro_evidence_fingerprint": "d9d2ebb4c6ec11fafc4ffce35090d64a5eaa05a3e024da4148b3900cf6370823",
+  "candle_total": 3096312,
+  "phase6_15m_dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "readiness_evidence_fingerprint": "d5d8f7a20cf820f177ccafb99d60d09cf503e5a80eee95a89bc7cf02334764b9",
+  "ingestion_statistics": {
+    "source_snapshots_inserted": 0,
+    "identities_inserted": 0,
+    "schedule_vintages_inserted": 0,
+    "provenance_assertions_inserted": 0,
+    "observations_inserted": 0,
+    "revisions_inserted": 0,
+    "idempotent_skips": 1001,
+    "duplicates": 0,
+    "conflicts": 0,
+    "quarantined": 0,
+    "rejected": 0,
+    "invalid_timestamp_records": 0,
+    "missing_provenance_records": 0
+  },
+  "hard_macro_readiness_gate": {
+    "passed": false,
+    "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
+    "reasons": [
+      "Point-in-time macroeconomic evidence complete. Awaiting empirical friction configuration."
+    ]
+  }
+}

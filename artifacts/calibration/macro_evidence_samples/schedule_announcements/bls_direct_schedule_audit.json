@@ -1,0 +1,78 @@
+{
+  "investigation_timestamp": "2026-09-04T10:28:22Z",
+  "investigation_target": "BLS Direct Annual Schedule Pages (/schedule/YYYY/home.htm)",
+  "governance_rule": "Do not equate Last-Modified with earliest known_at unless evidence defensibly supports it. Otherwise keep known_at UNKNOWN and fail-closed.",
+  "status_summary": "Akamai WAF blocks programmatic HTTP GET across all tested years (2020-2026) with HTTP 403 Forbidden. No Last-Modified header is returned. Earliest known_at for historical schedule releases remains UNKNOWN and FAIL-CLOSED.",
+  "endpoint_results": {
+    "2020": {
+      "url": "https://www.bls.gov/schedule/2020/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "c6177b71578f27c40e072d7877ea0fdf3a947dcf17d5d881c5a724340727e327",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2021": {
+      "url": "https://www.bls.gov/schedule/2021/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "4784ce43f09496e922e08b6f358b3652811cae8a383a2c64f7f7ef4fd4cb02f1",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2022": {
+      "url": "https://www.bls.gov/schedule/2022/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "d13e7f00469f27e56131ea3ac73ad2ca8a471cbe824c2dab1a8c457ee3e44fd4",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2023": {
+      "url": "https://www.bls.gov/schedule/2023/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "a9c1c232dce2784f9d65f60428144bdd22d482e2409dc8e0fc029c4536737b52",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2024": {
+      "url": "https://www.bls.gov/schedule/2024/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "459777e91232af50022df190b6bcd678e24e76567a7c9130a1b88ffc14e6a9f4",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2025": {
+      "url": "https://www.bls.gov/schedule/2025/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "58ded5a3e7e461d5cdb508dd08a16407b4ad2eed6e9aff0352405d397dd175bc",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    },
+    "2026": {
+      "url": "https://www.bls.gov/schedule/2026/home.htm",
+      "http_status": 403,
+      "reason": "Forbidden",
+      "server": "AkamaiGHost",
+      "content_length": 1325,
+      "content_type": "text/html",
+      "raw_bytes_sha256": "a01f789f9c7bd3280e879cd81f3621b0283ea6c90b4e135656971a0d783fb081",
+      "known_at_decision": "UNKNOWN (FAIL-CLOSED)"
+    }
+  }
+}
