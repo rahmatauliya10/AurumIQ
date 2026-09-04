@@ -43,9 +43,9 @@ def test_data_readiness_manifest_integrity():
     assert manifest["primary_provider"] == "twelve_data_xauusd"
     assert manifest["listing_role"] == "PRIMARY_XAUUSD_SPOT"
     assert manifest["hard_data_readiness_gate"]["passed"] is False
-    assert manifest["hard_data_readiness_gate"]["decision"] in (
-        "CANDLES_READY_MACRO_MISSING",
-        "CALIBRATION_DATA_NOT_READY",
+    assert (
+        manifest["hard_data_readiness_gate"]["decision"]
+        == "CANDLES_READY_MACRO_MISSING"
     )
     assert manifest["timeframe_counts"]["15m"] >= 0
     assert manifest["empirical_friction_evidence"]["status"] == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
