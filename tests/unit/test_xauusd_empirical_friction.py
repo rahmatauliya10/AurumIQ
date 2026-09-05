@@ -94,6 +94,7 @@ from apps.market_data.friction.artifact_parsers import (
     parse_contract_spec_backing_artifact,
     parse_financing_backing_artifact,
     parse_legal_entity_backing_artifact,
+    parse_optional_evidence_bool,
 )
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
@@ -298,7 +299,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01",
+        raw_content=b"SYMBOL:XAUUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01",
         source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
         source_origin="https://www.exness.com/contract-specifications/",
         collection_methodology="MT5_TERMINAL_SPEC_EXPORT",
@@ -326,7 +327,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE",
+        raw_content=b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE",
         source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
         source_origin="https://www.exness.com/swap/",
         collection_methodology="BROKER_PORTAL_DOCUMENT_VERIFIED",
@@ -4183,13 +4184,13 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
     legal_parsed = parse_legal_entity_backing_artifact(legal_bytes)
     assert legal_parsed["license_number"] == "SD025"
 
-    contract_bytes = b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    contract_bytes = b"SYMBOL:XAUUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     contract_parsed = parse_contract_spec_backing_artifact(contract_bytes, expected_symbol="XAUUSD")
 
     fee_bytes = b"STANDARD:COMMISSION:0.00:SCOPE:GLOBAL"
     fee_parsed = parse_commission_backing_artifact(fee_bytes, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
 
-    swap_bytes = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    swap_bytes = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
     swap_parsed = parse_financing_backing_artifact(swap_bytes, expected_symbol="XAUUSD")
 
     tick_lines = ["timestamp,bid,ask,symbol"]
@@ -4314,7 +4315,7 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
 
 def test_hardened_01_contract_artifact_with_only_digits_and_contract_size_cannot_qualify():
     """H-SPEC-01: Contract artifact with only digits + contract_size cannot qualify (Directive 1)."""
-    raw = b"DIGITS:2|CONTRACT_SIZE:100.0"
+    raw = b"SYMBOL:XAUUSD|DIGITS:2|CONTRACT_SIZE:100.0"
     with pytest.raises(ValueError) as exc_info:
         parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     err = str(exc_info.value)
@@ -4329,7 +4330,7 @@ def test_hardened_01_contract_artifact_with_only_digits_and_contract_size_cannot
 
 def test_hardened_02_missing_point_size_fails():
     """H-SPEC-02: Missing point_size fails closed; no default 0.01 (Directive 1)."""
-    raw = b"DIGITS:2|CONTRACT_SIZE:100.0|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    raw = b"SYMBOL:XAUUSD|DIGITS:2|CONTRACT_SIZE:100.0|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     with pytest.raises(ValueError) as exc_info:
         parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
@@ -4338,7 +4339,7 @@ def test_hardened_02_missing_point_size_fails():
 
 def test_hardened_03_missing_trade_tick_size_fails():
     """H-SPEC-03: Missing trade_tick_size fails closed; not defaulted to point_size (Directive 1)."""
-    raw = b"DIGITS:2|POINT:0.01|CONTRACT_SIZE:100.0|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    raw = b"SYMBOL:XAUUSD|DIGITS:2|POINT:0.01|CONTRACT_SIZE:100.0|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     with pytest.raises(ValueError) as exc_info:
         parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
@@ -4347,7 +4348,7 @@ def test_hardened_03_missing_trade_tick_size_fails():
 
 def test_hardened_04_missing_trade_tick_value_fails():
     """H-SPEC-04: Missing trade_tick_value fails closed; not defaulted to 1.00 (Directive 1)."""
-    raw = b"DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|CONTRACT_SIZE:100.0|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    raw = b"SYMBOL:XAUUSD|DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|CONTRACT_SIZE:100.0|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     with pytest.raises(ValueError) as exc_info:
         parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
@@ -4356,7 +4357,7 @@ def test_hardened_04_missing_trade_tick_value_fails():
 
 def test_hardened_05_missing_volume_limits_or_step_fails():
     """H-SPEC-05: Missing volume limits or step fails closed; not defaulted to 0.01/200 (Directive 1)."""
-    raw = b"DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|CONTRACT_SIZE:100.0"
+    raw = b"SYMBOL:XAUUSD|DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|CONTRACT_SIZE:100.0"
     with pytest.raises(ValueError) as exc_info:
         parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     err = str(exc_info.value)
@@ -4368,7 +4369,7 @@ def test_hardened_05_missing_volume_limits_or_step_fails():
 
 def test_hardened_06_financing_with_swap_long_short_but_no_rollover_evidence_fails():
     """H-SPEC-06: Financing with swap long/short but no rollover evidence fails closed (Directive 2)."""
-    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|TRIPLE:WEDNESDAY"
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|TRIPLE:WEDNESDAY"
     with pytest.raises(ValueError) as exc_info:
         parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
     assert "FINANCING_PARSER_ERROR" in str(exc_info.value)
@@ -4377,7 +4378,7 @@ def test_hardened_06_financing_with_swap_long_short_but_no_rollover_evidence_fai
 
 def test_hardened_07_financing_with_no_triple_swap_rule_fails():
     """H-SPEC-07: Financing with no triple-swap rule fails closed; not defaulted to WEDNESDAY (Directive 2)."""
-    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22"
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22"
     with pytest.raises(ValueError) as exc_info:
         parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
     assert "FINANCING_PARSER_ERROR" in str(exc_info.value)
@@ -4387,7 +4388,7 @@ def test_hardened_07_financing_with_no_triple_swap_rule_fails():
 @pytest.mark.django_db
 def test_hardened_08_missing_actual_swap_free_status_remains_none_and_not_converted_to_false(xauusd_setup):
     """H-SPEC-08: Missing actual swap-free status remains None/UNKNOWN and cannot be silently converted to False (Directive 2)."""
-    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
     parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
     assert parsed["actual_account_swap_free_status"] is None
 
@@ -4570,7 +4571,7 @@ def test_hardened_14_qualified_assertion_with_incorrect_normalized_evidence_hash
 def test_hardened_15_qualified_assertion_whose_parsed_data_differs_from_model_fields_fails():
     """H-SPEC-15: QUALIFIED assertion whose parsed data differs from model fields fails (Directive 5)."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
-    raw = b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    raw = b"SYMBOL:XAUUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     parsed = parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
     snap, _ = ingest_friction_source_snapshot(
         "http://ex.com/c_diff", "C_DIFF", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
@@ -4705,6 +4706,192 @@ def test_hardened_18_valid_trusted_parser_assertion_still_qualifies(qualified_ev
     )
     assert res.is_valid is True
     assert res.status == "EMPIRICAL_FRICTION_CONFIGURED"
+
+
+# =============================================================================
+# HARDENED SPEC-DRIVEN TESTS: EXACT INSTRUMENT SCOPE & CANONICAL-HASH INTEGRITY
+# =============================================================================
+
+def test_hardened_19_complete_contract_geometry_without_symbol_cannot_qualify():
+    """H-SPEC-19: Complete contract geometry without symbol fails closed (Directive 1 & 8.1)."""
+    raw = b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in err
+    assert "instrument identity" in err.lower() or "applicability" in err.lower()
+
+
+def test_hardened_20_eurusd_contract_cannot_qualify_xauusd():
+    """H-SPEC-20: Complete geometry with EURUSD symbol cannot qualify XAUUSD (Directive 1 & 8.2)."""
+    raw = b"SYMBOL:EURUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in err
+    assert "EURUSD" in err
+
+
+def test_hardened_21_explicit_xauusd_contract_still_qualifies():
+    """H-SPEC-21: Explicit XAUUSD contract artifact qualifies successfully (Directive 1 & 8.3)."""
+    raw = b"SYMBOL:XAUUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    parsed = parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["contract_size"] == Decimal("100.0")
+    assert parsed["point_size"] == Decimal("0.01")
+    assert parsed["digits"] == 2
+
+
+def test_hardened_22_financing_values_without_symbol_cannot_qualify():
+    """H-SPEC-22: Complete financing values without symbol fails closed (Directive 2 & 8.4)."""
+    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
+    with pytest.raises(ValueError) as exc_info:
+        parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "FINANCING_EVIDENCE_MISSING" in err
+    assert "applicability" in err.lower() or "instrument identity" in err.lower()
+
+
+def test_hardened_23_eurusd_financing_cannot_qualify_xauusd():
+    """H-SPEC-23: Financing values with EURUSD cannot qualify XAUUSD (Directive 2 & 8.5)."""
+    raw = b"SYMBOL:EURUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
+    with pytest.raises(ValueError) as exc_info:
+        parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "FINANCING_EVIDENCE_MISSING" in err
+    assert "EURUSD" in err
+
+
+def test_hardened_24_explicit_xauusd_financing_still_qualifies():
+    """H-SPEC-24: Explicit XAUUSD financing artifact qualifies successfully (Directive 2 & 8.6)."""
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert parsed["symbol"] == "XAUUSD"
+    assert parsed["swap_long_points"] == Decimal("-34.80")
+    assert parsed["swap_short_points"] == Decimal("12.40")
+    assert parsed["actual_account_swap_free_status"] is False
+
+
+def test_hardened_25_json_boolean_false_parses_false():
+    """H-SPEC-25: Strict boolean parser parses 'false', 'FALSE', 0, 'no' as False (Directive 3 & 8.7)."""
+    assert parse_optional_evidence_bool("false") is False
+    assert parse_optional_evidence_bool("FALSE") is False
+    assert parse_optional_evidence_bool(False) is False
+    assert parse_optional_evidence_bool(0) is False
+    assert parse_optional_evidence_bool("0") is False
+    assert parse_optional_evidence_bool("no") is False
+
+
+def test_hardened_26_json_boolean_true_parses_true():
+    """H-SPEC-26: Strict boolean parser parses 'true', 'TRUE', 1, 'yes' as True (Directive 3 & 8.8)."""
+    assert parse_optional_evidence_bool("true") is True
+    assert parse_optional_evidence_bool("TRUE") is True
+    assert parse_optional_evidence_bool(True) is True
+    assert parse_optional_evidence_bool(1) is True
+    assert parse_optional_evidence_bool("1") is True
+    assert parse_optional_evidence_bool("yes") is True
+
+
+def test_hardened_27_missing_boolean_remains_none():
+    """H-SPEC-27: Strict boolean parser maps None, empty string, and whitespace to None (Directive 3 & 8.9)."""
+    assert parse_optional_evidence_bool(None) is None
+    assert parse_optional_evidence_bool("") is None
+    assert parse_optional_evidence_bool("   ") is None
+
+
+def test_hardened_28_unknown_boolean_token_fails_closed():
+    """H-SPEC-28: Strict boolean parser fails closed on unknown token with ValueError (Directive 3 & 8.10)."""
+    with pytest.raises(ValueError) as exc_info:
+        parse_optional_evidence_bool("unknown")
+    assert "STRICT_BOOLEAN_ERROR" in str(exc_info.value)
+
+    with pytest.raises(ValueError):
+        parse_optional_evidence_bool("maybe")
+
+    with pytest.raises(ValueError):
+        parse_optional_evidence_bool("2")
+
+
+@pytest.mark.django_db
+def test_hardened_29_financing_assertion_uses_exact_parser_normalized_hash():
+    """H-SPEC-29: Qualification assertion for FINANCING uses exact parser-derived normalized hash (Directive 4, 5 & 8.11)."""
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/swap_exact_hash", "SWAP_EXACT_HASH", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="FINANCING",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_financing_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+    )
+    assert assertion.normalized_evidence_hash == parsed["normalized_evidence_hash"]
+
+
+@pytest.mark.django_db
+def test_hardened_30_legitimate_financing_artifact_assertion_survives_independent_validator_recomputation():
+    """H-SPEC-30: Legitimate financing artifact assertion survives independent validator recomputation (Directive 5 & 8.12)."""
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/swap_survives", "SWAP_SURVIVES", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="FINANCING",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_financing_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="MODEL_FINANCING_SURVIVES",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_source_snapshot=snap,
+        swap_spec_source_snapshot=snap,
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        swap_long_points=Decimal("-34.80"),
+        swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        actual_account_swap_free_status=False,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="FINANCING",
+        expected_parser="parse_financing_backing_artifact",
+        model_version=model,
+    )
+    assert is_valid is True, f"Expected valid, got errors: {errors}"
+    assert len(errors) == 0
+
+
+def test_hardened_31_changing_parser_derived_normalized_data_changes_assertion_hash():
+    """H-SPEC-31: Changing parser-derived normalized data changes assertion hash (Directive 5 & 8.13)."""
+    raw1 = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    raw2 = b"SYMBOL:XAUUSD|SWAP_LONG:-35.00|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    parsed1 = parse_financing_backing_artifact(raw1, expected_symbol="XAUUSD")
+    parsed2 = parse_financing_backing_artifact(raw2, expected_symbol="XAUUSD")
+    assert parsed1["normalized_evidence_hash"] != parsed2["normalized_evidence_hash"]
+
 
 
 

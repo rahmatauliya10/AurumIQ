@@ -223,16 +223,10 @@ def validate_source_qualification_assertion(
         reasons.append(f"Independent parser recomputation failed on raw artifact: {exc}")
         return False, reasons, None
 
-    valid_norm_hashes = {recomputed_norm_hash}
-    if parsed_data:
-        if parsed_data.get("normalized_evidence_hash"):
-            valid_norm_hashes.add(parsed_data["normalized_evidence_hash"])
-        trimmed = {k: v for k, v in parsed_data.items() if k not in ("symbol", "account_tier", "applicability_scope")}
-        valid_norm_hashes.add(compute_normalized_evidence_hash(trimmed))
-
-    if assertion.normalized_evidence_hash not in valid_norm_hashes:
+    expected_hash = (parsed_data.get("normalized_evidence_hash") if parsed_data else None) or recomputed_norm_hash
+    if assertion.normalized_evidence_hash != expected_hash:
         reasons.append(
-            f"Assertion normalized_evidence_hash '{assertion.normalized_evidence_hash}' does not match independently recomputed hash '{recomputed_norm_hash}'."
+            f"Assertion normalized_evidence_hash '{assertion.normalized_evidence_hash}' does not match independently recomputed hash '{expected_hash}'."
         )
 
     # 9. Match parsed fields against model_version fields if model_version is provided
@@ -314,6 +308,11 @@ def validate_source_qualification_assertion(
                 if parsed_data.get("actual_account_swap_free_status") != model_version.actual_account_swap_free_status:
                     reasons.append(
                         f"Parsed actual_account_swap_free_status '{parsed_data.get('actual_account_swap_free_status')}' does not match model '{model_version.actual_account_swap_free_status}'."
+                    )
+            if model_version.swap_free_available_for_account_type is not None and parsed_data.get("swap_free_available_for_account_type") is not None:
+                if parsed_data.get("swap_free_available_for_account_type") != model_version.swap_free_available_for_account_type:
+                    reasons.append(
+                        f"Parsed swap_free_available_for_account_type '{parsed_data.get('swap_free_available_for_account_type')}' does not match model '{model_version.swap_free_available_for_account_type}'."
                     )
 
     return len(reasons) == 0, reasons, parsed_data

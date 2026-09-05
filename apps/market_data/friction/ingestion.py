@@ -50,6 +50,7 @@ from apps.market_data.friction.artifact_parsers import (
     parse_contract_spec_backing_artifact,
     parse_financing_backing_artifact,
     parse_legal_entity_backing_artifact,
+    parse_optional_evidence_bool,
 )
 from apps.market_data.friction.distribution import (
     compute_distribution_statistics,
@@ -468,40 +469,44 @@ def build_and_bind_friction_model_version(
 
     if test_qualification_seam:
         if legal_entity_snapshot and not legal_entity_snapshot.qualification_assertions.filter(component_role="LEGAL_ENTITY").exists():
+            parsed = parse_legal_entity_backing_artifact(legal_entity_snapshot.raw_content, parser_version=parser_version)
             create_friction_qualification_assertion(
                 source_snapshot=legal_entity_snapshot,
                 component_role="LEGAL_ENTITY",
                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                parser_name="parse_legal_entity_backing_artifact",
-                parser_version=parser_version,
-                normalized_evidence_hash=compute_normalized_evidence_hash(legal_info),
+                parser_name=parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
+                parser_version=parsed.get("parser_version", parser_version),
+                normalized_evidence_hash=parsed["normalized_evidence_hash"],
             )
         if contract_spec_snapshot and not contract_spec_snapshot.qualification_assertions.filter(component_role="CONTRACT_SPEC").exists():
+            parsed = parse_contract_spec_backing_artifact(contract_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
             create_friction_qualification_assertion(
                 source_snapshot=contract_spec_snapshot,
                 component_role="CONTRACT_SPEC",
                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                parser_name="parse_contract_spec_backing_artifact",
-                parser_version=parser_version,
-                normalized_evidence_hash=compute_normalized_evidence_hash(geom),
+                parser_name=parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
+                parser_version=parsed.get("parser_version", parser_version),
+                normalized_evidence_hash=parsed["normalized_evidence_hash"],
             )
         if fee_schedule_snapshot and not fee_schedule_snapshot.qualification_assertions.filter(component_role="COMMISSION").exists():
+            parsed = parse_commission_backing_artifact(fee_schedule_snapshot.raw_content, expected_symbol=symbol, expected_account_tier=account_tier, parser_version=parser_version)
             create_friction_qualification_assertion(
                 source_snapshot=fee_schedule_snapshot,
                 component_role="COMMISSION",
                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                parser_name="parse_commission_backing_artifact",
-                parser_version=parser_version,
-                normalized_evidence_hash=compute_normalized_evidence_hash(comm),
+                parser_name=parsed.get("parser_name", "parse_commission_backing_artifact"),
+                parser_version=parsed.get("parser_version", parser_version),
+                normalized_evidence_hash=parsed["normalized_evidence_hash"],
             )
         if swap_spec_snapshot and not swap_spec_snapshot.qualification_assertions.filter(component_role="FINANCING").exists():
+            parsed = parse_financing_backing_artifact(swap_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
             create_friction_qualification_assertion(
                 source_snapshot=swap_spec_snapshot,
                 component_role="FINANCING",
                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                parser_name="parse_financing_backing_artifact",
-                parser_version=parser_version,
-                normalized_evidence_hash=compute_normalized_evidence_hash(fin),
+                parser_name=parsed.get("parser_name", "parse_financing_backing_artifact"),
+                parser_version=parsed.get("parser_version", parser_version),
+                normalized_evidence_hash=parsed["normalized_evidence_hash"],
             )
         if evidence_dataset and evidence_dataset.source_snapshot and not evidence_dataset.source_snapshot.qualification_assertions.filter(component_role="SPREAD_DATASET").exists():
             create_friction_qualification_assertion(
@@ -795,9 +800,7 @@ def build_and_bind_friction_model_version(
         return int(val)
 
     def _opt_bool(val: Any) -> Optional[bool]:
-        if val is None:
-            return None
-        return bool(val)
+        return parse_optional_evidence_bool(val)
 
     model_ver = FrictionModelVersion.objects.filter(model_version_id=ver_id).first()
     if not model_ver:

@@ -23,6 +23,7 @@ from apps.market_data.friction.artifact_parsers import (
     parse_contract_spec_backing_artifact,
     parse_financing_backing_artifact,
     parse_legal_entity_backing_artifact,
+    parse_optional_evidence_bool,
 )
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
@@ -434,7 +435,7 @@ class Command(BaseCommand):
                                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
                                 parser_name=legal_parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
                                 parser_version=legal_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=compute_normalized_evidence_hash(legal_entity_info),
+                                normalized_evidence_hash=legal_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(legal_entity_info),
                                 qualification_reason="Verified by authoritative legal entity parser",
                             )
             except Exception as e:
@@ -505,7 +506,7 @@ class Command(BaseCommand):
                                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
                                 parser_name=contract_parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
                                 parser_version=contract_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=compute_normalized_evidence_hash(contract_geometry),
+                                normalized_evidence_hash=contract_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(contract_geometry),
                                 qualification_reason="Verified by authoritative contract specification parser",
                             )
             except Exception as e:
@@ -571,7 +572,7 @@ class Command(BaseCommand):
                                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
                                 parser_name=fee_parsed.get("parser_name", "parse_commission_backing_artifact"),
                                 parser_version=fee_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=compute_normalized_evidence_hash(commission_policy),
+                                normalized_evidence_hash=fee_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(commission_policy),
                                 qualification_reason="Verified by authoritative commission fee parser",
                             )
             except Exception as e:
@@ -597,8 +598,8 @@ class Command(BaseCommand):
                     "rollover_summer_utc_hour": int(data["rollover_summer_utc_hour"]),
                     "rollover_winter_utc_hour": int(data["rollover_winter_utc_hour"]),
                     "triple_swap_weekday": str(data["triple_swap_weekday"]),
-                    "swap_free_available_for_account_type": bool(data["swap_free_available_for_account_type"]) if data.get("swap_free_available_for_account_type") is not None else None,
-                    "actual_account_swap_free_status": bool(data["actual_account_swap_free_status"]) if data.get("actual_account_swap_free_status") is not None else None,
+                    "swap_free_available_for_account_type": parse_optional_evidence_bool(data.get("swap_free_available_for_account_type")),
+                    "actual_account_swap_free_status": parse_optional_evidence_bool(data.get("actual_account_swap_free_status")),
                 }
                 resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed = _resolve_source_provenance(
                     data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, "Financing Swap Spec", symbol, account_tier
@@ -613,9 +614,11 @@ class Command(BaseCommand):
                     )
                 else:
                     if swap_parsed:
-                        for k in ("swap_long_points", "swap_short_points", "rollover_summer_utc_hour", "rollover_winter_utc_hour", "triple_swap_weekday", "swap_free_available_for_account_type", "actual_account_swap_free_status"):
+                        for k in ("swap_long_points", "swap_short_points", "rollover_summer_utc_hour", "rollover_winter_utc_hour", "triple_swap_weekday", "actual_account_swap_free_status"):
                             if k in swap_parsed:
                                 financing_policy[k] = swap_parsed[k]
+                        if "swap_free_available_for_account_type" in swap_parsed:
+                            financing_policy["swap_free_available_for_account_type"] = swap_parsed["swap_free_available_for_account_type"]
                     financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         effective_file = swap_backing_file or swap_file
@@ -641,7 +644,7 @@ class Command(BaseCommand):
                                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
                                 parser_name=swap_parsed.get("parser_name", "parse_financing_backing_artifact"),
                                 parser_version=swap_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=compute_normalized_evidence_hash(financing_policy),
+                                normalized_evidence_hash=swap_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(financing_policy),
                                 qualification_reason="Verified by authoritative financing swap parser",
                             )
             except Exception as e:

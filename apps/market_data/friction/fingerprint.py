@@ -27,6 +27,8 @@ import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from apps.market_data.friction.artifact_parsers import parse_optional_evidence_bool
+
 
 def _serialize_decimal(val: Any) -> Optional[str]:
     """Format Decimal values consistently for canonical hashing across differing DB column precisions."""
@@ -162,7 +164,7 @@ def compute_empirical_friction_fingerprint(
             "rollover_summer_utc_hour": None if financing_policy.get("rollover_summer_utc_hour") is None else int(financing_policy.get("rollover_summer_utc_hour")),
             "rollover_winter_utc_hour": None if financing_policy.get("rollover_winter_utc_hour") is None else int(financing_policy.get("rollover_winter_utc_hour")),
             "triple_swap_weekday": None if financing_policy.get("triple_swap_weekday") is None else str(financing_policy.get("triple_swap_weekday")),
-            "actual_account_swap_free_status": None if financing_policy.get("actual_account_swap_free_status") is None else bool(financing_policy.get("actual_account_swap_free_status")),
+            "actual_account_swap_free_status": parse_optional_evidence_bool(financing_policy.get("actual_account_swap_free_status")),
         },
         "bound_binding_roles": sorted_binding_roles,
     }

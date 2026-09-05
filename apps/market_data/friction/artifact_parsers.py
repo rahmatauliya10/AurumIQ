@@ -14,6 +14,50 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def parse_optional_evidence_bool(value: Any) -> Optional[bool]:
+    """Strictly parse an optional evidence boolean without silent coercion or bool('false') pitfalls.
+
+    Accepted True values:
+        True, "true", "TRUE", "True", 1, "1", "yes", "YES", "Yes", "t", "y"
+    Accepted False values:
+        False, "false", "FALSE", "False", 0, "0", "no", "NO", "No", "f", "n"
+    Missing / None values:
+        None, "" (empty or whitespace string)
+    Unknown tokens / types:
+        Raises ValueError (fail closed)
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        raise ValueError(f"STRICT_BOOLEAN_ERROR: Invalid boolean numeric value: {value}")
+
+    val_str = str(value).strip().lower()
+    if val_str == "":
+        return None
+    if val_str in ("true", "1", "yes", "t", "y"):
+        return True
+    if val_str in ("false", "0", "no", "f", "n"):
+        return False
+    raise ValueError(f"STRICT_BOOLEAN_ERROR: Cannot parse '{value}' as evidence boolean (must be true/false/1/0/yes/no or None).")
+
+
+def _matches_expected_symbol(candidate: str, expected_symbol: str) -> bool:
+    """Check if candidate symbol matches expected_symbol with canonical alias support."""
+    c = str(candidate).replace("/", "").replace("_", "").strip().upper()
+    e = str(expected_symbol).replace("/", "").replace("_", "").strip().upper()
+    if c == e:
+        return True
+    if e == "XAUUSD" and c in ("GOLD", "XAUUSD"):
+        return True
+    return False
+
+
 def compute_normalized_evidence_hash(derived_data: Dict[str, Any]) -> str:
     """Compute deterministic SHA-256 hash of normalized derived evidence dictionary."""
     filtered = {
@@ -60,7 +104,13 @@ def compare_asserted_vs_derived(asserted_data: Dict[str, Any], derived_data: Dic
                         f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
                     )
         elif isinstance(derived_val, bool):
-            if bool(asserted_val) != bool(derived_val):
+            try:
+                parsed_bool = parse_optional_evidence_bool(asserted_val)
+                if parsed_bool != derived_val:
+                    mismatches.append(
+                        f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
+                    )
+            except ValueError:
                 mismatches.append(
                     f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
                 )
@@ -247,31 +297,17 @@ def parse_contract_spec_backing_artifact(
     digits, point_size, trade_tick_size, trade_tick_value, contract_size,
     volume_min, volume_max, volume_step MUST be explicitly established.
     Missing any field raises ValueError("CONTRACT_SPEC_EVIDENCE_MISSING: ...").
+
+    MANDATORY INSTRUMENT APPLICABILITY:
+    The authoritative raw artifact must explicitly establish applicability to expected_symbol
+    (e.g., XAUUSD, XAU/USD, GOLD). An otherwise complete geometry artifact with no instrument
+    identity or with an incompatible symbol fails closed (CONTRACT_SPEC_EVIDENCE_MISSING).
     """
     parser_name = "parse_contract_spec_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 10:
         raise ValueError("CONTRACT_SPEC_PARSER_ERROR: Backing artifact is empty or insufficient.")
 
     text = raw_content.decode("utf-8", errors="ignore").strip()
-
-    # Reject if artifact explicitly specifies a different symbol and not expected_symbol
-    sym_tag = re.search(r"SYMBOL[:\s=]+([A-Za-z0-9/_-]+)", text, re.IGNORECASE)
-    if sym_tag:
-        sym = sym_tag.group(1).replace("/", "").upper()
-        if sym != expected_symbol.upper():
-            raise ValueError(
-                f"CONTRACT_SPEC_PARSER_ERROR: Backing artifact symbol '{sym}' does not match expected '{expected_symbol}'."
-            )
-    else:
-        ignore_words = {"DIGITS", "VOLUME", "SPREAD", "MARGIN", "SYMBOL", "POINTS", "STATUS"}
-        sym_mentions = [
-            s.replace("/", "").upper() for s in re.findall(r"\b([A-Z]{6}|[A-Z]{3}/[A-Z]{3})\b", text)
-            if s.upper() not in ignore_words and s.replace("/", "").upper() not in ignore_words
-        ]
-        if sym_mentions and expected_symbol.upper() not in sym_mentions:
-            raise ValueError(
-                f"CONTRACT_SPEC_PARSER_ERROR: Backing artifact symbol '{sym_mentions[0]}' does not match expected '{expected_symbol}'."
-            )
 
     required_geometry_keys = {
         "digits": ["digits"],
@@ -288,7 +324,54 @@ def parse_contract_spec_backing_artifact(
     if text.startswith("{"):
         try:
             data = json.loads(text)
-            spec = data.get(expected_symbol) or data.get(f"{expected_symbol[:3]}/{expected_symbol[3:]}") or data
+            spec = None
+            explicit_symbol_found = False
+
+            # Check if expected_symbol is a key in JSON data
+            if expected_symbol in data and isinstance(data[expected_symbol], dict):
+                spec = data[expected_symbol]
+                explicit_symbol_found = True
+            elif f"{expected_symbol[:3]}/{expected_symbol[3:]}" in data and isinstance(data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"], dict):
+                spec = data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"]
+                explicit_symbol_found = True
+            elif expected_symbol == "XAUUSD" and "GOLD" in data and isinstance(data["GOLD"], dict):
+                spec = data["GOLD"]
+                explicit_symbol_found = True
+            else:
+                # Check if other symbol keys exist in data (e.g. {"EURUSD": {...}})
+                other_sym_keys = [
+                    k for k in data.keys()
+                    if isinstance(data[k], dict) and re.match(r"^[A-Z]{6}$|^[A-Z]{3}/[A-Z]{3}$", k.upper())
+                ]
+                if other_sym_keys:
+                    raise ValueError(
+                        f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{other_sym_keys[0]}' does not match expected '{expected_symbol}'."
+                    )
+
+                # If data itself is the specification dictionary
+                if "symbol" in data and data["symbol"]:
+                    if _matches_expected_symbol(data["symbol"], expected_symbol):
+                        spec = data
+                        explicit_symbol_found = True
+                    else:
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{data['symbol']}' does not match expected '{expected_symbol}'."
+                        )
+                elif "symbols" in data or "instruments" in data:
+                    sym_list = [str(s).upper() for s in (data.get("symbols") or data.get("instruments") or [])]
+                    if any(_matches_expected_symbol(s, expected_symbol) for s in sym_list):
+                        spec = data
+                        explicit_symbol_found = True
+                    else:
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact does not establish applicability for '{expected_symbol}'."
+                        )
+
+            if not explicit_symbol_found:
+                raise ValueError(
+                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact lacks instrument identity or applicability for '{expected_symbol}'."
+                )
+
             if isinstance(spec, dict):
                 extracted = {}
                 missing = []
@@ -326,7 +409,34 @@ def parse_contract_spec_backing_artifact(
         except json.JSONDecodeError:
             pass
 
-    # Try pipe / colon delimited format e.g. "CONTRACT_SIZE:100|POINT:0.01|DIGITS:2"
+    # Non-JSON: Check for explicit symbol tag or presence in text
+    sym_tag = re.search(r"\bSYMBOL[:\s=]+([A-Za-z0-9/_-]+)", text, re.IGNORECASE)
+    if sym_tag:
+        sym = sym_tag.group(1).replace("/", "").upper()
+        if not _matches_expected_symbol(sym, expected_symbol):
+            raise ValueError(
+                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym}' does not match expected '{expected_symbol}'."
+            )
+    else:
+        ignore_words = {"DIGITS", "VOLUME", "SPREAD", "MARGIN", "SYMBOL", "POINTS", "STATUS", "TRADE", "TICK", "CONTRACT", "POLICY"}
+        sym_mentions = [
+            s.replace("/", "").upper() for s in re.findall(r"\b([A-Z]{6}|[A-Z]{3}/[A-Z]{3})\b", text)
+            if s.upper() not in ignore_words and s.replace("/", "").upper() not in ignore_words
+        ]
+        has_expected = bool(
+            re.search(rf"\b{re.escape(expected_symbol)}\b", text, re.IGNORECASE)
+            or (expected_symbol.upper() == "XAUUSD" and re.search(r"\b(XAU/USD|GOLD)\b", text, re.IGNORECASE))
+        )
+        if sym_mentions and not has_expected:
+            raise ValueError(
+                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym_mentions[0]}' does not match expected '{expected_symbol}'."
+            )
+        if not has_expected and not sym_mentions:
+            raise ValueError(
+                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact lacks instrument identity or applicability for '{expected_symbol}'."
+            )
+
+    # Try pipe / colon delimited format e.g. "SYMBOL:XAUUSD|CONTRACT_SIZE:100|POINT:0.01|DIGITS:2"
     if "|" in text or ":" in text:
         kv = {}
         for token in re.split(r"[|\n;]", text):
@@ -588,6 +698,11 @@ def parse_financing_backing_artifact(
     Removes all financing silent defaults. Must explicitly establish swap rate evidence,
     rollover policy evidence (summer/winter utc hours), and triple-swap rule evidence.
     Unknown actual swap-free status remains None (UNKNOWN), NOT False.
+
+    MANDATORY INSTRUMENT APPLICABILITY:
+    Swap values are instrument-specific. The artifact must explicitly establish that
+    swap_long/swap_short, rollover, and triple-swap rule apply to expected_symbol (e.g. XAUUSD).
+    Generic swap values without instrument applicability fail closed (FINANCING_EVIDENCE_MISSING).
     """
     parser_name = "parse_financing_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 10:
@@ -595,30 +710,56 @@ def parse_financing_backing_artifact(
 
     text = raw_content.decode("utf-8", errors="ignore").strip()
 
-    # Reject if artifact explicitly specifies other symbols without expected_symbol
-    sym_tag = re.search(r"SYMBOL[:\s=]+([A-Za-z0-9/_-]+)", text, re.IGNORECASE)
-    if sym_tag:
-        sym = sym_tag.group(1).replace("/", "").upper()
-        if sym != expected_symbol.upper():
-            raise ValueError(
-                f"FINANCING_PARSER_ERROR: Financing backing artifact does not establish swap values for '{expected_symbol}' (found: '{sym}')."
-            )
-    else:
-        ignore_words = {"DIGITS", "VOLUME", "SPREAD", "MARGIN", "SYMBOL", "POINTS", "STATUS", "TRIPLE", "POLICY"}
-        sym_mentions = [
-            s.replace("/", "").upper() for s in re.findall(r"\b([A-Z]{6}|[A-Z]{3}/[A-Z]{3})\b", text)
-            if s.upper() not in ignore_words and s.replace("/", "").upper() not in ignore_words
-        ]
-        if sym_mentions and expected_symbol.upper() not in sym_mentions:
-            raise ValueError(
-                f"FINANCING_PARSER_ERROR: Financing backing artifact does not establish swap values for '{expected_symbol}' (mentions: {sym_mentions})."
-            )
-
     # Try JSON
     if text.startswith("{"):
         try:
             data = json.loads(text)
-            spec = data.get(expected_symbol) or data.get(f"{expected_symbol[:3]}/{expected_symbol[3:]}") or data
+            spec = None
+            explicit_symbol_found = False
+
+            # Check if expected_symbol is a key in JSON data
+            if expected_symbol in data and isinstance(data[expected_symbol], dict):
+                spec = data[expected_symbol]
+                explicit_symbol_found = True
+            elif f"{expected_symbol[:3]}/{expected_symbol[3:]}" in data and isinstance(data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"], dict):
+                spec = data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"]
+                explicit_symbol_found = True
+            elif expected_symbol == "XAUUSD" and "GOLD" in data and isinstance(data["GOLD"], dict):
+                spec = data["GOLD"]
+                explicit_symbol_found = True
+            else:
+                other_sym_keys = [
+                    k for k in data.keys()
+                    if isinstance(data[k], dict) and re.match(r"^[A-Z]{6}$|^[A-Z]{3}/[A-Z]{3}$", k.upper())
+                ]
+                if other_sym_keys:
+                    raise ValueError(
+                        f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{other_sym_keys[0]}' does not match expected '{expected_symbol}'."
+                    )
+
+                if "symbol" in data and data["symbol"]:
+                    if _matches_expected_symbol(data["symbol"], expected_symbol):
+                        spec = data
+                        explicit_symbol_found = True
+                    else:
+                        raise ValueError(
+                            f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{data['symbol']}' does not match expected '{expected_symbol}'."
+                        )
+                elif "symbols" in data or "instruments" in data:
+                    sym_list = [str(s).upper() for s in (data.get("symbols") or data.get("instruments") or [])]
+                    if any(_matches_expected_symbol(s, expected_symbol) for s in sym_list):
+                        spec = data
+                        explicit_symbol_found = True
+                    else:
+                        raise ValueError(
+                            f"FINANCING_EVIDENCE_MISSING: Financing backing artifact does not establish swap values for '{expected_symbol}'."
+                        )
+
+            if not explicit_symbol_found:
+                raise ValueError(
+                    f"FINANCING_EVIDENCE_MISSING: Financing backing artifact lacks instrument applicability for '{expected_symbol}'."
+                )
+
             if isinstance(spec, dict):
                 s_long_val = spec.get("swap_long_points") if spec.get("swap_long_points") is not None else spec.get("swap_long")
                 s_short_val = spec.get("swap_short_points") if spec.get("swap_short_points") is not None else spec.get("swap_short")
@@ -642,9 +783,13 @@ def parse_financing_backing_artifact(
 
                 swap_free_status = None
                 if "actual_account_swap_free_status" in spec and spec["actual_account_swap_free_status"] is not None:
-                    swap_free_status = bool(spec["actual_account_swap_free_status"])
+                    swap_free_status = parse_optional_evidence_bool(spec["actual_account_swap_free_status"])
                 elif "swap_free" in spec and spec["swap_free"] is not None:
-                    swap_free_status = bool(spec["swap_free"])
+                    swap_free_status = parse_optional_evidence_bool(spec["swap_free"])
+
+                swap_free_avail = None
+                if "swap_free_available_for_account_type" in spec and spec["swap_free_available_for_account_type"] is not None:
+                    swap_free_avail = parse_optional_evidence_bool(spec["swap_free_available_for_account_type"])
 
                 derived = {
                     "symbol": expected_symbol,
@@ -657,12 +802,41 @@ def parse_financing_backing_artifact(
                     "parser_name": parser_name,
                     "parser_version": parser_version,
                 }
+                if swap_free_avail is not None:
+                    derived["swap_free_available_for_account_type"] = swap_free_avail
                 derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
                 return derived
         except json.JSONDecodeError:
             pass
 
-    # Try pipe format e.g. "SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
+    # Non-JSON: Check for explicit symbol tag or presence in text
+    sym_tag = re.search(r"\bSYMBOL[:\s=]+([A-Za-z0-9/_-]+)", text, re.IGNORECASE)
+    if sym_tag:
+        sym = sym_tag.group(1).replace("/", "").upper()
+        if not _matches_expected_symbol(sym, expected_symbol):
+            raise ValueError(
+                f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{sym}' does not match expected '{expected_symbol}'."
+            )
+    else:
+        ignore_words = {"DIGITS", "VOLUME", "SPREAD", "MARGIN", "SYMBOL", "POINTS", "STATUS", "TRIPLE", "POLICY", "SWAP", "LONG", "SHORT", "HOURS"}
+        sym_mentions = [
+            s.replace("/", "").upper() for s in re.findall(r"\b([A-Z]{6}|[A-Z]{3}/[A-Z]{3})\b", text)
+            if s.upper() not in ignore_words and s.replace("/", "").upper() not in ignore_words
+        ]
+        has_expected = bool(
+            re.search(rf"\b{re.escape(expected_symbol)}\b", text, re.IGNORECASE)
+            or (expected_symbol.upper() == "XAUUSD" and re.search(r"\b(XAU/USD|GOLD)\b", text, re.IGNORECASE))
+        )
+        if sym_mentions and not has_expected:
+            raise ValueError(
+                f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{sym_mentions[0]}' does not match expected '{expected_symbol}'."
+            )
+        if not has_expected and not sym_mentions:
+            raise ValueError(
+                f"FINANCING_EVIDENCE_MISSING: Financing backing artifact lacks instrument applicability for '{expected_symbol}'."
+            )
+
+    # Try pipe format e.g. "SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
     if "|" in text or ":" in text:
         kv = {}
         for token in re.split(r"[|\n;]", text):
@@ -696,9 +870,13 @@ def parse_financing_backing_artifact(
 
             swap_free_status = None
             if "ACTUAL_ACCOUNT_SWAP_FREE_STATUS" in kv:
-                swap_free_status = kv["ACTUAL_ACCOUNT_SWAP_FREE_STATUS"].upper() in ("TRUE", "1", "YES")
+                swap_free_status = parse_optional_evidence_bool(kv["ACTUAL_ACCOUNT_SWAP_FREE_STATUS"])
             elif "SWAP_FREE" in kv:
-                swap_free_status = kv["SWAP_FREE"].upper() in ("TRUE", "1", "YES")
+                swap_free_status = parse_optional_evidence_bool(kv["SWAP_FREE"])
+
+            swap_free_avail = None
+            if "SWAP_FREE_AVAILABLE_FOR_ACCOUNT_TYPE" in kv:
+                swap_free_avail = parse_optional_evidence_bool(kv["SWAP_FREE_AVAILABLE_FOR_ACCOUNT_TYPE"])
 
             derived = {
                 "symbol": expected_symbol,
@@ -711,6 +889,8 @@ def parse_financing_backing_artifact(
                 "parser_name": parser_name,
                 "parser_version": parser_version,
             }
+            if swap_free_avail is not None:
+                derived["swap_free_available_for_account_type"] = swap_free_avail
             derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
             return derived
 
@@ -732,9 +912,14 @@ def parse_financing_backing_artifact(
             )
 
         swap_free_status = None
-        sf_m = re.search(r"(?:actual_account_)?swap_free(?:_status)?[:\s=]+(true|false|1|0|yes|no)", text, re.IGNORECASE)
+        sf_m = re.search(r"(?:actual_account_)?swap_free(?:_status)?[:\s=]+([A-Za-z0-9]+)", text, re.IGNORECASE)
         if sf_m:
-            swap_free_status = sf_m.group(1).lower() in ("true", "1", "yes")
+            swap_free_status = parse_optional_evidence_bool(sf_m.group(1))
+
+        swap_free_avail = None
+        sf_avail_m = re.search(r"swap_free_available(?:_for_account_type)?[:\s=]+([A-Za-z0-9]+)", text, re.IGNORECASE)
+        if sf_avail_m:
+            swap_free_avail = parse_optional_evidence_bool(sf_avail_m.group(1))
 
         derived = {
             "symbol": expected_symbol,
@@ -747,6 +932,8 @@ def parse_financing_backing_artifact(
             "parser_name": parser_name,
             "parser_version": parser_version,
         }
+        if swap_free_avail is not None:
+            derived["swap_free_available_for_account_type"] = swap_free_avail
         derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
         return derived
 
