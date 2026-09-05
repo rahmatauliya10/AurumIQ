@@ -59,6 +59,7 @@ def compute_empirical_friction_fingerprint(
     bound_binding_roles: Optional[List[str]] = None,
     source_types: Optional[List[str]] = None,
     slippage_cost_policy_version: Optional[str] = None,
+    source_evidence: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> str:
     """Compute deterministic 64-character SHA-256 fingerprint for a friction model."""
     sorted_source_hashes = sorted(set(source_snapshot_hashes))
@@ -73,10 +74,19 @@ def compute_empirical_friction_fingerprint(
             str(s.get("condition")),
             str(s.get("session")),
             str(s.get("unit")),
+            str(s.get("population_semantics") or ""),
         ),
     )
 
     resolved_slip_policy = slippage_cost_policy_version or semantic_versions.get("slippage_cost_policy_version", "ADVERSE_ONLY_P75_P95_V1")
+
+    normalized_source_evidence = {}
+    if source_evidence:
+        for role_name, ev_dict in sorted(source_evidence.items()):
+            normalized_source_evidence[str(role_name).upper()] = {
+                "sha256": str(ev_dict.get("sha256") or ""),
+                "source_type": str(ev_dict.get("source_type") or "").upper(),
+            }
 
     canonical_payload: Dict[str, Any] = {
         "semantic_versions": {
@@ -108,6 +118,7 @@ def compute_empirical_friction_fingerprint(
         },
         "source_snapshot_hashes": sorted_source_hashes,
         "source_types": sorted_source_types,
+        "source_evidence": normalized_source_evidence,
         "dataset_hashes": sorted_dataset_hashes,
         "distribution_summaries": [
             {
@@ -115,6 +126,7 @@ def compute_empirical_friction_fingerprint(
                 "condition": str(s.get("condition")),
                 "session": str(s.get("session")),
                 "unit": str(s.get("unit")),
+                "population_semantics": str(s.get("population_semantics") or ""),
                 "sample_count": int(s.get("sample_count", 0)),
                 "stat_min": _serialize_decimal(s.get("stat_min")),
                 "stat_p50": _serialize_decimal(s.get("stat_p50")),

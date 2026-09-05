@@ -22,16 +22,25 @@ from apps.market_data.models import (
     FrictionBindingRole,
     FrictionComponentType,
     FrictionConditionType,
+    FrictionComponentType,
+    FrictionConditionType,
     FrictionDistributionSummary,
     FrictionEvidenceDataset,
     FrictionModelActivation,
     FrictionModelDatasetBinding,
     FrictionModelSummaryBinding,
     FrictionModelVersion,
+    FrictionPopulationSemantics,
     FrictionSessionType,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    QUALIFIED_COMMISSION_SOURCE_TYPES,
+    QUALIFIED_CONTRACT_SOURCE_TYPES,
+    QUALIFIED_FINANCING_SOURCE_TYPES,
     QUALIFIED_FRICTION_SOURCE_TYPES,
+    QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES,
+    QUALIFIED_SLIPPAGE_SOURCE_TYPES,
+    QUALIFIED_SPREAD_SOURCE_TYPES,
 )
 from apps.market_data.friction.distribution import (
     compute_distribution_statistics,
@@ -42,6 +51,30 @@ from apps.market_data.friction.fingerprint import compute_empirical_friction_fin
 from apps.market_data.friction.validation import validate_friction_model_for_activation
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_slippage_cost_samples(
+    telemetry_records: List[Dict[str, Any]],
+    slippage_cost_policy_version: str,
+) -> Tuple[List[Decimal], str]:
+    """Canonical slippage policy sample resolver and population semantics dispatch.
+    
+    Directives 2 & 9:
+    - ADVERSE_ONLY_P75_P95_V1: extracts 'adverse_only_bps', assigns SLIPPAGE_ADVERSE_ONLY.
+    - RAW_SIGNED_DISTRIBUTION_V1: extracts 'signed_slippage_bps', assigns SLIPPAGE_SIGNED.
+    - Unknown/unsupported policy: fails closed (ValueError).
+    """
+    if slippage_cost_policy_version == "ADVERSE_ONLY_P75_P95_V1":
+        samples = [Decimal(str(r["adverse_only_bps"])) for r in telemetry_records]
+        return samples, FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
+    elif slippage_cost_policy_version == "RAW_SIGNED_DISTRIBUTION_V1":
+        samples = [Decimal(str(r["signed_slippage_bps"])) for r in telemetry_records]
+        return samples, FrictionPopulationSemantics.SLIPPAGE_SIGNED.value
+    else:
+        raise ValueError(
+            f"SLIPPAGE_POLICY_INVALID: Unknown or unsupported slippage cost policy version '{slippage_cost_policy_version}'. "
+            f"Must be one of ['ADVERSE_ONLY_P75_P95_V1', 'RAW_SIGNED_DISTRIBUTION_V1']."
+        )
 
 
 def ingest_friction_source_snapshot(
@@ -57,7 +90,7 @@ def ingest_friction_source_snapshot(
     effective_to: Optional[datetime] = None,
     http_status: int = 200,
     metadata: Optional[Dict[str, Any]] = None,
-    source_type: str = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
+    source_type: str = FrictionSourceType.USER_PROVIDED_UNVERIFIED,
     source_origin: str = "",
     collection_methodology: str = "",
     original_filename: str = "",
@@ -234,6 +267,8 @@ def build_and_bind_friction_model_version(
     effective_from: Optional[datetime] = None,
     slippage_cost_policy_version: str = "ADVERSE_ONLY_P75_P95_V1",
     known_at: Optional[datetime] = None,
+    telemetry_records: Optional[List[Dict[str, Any]]] = None,
+    slippage_population_semantics: Optional[str] = None,
 ) -> Tuple[FrictionModelVersion, FrictionModelActivation]:
     """Calculate distributions, create bindings, and resolve activation.
     
@@ -248,13 +283,35 @@ def build_and_bind_friction_model_version(
     comm = commission_policy or {}
     fin = financing_policy or {}
 
+    # Canonical slippage policy dispatch (Directives 2 & 9)
+    pop_semantics: Optional[str] = None
+    slip_samples: Optional[List[Decimal]] = None
+    if telemetry_records:
+        slip_samples, pop_semantics = resolve_slippage_cost_samples(telemetry_records, slippage_cost_policy_version)
+    elif slippage_records_bps is not None:
+        if slippage_cost_policy_version not in ("ADVERSE_ONLY_P75_P95_V1", "RAW_SIGNED_DISTRIBUTION_V1"):
+            raise ValueError(
+                f"SLIPPAGE_POLICY_INVALID: Unknown or unsupported slippage cost policy version '{slippage_cost_policy_version}'."
+            )
+        if slippage_cost_policy_version == "ADVERSE_ONLY_P75_P95_V1":
+            if any(Decimal(str(x)) < Decimal("0") for x in slippage_records_bps):
+                raise ValueError("ADVERSE_ONLY policy cannot consume signed sample list containing negative values")
+            if slippage_population_semantics and slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value:
+                raise ValueError(f"Population semantics mismatch: policy {slippage_cost_policy_version} cannot be {slippage_population_semantics}")
+            pop_semantics = FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
+        else:
+            if slippage_population_semantics and slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_SIGNED.value:
+                raise ValueError(f"Population semantics mismatch: policy {slippage_cost_policy_version} cannot be {slippage_population_semantics}")
+            pop_semantics = FrictionPopulationSemantics.SLIPPAGE_SIGNED.value
+        slip_samples = [Decimal(str(x)) for x in slippage_records_bps]
+
     # Check evidence completeness (Directive 8)
     has_legal = bool(legal_entity_snapshot and legal_info.get("legal_entity_code"))
     has_contract = bool(contract_spec_snapshot and geom.get("contract_size") is not None)
     has_comm = bool(fee_schedule_snapshot and comm.get("native_commission_usd_per_lot_per_side") is not None)
     has_swap = bool(swap_spec_snapshot and fin.get("swap_long_points") is not None)
     has_spread = bool(evidence_dataset and spread_ticks_bps and len(spread_ticks_bps) >= 1000)
-    has_slippage = bool(telemetry_dataset and slippage_records_bps and len(slippage_records_bps) >= 30)
+    has_slippage = bool(telemetry_dataset and slip_samples and len(slip_samples) >= 30)
 
     is_complete = all([
         has_legal,
@@ -276,7 +333,7 @@ def build_and_bind_friction_model_version(
         stress_spread = spread_stats["stat_p95"]
 
         spread_summary_id = hashlib.sha256(
-            f"{evidence_dataset.dataset_id}:SPREAD:NORMAL:ALL:{base_spread}".encode()
+            f"{evidence_dataset.dataset_id}:SPREAD:NORMAL:ALL:{base_spread}:{FrictionPopulationSemantics.SPREAD_BPS.value}".encode()
         ).hexdigest()
 
         spread_summary = FrictionDistributionSummary.objects.filter(summary_id=spread_summary_id).first()
@@ -288,6 +345,7 @@ def build_and_bind_friction_model_version(
                 condition=FrictionConditionType.NORMAL,
                 session=FrictionSessionType.ALL,
                 unit="BPS",
+                population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
                 sample_count=int(spread_stats["sample_count"]),
                 stat_min=spread_stats["stat_min"],
                 stat_p50=spread_stats["stat_p50"],
@@ -305,13 +363,13 @@ def build_and_bind_friction_model_version(
     stress_slippage: Optional[Decimal] = None
     slippage_summary: Optional[FrictionDistributionSummary] = None
 
-    if slippage_records_bps and telemetry_dataset:
-        slip_stats = compute_distribution_statistics(slippage_records_bps)
+    if slip_samples and telemetry_dataset:
+        slip_stats = compute_distribution_statistics(slip_samples)
         base_slippage = slip_stats["stat_p75"]
         stress_slippage = slip_stats["stat_p95"]
 
         slip_summary_id = hashlib.sha256(
-            f"{telemetry_dataset.dataset_id}:SLIPPAGE:NORMAL:ALL:{base_slippage}".encode()
+            f"{telemetry_dataset.dataset_id}:SLIPPAGE:NORMAL:ALL:{base_slippage}:{pop_semantics}".encode()
         ).hexdigest()
 
         slippage_summary = FrictionDistributionSummary.objects.filter(summary_id=slip_summary_id).first()
@@ -323,6 +381,7 @@ def build_and_bind_friction_model_version(
                 condition=FrictionConditionType.NORMAL,
                 session=FrictionSessionType.ALL,
                 unit="BPS",
+                population_semantics=pop_semantics or FrictionPopulationSemantics.UNKNOWN.value,
                 sample_count=int(slip_stats["sample_count"]),
                 stat_min=slip_stats["stat_min"],
                 stat_p50=slip_stats["stat_p50"],
@@ -363,9 +422,9 @@ def build_and_bind_friction_model_version(
         source_hashes.append(fee_schedule_snapshot.raw_payload_bytes_sha256)
     if swap_spec_snapshot:
         source_hashes.append(swap_spec_snapshot.raw_payload_bytes_sha256)
-    if evidence_dataset:
+    if evidence_dataset and evidence_dataset.source_snapshot:
         source_hashes.append(evidence_dataset.source_snapshot.raw_payload_bytes_sha256)
-    if telemetry_dataset:
+    if telemetry_dataset and telemetry_dataset.source_snapshot:
         source_hashes.append(telemetry_dataset.source_snapshot.raw_payload_bytes_sha256)
 
     dataset_hashes: List[str] = []
@@ -385,6 +444,7 @@ def build_and_bind_friction_model_version(
             "condition": str(spread_summary.condition),
             "session": str(spread_summary.session),
             "unit": str(spread_summary.unit),
+            "population_semantics": str(spread_summary.population_semantics),
             "sample_count": spread_summary.sample_count,
             "stat_min": spread_summary.stat_min,
             "stat_p50": spread_summary.stat_p50,
@@ -405,6 +465,7 @@ def build_and_bind_friction_model_version(
             "condition": str(slippage_summary.condition),
             "session": str(slippage_summary.session),
             "unit": str(slippage_summary.unit),
+            "population_semantics": str(slippage_summary.population_semantics),
             "sample_count": slippage_summary.sample_count,
             "stat_min": slippage_summary.stat_min,
             "stat_p50": slippage_summary.stat_p50,
@@ -426,6 +487,42 @@ def build_and_bind_friction_model_version(
         source_types.append(fee_schedule_snapshot.source_type)
     if swap_spec_snapshot:
         source_types.append(swap_spec_snapshot.source_type)
+    if evidence_dataset and evidence_dataset.source_snapshot:
+        source_types.append(evidence_dataset.source_snapshot.source_type)
+    if telemetry_dataset and telemetry_dataset.source_snapshot:
+        source_types.append(telemetry_dataset.source_snapshot.source_type)
+
+    source_evidence: Dict[str, Dict[str, str]] = {}
+    if legal_entity_snapshot:
+        source_evidence["LEGAL_ENTITY"] = {
+            "sha256": legal_entity_snapshot.raw_payload_bytes_sha256,
+            "source_type": legal_entity_snapshot.source_type,
+        }
+    if contract_spec_snapshot:
+        source_evidence["CONTRACT_SPEC"] = {
+            "sha256": contract_spec_snapshot.raw_payload_bytes_sha256,
+            "source_type": contract_spec_snapshot.source_type,
+        }
+    if fee_schedule_snapshot:
+        source_evidence["COMMISSION"] = {
+            "sha256": fee_schedule_snapshot.raw_payload_bytes_sha256,
+            "source_type": fee_schedule_snapshot.source_type,
+        }
+    if swap_spec_snapshot:
+        source_evidence["FINANCING"] = {
+            "sha256": swap_spec_snapshot.raw_payload_bytes_sha256,
+            "source_type": swap_spec_snapshot.source_type,
+        }
+    if evidence_dataset and evidence_dataset.source_snapshot:
+        source_evidence["SPREAD_DATASET"] = {
+            "sha256": evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
+            "source_type": evidence_dataset.source_snapshot.source_type,
+        }
+    if telemetry_dataset and telemetry_dataset.source_snapshot:
+        source_evidence["SLIPPAGE_DATASET"] = {
+            "sha256": telemetry_dataset.source_snapshot.raw_payload_bytes_sha256,
+            "source_type": telemetry_dataset.source_snapshot.source_type,
+        }
 
     fingerprint: Optional[str] = None
     if is_complete:
@@ -444,6 +541,8 @@ def build_and_bind_friction_model_version(
             commission_policy=comm,
             financing_policy=fin,
             bound_binding_roles=bound_roles,
+            slippage_cost_policy_version=slippage_cost_policy_version,
+            source_evidence=source_evidence,
         )
 
     ver_id = model_version_id or f"{venue}_{symbol}_{account_tier}_EMPIRICAL_{'V1' if is_complete else 'DRAFT'}"

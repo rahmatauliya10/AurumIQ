@@ -562,22 +562,63 @@ class FrictionActivationStatus(models.TextChoices):
     RETIRED = "RETIRED", "Retired"
 
 
+class FrictionPopulationSemantics(models.TextChoices):
+    UNKNOWN = "UNKNOWN", "Unknown / Legacy Unspecified"
+    SPREAD_BPS = "SPREAD_BPS", "Spread Distribution (BPS)"
+    SLIPPAGE_ADVERSE_ONLY = "SLIPPAGE_ADVERSE_ONLY", "Slippage Adverse-Only Distribution (BPS)"
+    SLIPPAGE_SIGNED = "SLIPPAGE_SIGNED", "Slippage Raw Signed Distribution (BPS)"
+
+
 class FrictionSourceType(models.TextChoices):
     OFFICIAL_BROKER_DOCUMENT = "OFFICIAL_BROKER_DOCUMENT", "Official Broker Document"
     MT5_SYMBOL_INFO_EXPORT = "MT5_SYMBOL_INFO_EXPORT", "MT5 Symbol Info Export"
     MT5_ACCOUNT_EXPORT = "MT5_ACCOUNT_EXPORT", "MT5 Account Export"
     BROKER_PERSONAL_AREA_EXPORT = "BROKER_PERSONAL_AREA_EXPORT", "Broker Personal Area Export"
     ACCOUNT_CLIENT_AGREEMENT = "ACCOUNT_CLIENT_AGREEMENT", "Account Client Agreement"
+    MT5_TICK_HISTORY_EXPORT = "MT5_TICK_HISTORY_EXPORT", "MT5 Tick History Export"
+    MT5_EXECUTION_TELEMETRY_EXPORT = "MT5_EXECUTION_TELEMETRY_EXPORT", "MT5 Execution Telemetry Export"
     USER_PROVIDED_UNVERIFIED = "USER_PROVIDED_UNVERIFIED", "User Provided Unverified"
 
 
-QUALIFIED_FRICTION_SOURCE_TYPES = {
+QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES = {
+    FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+    FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
     FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+}
+
+QUALIFIED_CONTRACT_SOURCE_TYPES = {
     FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
-    FrictionSourceType.MT5_ACCOUNT_EXPORT.value,
+    FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+}
+
+QUALIFIED_COMMISSION_SOURCE_TYPES = {
     FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
     FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+    FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
 }
+
+QUALIFIED_FINANCING_SOURCE_TYPES = {
+    FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+    FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
+    FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+}
+
+QUALIFIED_SPREAD_SOURCE_TYPES = {
+    FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+}
+
+QUALIFIED_SLIPPAGE_SOURCE_TYPES = {
+    FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value,
+}
+
+QUALIFIED_FRICTION_SOURCE_TYPES = (
+    QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES
+    | QUALIFIED_CONTRACT_SOURCE_TYPES
+    | QUALIFIED_COMMISSION_SOURCE_TYPES
+    | QUALIFIED_FINANCING_SOURCE_TYPES
+    | QUALIFIED_SPREAD_SOURCE_TYPES
+    | QUALIFIED_SLIPPAGE_SOURCE_TYPES
+)
 
 
 class FrictionSourceSnapshot(models.Model):
@@ -702,6 +743,12 @@ class FrictionDistributionSummary(models.Model):
     stat_max = models.DecimalField(max_digits=12, decimal_places=6)
     stat_mean = models.DecimalField(max_digits=12, decimal_places=6)
     stat_std = models.DecimalField(max_digits=12, decimal_places=6)
+    population_semantics = models.CharField(
+        max_length=32,
+        choices=FrictionPopulationSemantics.choices,
+        default=FrictionPopulationSemantics.UNKNOWN,
+        db_index=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = ImmutableManager()

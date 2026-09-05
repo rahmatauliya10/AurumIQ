@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from django.core.management.base import BaseCommand
 
 from apps.market_data.friction.commission import (
@@ -31,6 +31,7 @@ from apps.market_data.friction.ingestion import (
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
     ingest_friction_telemetry_dataset,
+    resolve_slippage_cost_samples,
 )
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
@@ -48,9 +49,46 @@ from apps.market_data.models import (
     FrictionSessionType,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    QUALIFIED_COMMISSION_SOURCE_TYPES,
+    QUALIFIED_CONTRACT_SOURCE_TYPES,
+    QUALIFIED_FINANCING_SOURCE_TYPES,
     QUALIFIED_FRICTION_SOURCE_TYPES,
+    QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES,
+    QUALIFIED_SLIPPAGE_SOURCE_TYPES,
+    QUALIFIED_SPREAD_SOURCE_TYPES,
 )
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
+
+
+def _resolve_source_provenance(
+    data: Dict[str, Any],
+    declared_source_type: str,
+    qualified_types: set,
+    file_path: str,
+) -> Tuple[str, str, str]:
+    """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA (Requirement 3).
+
+    A caller must NOT be able to turn an arbitrary manually-authored file into qualified
+    evidence simply by passing CLI options. A manually created normalized JSON without an
+    authoritative backing artifact remains USER_PROVIDED_UNVERIFIED.
+    """
+    provenance = data.get("provenance") or data.get("backing_artifact") or {}
+    has_backing_artifact = bool(
+        provenance.get("source_origin")
+        and provenance.get("collection_methodology")
+        and (provenance.get("raw_sha256") or provenance.get("raw_backing_sha256") or provenance.get("parser_version"))
+    )
+    if has_backing_artifact and declared_source_type in qualified_types:
+        return (
+            declared_source_type,
+            str(provenance.get("source_origin", "")),
+            str(provenance.get("collection_methodology", "")),
+        )
+    return (
+        FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+        str(provenance.get("source_origin") or f"file://{os.path.abspath(file_path)}"),
+        str(provenance.get("collection_methodology") or "MANUALLY_AUTHORED_NORMALIZED_JSON"),
+    )
 
 
 class Command(BaseCommand):
@@ -109,26 +147,26 @@ class Command(BaseCommand):
         parser.add_argument(
             "--legal-entity-source-type",
             type=str,
-            default=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
-            help="Source provenance type for legal entity snapshot.",
+            default=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+            help="Declared source provenance type for legal entity snapshot (requires backing evidence).",
         )
         parser.add_argument(
             "--contract-spec-source-type",
             type=str,
-            default=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT,
-            help="Source provenance type for contract specification snapshot.",
+            default=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+            help="Declared source provenance type for contract specification snapshot (requires backing evidence).",
         )
         parser.add_argument(
             "--fee-schedule-source-type",
             type=str,
-            default=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT,
-            help="Source provenance type for fee schedule snapshot.",
+            default=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+            help="Declared source provenance type for fee schedule snapshot (requires backing evidence).",
         )
         parser.add_argument(
             "--swap-spec-source-type",
             type=str,
-            default=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT,
-            help="Source provenance type for swap/financing snapshot.",
+            default=FrictionSourceType.USER_PROVIDED_UNVERIFIED,
+            help="Declared source provenance type for swap/financing snapshot (requires backing evidence).",
         )
         parser.add_argument(
             "--slippage-cost-policy",
@@ -196,13 +234,16 @@ class Command(BaseCommand):
                     "regulator": data.get("regulator", ""),
                     "license_number": data.get("license_number", ""),
                 }
+                resolved_legal_source_type, legal_origin, legal_method = _resolve_source_provenance(
+                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file
+                )
                 if not all(legal_entity_info.values()):
                     legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
                     reasons.append("Legal entity file missing required fields (code, name, regulator, license).")
-                elif legal_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                elif resolved_legal_source_type not in QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES:
                     legal_entity_status = "EMPIRICAL_FRICTION_INVALID"
                     reasons.append(
-                        f"Legal entity source provenance '{legal_source_type}' is unverified; hard readiness requires qualified broker provenance."
+                        f"Legal entity source provenance '{resolved_legal_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
                     legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
@@ -217,7 +258,9 @@ class Command(BaseCommand):
                             known_at=now_utc,
                             raw_content=content,
                             metadata=legal_entity_info,
-                            source_type=legal_source_type,
+                            source_type=resolved_legal_source_type,
+                            source_origin=legal_origin,
+                            collection_methodology=legal_method,
                             original_filename=os.path.basename(legal_file),
                         )
             except Exception as e:
@@ -247,10 +290,13 @@ class Command(BaseCommand):
                     "volume_max": Decimal(str(data["volume_max"])),
                     "volume_step": Decimal(str(data["volume_step"])),
                 }
-                if contract_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                resolved_contract_source_type, contract_origin, contract_method = _resolve_source_provenance(
+                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file
+                )
+                if resolved_contract_source_type not in QUALIFIED_CONTRACT_SOURCE_TYPES:
                     contract_status = "EMPIRICAL_FRICTION_INVALID"
                     reasons.append(
-                        f"Contract specification source provenance '{contract_source_type}' is unverified; hard readiness requires qualified broker provenance."
+                        f"Contract specification source provenance '{resolved_contract_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
                     contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
@@ -265,7 +311,9 @@ class Command(BaseCommand):
                             known_at=now_utc,
                             raw_content=content,
                             metadata=contract_geometry,
-                            source_type=contract_source_type,
+                            source_type=resolved_contract_source_type,
+                            source_origin=contract_origin,
+                            collection_methodology=contract_method,
                             original_filename=os.path.basename(contract_file),
                         )
             except Exception as e:
@@ -289,10 +337,13 @@ class Command(BaseCommand):
                     "native_commission_usd_per_lot_per_side": Decimal(str(data["native_commission_usd_per_lot_per_side"])),
                     "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
                 }
-                if fee_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                resolved_fee_source_type, fee_origin, fee_method = _resolve_source_provenance(
+                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file
+                )
+                if resolved_fee_source_type not in QUALIFIED_COMMISSION_SOURCE_TYPES:
                     commission_status = "EMPIRICAL_FRICTION_INVALID"
                     reasons.append(
-                        f"Fee schedule source provenance '{fee_source_type}' is unverified; hard readiness requires qualified broker provenance."
+                        f"Fee schedule source provenance '{resolved_fee_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
                     commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
@@ -307,7 +358,9 @@ class Command(BaseCommand):
                             known_at=now_utc,
                             raw_content=content,
                             metadata=commission_policy,
-                            source_type=fee_source_type,
+                            source_type=resolved_fee_source_type,
+                            source_origin=fee_origin,
+                            collection_methodology=fee_method,
                             original_filename=os.path.basename(fee_file),
                         )
             except Exception as e:
@@ -335,10 +388,13 @@ class Command(BaseCommand):
                     "triple_swap_weekday": str(data["triple_swap_weekday"]),
                     "actual_account_swap_free_status": bool(data.get("actual_account_swap_free_status", False)),
                 }
-                if swap_source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+                resolved_swap_source_type, swap_origin, swap_method = _resolve_source_provenance(
+                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file
+                )
+                if resolved_swap_source_type not in QUALIFIED_FINANCING_SOURCE_TYPES:
                     financing_status = "EMPIRICAL_FRICTION_INVALID"
                     reasons.append(
-                        f"Swap specification source provenance '{swap_source_type}' is unverified; hard readiness requires qualified broker provenance."
+                        f"Swap specification source provenance '{resolved_swap_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
                     financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
@@ -353,7 +409,9 @@ class Command(BaseCommand):
                             known_at=now_utc,
                             raw_content=content,
                             metadata=financing_policy,
-                            source_type=swap_source_type,
+                            source_type=resolved_swap_source_type,
+                            source_origin=swap_origin,
+                            collection_methodology=swap_method,
                             original_filename=os.path.basename(swap_file),
                         )
             except Exception as e:
@@ -406,7 +464,9 @@ class Command(BaseCommand):
                                     known_at=now_utc,
                                     raw_content=tick_bytes,
                                     metadata=summary_meta,
-                                    source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT,
+                                    source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT,
+                                    source_origin=f"file://{os.path.abspath(tick_file)}",
+                                    collection_methodology="MT5_TERMINAL_TICK_EXPORT",
                                     original_filename=os.path.basename(tick_file),
                                 )
                                 spread_dataset, _ = ingest_friction_evidence_dataset(
@@ -455,8 +515,9 @@ class Command(BaseCommand):
                         slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
                         reasons.extend(slip_errors)
                     else:
-                        slip_bps_list = [r["signed_slippage_bps"] for r in telemetry_data]
-                        slip_stats = compute_distribution_statistics(slip_bps_list)
+                        # Canonical slippage policy sample resolution (Directive 2 & 9)
+                        slip_samples, pop_semantics = resolve_slippage_cost_samples(telemetry_data, slippage_policy)
+                        slip_stats = compute_distribution_statistics(slip_samples)
                         if slip_stats["stat_p75"] < Decimal("0") or slip_stats["stat_p95"] < slip_stats["stat_p75"]:
                             slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
                             reasons.append(f"Execution slippage distribution invalid: p75={slip_stats['stat_p75']}, p95={slip_stats['stat_p95']}")
@@ -474,7 +535,9 @@ class Command(BaseCommand):
                                     known_at=now_utc,
                                     raw_content=telem_bytes,
                                     metadata=summary_meta,
-                                    source_type=FrictionSourceType.MT5_ACCOUNT_EXPORT,
+                                    source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT,
+                                    source_origin=f"file://{os.path.abspath(slippage_file)}",
+                                    collection_methodology="MT5_EXECUTION_TELEMETRY_EXPORT",
                                     original_filename=os.path.basename(slippage_file),
                                 )
                                 telemetry_dataset, _ = ingest_friction_telemetry_dataset(
@@ -514,7 +577,6 @@ class Command(BaseCommand):
             gate_decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
         elif is_evidence_complete:
             spread_bps_list = [t["spread_bps"] for t in (spread_ticks or [])]
-            slip_bps_list = [r["signed_slippage_bps"] for r in (telemetry_records or [])]
 
             model_ver, activation = build_and_bind_friction_model_version(
                 legal_entity_snapshot=legal_entity_snapshot,
@@ -528,7 +590,7 @@ class Command(BaseCommand):
                 commission_policy=commission_policy,
                 financing_policy=financing_policy,
                 telemetry_dataset=telemetry_dataset,
-                slippage_records_bps=slip_bps_list,
+                telemetry_records=telemetry_records,
                 venue=venue,
                 symbol=symbol,
                 account_tier=account_tier,

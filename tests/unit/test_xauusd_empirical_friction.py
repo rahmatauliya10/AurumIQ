@@ -51,6 +51,7 @@ from decimal import Decimal
 import hashlib
 import json
 import os
+from typing import Any, Dict, Optional
 import pytest
 from django.db import IntegrityError, models
 from django.core.management import call_command
@@ -82,6 +83,7 @@ from apps.market_data.models import (
     FrictionSessionType,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    FrictionPopulationSemantics,
 )
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
@@ -108,6 +110,7 @@ from apps.market_data.friction.ingestion import (
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
     ingest_friction_telemetry_dataset,
+    resolve_slippage_cost_samples,
 )
 from apps.market_data.friction.resolution import resolve_friction_model, resolve_friction_model_activation
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
@@ -246,6 +249,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"EXNESS_SC_LTD:FSA:SD025",
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        source_origin="https://www.exness.com/legal/terms",
+        collection_methodology="BROKER_PORTAL_DOCUMENT_VERIFIED",
+        original_filename="exness_sc_terms_and_conditions.pdf",
     )
     spec_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/contract-specifications/",
@@ -256,6 +263,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"CONTRACT_SIZE:100|POINT:0.01|DIGITS:2",
+        source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
+        source_origin="https://www.exness.com/contract-specifications/",
+        collection_methodology="MT5_TERMINAL_SPEC_EXPORT",
+        original_filename="exness_contract_specs.json",
     )
     fee_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/fees/",
@@ -266,6 +277,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"STANDARD:COMMISSION:0.00",
+        source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+        source_origin="https://www.exness.com/fees/",
+        collection_methodology="BROKER_PERSONAL_AREA_EXPORT",
+        original_filename="exness_fee_schedule.json",
     )
     swap_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/swap/",
@@ -276,6 +291,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE",
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        source_origin="https://www.exness.com/swap/",
+        collection_methodology="BROKER_PORTAL_DOCUMENT_VERIFIED",
+        original_filename="exness_swap_schedule.json",
     )
     tick_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/tick-history/xauusd",
@@ -286,6 +305,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"RAW_TICK_PAYLOAD_BYTES",
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+        source_origin="https://www.exness.com/tick-history/xauusd",
+        collection_methodology="MT5_TERMINAL_TICK_EXPORT",
+        original_filename="XAUUSD_Ticks_2026.csv",
     )
     telem_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/telemetry/xauusd",
@@ -296,6 +319,10 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         retrieved_at=now_utc,
         known_at=now_utc,
         raw_content=b"RAW_TELEMETRY_PAYLOAD_BYTES",
+        source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value,
+        source_origin="https://www.exness.com/telemetry/xauusd",
+        collection_methodology="MT5_EXECUTION_TELEMETRY_EXPORT",
+        original_filename="execution_telemetry_2026.csv",
     )
 
     # 2. Datasets
@@ -319,7 +346,6 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
     )
 
     spread_bps_list = [t["spread_bps"] for t in base_sample_ticks]
-    slip_bps_list = [r["signed_slippage_bps"] for r in base_telemetry_fills]
 
     legal_info = {
         "legal_entity_code": "EXNESS_SC_LTD",
@@ -358,7 +384,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         evidence_dataset=spread_dataset,
         spread_ticks_bps=spread_bps_list,
         telemetry_dataset=telemetry_dataset,
-        slippage_records_bps=slip_bps_list,
+        telemetry_records=base_telemetry_fills,
         legal_entity_info=legal_info,
         contract_geometry=contract_geom,
         commission_policy=commission_pol,
@@ -800,11 +826,11 @@ def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, ba
     _create_clean_candles(instrument, count=30, tf="15m")
     now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
 
-    legal_snap, _ = ingest_friction_source_snapshot("http://ex.com/l", "L", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"L")
-    spec_snap, _ = ingest_friction_source_snapshot("http://ex.com/c", "C", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"C")
-    fee_snap, _ = ingest_friction_source_snapshot("http://ex.com/f", "F", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"F")
-    swap_snap, _ = ingest_friction_source_snapshot("http://ex.com/s", "S", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"S")
-    tick_snap, _ = ingest_friction_source_snapshot("http://ex.com/t", "T", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"T")
+    legal_snap, _ = ingest_friction_source_snapshot("http://ex.com/l", "L", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"L", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value)
+    spec_snap, _ = ingest_friction_source_snapshot("http://ex.com/c", "C", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"C", source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value)
+    fee_snap, _ = ingest_friction_source_snapshot("http://ex.com/f", "F", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"F", source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value)
+    swap_snap, _ = ingest_friction_source_snapshot("http://ex.com/s", "S", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"S", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value)
+    tick_snap, _ = ingest_friction_source_snapshot("http://ex.com/t", "T", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"T", source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value)
 
     spread_ds, _ = ingest_friction_evidence_dataset(
         source_snapshot=tick_snap,
@@ -1458,6 +1484,7 @@ def test_harden_16_missing_rollover_session_threshold_fails(xauusd_setup, qualif
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=1200,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.00"), stat_p90=Decimal("1.5"),
         stat_p95=Decimal("2.00"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -1551,6 +1578,7 @@ def test_harden_17_missing_session_count_metadata_fails(xauusd_setup, qualified_
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=1200,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.00"), stat_p90=Decimal("1.5"),
         stat_p95=Decimal("2.00"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -1590,6 +1618,7 @@ def test_harden_18_wrong_distribution_unit_fails(xauusd_setup, qualified_evidenc
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="POINTS",  # Invalid unit
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=dataset.sample_count,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.00"), stat_p90=Decimal("1.5"),
         stat_p95=Decimal("2.00"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -1669,6 +1698,7 @@ def test_harden_19_spread_summary_p75_mismatch_with_model_fails(xauusd_setup, qu
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=dataset.sample_count,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.00"), stat_p90=Decimal("1.5"),
         stat_p95=Decimal("2.00"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -1750,6 +1780,7 @@ def test_harden_20_stress_p95_lower_than_p75_fails(xauusd_setup, qualified_evide
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=dataset.sample_count,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.50"), stat_p90=Decimal("1.2"),
         stat_p95=Decimal("0.50"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -1870,6 +1901,7 @@ def test_harden_21_missing_telemetry_binding_fails(xauusd_setup, qualified_evide
         condition=FrictionConditionType.NORMAL,
         session=FrictionSessionType.ALL,
         unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SPREAD_BPS.value,
         sample_count=dataset.sample_count,
         stat_min=Decimal("0.5"), stat_p50=Decimal("1.0"), stat_p75=Decimal("1.00"), stat_p90=Decimal("1.5"),
         stat_p95=Decimal("2.00"), stat_p99=Decimal("2.5"), stat_max=Decimal("3.0"), stat_mean=Decimal("1.1"), stat_std=Decimal("0.2"),
@@ -2890,5 +2922,660 @@ def test_seal_20_future_activation_cannot_leak_backward_through_readiness(xauusd
     res_future = resolve_friction_model_activation(as_of=as_of_future, symbol="XAUUSD")
     assert res_future is not None
     assert res_future[0].model_version_id == "FUTURE_MODEL_SEAL_20"
+
+
+# =============================================================================
+# PROVENANCE SEAL & POPULATION SEMANTICS HOSTILE TESTS (T21 - T36)
+# =============================================================================
+
+@pytest.mark.django_db
+def test_seal_21_default_population_semantics_is_unknown_not_adverse_only(qualified_evidence_bundle):
+    """T21: Default population semantics must be UNKNOWN, not ADVERSE_ONLY (Requirement 1 & 7)."""
+    dataset = qualified_evidence_bundle["dataset"]
+    summary = FrictionDistributionSummary.objects.create(
+        summary_id="SUM_DEFAULT_POP",
+        evidence_dataset=dataset,
+        component_type=FrictionComponentType.SPREAD,
+        condition=FrictionConditionType.NORMAL,
+        session=FrictionSessionType.ALL,
+        unit="BPS",
+        sample_count=1000,
+        stat_min=Decimal("0.5"),
+        stat_p50=Decimal("1.0"),
+        stat_p75=Decimal("1.00"),
+        stat_p90=Decimal("1.5"),
+        stat_p95=Decimal("2.00"),
+        stat_p99=Decimal("2.5"),
+        stat_max=Decimal("3.0"),
+        stat_mean=Decimal("1.1"),
+        stat_std=Decimal("0.2"),
+    )
+    assert summary.population_semantics == FrictionPopulationSemantics.UNKNOWN
+    assert summary.population_semantics != FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY
+
+
+@pytest.mark.django_db
+def test_seal_22_spread_summary_cannot_be_labeled_adverse_only(qualified_evidence_bundle):
+    """T22: Spread distribution cannot be labeled adverse-only (Requirement 1 & 7)."""
+    model = qualified_evidence_bundle["model_version"]
+    dataset = qualified_evidence_bundle["dataset"]
+    bad_spread_summary = FrictionDistributionSummary.objects.create(
+        summary_id="SUM_SPREAD_ADVERSE_ONLY",
+        evidence_dataset=dataset,
+        component_type=FrictionComponentType.SPREAD,
+        condition=FrictionConditionType.NORMAL,
+        session=FrictionSessionType.ALL,
+        unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value,
+        sample_count=dataset.sample_count,
+        stat_min=Decimal("0.5"),
+        stat_p50=Decimal("1.0"),
+        stat_p75=Decimal("1.00"),
+        stat_p90=Decimal("1.5"),
+        stat_p95=Decimal("2.00"),
+        stat_p99=Decimal("2.5"),
+        stat_max=Decimal("3.0"),
+        stat_mean=Decimal("1.1"),
+        stat_std=Decimal("0.2"),
+    )
+    FrictionModelSummaryBinding.objects.create(
+        binding_id="BIND_SUM_BAD_SPREAD_POP",
+        friction_model_version=model,
+        distribution_summary=bad_spread_summary,
+        binding_role=FrictionBindingRole.NORMAL_SPREAD_DISTRIBUTION,
+    )
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("population semantics" in r for r in val.reasons)
+
+
+def _clone_model_with_bindings(
+    orig_model: FrictionModelVersion,
+    new_model_id: str,
+    override_fields: Optional[Dict[str, Any]] = None,
+    override_spread_summary: Optional[FrictionDistributionSummary] = None,
+    override_slippage_summary: Optional[FrictionDistributionSummary] = None,
+    override_spread_dataset: Optional[FrictionEvidenceDataset] = None,
+    override_telemetry_dataset: Optional[FrictionEvidenceDataset] = None,
+) -> FrictionModelVersion:
+    """Helper to create a fresh immutable model cloned from qualified evidence bundle without mutation."""
+    fields = {
+        "model_version_id": new_model_id,
+        "venue": orig_model.venue,
+        "symbol": orig_model.symbol,
+        "account_tier": orig_model.account_tier,
+        "legal_entity_code": orig_model.legal_entity_code,
+        "legal_entity_name": orig_model.legal_entity_name,
+        "regulator": orig_model.regulator,
+        "license_number": orig_model.license_number,
+        "legal_entity_source_snapshot": orig_model.legal_entity_source_snapshot,
+        "contract_spec_source_snapshot": orig_model.contract_spec_source_snapshot,
+        "fee_schedule_source_snapshot": orig_model.fee_schedule_source_snapshot,
+        "swap_spec_source_snapshot": orig_model.swap_spec_source_snapshot,
+        "digits": orig_model.digits,
+        "point_size": orig_model.point_size,
+        "trade_tick_size": orig_model.trade_tick_size,
+        "trade_tick_value": orig_model.trade_tick_value,
+        "contract_size": orig_model.contract_size,
+        "volume_min": orig_model.volume_min,
+        "volume_max": orig_model.volume_max,
+        "volume_step": orig_model.volume_step,
+        "native_commission_usd_per_lot_per_side": orig_model.native_commission_usd_per_lot_per_side,
+        "commission_formula": orig_model.commission_formula,
+        "swap_long_points": orig_model.swap_long_points,
+        "swap_short_points": orig_model.swap_short_points,
+        "rollover_summer_utc_hour": orig_model.rollover_summer_utc_hour,
+        "rollover_winter_utc_hour": orig_model.rollover_winter_utc_hour,
+        "triple_swap_weekday": orig_model.triple_swap_weekday,
+        "base_spread_bps": orig_model.base_spread_bps,
+        "stress_spread_bps": orig_model.stress_spread_bps,
+        "base_slippage_bps": orig_model.base_slippage_bps,
+        "stress_slippage_bps": orig_model.stress_slippage_bps,
+        "empirical_friction_evidence_fingerprint": f"fp_{new_model_id}",
+        "slippage_cost_policy_version": orig_model.slippage_cost_policy_version,
+    }
+    if override_fields:
+        fields.update(override_fields)
+
+    cloned = FrictionModelVersion.objects.create(**fields)
+
+    # Bind spread dataset
+    sp_ds = override_spread_dataset or next(
+        (db.evidence_dataset for db in orig_model.dataset_bindings.all() if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE),
+        None,
+    )
+    if sp_ds:
+        FrictionModelDatasetBinding.objects.create(
+            binding_id=f"BIND_DS_SP_{new_model_id}",
+            friction_model_version=cloned,
+            evidence_dataset=sp_ds,
+            binding_role=FrictionBindingRole.PRIMARY_SPREAD_SAMPLE,
+        )
+
+    # Bind telemetry dataset
+    telem_ds = override_telemetry_dataset or next(
+        (db.evidence_dataset for db in orig_model.dataset_bindings.all() if db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE)),
+        None,
+    )
+    if telem_ds:
+        FrictionModelDatasetBinding.objects.create(
+            binding_id=f"BIND_DS_TELEM_{new_model_id}",
+            friction_model_version=cloned,
+            evidence_dataset=telem_ds,
+            binding_role=FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE,
+        )
+
+    # Bind spread summary
+    sp_sum = override_spread_summary or next(
+        (sb.distribution_summary for sb in orig_model.summary_bindings.all() if sb.binding_role == FrictionBindingRole.NORMAL_SPREAD_DISTRIBUTION),
+        None,
+    )
+    if sp_sum:
+        FrictionModelSummaryBinding.objects.create(
+            binding_id=f"BIND_SUM_SP_{new_model_id}",
+            friction_model_version=cloned,
+            distribution_summary=sp_sum,
+            binding_role=FrictionBindingRole.NORMAL_SPREAD_DISTRIBUTION,
+        )
+
+    # Bind slippage summary
+    slip_sum = override_slippage_summary or next(
+        (sb.distribution_summary for sb in orig_model.summary_bindings.all() if sb.binding_role == FrictionBindingRole.NORMAL_SLIPPAGE_DISTRIBUTION),
+        None,
+    )
+    if slip_sum:
+        FrictionModelSummaryBinding.objects.create(
+            binding_id=f"BIND_SUM_SLIP_{new_model_id}",
+            friction_model_version=cloned,
+            distribution_summary=slip_sum,
+            binding_role=FrictionBindingRole.NORMAL_SLIPPAGE_DISTRIBUTION,
+        )
+
+    return cloned
+
+
+@pytest.mark.django_db
+def test_seal_23_legacy_or_unknown_slippage_population_cannot_active(qualified_evidence_bundle):
+    """T23: Legacy/unknown slippage population cannot qualify as ACTIVE (Requirement 1 & 7)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    unknown_summary = FrictionDistributionSummary.objects.create(
+        summary_id="SUM_SLIPPAGE_UNKNOWN_POP",
+        evidence_dataset=telem_ds,
+        component_type=FrictionComponentType.SLIPPAGE,
+        condition=FrictionConditionType.NORMAL,
+        session=FrictionSessionType.ALL,
+        unit="BPS",
+        population_semantics=FrictionPopulationSemantics.UNKNOWN.value,
+        sample_count=telem_ds.sample_count,
+        stat_min=Decimal("0.0"),
+        stat_p50=Decimal("0.08"),
+        stat_p75=Decimal("0.08"),
+        stat_p90=Decimal("0.08"),
+        stat_p95=Decimal("0.08"),
+        stat_p99=Decimal("0.08"),
+        stat_max=Decimal("0.08"),
+        stat_mean=Decimal("0.08"),
+        stat_std=Decimal("0.0"),
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_UNKNOWN_SLIP_POP",
+        override_slippage_summary=unknown_summary,
+    )
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("UNKNOWN or unspecified population semantics" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_24_explicit_cli_qualified_label_cannot_upgrade_unverified_handmade_json():
+    """T24: Explicit CLI qualified label cannot upgrade an unverified handmade JSON (Requirement 3 & 7)."""
+    handmade_file = "artifacts/handmade_legal_entity_tmp.json"
+    manifest_file = "artifacts/test_seal_24_manifest_tmp.json"
+    report_file = "artifacts/test_seal_24_report_tmp.md"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        # A human-authored JSON without authoritative backing artifact / provenance
+        with open(handmade_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "legal_entity_code": "EXNESS_SC_LTD",
+                "legal_entity_name": "Exness (SC) Ltd",
+                "regulator": "FSA",
+                "license_number": "SD025",
+            }, f)
+
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--legal-entity-file", handmade_file,
+            "--legal-entity-source-type", "OFFICIAL_BROKER_DOCUMENT",
+            "--dry-run",
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["evidence_inventory"]["legal_entity_scope"]["status"] == "EMPIRICAL_FRICTION_INVALID"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert any("USER_PROVIDED_UNVERIFIED" in r for r in manifest["blocking_reasons"])
+    finally:
+        for p in (handmade_file, manifest_file, report_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_seal_25_swapping_source_role_assignments_alters_fingerprint():
+    """T25: Swapping source role assignments alters fingerprint (Requirement 5 & 7)."""
+    base_args = {
+        "semantic_versions": {"friction_policy_schema_version": "1.0.0"},
+        "venue": "EXNESS",
+        "legal_entity_code": "EXNESS_SC_LTD",
+        "account_tier": "STANDARD",
+        "symbol": "XAUUSD",
+        "contract_geometry": {"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1"), "contract_size": Decimal("100"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200"), "volume_step": Decimal("0.01")},
+        "source_snapshot_hashes": ["hash_alpha", "hash_beta"],
+        "dataset_hashes": ["ds_hash"],
+        "distribution_summaries": [],
+        "calibrated_parameters": {"base_spread_bps": Decimal("1"), "stress_spread_bps": Decimal("2"), "base_slippage_bps": Decimal("0.5"), "stress_slippage_bps": Decimal("1")},
+        "commission_policy": {"native_commission_usd_per_lot_per_side": Decimal("0"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        "financing_policy": {"swap_long_points": Decimal("-10"), "swap_short_points": Decimal("5")},
+    }
+
+    # Fingerprint A: LEGAL_ENTITY = hash_alpha, COMMISSION = hash_beta
+    fp_a = compute_empirical_friction_fingerprint(
+        **base_args,
+        source_evidence={
+            "LEGAL_ENTITY": {"sha256": "hash_alpha", "source_type": "OFFICIAL_BROKER_DOCUMENT"},
+            "COMMISSION": {"sha256": "hash_beta", "source_type": "BROKER_PERSONAL_AREA_EXPORT"},
+        },
+    )
+
+    # Fingerprint B: Swapped roles: LEGAL_ENTITY = hash_beta, COMMISSION = hash_alpha
+    fp_b = compute_empirical_friction_fingerprint(
+        **base_args,
+        source_evidence={
+            "LEGAL_ENTITY": {"sha256": "hash_beta", "source_type": "OFFICIAL_BROKER_DOCUMENT"},
+            "COMMISSION": {"sha256": "hash_alpha", "source_type": "BROKER_PERSONAL_AREA_EXPORT"},
+        },
+    )
+
+    assert fp_a != fp_b, "Swapping role bindings must alter the deterministic fingerprint."
+
+
+def test_seal_26_canonical_slippage_policy_resolver_sample_selection():
+    """T26: Canonical slippage policy resolver is the only sample-selection path (Requirement 2 & 7)."""
+    telemetry = [
+        {"adverse_only_bps": Decimal("0.15"), "signed_slippage_bps": Decimal("-0.20")},
+        {"adverse_only_bps": Decimal("0.40"), "signed_slippage_bps": Decimal("0.40")},
+    ]
+
+    # ADVERSE_ONLY policy
+    adv_samples, adv_pop = resolve_slippage_cost_samples(telemetry, "ADVERSE_ONLY_P75_P95_V1")
+    assert adv_samples == [Decimal("0.15"), Decimal("0.40")]
+    assert adv_pop == FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
+
+    # RAW_SIGNED policy
+    sgn_samples, sgn_pop = resolve_slippage_cost_samples(telemetry, "RAW_SIGNED_DISTRIBUTION_V1")
+    assert sgn_samples == [Decimal("-0.20"), Decimal("0.40")]
+    assert sgn_pop == FrictionPopulationSemantics.SLIPPAGE_SIGNED.value
+
+    # Unknown policy fails closed
+    with pytest.raises(ValueError, match="SLIPPAGE_POLICY_INVALID"):
+        resolve_slippage_cost_samples(telemetry, "INVALID_POLICY_NAME")
+
+
+@pytest.mark.django_db
+def test_seal_27_adverse_only_policy_cannot_consume_signed_sample_list(qualified_evidence_bundle):
+    """T27: ADVERSE_ONLY policy cannot consume a caller-supplied signed sample list containing negatives (Requirement 2 & 7)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    with pytest.raises(ValueError, match="ADVERSE_ONLY policy cannot consume signed sample list containing negative values"):
+        build_and_bind_friction_model_version(
+            legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+            contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+            fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+            swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+            evidence_dataset=qualified_evidence_bundle["dataset"],
+            spread_ticks_bps=[Decimal("1.0")],
+            telemetry_dataset=telem_ds,
+            slippage_records_bps=[Decimal("-0.50"), Decimal("0.80")],  # Negative signed slippage
+            slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+        )
+
+
+def test_seal_28_summary_population_semantics_enters_fingerprint():
+    """T28: Summary population semantics enters fingerprint (Requirement 5 & 7)."""
+    base_args = {
+        "semantic_versions": {"friction_policy_schema_version": "1.0.0"},
+        "venue": "EXNESS",
+        "legal_entity_code": "EXNESS_SC_LTD",
+        "account_tier": "STANDARD",
+        "symbol": "XAUUSD",
+        "contract_geometry": {"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1"), "contract_size": Decimal("100"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200"), "volume_step": Decimal("0.01")},
+        "source_snapshot_hashes": ["hash1"],
+        "dataset_hashes": ["ds1"],
+        "calibrated_parameters": {"base_spread_bps": Decimal("1"), "stress_spread_bps": Decimal("2"), "base_slippage_bps": Decimal("0.5"), "stress_slippage_bps": Decimal("1")},
+        "commission_policy": {"native_commission_usd_per_lot_per_side": Decimal("0"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        "financing_policy": {"swap_long_points": Decimal("-10"), "swap_short_points": Decimal("5")},
+    }
+
+    sum_adverse = [{
+        "component_type": "SLIPPAGE",
+        "condition": "NORMAL",
+        "session": "ALL",
+        "unit": "BPS",
+        "population_semantics": "SLIPPAGE_ADVERSE_ONLY",
+        "sample_count": 50,
+        "stat_p75": Decimal("0.5"),
+        "stat_p95": Decimal("1.0"),
+    }]
+    sum_signed = [{
+        "component_type": "SLIPPAGE",
+        "condition": "NORMAL",
+        "session": "ALL",
+        "unit": "BPS",
+        "population_semantics": "SLIPPAGE_SIGNED",
+        "sample_count": 50,
+        "stat_p75": Decimal("0.5"),
+        "stat_p95": Decimal("1.0"),
+    }]
+
+    fp_adverse = compute_empirical_friction_fingerprint(**base_args, distribution_summaries=sum_adverse)
+    fp_signed = compute_empirical_friction_fingerprint(**base_args, distribution_summaries=sum_signed)
+
+    assert fp_adverse != fp_signed
+
+
+@pytest.mark.django_db
+def test_seal_29_omitted_source_type_defaults_to_user_provided_unverified():
+    """T29: Omitted source type in ingestion snapshot defaults to USER_PROVIDED_UNVERIFIED (Requirement 3)."""
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    snap, _ = ingest_friction_source_snapshot(
+        source_url="http://ex.com/unspec",
+        source_name="UNSPECIFIED_SNAP",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=b"UNVERIFIED_RAW_PAYLOAD",
+    )
+    assert snap.source_type == FrictionSourceType.USER_PROVIDED_UNVERIFIED.value
+
+
+@pytest.mark.django_db
+def test_seal_30_mt5_tick_export_cannot_satisfy_legal_entity_evidence(qualified_evidence_bundle):
+    """T30: Cross-component qualification fails: MT5 tick export cannot satisfy legal-entity evidence (Requirement 4 & 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    tick_as_legal, _ = ingest_friction_source_snapshot(
+        source_url="http://ex.com/tick",
+        source_name="TICK_LEGAL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=b"TICK_DATA_BYTES",
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_BAD_LEGAL_SOURCE_TYPE",
+        override_fields={"legal_entity_source_snapshot": tick_as_legal},
+    )
+
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "EMPIRICAL_FRICTION_INVALID"
+    assert any("Legal entity source provenance 'MT5_TICK_HISTORY_EXPORT' is unverified" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_31_mt5_symbol_info_cannot_satisfy_slippage_evidence(qualified_evidence_bundle):
+    """T31: Cross-component qualification fails: MT5 SymbolInfo cannot satisfy slippage telemetry evidence (Requirement 4 & 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    symbol_info_snap, _ = ingest_friction_source_snapshot(
+        source_url="http://ex.com/sym",
+        source_name="SYMBOL_INFO_SNAP",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=b"SYMBOL_INFO_BYTES",
+        source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
+    )
+    ds_bad_telem = FrictionEvidenceDataset.objects.create(
+        dataset_id="DS_BAD_TELEM_SRC",
+        source_snapshot=symbol_info_snap,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        sample_start=telem_ds.sample_start,
+        sample_end=telem_ds.sample_end,
+        sample_count=telem_ds.sample_count,
+        distinct_trading_days=telem_ds.distinct_trading_days,
+        session_counts=telem_ds.session_counts,
+        source_units="BPS",
+        raw_dataset_sha256="bad_telem_sha",
+        collection_methodology="MT5_SYMBOL_INFO_EXPORT",
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_BAD_TELEM_SRC_TYPE",
+        override_telemetry_dataset=ds_bad_telem,
+    )
+
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("Execution slippage telemetry source provenance" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_32_spread_dataset_with_unverified_source_cannot_active(qualified_evidence_bundle):
+    """T32: Spread dataset with USER_PROVIDED_UNVERIFIED source cannot achieve ACTIVE (Requirement 3, 4, 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    spread_ds = qualified_evidence_bundle["dataset"]
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    unverified_snap, _ = ingest_friction_source_snapshot(
+        source_url="http://ex.com/u",
+        source_name="UNVERIFIED_TICKS",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=b"UNVERIFIED_TICK_BYTES",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+    )
+    ds_unver_spread = FrictionEvidenceDataset.objects.create(
+        dataset_id="DS_UNVER_SPREAD",
+        source_snapshot=unverified_snap,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        sample_start=spread_ds.sample_start,
+        sample_end=spread_ds.sample_end,
+        sample_count=spread_ds.sample_count,
+        distinct_trading_days=spread_ds.distinct_trading_days,
+        session_counts=spread_ds.session_counts,
+        source_units="POINTS",
+        raw_dataset_sha256="unver_spread_sha",
+        collection_methodology="TEST",
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_UNVER_SPREAD_SRC",
+        override_spread_dataset=ds_unver_spread,
+    )
+
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("Spread dataset source provenance 'USER_PROVIDED_UNVERIFIED' is unverified" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_33_slippage_dataset_with_unverified_source_cannot_active(qualified_evidence_bundle):
+    """T33: Slippage dataset with USER_PROVIDED_UNVERIFIED source cannot achieve ACTIVE (Requirement 3, 4, 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+    unverified_snap, _ = ingest_friction_source_snapshot(
+        source_url="http://ex.com/u_slip",
+        source_name="UNVERIFIED_TELEM",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=b"UNVERIFIED_TELEMETRY_BYTES",
+        source_type=FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+    )
+    ds_unver_telem = FrictionEvidenceDataset.objects.create(
+        dataset_id="DS_UNVER_TELEM",
+        source_snapshot=unverified_snap,
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        sample_start=telem_ds.sample_start,
+        sample_end=telem_ds.sample_end,
+        sample_count=telem_ds.sample_count,
+        distinct_trading_days=telem_ds.distinct_trading_days,
+        session_counts=telem_ds.session_counts,
+        source_units="BPS",
+        raw_dataset_sha256="unver_telem_sha",
+        collection_methodology="TEST",
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_UNVER_TELEM_SRC",
+        override_telemetry_dataset=ds_unver_telem,
+    )
+
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert val.is_valid is False
+    assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("Execution slippage telemetry source provenance 'USER_PROVIDED_UNVERIFIED' is unverified" in r for r in val.reasons)
+
+
+def test_seal_34_favorable_signed_fills_do_not_reduce_adverse_only_cost_below_zero():
+    """T34: Favorable signed fills (-0.50 bps) resolve to >= 0 under ADVERSE_ONLY policy (Requirement 2)."""
+    records = [
+        {"adverse_only_bps": Decimal("0.00"), "signed_slippage_bps": Decimal("-0.50")},
+        {"adverse_only_bps": Decimal("0.25"), "signed_slippage_bps": Decimal("0.25")},
+    ]
+    samples, pop = resolve_slippage_cost_samples(records, "ADVERSE_ONLY_P75_P95_V1")
+    assert all(s >= Decimal("0") for s in samples)
+    assert samples[0] == Decimal("0.00")
+    assert pop == FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
+
+
+@pytest.mark.django_db
+def test_seal_35_unknown_slippage_policy_fails_closed(qualified_evidence_bundle):
+    """T35: Unknown or unsupported slippage cost policy fails closed in validator (Requirement 2 & 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_UNKNOWN_POLICY",
+        override_fields={"slippage_cost_policy_version": "UNKNOWN_FICTITIOUS_POLICY_V99"},
+    )
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+        slippage_cost_policy_version="UNKNOWN_FICTITIOUS_POLICY_V99",
+    )
+    assert val.is_valid is False
+    assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("Unknown or unsupported slippage cost policy" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_36_adverse_only_model_bound_to_signed_summary_fails_validation(qualified_evidence_bundle):
+    """T36: ADVERSE_ONLY model policy bound to SLIPPAGE_SIGNED summary fails closed (Requirement 1, 2, 6)."""
+    orig_model = qualified_evidence_bundle["model_version"]
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    signed_summary = FrictionDistributionSummary.objects.create(
+        summary_id="SUM_SLIPPAGE_SIGNED_MISMATCH",
+        evidence_dataset=telem_ds,
+        component_type=FrictionComponentType.SLIPPAGE,
+        condition=FrictionConditionType.NORMAL,
+        session=FrictionSessionType.ALL,
+        unit="BPS",
+        population_semantics=FrictionPopulationSemantics.SLIPPAGE_SIGNED.value,
+        sample_count=telem_ds.sample_count,
+        stat_min=Decimal("0.0"),
+        stat_p50=Decimal("0.08"),
+        stat_p75=Decimal("0.08"),
+        stat_p90=Decimal("0.08"),
+        stat_p95=Decimal("0.08"),
+        stat_p99=Decimal("0.08"),
+        stat_max=Decimal("0.08"),
+        stat_mean=Decimal("0.08"),
+        stat_std=Decimal("0.0"),
+    )
+    model = _clone_model_with_bindings(
+        orig_model,
+        "MODEL_SIGNED_MISMATCH",
+        override_fields={"slippage_cost_policy_version": "ADVERSE_ONLY_P75_P95_V1"},
+        override_slippage_summary=signed_summary,
+    )
+
+    val = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+        slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+    )
+    assert val.is_valid is False
+    assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
+    assert any("requires SLIPPAGE_ADVERSE_ONLY summary" in r for r in val.reasons)
 
 

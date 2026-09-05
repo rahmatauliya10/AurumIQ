@@ -26,9 +26,16 @@ from apps.market_data.models import (
     FrictionDistributionSummary,
     FrictionEvidenceDataset,
     FrictionModelVersion,
+    FrictionPopulationSemantics,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    QUALIFIED_COMMISSION_SOURCE_TYPES,
+    QUALIFIED_CONTRACT_SOURCE_TYPES,
+    QUALIFIED_FINANCING_SOURCE_TYPES,
     QUALIFIED_FRICTION_SOURCE_TYPES,
+    QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES,
+    QUALIFIED_SLIPPAGE_SOURCE_TYPES,
+    QUALIFIED_SPREAD_SOURCE_TYPES,
 )
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 
@@ -107,11 +114,11 @@ def validate_friction_model_for_activation(
             reasons=["Legal entity snapshot scope does not match model scope."],
             details=details,
         )
-    if legal_snap.source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+    if legal_snap.source_type not in QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES:
         return FrictionValidationResult(
             is_valid=False,
             status="EMPIRICAL_FRICTION_INVALID",
-            reasons=[f"Legal entity source provenance '{legal_snap.source_type}' is unverified; hard readiness requires qualified broker provenance."],
+            reasons=[f"Legal entity source provenance '{legal_snap.source_type}' is unverified; hard readiness requires qualified legal entity provenance."],
             details=details,
         )
     if (
@@ -152,11 +159,11 @@ def validate_friction_model_for_activation(
             reasons=["Contract specification snapshot scope does not match model scope."],
             details=details,
         )
-    if contract_snap.source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+    if contract_snap.source_type not in QUALIFIED_CONTRACT_SOURCE_TYPES:
         return FrictionValidationResult(
             is_valid=False,
             status="EMPIRICAL_FRICTION_INVALID",
-            reasons=[f"Contract specification source provenance '{contract_snap.source_type}' is unverified; hard readiness requires qualified broker provenance."],
+            reasons=[f"Contract specification source provenance '{contract_snap.source_type}' is unverified; hard readiness requires qualified contract provenance."],
             details=details,
         )
     if (
@@ -207,11 +214,11 @@ def validate_friction_model_for_activation(
             reasons=["Fee schedule snapshot scope does not match model scope."],
             details=details,
         )
-    if fee_snap.source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+    if fee_snap.source_type not in QUALIFIED_COMMISSION_SOURCE_TYPES:
         return FrictionValidationResult(
             is_valid=False,
             status="EMPIRICAL_FRICTION_INVALID",
-            reasons=[f"Fee schedule source provenance '{fee_snap.source_type}' is unverified; hard readiness requires qualified broker provenance."],
+            reasons=[f"Fee schedule source provenance '{fee_snap.source_type}' is unverified; hard readiness requires qualified commission provenance."],
             details=details,
         )
     if (
@@ -252,11 +259,11 @@ def validate_friction_model_for_activation(
             reasons=["Swap specification snapshot scope does not match model scope."],
             details=details,
         )
-    if swap_snap.source_type not in QUALIFIED_FRICTION_SOURCE_TYPES:
+    if swap_snap.source_type not in QUALIFIED_FINANCING_SOURCE_TYPES:
         return FrictionValidationResult(
             is_valid=False,
             status="EMPIRICAL_FRICTION_INVALID",
-            reasons=[f"Swap specification source provenance '{swap_snap.source_type}' is unverified; hard readiness requires qualified broker provenance."],
+            reasons=[f"Swap specification source provenance '{swap_snap.source_type}' is unverified; hard readiness requires qualified financing provenance."],
             details=details,
         )
     if (
@@ -324,6 +331,36 @@ def validate_friction_model_for_activation(
         )
 
     spread_ds = primary_ds_binding.evidence_dataset
+    spread_snap = spread_ds.source_snapshot
+    if not spread_snap:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SPREAD_EMPIRICAL_EVIDENCE_MISSING",
+            reasons=["Spread dataset source snapshot is missing."],
+            details=details,
+        )
+    if spread_snap.source_type not in QUALIFIED_SPREAD_SOURCE_TYPES:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SPREAD_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=[f"Spread dataset source provenance '{spread_snap.source_type}' is unverified; hard readiness requires qualified spread provenance."],
+            details=details,
+        )
+    if not spread_snap.raw_content or hashlib.sha256(spread_snap.raw_content).hexdigest() != spread_snap.raw_payload_bytes_sha256:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SPREAD_EMPIRICAL_EVIDENCE_MISSING",
+            reasons=["Spread dataset source payload content or SHA-256 verification failed."],
+            details=details,
+        )
+    if spread_snap.venue != model_version.venue or spread_snap.symbol != model_version.symbol or spread_snap.account_tier != model_version.account_tier:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="EMPIRICAL_FRICTION_INVALID",
+            reasons=["Spread dataset source snapshot scope does not match model scope."],
+            details=details,
+        )
+
     if spread_ds.sample_count < 1000:
         return FrictionValidationResult(
             is_valid=False,
@@ -369,6 +406,14 @@ def validate_friction_model_for_activation(
             reasons=[f"Spread distribution unit is '{spread_sum.unit}', expected 'BPS'."],
             details=details,
         )
+    spread_pop = getattr(spread_sum, "population_semantics", None)
+    if spread_pop != FrictionPopulationSemantics.SPREAD_BPS.value:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SPREAD_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=[f"Spread distribution summary population semantics is '{spread_pop}', expected '{FrictionPopulationSemantics.SPREAD_BPS.value}'."],
+            details=details,
+        )
     if spread_sum.stat_p75 <= Decimal("0"):
         return FrictionValidationResult(
             is_valid=False,
@@ -394,7 +439,7 @@ def validate_friction_model_for_activation(
             details=details,
         )
 
-    # 7. Slippage Telemetry & Summary Sufficiency (Directives 7, 8, 10, 11)
+    # 7. Slippage Telemetry & Summary Sufficiency (Directives 7, 8, 10, 11, 12)
     telem_ds_binding = next(
         (b for b in dataset_bindings if b.binding_role in (
             FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE,
@@ -411,6 +456,36 @@ def validate_friction_model_for_activation(
         )
 
     telem_ds = telem_ds_binding.evidence_dataset
+    telem_snap = telem_ds.source_snapshot
+    if not telem_snap:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+            reasons=["Execution slippage telemetry dataset source snapshot is missing."],
+            details=details,
+        )
+    if telem_snap.source_type not in QUALIFIED_SLIPPAGE_SOURCE_TYPES:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=[f"Execution slippage telemetry source provenance '{telem_snap.source_type}' is unverified; hard readiness requires qualified telemetry provenance."],
+            details=details,
+        )
+    if not telem_snap.raw_content or hashlib.sha256(telem_snap.raw_content).hexdigest() != telem_snap.raw_payload_bytes_sha256:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+            reasons=["Execution slippage telemetry payload content or SHA-256 verification failed."],
+            details=details,
+        )
+    if telem_snap.venue != model_version.venue or telem_snap.symbol != model_version.symbol or telem_snap.account_tier != model_version.account_tier:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="EMPIRICAL_FRICTION_INVALID",
+            reasons=["Execution slippage telemetry source snapshot scope does not match model scope."],
+            details=details,
+        )
+
     if telem_ds.sample_count < 30:
         return FrictionValidationResult(
             is_valid=False,
@@ -442,6 +517,43 @@ def validate_friction_model_for_activation(
             reasons=[f"Slippage distribution unit is '{slip_sum.unit}', expected 'BPS'."],
             details=details,
         )
+
+    # Validate slippage cost policy version against distribution summary population semantics (Directive 12)
+    model_policy = getattr(model_version, "slippage_cost_policy_version", slippage_cost_policy_version)
+    slip_pop = getattr(slip_sum, "population_semantics", None)
+
+    if slip_pop in (FrictionPopulationSemantics.UNKNOWN.value, None, "", "LEGACY_UNSPECIFIED"):
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=["Execution slippage distribution summary has UNKNOWN or unspecified population semantics."],
+            details=details,
+        )
+
+    if model_policy == "ADVERSE_ONLY_P75_P95_V1":
+        if slip_pop != FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+                reasons=[f"Slippage policy 'ADVERSE_ONLY_P75_P95_V1' requires SLIPPAGE_ADVERSE_ONLY summary, got '{slip_pop}'."],
+                details=details,
+            )
+    elif model_policy == "RAW_SIGNED_DISTRIBUTION_V1":
+        if slip_pop != FrictionPopulationSemantics.SLIPPAGE_SIGNED.value:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+                reasons=[f"Slippage policy 'RAW_SIGNED_DISTRIBUTION_V1' requires SLIPPAGE_SIGNED summary, got '{slip_pop}'."],
+                details=details,
+            )
+    else:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=[f"Unknown or unsupported slippage cost policy '{model_policy}'."],
+            details=details,
+        )
+
     if slip_sum.stat_p75 < Decimal("0"):
         return FrictionValidationResult(
             is_valid=False,
@@ -478,7 +590,44 @@ def validate_friction_model_for_activation(
     for db in dataset_bindings:
         if db.evidence_dataset.source_snapshot and db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256 not in source_hashes:
             source_hashes.append(db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256)
+
     source_types = [s.source_type for s in source_snapshots if s]
+    for db in dataset_bindings:
+        if db.evidence_dataset.source_snapshot and db.evidence_dataset.source_snapshot.source_type not in source_types:
+            source_types.append(db.evidence_dataset.source_snapshot.source_type)
+
+    source_evidence: Dict[str, Dict[str, str]] = {}
+    if model_version.legal_entity_source_snapshot:
+        source_evidence["LEGAL_ENTITY"] = {
+            "sha256": model_version.legal_entity_source_snapshot.raw_payload_bytes_sha256,
+            "source_type": model_version.legal_entity_source_snapshot.source_type,
+        }
+    if model_version.contract_spec_source_snapshot:
+        source_evidence["CONTRACT_SPEC"] = {
+            "sha256": model_version.contract_spec_source_snapshot.raw_payload_bytes_sha256,
+            "source_type": model_version.contract_spec_source_snapshot.source_type,
+        }
+    if model_version.fee_schedule_source_snapshot:
+        source_evidence["COMMISSION"] = {
+            "sha256": model_version.fee_schedule_source_snapshot.raw_payload_bytes_sha256,
+            "source_type": model_version.fee_schedule_source_snapshot.source_type,
+        }
+    if model_version.swap_spec_source_snapshot:
+        source_evidence["FINANCING"] = {
+            "sha256": model_version.swap_spec_source_snapshot.raw_payload_bytes_sha256,
+            "source_type": model_version.swap_spec_source_snapshot.source_type,
+        }
+    for db in dataset_bindings:
+        if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE and db.evidence_dataset.source_snapshot:
+            source_evidence["SPREAD_DATASET"] = {
+                "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
+                "source_type": db.evidence_dataset.source_snapshot.source_type,
+            }
+        elif db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE) and db.evidence_dataset.source_snapshot:
+            source_evidence["SLIPPAGE_DATASET"] = {
+                "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
+                "source_type": db.evidence_dataset.source_snapshot.source_type,
+            }
 
     dataset_hashes = [db.evidence_dataset.raw_dataset_sha256 for db in dataset_bindings]
     bound_roles = [db.binding_role for db in dataset_bindings] + [sb.binding_role for sb in summary_bindings]
@@ -489,6 +638,7 @@ def validate_friction_model_for_activation(
             "condition": sb.distribution_summary.condition,
             "session": sb.distribution_summary.session,
             "unit": sb.distribution_summary.unit,
+            "population_semantics": getattr(sb.distribution_summary, "population_semantics", ""),
             "sample_count": sb.distribution_summary.sample_count,
             "stat_min": sb.distribution_summary.stat_min,
             "stat_p50": sb.distribution_summary.stat_p50,
@@ -531,6 +681,7 @@ def validate_friction_model_for_activation(
         },
         source_snapshot_hashes=source_hashes,
         source_types=source_types,
+        source_evidence=source_evidence,
         dataset_hashes=dataset_hashes,
         distribution_summaries=summaries_dict,
         calibrated_parameters={
@@ -553,6 +704,7 @@ def validate_friction_model_for_activation(
             "actual_account_swap_free_status": model_version.actual_account_swap_free_status,
         },
         bound_binding_roles=bound_roles,
+        slippage_cost_policy_version=getattr(model_version, "slippage_cost_policy_version", slippage_cost_policy_version),
     )
 
     if model_version.empirical_friction_evidence_fingerprint != recomputed_fp:
