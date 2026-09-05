@@ -19,6 +19,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from apps.market_data.models import (
+    ACCEPTED_VERIFICATION_METHODS,
     FrictionActivationStatus,
     FrictionBindingRole,
     FrictionComponentType,
@@ -32,9 +33,11 @@ from apps.market_data.models import (
     FrictionPopulationSemantics,
     FrictionQualificationStatus,
     FrictionSessionType,
+    FrictionSourceProvenanceAttestation,
     FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    FrictionVerificationMethod,
     QUALIFIED_COMMISSION_SOURCE_TYPES,
     QUALIFIED_CONTRACT_SOURCE_TYPES,
     QUALIFIED_FINANCING_SOURCE_TYPES,
@@ -177,6 +180,79 @@ def verify_authoritative_backing_artifact(
     return True, raw_bytes, computed_sha, []
 
 
+def create_friction_provenance_attestation(
+    source_snapshot: FrictionSourceSnapshot,
+    component_role: str,
+    verification_method: str,
+    verifier_identity: str,
+    captured_at: Optional[datetime] = None,
+    reviewed_at: Optional[datetime] = None,
+    raw_artifact_sha256: Optional[str] = None,
+    source_origin: Optional[str] = None,
+    source_type: Optional[str] = None,
+    collection_methodology: Optional[str] = None,
+    venue: Optional[str] = None,
+    symbol: Optional[str] = None,
+    account_tier: Optional[str] = None,
+    provenance_metadata: Optional[Dict[str, Any]] = None,
+) -> FrictionSourceProvenanceAttestation:
+    """Create and persist an immutable FrictionSourceProvenanceAttestation.
+    
+    Hard-gate governance (Condition 3):
+    - verification_method must belong to ACCEPTED_VERIFICATION_METHODS.
+    - verifier_identity must be non-empty.
+    - raw_artifact_sha256 must match source_snapshot.raw_payload_bytes_sha256.
+    - Deterministic attestation_id binding snapshot, role, method, verifier, and raw SHA.
+    """
+    if not verification_method or verification_method not in ACCEPTED_VERIFICATION_METHODS:
+        raise ValueError(
+            f"PROVENANCE_ERROR: verification_method '{verification_method}' is not an accepted method: {sorted(ACCEPTED_VERIFICATION_METHODS)}."
+        )
+    if not verifier_identity or not str(verifier_identity).strip():
+        raise ValueError("PROVENANCE_ERROR: verifier_identity must be non-empty.")
+
+    raw_sha = raw_artifact_sha256 or source_snapshot.raw_payload_bytes_sha256
+    if raw_sha != source_snapshot.raw_payload_bytes_sha256:
+        raise ValueError(
+            f"PROVENANCE_ERROR: raw_artifact_sha256 '{raw_sha}' does not match snapshot raw_payload_bytes_sha256 '{source_snapshot.raw_payload_bytes_sha256}'."
+        )
+
+    att_venue = venue or source_snapshot.venue
+    att_symbol = symbol or source_snapshot.symbol
+    att_tier = account_tier or source_snapshot.account_tier
+    att_origin = source_origin or source_snapshot.source_origin or source_snapshot.source_url
+    att_stype = source_type or source_snapshot.source_type
+    att_method = collection_methodology or source_snapshot.collection_methodology
+    att_captured = captured_at or source_snapshot.retrieved_at
+
+    attestation_id = hashlib.sha256(
+        f"{source_snapshot.snapshot_id}:{component_role}:{verification_method}:{verifier_identity.strip()}:{raw_sha}".encode()
+    ).hexdigest()
+
+    existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
+    if existing:
+        return existing
+
+    safe_meta = json.loads(json.dumps(provenance_metadata or {}, default=str))
+    return FrictionSourceProvenanceAttestation.objects.create(
+        attestation_id=attestation_id,
+        source_snapshot=source_snapshot,
+        component_role=component_role,
+        source_origin=att_origin,
+        source_type=att_stype,
+        collection_methodology=att_method,
+        captured_at=att_captured,
+        reviewed_at=reviewed_at,
+        verification_method=verification_method,
+        verifier_identity=verifier_identity.strip(),
+        venue=att_venue,
+        symbol=att_symbol,
+        account_tier=att_tier,
+        raw_artifact_sha256=raw_sha,
+        provenance_metadata=safe_meta,
+    )
+
+
 def create_friction_qualification_assertion(
     source_snapshot: FrictionSourceSnapshot,
     component_role: str,
@@ -186,12 +262,49 @@ def create_friction_qualification_assertion(
     raw_artifact_sha256: Optional[str] = None,
     normalized_evidence_hash: Optional[str] = None,
     qualification_reason: str = "Unverified friction source assertion",
+    provenance_attestation: Optional[FrictionSourceProvenanceAttestation] = None,
 ) -> FrictionSourceQualificationAssertion:
-    """Create and persist an immutable qualification assertion for a friction source snapshot (Directive 6)."""
+    """Create and persist an immutable qualification assertion for a friction source snapshot.
+    
+    Hard-gate qualification governance (Directive 7 & Conditions 2, 4):
+    A caller must NOT be able to create a QUALIFIED assertion solely by passing
+    qualification_status="QUALIFIED". A valid linked FrictionSourceProvenanceAttestation
+    for the exact raw artifact hash and component role is mandatory.
+    If absent or invalid, the assertion fails closed to UNVERIFIED.
+    """
     raw_sha = raw_artifact_sha256 or source_snapshot.raw_payload_bytes_sha256
     norm_hash = normalized_evidence_hash or compute_normalized_evidence_hash(source_snapshot.metadata)
+
+    linked_attestation = provenance_attestation
+    if linked_attestation is None:
+        linked_attestation = FrictionSourceProvenanceAttestation.objects.filter(
+            source_snapshot_id=source_snapshot.snapshot_id,
+            component_role=component_role,
+            raw_artifact_sha256=raw_sha,
+        ).first()
+
+    eff_status = qualification_status
+    eff_reason = qualification_reason
+    if eff_status == FrictionQualificationStatus.QUALIFIED.value:
+        if linked_attestation is None:
+            eff_status = FrictionQualificationStatus.UNVERIFIED.value
+            eff_reason = f"Unverified: Missing valid FrictionSourceProvenanceAttestation for role '{component_role}' and raw SHA '{raw_sha}'."
+        elif (
+            linked_attestation.raw_artifact_sha256 != raw_sha
+            or linked_attestation.source_snapshot_id != source_snapshot.snapshot_id
+            or linked_attestation.component_role != component_role
+            or linked_attestation.verification_method not in ACCEPTED_VERIFICATION_METHODS
+            or not linked_attestation.verifier_identity
+            or (linked_attestation.venue and linked_attestation.venue != source_snapshot.venue)
+            or (linked_attestation.symbol and linked_attestation.symbol != source_snapshot.symbol)
+            or (linked_attestation.account_tier and linked_attestation.account_tier != source_snapshot.account_tier)
+        ):
+            eff_status = FrictionQualificationStatus.UNVERIFIED.value
+            eff_reason = "Unverified: Invalid or mismatched FrictionSourceProvenanceAttestation."
+
+    att_id_part = linked_attestation.attestation_id if linked_attestation else "NO_ATT"
     assertion_id = hashlib.sha256(
-        f"{source_snapshot.snapshot_id}:{component_role}:{qualification_status}:{parser_name}:{parser_version}:{norm_hash}".encode()
+        f"{source_snapshot.snapshot_id}:{component_role}:{eff_status}:{parser_name}:{parser_version}:{norm_hash}:{att_id_part}".encode()
     ).hexdigest()
 
     existing = FrictionSourceQualificationAssertion.objects.filter(assertion_id=assertion_id).first()
@@ -201,13 +314,14 @@ def create_friction_qualification_assertion(
     return FrictionSourceQualificationAssertion.objects.create(
         assertion_id=assertion_id,
         source_snapshot=source_snapshot,
+        provenance_attestation=linked_attestation,
         component_role=component_role,
-        qualification_status=qualification_status,
+        qualification_status=eff_status,
         parser_name=parser_name,
         parser_version=parser_version,
         raw_artifact_sha256=raw_sha,
         normalized_evidence_hash=norm_hash,
-        qualification_reason=qualification_reason,
+        qualification_reason=eff_reason,
     )
 
 
@@ -468,8 +582,23 @@ def build_and_bind_friction_model_version(
     ])
 
     if test_qualification_seam:
+        from django.conf import settings
+        is_testing = (
+            getattr(settings, "IS_TESTING", False)
+            or "testing" in getattr(settings, "SETTINGS_MODULE", "").lower()
+            or getattr(settings, "DEBUG", False)
+        )
+        if not is_testing:
+            raise PermissionError("PRODUCTION_SECURITY_VIOLATION: test_qualification_seam is strictly isolated to test environments.")
+
         if legal_entity_snapshot and not legal_entity_snapshot.qualification_assertions.filter(component_role="LEGAL_ENTITY").exists():
             parsed = parse_legal_entity_backing_artifact(legal_entity_snapshot.raw_content, parser_version=parser_version)
+            att = create_friction_provenance_attestation(
+                source_snapshot=legal_entity_snapshot,
+                component_role="LEGAL_ENTITY",
+                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=legal_entity_snapshot,
                 component_role="LEGAL_ENTITY",
@@ -477,9 +606,16 @@ def build_and_bind_friction_model_version(
                 parser_name=parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
                 parser_version=parsed.get("parser_version", parser_version),
                 normalized_evidence_hash=parsed["normalized_evidence_hash"],
+                provenance_attestation=att,
             )
         if contract_spec_snapshot and not contract_spec_snapshot.qualification_assertions.filter(component_role="CONTRACT_SPEC").exists():
             parsed = parse_contract_spec_backing_artifact(contract_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
+            att = create_friction_provenance_attestation(
+                source_snapshot=contract_spec_snapshot,
+                component_role="CONTRACT_SPEC",
+                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=contract_spec_snapshot,
                 component_role="CONTRACT_SPEC",
@@ -487,9 +623,16 @@ def build_and_bind_friction_model_version(
                 parser_name=parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
                 parser_version=parsed.get("parser_version", parser_version),
                 normalized_evidence_hash=parsed["normalized_evidence_hash"],
+                provenance_attestation=att,
             )
         if fee_schedule_snapshot and not fee_schedule_snapshot.qualification_assertions.filter(component_role="COMMISSION").exists():
             parsed = parse_commission_backing_artifact(fee_schedule_snapshot.raw_content, expected_symbol=symbol, expected_account_tier=account_tier, parser_version=parser_version)
+            att = create_friction_provenance_attestation(
+                source_snapshot=fee_schedule_snapshot,
+                component_role="COMMISSION",
+                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=fee_schedule_snapshot,
                 component_role="COMMISSION",
@@ -497,9 +640,16 @@ def build_and_bind_friction_model_version(
                 parser_name=parsed.get("parser_name", "parse_commission_backing_artifact"),
                 parser_version=parsed.get("parser_version", parser_version),
                 normalized_evidence_hash=parsed["normalized_evidence_hash"],
+                provenance_attestation=att,
             )
         if swap_spec_snapshot and not swap_spec_snapshot.qualification_assertions.filter(component_role="FINANCING").exists():
             parsed = parse_financing_backing_artifact(swap_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
+            att = create_friction_provenance_attestation(
+                source_snapshot=swap_spec_snapshot,
+                component_role="FINANCING",
+                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=swap_spec_snapshot,
                 component_role="FINANCING",
@@ -507,8 +657,15 @@ def build_and_bind_friction_model_version(
                 parser_name=parsed.get("parser_name", "parse_financing_backing_artifact"),
                 parser_version=parsed.get("parser_version", parser_version),
                 normalized_evidence_hash=parsed["normalized_evidence_hash"],
+                provenance_attestation=att,
             )
         if evidence_dataset and evidence_dataset.source_snapshot and not evidence_dataset.source_snapshot.qualification_assertions.filter(component_role="SPREAD_DATASET").exists():
+            att = create_friction_provenance_attestation(
+                source_snapshot=evidence_dataset.source_snapshot,
+                component_role="SPREAD_DATASET",
+                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=evidence_dataset.source_snapshot,
                 component_role="SPREAD_DATASET",
@@ -516,8 +673,15 @@ def build_and_bind_friction_model_version(
                 parser_name="parse_mt5_tick_export",
                 parser_version=parser_version,
                 normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": evidence_dataset.raw_dataset_sha256}),
+                provenance_attestation=att,
             )
         if telemetry_dataset and telemetry_dataset.source_snapshot and not telemetry_dataset.source_snapshot.qualification_assertions.filter(component_role="SLIPPAGE_DATASET").exists():
+            att = create_friction_provenance_attestation(
+                source_snapshot=telemetry_dataset.source_snapshot,
+                component_role="SLIPPAGE_DATASET",
+                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            )
             create_friction_qualification_assertion(
                 source_snapshot=telemetry_dataset.source_snapshot,
                 component_role="SLIPPAGE_DATASET",
@@ -525,6 +689,7 @@ def build_and_bind_friction_model_version(
                 parser_name="parse_mt5_execution_telemetry",
                 parser_version=parser_version,
                 normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telemetry_dataset.raw_dataset_sha256}),
+                provenance_attestation=att,
             )
 
     # 1. Compute spread statistics if provided
@@ -697,72 +862,87 @@ def build_and_bind_friction_model_version(
     if telemetry_dataset and telemetry_dataset.source_snapshot:
         source_types.append(telemetry_dataset.source_snapshot.source_type)
 
-    def _get_assertion_meta(snapshot: Optional[FrictionSourceSnapshot], role: str) -> Tuple[str, str, str]:
+    def _get_assertion_meta(snapshot: Optional[FrictionSourceSnapshot], role: str) -> Tuple[str, str, str, str, str]:
         if not snapshot:
-            return "", "", ""
+            return "", "", "", "", ""
         assertion = snapshot.qualification_assertions.filter(component_role=role).order_by("-asserted_at").first()
         if assertion:
-            return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash
+            att = assertion.provenance_attestation
+            att_id = att.attestation_id if att else ""
+            v_method = att.verification_method if att else ""
+            return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash, att_id, v_method
         meta = snapshot.metadata or {}
         p_name = meta.get("parser_name", "AUTHORITATIVE_PARSER")
         p_ver = meta.get("parser_version", "1.0.0")
         norm_hash = meta.get("normalized_evidence_hash") or compute_normalized_evidence_hash(meta)
-        return p_name, p_ver, norm_hash
+        return p_name, p_ver, norm_hash, "", ""
 
     source_evidence: Dict[str, Dict[str, str]] = {}
     if legal_entity_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(legal_entity_snapshot, "LEGAL_ENTITY")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(legal_entity_snapshot, "LEGAL_ENTITY")
         source_evidence["LEGAL_ENTITY"] = {
             "sha256": legal_entity_snapshot.raw_payload_bytes_sha256,
             "source_type": legal_entity_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if contract_spec_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(contract_spec_snapshot, "CONTRACT_SPEC")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(contract_spec_snapshot, "CONTRACT_SPEC")
         source_evidence["CONTRACT_SPEC"] = {
             "sha256": contract_spec_snapshot.raw_payload_bytes_sha256,
             "source_type": contract_spec_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if fee_schedule_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(fee_schedule_snapshot, "COMMISSION")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(fee_schedule_snapshot, "COMMISSION")
         source_evidence["COMMISSION"] = {
             "sha256": fee_schedule_snapshot.raw_payload_bytes_sha256,
             "source_type": fee_schedule_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if swap_spec_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(swap_spec_snapshot, "FINANCING")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(swap_spec_snapshot, "FINANCING")
         source_evidence["FINANCING"] = {
             "sha256": swap_spec_snapshot.raw_payload_bytes_sha256,
             "source_type": swap_spec_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if evidence_dataset and evidence_dataset.source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(evidence_dataset.source_snapshot, "SPREAD_DATASET")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(evidence_dataset.source_snapshot, "SPREAD_DATASET")
         source_evidence["SPREAD_DATASET"] = {
             "sha256": evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
             "source_type": evidence_dataset.source_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if telemetry_dataset and telemetry_dataset.source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(telemetry_dataset.source_snapshot, "SLIPPAGE_DATASET")
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(telemetry_dataset.source_snapshot, "SLIPPAGE_DATASET")
         source_evidence["SLIPPAGE_DATASET"] = {
             "sha256": telemetry_dataset.source_snapshot.raw_payload_bytes_sha256,
             "source_type": telemetry_dataset.source_snapshot.source_type,
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
 
     fingerprint: Optional[str] = None

@@ -88,8 +88,20 @@ def compare_asserted_vs_derived(asserted_data: Dict[str, Any], derived_data: Dic
         if derived_val is None:
             continue
 
-        # Compare decimals / numbers
-        if isinstance(derived_val, (Decimal, int, float)) or (
+        # 1. Compare booleans first (CRITICAL: bool is a subclass of int in Python)
+        if isinstance(derived_val, bool):
+            try:
+                parsed_bool = parse_optional_evidence_bool(asserted_val)
+                if parsed_bool != derived_val:
+                    mismatches.append(
+                        f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
+                    )
+            except ValueError:
+                mismatches.append(
+                    f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
+                )
+        # 2. Compare decimals / numbers
+        elif isinstance(derived_val, (Decimal, int, float)) or (
             isinstance(asserted_val, (int, float, str)) and re.match(r"^-?\d+(\.\d+)?$", str(asserted_val).strip())
             and re.match(r"^-?\d+(\.\d+)?$", str(derived_val).strip())
         ):
@@ -103,17 +115,6 @@ def compare_asserted_vs_derived(asserted_data: Dict[str, Any], derived_data: Dic
                     mismatches.append(
                         f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
                     )
-        elif isinstance(derived_val, bool):
-            try:
-                parsed_bool = parse_optional_evidence_bool(asserted_val)
-                if parsed_bool != derived_val:
-                    mismatches.append(
-                        f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
-                    )
-            except ValueError:
-                mismatches.append(
-                    f"Asserted {key} '{asserted_val}' contradicts authoritative parsed backing value '{derived_val}'."
-                )
         else:
             # String comparison (case-insensitive for codes, exact for names)
             a_str = str(asserted_val).strip()

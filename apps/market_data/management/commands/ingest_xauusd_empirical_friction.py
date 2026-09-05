@@ -38,6 +38,7 @@ from apps.market_data.friction.distribution import (
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
+    create_friction_provenance_attestation,
     create_friction_qualification_assertion,
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
@@ -60,9 +61,12 @@ from apps.market_data.models import (
     FrictionModelVersion,
     FrictionQualificationStatus,
     FrictionSessionType,
+    FrictionSourceProvenanceAttestation,
     FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    FrictionVerificationMethod,
+    ACCEPTED_VERIFICATION_METHODS,
     QUALIFIED_COMMISSION_SOURCE_TYPES,
     QUALIFIED_CONTRACT_SOURCE_TYPES,
     QUALIFIED_FINANCING_SOURCE_TYPES,
@@ -74,22 +78,79 @@ from apps.market_data.models import (
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
 
+def _verify_provenance_attestation_file(
+    provenance_file_path: Optional[str],
+    expected_raw_sha: str,
+    expected_role: str,
+    expected_venue: str = "EXNESS",
+    expected_symbol: str = "XAUUSD",
+    expected_account_tier: str = "STANDARD",
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+    """Verify independent provenance attestation JSON file (Directive 3 & 4).
+
+    Ensures that manually-authored artifacts or declared CLI arguments have zero trust authority.
+    An attestation must independently bind raw artifact SHA, role, accepted verification method,
+    verifier identity, venue, symbol, and account tier.
+    """
+    if not provenance_file_path:
+        return False, None, f"Provenance attestation file missing for role '{expected_role}'."
+    if not os.path.isfile(provenance_file_path):
+        return False, None, f"Provenance attestation file not found: '{provenance_file_path}'."
+    try:
+        with open(provenance_file_path, "r", encoding="utf-8") as f:
+            att = json.load(f)
+    except Exception as e:
+        return False, None, f"Invalid JSON in provenance attestation file '{provenance_file_path}': {e}"
+
+    raw_sha = str(att.get("raw_artifact_sha256") or att.get("raw_sha256") or "").lower()
+    if not raw_sha or raw_sha != expected_raw_sha.lower():
+        return False, None, f"Provenance attestation raw artifact SHA '{raw_sha}' mismatch (expected '{expected_raw_sha}')."
+
+    role = str(att.get("component_role") or "").upper()
+    if not role or role != expected_role.upper():
+        return False, None, f"Provenance attestation component role '{role}' mismatch (expected '{expected_role}')."
+
+    method = att.get("verification_method")
+    if not method or method not in ACCEPTED_VERIFICATION_METHODS:
+        return False, None, f"Provenance attestation verification method '{method}' not in accepted methods: {sorted(ACCEPTED_VERIFICATION_METHODS)}."
+
+    verifier = att.get("verifier_identity")
+    if not verifier or not str(verifier).strip():
+        return False, None, "Provenance attestation verifier identity is empty."
+
+    if att.get("venue") and str(att["venue"]).upper() != expected_venue.upper():
+        return False, None, f"Provenance attestation venue '{att['venue']}' mismatch (expected '{expected_venue}')."
+
+    if att.get("symbol") and str(att["symbol"]).upper() != expected_symbol.upper():
+        return False, None, f"Provenance attestation symbol '{att['symbol']}' mismatch (expected '{expected_symbol}')."
+
+    if att.get("account_tier") and str(att["account_tier"]).upper() != expected_account_tier.upper():
+        return False, None, f"Provenance attestation account tier '{att['account_tier']}' mismatch (expected '{expected_account_tier}')."
+
+    return True, att, None
+
+
 def _resolve_source_provenance(
     data: Dict[str, Any],
     declared_source_type: str,
     qualified_types: set,
     metadata_file_path: str,
     backing_file_path: Optional[str] = None,
+    provenance_file_path: Optional[str] = None,
     component_name: str = "COMPONENT",
     expected_symbol: str = "XAUUSD",
     expected_account_tier: str = "STANDARD",
-) -> Tuple[str, str, str, bytes, str, Optional[str], Dict[str, Any]]:
-    """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA.
+    expected_venue: str = "EXNESS",
+) -> Tuple[str, str, str, bytes, str, Optional[str], Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA with strict provenance binding.
 
-    A caller must NOT be able to turn an arbitrary manually-authored file into qualified
-    evidence simply by passing CLI options. A manually created normalized JSON without an
-    actual authoritative backing artifact remains USER_PROVIDED_UNVERIFIED.
-    Normalized values must be derived from the backing artifact bytes by a trusted parser.
+    Hard-gate governance (Condition 2, 3, 4):
+    USER DECLARATIONS HAVE ZERO TRUST AUTHORITY.
+    A caller must NOT be able to turn an arbitrary manually-authored file into qualified evidence
+    simply by passing CLI options (--source-type) or inserting an inline provenance dict in metadata.
+    Hard qualification strictly requires:
+    PARSER VALID + RAW SHA VALID + PROVENANCE ATTESTATION VALID = QUALIFIED.
+    Without a verified provenance attestation, local artifacts fail closed to USER_PROVIDED_UNVERIFIED.
     """
     provenance = data.get("provenance") or data.get("backing_artifact") or {}
     declared_backing_sha = (
@@ -115,6 +176,7 @@ def _resolve_source_provenance(
             hashlib.sha256(meta_bytes).hexdigest(),
             f"Declared backing SHA '{declared_backing_sha}' provided for {component_name} but backing artifact file is missing. Fails closed.",
             {},
+            None,
         )
 
     # 2. If backing file is provided, verify and parse it independently
@@ -143,6 +205,7 @@ def _resolve_source_provenance(
                 computed_sha or "",
                 f"Backing artifact verification failed for {component_name}: {'; '.join(errors)}",
                 {},
+                None,
             )
 
         # Execute component-specific authoritative parser
@@ -165,6 +228,7 @@ def _resolve_source_provenance(
                 computed_sha or "",
                 f"Authoritative parser failed for {component_name}: {ve}",
                 {},
+                None,
             )
 
         # Check for contradictions between user-supplied metadata and derived values
@@ -179,34 +243,76 @@ def _resolve_source_provenance(
                     computed_sha or "",
                     f"Normalized metadata contradicts authoritative backing artifact for {component_name}: {'; '.join(mismatches)}",
                     parsed_data,
+                    None,
                 )
 
-        if declared_source_type in qualified_types:
-            origin = provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"
-            method = provenance.get("collection_methodology") or f"VERIFIED_{declared_source_type}"
-            return (
-                declared_source_type,
-                str(origin),
-                str(method),
-                raw_bytes,
-                computed_sha,
-                None,
-                parsed_data,
+        # 3. Provenance Attestation Verification (Directive 3 & 4)
+        # Without an independent, verified provenance attestation, local evidence CANNOT qualify.
+        if provenance_file_path:
+            is_att_valid, att_dict, att_err = _verify_provenance_attestation_file(
+                provenance_file_path=provenance_file_path,
+                expected_raw_sha=computed_sha,
+                expected_role=comp_role,
+                expected_venue=expected_venue,
+                expected_symbol=expected_symbol,
+                expected_account_tier=expected_account_tier,
             )
-        else:
-            origin = provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"
-            method = provenance.get("collection_methodology") or "UNQUALIFIED_SOURCE_TYPE"
-            return (
-                FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
-                str(origin),
-                str(method),
-                raw_bytes,
-                computed_sha,
-                None,
-                parsed_data,
-            )
+            if not is_att_valid or not att_dict:
+                return (
+                    FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+                    f"file://{os.path.abspath(resolved_backing_path)}",
+                    "INVALID_PROVENANCE_ATTESTATION",
+                    raw_bytes,
+                    computed_sha,
+                    f"Provenance attestation invalid for {component_name}: {att_err}",
+                    parsed_data,
+                    None,
+                )
 
-    # 3. No backing file provided: handwritten JSON alone remains USER_PROVIDED_UNVERIFIED
+            resolved_type = str(att_dict.get("source_type") or declared_source_type)
+            if resolved_type in qualified_types:
+                origin = str(att_dict.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}")
+                method = str(att_dict.get("collection_methodology") or att_dict.get("verification_method") or f"VERIFIED_{resolved_type}")
+                return (
+                    resolved_type,
+                    origin,
+                    method,
+                    raw_bytes,
+                    computed_sha,
+                    None,
+                    parsed_data,
+                    att_dict,
+                )
+            else:
+                origin = str(att_dict.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}")
+                method = str(att_dict.get("collection_methodology") or "UNQUALIFIED_SOURCE_TYPE")
+                return (
+                    FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+                    origin,
+                    method,
+                    raw_bytes,
+                    computed_sha,
+                    None,
+                    parsed_data,
+                    None,
+                )
+
+        # No provenance attestation provided: user declaration has ZERO authority.
+        # Fails closed to USER_PROVIDED_UNVERIFIED.
+        origin = f"file://{os.path.abspath(resolved_backing_path)}"
+        method = "UNATTESTED_LOCAL_ARTIFACT"
+        return (
+            FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+            origin,
+            method,
+            raw_bytes,
+            computed_sha,
+            None,
+            parsed_data,
+            None,
+        )
+
+    # 4. No backing file provided: handwritten JSON alone remains USER_PROVIDED_UNVERIFIED
     with open(metadata_file_path, "rb") as f:
         meta_bytes = f.read()
     return (
@@ -217,6 +323,7 @@ def _resolve_source_provenance(
         hashlib.sha256(meta_bytes).hexdigest(),
         None,
         {},
+        None,
     )
 
 
@@ -322,6 +429,42 @@ class Command(BaseCommand):
             help="Declared source provenance type for swap/financing snapshot (requires backing evidence).",
         )
         parser.add_argument(
+            "--legal-entity-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for legal entity.",
+        )
+        parser.add_argument(
+            "--contract-spec-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for contract specification.",
+        )
+        parser.add_argument(
+            "--fee-schedule-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for broker fee schedule.",
+        )
+        parser.add_argument(
+            "--swap-spec-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for broker financing / swap rates.",
+        )
+        parser.add_argument(
+            "--tick-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for MT5 tick export.",
+        )
+        parser.add_argument(
+            "--slippage-provenance-file",
+            type=str,
+            default=None,
+            help="Path to independent provenance attestation JSON file for MT5 execution telemetry.",
+        )
+        parser.add_argument(
             "--slippage-cost-policy",
             type=str,
             default="ADVERSE_ONLY_P75_P95_V1",
@@ -366,6 +509,12 @@ class Command(BaseCommand):
         contract_source_type = options["contract_spec_source_type"]
         fee_source_type = options["fee_schedule_source_type"]
         swap_source_type = options["swap_spec_source_type"]
+        legal_provenance_file = options.get("legal_entity_provenance_file")
+        contract_provenance_file = options.get("contract_spec_provenance_file")
+        fee_provenance_file = options.get("fee_schedule_provenance_file")
+        swap_provenance_file = options.get("swap_spec_provenance_file")
+        tick_provenance_file = options.get("tick_provenance_file")
+        slippage_provenance_file = options.get("slippage_provenance_file")
         slippage_policy = options["slippage_cost_policy"]
 
         self.stdout.write(self.style.NOTICE(
@@ -391,8 +540,8 @@ class Command(BaseCommand):
                     "regulator": data.get("regulator", ""),
                     "license_number": data.get("license_number", ""),
                 }
-                resolved_legal_source_type, legal_origin, legal_method, legal_raw_bytes, legal_raw_sha, legal_err, legal_parsed = _resolve_source_provenance(
-                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, "Legal Entity", symbol, account_tier
+                resolved_legal_source_type, legal_origin, legal_method, legal_raw_bytes, legal_raw_sha, legal_err, legal_parsed, legal_att_data = _resolve_source_provenance(
+                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, legal_provenance_file, "Legal Entity", symbol, account_tier, venue
                 )
                 if legal_err:
                     legal_entity_status = "EMPIRICAL_FRICTION_INVALID"
@@ -428,16 +577,34 @@ class Command(BaseCommand):
                             collection_methodology=legal_method,
                             original_filename=os.path.basename(effective_file),
                         )
-                        if resolved_legal_source_type in QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES:
-                            create_friction_qualification_assertion(
+                        legal_att_obj = None
+                        if legal_att_data:
+                            legal_att_obj = create_friction_provenance_attestation(
                                 source_snapshot=legal_entity_snapshot,
                                 component_role="LEGAL_ENTITY",
-                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                                parser_name=legal_parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
-                                parser_version=legal_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=legal_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(legal_entity_info),
-                                qualification_reason="Verified by authoritative legal entity parser",
+                                verification_method=legal_att_data["verification_method"],
+                                verifier_identity=legal_att_data["verifier_identity"],
+                                captured_at=legal_att_data.get("captured_at"),
+                                reviewed_at=legal_att_data.get("reviewed_at"),
+                                raw_artifact_sha256=legal_raw_sha,
+                                source_origin=legal_origin,
+                                source_type=resolved_legal_source_type,
+                                collection_methodology=legal_method,
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                provenance_metadata=legal_att_data.get("provenance_metadata") or {},
                             )
+                        create_friction_qualification_assertion(
+                            source_snapshot=legal_entity_snapshot,
+                            provenance_attestation=legal_att_obj,
+                            component_role="LEGAL_ENTITY",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if (resolved_legal_source_type in QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES and legal_att_obj is not None) else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name=legal_parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
+                            parser_version=legal_parsed.get("parser_version", "1.0.0"),
+                            normalized_evidence_hash=legal_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(legal_entity_info),
+                            qualification_reason="Verified by authoritative legal entity parser and provenance attestation" if legal_att_obj is not None else "Unattested legal entity evidence",
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse legal entity file: {e}"))
                 legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
@@ -465,8 +632,8 @@ class Command(BaseCommand):
                     "volume_max": Decimal(str(data["volume_max"])),
                     "volume_step": Decimal(str(data["volume_step"])),
                 }
-                resolved_contract_source_type, contract_origin, contract_method, contract_raw_bytes, contract_raw_sha, contract_err, contract_parsed = _resolve_source_provenance(
-                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, "Contract Specification", symbol, account_tier
+                resolved_contract_source_type, contract_origin, contract_method, contract_raw_bytes, contract_raw_sha, contract_err, contract_parsed, contract_att_data = _resolve_source_provenance(
+                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, contract_provenance_file, "Contract Specification", symbol, account_tier, venue
                 )
                 if contract_err:
                     contract_status = "EMPIRICAL_FRICTION_INVALID"
@@ -499,16 +666,34 @@ class Command(BaseCommand):
                             collection_methodology=contract_method,
                             original_filename=os.path.basename(effective_file),
                         )
-                        if resolved_contract_source_type in QUALIFIED_CONTRACT_SOURCE_TYPES:
-                            create_friction_qualification_assertion(
+                        contract_att_obj = None
+                        if contract_att_data:
+                            contract_att_obj = create_friction_provenance_attestation(
                                 source_snapshot=contract_spec_snapshot,
                                 component_role="CONTRACT_SPEC",
-                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                                parser_name=contract_parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
-                                parser_version=contract_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=contract_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(contract_geometry),
-                                qualification_reason="Verified by authoritative contract specification parser",
+                                verification_method=contract_att_data["verification_method"],
+                                verifier_identity=contract_att_data["verifier_identity"],
+                                captured_at=contract_att_data.get("captured_at"),
+                                reviewed_at=contract_att_data.get("reviewed_at"),
+                                raw_artifact_sha256=contract_raw_sha,
+                                source_origin=contract_origin,
+                                source_type=resolved_contract_source_type,
+                                collection_methodology=contract_method,
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                provenance_metadata=contract_att_data.get("provenance_metadata") or {},
                             )
+                        create_friction_qualification_assertion(
+                            source_snapshot=contract_spec_snapshot,
+                            provenance_attestation=contract_att_obj,
+                            component_role="CONTRACT_SPEC",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if (resolved_contract_source_type in QUALIFIED_CONTRACT_SOURCE_TYPES and contract_att_obj is not None) else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name=contract_parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
+                            parser_version=contract_parsed.get("parser_version", "1.0.0"),
+                            normalized_evidence_hash=contract_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(contract_geometry),
+                            qualification_reason="Verified by authoritative contract specification parser and provenance attestation" if contract_att_obj is not None else "Unattested contract specification evidence",
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse contract spec file: {e}"))
                 contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
@@ -530,8 +715,8 @@ class Command(BaseCommand):
                     "native_commission_usd_per_lot_per_side": Decimal(str(data["native_commission_usd_per_lot_per_side"])),
                     "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
                 }
-                resolved_fee_source_type, fee_origin, fee_method, fee_raw_bytes, fee_raw_sha, fee_err, fee_parsed = _resolve_source_provenance(
-                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, "Commission Fee Schedule", symbol, account_tier
+                resolved_fee_source_type, fee_origin, fee_method, fee_raw_bytes, fee_raw_sha, fee_err, fee_parsed, fee_att_data = _resolve_source_provenance(
+                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, fee_provenance_file, "Commission Fee Schedule", symbol, account_tier, venue
                 )
                 if fee_err:
                     commission_status = "EMPIRICAL_FRICTION_INVALID"
@@ -565,16 +750,34 @@ class Command(BaseCommand):
                             collection_methodology=fee_method,
                             original_filename=os.path.basename(effective_file),
                         )
-                        if resolved_fee_source_type in QUALIFIED_COMMISSION_SOURCE_TYPES:
-                            create_friction_qualification_assertion(
+                        fee_att_obj = None
+                        if fee_att_data:
+                            fee_att_obj = create_friction_provenance_attestation(
                                 source_snapshot=fee_schedule_snapshot,
                                 component_role="COMMISSION",
-                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                                parser_name=fee_parsed.get("parser_name", "parse_commission_backing_artifact"),
-                                parser_version=fee_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=fee_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(commission_policy),
-                                qualification_reason="Verified by authoritative commission fee parser",
+                                verification_method=fee_att_data["verification_method"],
+                                verifier_identity=fee_att_data["verifier_identity"],
+                                captured_at=fee_att_data.get("captured_at"),
+                                reviewed_at=fee_att_data.get("reviewed_at"),
+                                raw_artifact_sha256=fee_raw_sha,
+                                source_origin=fee_origin,
+                                source_type=resolved_fee_source_type,
+                                collection_methodology=fee_method,
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                provenance_metadata=fee_att_data.get("provenance_metadata") or {},
                             )
+                        create_friction_qualification_assertion(
+                            source_snapshot=fee_schedule_snapshot,
+                            provenance_attestation=fee_att_obj,
+                            component_role="COMMISSION",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if (resolved_fee_source_type in QUALIFIED_COMMISSION_SOURCE_TYPES and fee_att_obj is not None) else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name=fee_parsed.get("parser_name", "parse_commission_backing_artifact"),
+                            parser_version=fee_parsed.get("parser_version", "1.0.0"),
+                            normalized_evidence_hash=fee_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(commission_policy),
+                            qualification_reason="Verified by authoritative commission fee parser and provenance attestation" if fee_att_obj is not None else "Unattested fee schedule evidence",
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse fee schedule file: {e}"))
                 commission_status = "COMMISSION_EVIDENCE_MISSING"
@@ -601,8 +804,8 @@ class Command(BaseCommand):
                     "swap_free_available_for_account_type": parse_optional_evidence_bool(data.get("swap_free_available_for_account_type")),
                     "actual_account_swap_free_status": parse_optional_evidence_bool(data.get("actual_account_swap_free_status")),
                 }
-                resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed = _resolve_source_provenance(
-                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, "Financing Swap Spec", symbol, account_tier
+                resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed, swap_att_data = _resolve_source_provenance(
+                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, swap_provenance_file, "Financing Swap Spec", symbol, account_tier, venue
                 )
                 if swap_err:
                     financing_status = "EMPIRICAL_FRICTION_INVALID"
@@ -637,16 +840,34 @@ class Command(BaseCommand):
                             collection_methodology=swap_method,
                             original_filename=os.path.basename(effective_file),
                         )
-                        if resolved_swap_source_type in QUALIFIED_FINANCING_SOURCE_TYPES:
-                            create_friction_qualification_assertion(
+                        swap_att_obj = None
+                        if swap_att_data:
+                            swap_att_obj = create_friction_provenance_attestation(
                                 source_snapshot=swap_spec_snapshot,
                                 component_role="FINANCING",
-                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                                parser_name=swap_parsed.get("parser_name", "parse_financing_backing_artifact"),
-                                parser_version=swap_parsed.get("parser_version", "1.0.0"),
-                                normalized_evidence_hash=swap_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(financing_policy),
-                                qualification_reason="Verified by authoritative financing swap parser",
+                                verification_method=swap_att_data["verification_method"],
+                                verifier_identity=swap_att_data["verifier_identity"],
+                                captured_at=swap_att_data.get("captured_at"),
+                                reviewed_at=swap_att_data.get("reviewed_at"),
+                                raw_artifact_sha256=swap_raw_sha,
+                                source_origin=swap_origin,
+                                source_type=resolved_swap_source_type,
+                                collection_methodology=swap_method,
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                provenance_metadata=swap_att_data.get("provenance_metadata") or {},
                             )
+                        create_friction_qualification_assertion(
+                            source_snapshot=swap_spec_snapshot,
+                            provenance_attestation=swap_att_obj,
+                            component_role="FINANCING",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if (resolved_swap_source_type in QUALIFIED_FINANCING_SOURCE_TYPES and swap_att_obj is not None) else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name=swap_parsed.get("parser_name", "parse_financing_backing_artifact"),
+                            parser_version=swap_parsed.get("parser_version", "1.0.0"),
+                            normalized_evidence_hash=swap_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(financing_policy),
+                            qualification_reason="Verified by authoritative financing swap parser and provenance attestation" if swap_att_obj is not None else "Unattested financing swap evidence",
+                        )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse swap spec file: {e}"))
                 financing_status = "FINANCING_EVIDENCE_MISSING"
@@ -711,14 +932,42 @@ class Command(BaseCommand):
                                     sample_end=summary_meta["sample_end"],
                                     ticks_data=ticks_data,
                                 )
+                                spread_att_obj = None
+                                if tick_provenance_file:
+                                    is_att_valid, att_dict, att_err = _verify_provenance_attestation_file(
+                                        provenance_file_path=tick_provenance_file,
+                                        expected_raw_sha=hashlib.sha256(tick_bytes).hexdigest(),
+                                        expected_role="SPREAD_DATASET",
+                                        expected_venue=venue,
+                                        expected_symbol=symbol,
+                                        expected_account_tier=account_tier,
+                                    )
+                                    if is_att_valid and att_dict:
+                                        spread_att_obj = create_friction_provenance_attestation(
+                                            source_snapshot=snap,
+                                            component_role="SPREAD_DATASET",
+                                            verification_method=att_dict["verification_method"],
+                                            verifier_identity=att_dict["verifier_identity"],
+                                            captured_at=att_dict.get("captured_at"),
+                                            reviewed_at=att_dict.get("reviewed_at"),
+                                            raw_artifact_sha256=hashlib.sha256(tick_bytes).hexdigest(),
+                                            source_origin=str(att_dict.get("source_origin") or f"file://{os.path.abspath(tick_file)}"),
+                                            source_type=str(att_dict.get("source_type") or FrictionSourceType.MT5_TICK_HISTORY_EXPORT),
+                                            collection_methodology=str(att_dict.get("collection_methodology") or "MT5_TERMINAL_TICK_EXPORT"),
+                                            venue=venue,
+                                            symbol=symbol,
+                                            account_tier=account_tier,
+                                            provenance_metadata=att_dict.get("provenance_metadata") or {},
+                                        )
                                 create_friction_qualification_assertion(
                                     source_snapshot=snap,
+                                    provenance_attestation=spread_att_obj,
                                     component_role="SPREAD_DATASET",
-                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value if spread_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
                                     parser_name="parse_mt5_tick_export",
                                     parser_version="1.0.0",
                                     normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
-                                    qualification_reason="Verified by authoritative MT5 tick export parser",
+                                    qualification_reason="Verified by authoritative MT5 tick export parser and provenance attestation" if spread_att_obj is not None else "Unattested MT5 tick export",
                                 )
                                 spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:
@@ -791,14 +1040,42 @@ class Command(BaseCommand):
                                     sample_end=summary_meta["sample_end"],
                                     telemetry_records=telemetry_data,
                                 )
+                                slippage_att_obj = None
+                                if slippage_provenance_file:
+                                    is_att_valid, att_dict, att_err = _verify_provenance_attestation_file(
+                                        provenance_file_path=slippage_provenance_file,
+                                        expected_raw_sha=hashlib.sha256(telem_bytes).hexdigest(),
+                                        expected_role="SLIPPAGE_DATASET",
+                                        expected_venue=venue,
+                                        expected_symbol=symbol,
+                                        expected_account_tier=account_tier,
+                                    )
+                                    if is_att_valid and att_dict:
+                                        slippage_att_obj = create_friction_provenance_attestation(
+                                            source_snapshot=snap,
+                                            component_role="SLIPPAGE_DATASET",
+                                            verification_method=att_dict["verification_method"],
+                                            verifier_identity=att_dict["verifier_identity"],
+                                            captured_at=att_dict.get("captured_at"),
+                                            reviewed_at=att_dict.get("reviewed_at"),
+                                            raw_artifact_sha256=hashlib.sha256(telem_bytes).hexdigest(),
+                                            source_origin=str(att_dict.get("source_origin") or f"file://{os.path.abspath(slippage_file)}"),
+                                            source_type=str(att_dict.get("source_type") or FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT),
+                                            collection_methodology=str(att_dict.get("collection_methodology") or "MT5_EXECUTION_TELEMETRY_EXPORT"),
+                                            venue=venue,
+                                            symbol=symbol,
+                                            account_tier=account_tier,
+                                            provenance_metadata=att_dict.get("provenance_metadata") or {},
+                                        )
                                 create_friction_qualification_assertion(
                                     source_snapshot=snap,
+                                    provenance_attestation=slippage_att_obj,
                                     component_role="SLIPPAGE_DATASET",
-                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value if slippage_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
                                     parser_name="parse_mt5_execution_telemetry",
                                     parser_version="1.0.0",
                                     normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telemetry_dataset.raw_dataset_sha256}),
-                                    qualification_reason="Verified by authoritative MT5 execution telemetry parser",
+                                    qualification_reason="Verified by authoritative MT5 execution telemetry parser and provenance attestation" if slippage_att_obj is not None else "Unattested MT5 execution telemetry",
                                 )
                                 slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:

@@ -83,9 +83,11 @@ from apps.market_data.models import (
     FrictionPopulationSemantics,
     FrictionQualificationStatus,
     FrictionSessionType,
+    FrictionSourceProvenanceAttestation,
     FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    FrictionVerificationMethod,
 )
 from apps.market_data.friction.artifact_parsers import (
     compare_asserted_vs_derived,
@@ -118,6 +120,7 @@ from apps.market_data.friction.financing import (
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
+    create_friction_provenance_attestation,
     create_friction_qualification_assertion,
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
@@ -829,6 +832,7 @@ def test_16_activation_history_resolves_without_update(qualified_evidence_bundle
     now_utc = datetime(2026, 8, 28, 14, 0, 0, tzinfo=timezone.utc)
     model = qualified_evidence_bundle["model_version"]
 
+    act = qualified_evidence_bundle["activation"]
     active = FrictionModelActivation.objects.filter(
         effective_from__lte=now_utc,
         activation_status=FrictionActivationStatus.ACTIVE,
@@ -4247,35 +4251,77 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
         sample_start=parsed_telem[0]["decision_timestamp"], sample_end=parsed_telem[-1]["fill_timestamp"], telemetry_records=parsed_telem
     )
 
+    att_legal = create_friction_provenance_attestation(
+        source_snapshot=legal_snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_OFFICER_AUDIT",
+    )
     create_friction_qualification_assertion(
         source_snapshot=legal_snap, component_role="LEGAL_ENTITY", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_legal_entity_backing_artifact", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash(legal_parsed)
+        normalized_evidence_hash=compute_normalized_evidence_hash(legal_parsed),
+        provenance_attestation=att_legal,
+    )
+    att_spec = create_friction_provenance_attestation(
+        source_snapshot=spec_snap,
+        component_role="CONTRACT_SPEC",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="ENGINEERING_AUDIT",
     )
     create_friction_qualification_assertion(
         source_snapshot=spec_snap, component_role="CONTRACT_SPEC", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_contract_spec_backing_artifact", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash(contract_parsed)
+        normalized_evidence_hash=compute_normalized_evidence_hash(contract_parsed),
+        provenance_attestation=att_spec,
+    )
+    att_fee = create_friction_provenance_attestation(
+        source_snapshot=fee_snap,
+        component_role="COMMISSION",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_OFFICER_AUDIT",
     )
     create_friction_qualification_assertion(
         source_snapshot=fee_snap, component_role="COMMISSION", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_commission_backing_artifact", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash(fee_parsed)
+        normalized_evidence_hash=compute_normalized_evidence_hash(fee_parsed),
+        provenance_attestation=att_fee,
+    )
+    att_swap = create_friction_provenance_attestation(
+        source_snapshot=swap_snap,
+        component_role="FINANCING",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_OFFICER_AUDIT",
     )
     create_friction_qualification_assertion(
         source_snapshot=swap_snap, component_role="FINANCING", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_financing_backing_artifact", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash(swap_parsed)
+        normalized_evidence_hash=compute_normalized_evidence_hash(swap_parsed),
+        provenance_attestation=att_swap,
+    )
+    att_tick = create_friction_provenance_attestation(
+        source_snapshot=tick_snap,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="MARKET_DATA_AUDIT",
     )
     create_friction_qualification_assertion(
         source_snapshot=tick_snap, component_role="SPREAD_DATASET", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_mt5_tick_export", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_ds.raw_dataset_sha256})
+        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_ds.raw_dataset_sha256}),
+        provenance_attestation=att_tick,
+    )
+    att_telem = create_friction_provenance_attestation(
+        source_snapshot=telem_snap,
+        component_role="SLIPPAGE_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="EXECUTION_TELEMETRY_AUDIT",
     )
     create_friction_qualification_assertion(
         source_snapshot=telem_snap, component_role="SLIPPAGE_DATASET", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
         parser_name="parse_mt5_execution_telemetry", parser_version="1.0.0",
-        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telem_ds.raw_dataset_sha256})
+        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telem_ds.raw_dataset_sha256}),
+        provenance_attestation=att_telem,
     )
 
     model_ver, act = build_and_bind_friction_model_version(
@@ -4522,6 +4568,12 @@ def test_hardened_13_qualified_assertion_with_unsupported_parser_version_fails()
         "http://ex.com/l_bad_ver", "L_BAD_VER", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
         raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
     )
+    att13 = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_AUDIT",
+    )
     assertion = create_friction_qualification_assertion(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
@@ -4529,6 +4581,7 @@ def test_hardened_13_qualified_assertion_with_unsupported_parser_version_fails()
         parser_name="parse_legal_entity_backing_artifact",
         parser_version="99.0.0",
         normalized_evidence_hash="some_hash",
+        provenance_attestation=att13,
     )
     is_valid, errors, _ = validate_source_qualification_assertion(
         snapshot=snap,
@@ -4549,6 +4602,12 @@ def test_hardened_14_qualified_assertion_with_incorrect_normalized_evidence_hash
         "http://ex.com/l_bad_nhash", "L_BAD_NHASH", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
         raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
     )
+    att14 = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_AUDIT",
+    )
     assertion = create_friction_qualification_assertion(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
@@ -4556,6 +4615,7 @@ def test_hardened_14_qualified_assertion_with_incorrect_normalized_evidence_hash
         parser_name="parse_legal_entity_backing_artifact",
         parser_version="1.0.0",
         normalized_evidence_hash="FORGED_HASH_" + "0" * 52,
+        provenance_attestation=att14,
     )
     is_valid, errors, _ = validate_source_qualification_assertion(
         snapshot=snap,
@@ -4577,6 +4637,12 @@ def test_hardened_15_qualified_assertion_whose_parsed_data_differs_from_model_fi
         "http://ex.com/c_diff", "C_DIFF", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
         raw, source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value, metadata=parsed
     )
+    att15 = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="CONTRACT_SPEC",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="ENGINEERING_AUDIT",
+    )
     assertion = create_friction_qualification_assertion(
         source_snapshot=snap,
         component_role="CONTRACT_SPEC",
@@ -4584,6 +4650,7 @@ def test_hardened_15_qualified_assertion_whose_parsed_data_differs_from_model_fi
         parser_name="parse_contract_spec_backing_artifact",
         parser_version="1.0.0",
         normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=att15,
     )
     model = FrictionModelVersion.objects.create(
         model_version_id="MODEL_CONTRADICTORY_SPEC",
@@ -4843,6 +4910,12 @@ def test_hardened_30_legitimate_financing_artifact_assertion_survives_independen
         "http://ex.com/swap_survives", "SWAP_SURVIVES", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
         raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed
     )
+    att30 = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="FINANCING",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="COMPLIANCE_AUDIT",
+    )
     assertion = create_friction_qualification_assertion(
         source_snapshot=snap,
         component_role="FINANCING",
@@ -4850,6 +4923,7 @@ def test_hardened_30_legitimate_financing_artifact_assertion_survives_independen
         parser_name="parse_financing_backing_artifact",
         parser_version="1.0.0",
         normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=att30,
     )
     model = FrictionModelVersion.objects.create(
         model_version_id="MODEL_FINANCING_SURVIVES",
@@ -4891,6 +4965,587 @@ def test_hardened_31_changing_parser_derived_normalized_data_changes_assertion_h
     parsed1 = parse_financing_backing_artifact(raw1, expected_symbol="XAUUSD")
     parsed2 = parse_financing_backing_artifact(raw2, expected_symbol="XAUUSD")
     assert parsed1["normalized_evidence_hash"] != parsed2["normalized_evidence_hash"]
+
+
+# =============================================================================
+# DIRECTIVE 8 HOSTILE TEST MINIMUM: PROVENANCE AUTHENTICITY SEAL
+# =============================================================================
+
+@pytest.mark.django_db
+def test_hostile_01_manually_authored_legal_evidence_cannot_self_qualify():
+    """Directive 8.1: Manually-authored legal evidence cannot self-qualify without provenance attestation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "file:///manual/legal.txt", "MANUAL_LEGAL", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("UNVERIFIED" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_02_manually_authored_contract_evidence_cannot_self_qualify():
+    """Directive 8.2: Manually-authored contract evidence cannot self-qualify merely because user declared source type."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"SYMBOL:XAUUSD|CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    parsed = parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    snap, _ = ingest_friction_source_snapshot(
+        "file:///manual/contract.txt", "MANUAL_CONTRACT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="CONTRACT_SPEC",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_contract_spec_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=None,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="CONTRACT_SPEC",
+        expected_parser="parse_contract_spec_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("UNVERIFIED" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_03_manually_authored_commission_evidence_cannot_self_qualify():
+    """Directive 8.3: Manually-authored commission evidence cannot self-qualify."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"STANDARD:COMMISSION:0.00:SCOPE:GLOBAL"
+    parsed = parse_commission_backing_artifact(raw, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
+    snap, _ = ingest_friction_source_snapshot(
+        "file:///manual/fees.txt", "MANUAL_FEES", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value, metadata=parsed,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="COMMISSION",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_commission_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=None,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="COMMISSION",
+        expected_parser="parse_commission_backing_artifact",
+    )
+    assert is_valid is False
+
+
+@pytest.mark.django_db
+def test_hostile_04_manually_authored_financing_evidence_cannot_self_qualify():
+    """Directive 8.4: Manually-authored financing evidence cannot self-qualify."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"SYMBOL:XAUUSD|SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
+    parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    snap, _ = ingest_friction_source_snapshot(
+        "file:///manual/financing.txt", "MANUAL_FINANCING", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="FINANCING",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_financing_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=None,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="FINANCING",
+        expected_parser="parse_financing_backing_artifact",
+    )
+    assert is_valid is False
+
+
+@pytest.mark.django_db
+def test_hostile_05_source_type_declaration_alone_has_zero_authority():
+    """Directive 8.5: Declared source_type string alone has zero qualification authority."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/declared_only", "DEC_ONLY", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=None,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("Qualification assertion is missing" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_06_forged_qualified_assertion_fails():
+    """Directive 8.6: Forged QUALIFIED assertion directly created in DB without valid attestation fails."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/forged", "FORGED", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    # Direct DB creation with forged QUALIFIED status and no attestation
+    assertion_id = hashlib.sha256(f"{snap.snapshot_id}:LEGAL_ENTITY:FORGED".encode()).hexdigest()
+    forged = FrictionSourceQualificationAssertion.objects.create(
+        assertion_id=assertion_id,
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        raw_artifact_sha256=snap.raw_payload_bytes_sha256,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        qualification_reason="Forged manual assertion",
+        provenance_attestation=None,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=forged,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("Assertion lacks a valid FrictionSourceProvenanceAttestation" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_07_missing_attestation_fails():
+    """Directive 8.7: Missing attestation fails validation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/no_att", "NO_ATT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    assertion_id = hashlib.sha256(f"{snap.snapshot_id}:LEGAL_ENTITY:NO_ATT".encode()).hexdigest()
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        assertion_id=assertion_id,
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        raw_artifact_sha256=snap.raw_payload_bytes_sha256,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        provenance_attestation=None,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("Assertion lacks a valid FrictionSourceProvenanceAttestation" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_08_wrong_raw_sha_fails():
+    """Directive 8.8: Wrong raw SHA in attestation fails validation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/wrong_sha", "WRONG_SHA", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    wrong_sha = "0" * 64
+    att_id = hashlib.sha256(f"{snap.snapshot_id}:LEGAL_ENTITY:{wrong_sha}".encode()).hexdigest()
+    att = FrictionSourceProvenanceAttestation.objects.create(
+        attestation_id=att_id,
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        source_type=snap.source_type,
+        raw_artifact_sha256=wrong_sha,
+        source_origin="http://ex.com",
+        collection_methodology="MANUAL",
+        captured_at=now_utc,
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDIT",
+    )
+    assertion_id = hashlib.sha256(f"{snap.snapshot_id}:LEGAL_ENTITY:A".encode()).hexdigest()
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        assertion_id=assertion_id,
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        raw_artifact_sha256=snap.raw_payload_bytes_sha256,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        provenance_attestation=att,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("does not match assertion raw SHA" in e or "does not match snapshot raw SHA" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_09_wrong_snapshot_fails():
+    """Directive 8.9: Attestation bound to another snapshot fails validation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw1 = b"EXNESS_SC_LTD:FSA:SD025"
+    raw2 = b"EXNESS_BVI_LTD:BVIFSC:SIBA/L/20/1133"
+    parsed2 = parse_legal_entity_backing_artifact(raw2)
+    snap1, _ = ingest_friction_source_snapshot(
+        "http://ex.com/snap1", "SNAP1", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw1, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    snap2, _ = ingest_friction_source_snapshot(
+        "http://ex.com/snap2", "SNAP2", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw2, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed2,
+    )
+    att1 = create_friction_provenance_attestation(
+        source_snapshot=snap1,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDITOR",
+    )
+    assertion_id = hashlib.sha256(f"{snap2.snapshot_id}:LEGAL_ENTITY:A".encode()).hexdigest()
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        assertion_id=assertion_id,
+        source_snapshot=snap2,
+        component_role="LEGAL_ENTITY",
+        raw_artifact_sha256=snap2.raw_payload_bytes_sha256,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed2["normalized_evidence_hash"],
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        provenance_attestation=att1,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap2,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("does not match snapshot" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_10_wrong_component_role_fails():
+    """Directive 8.10: Attestation with wrong component role fails validation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/role_mismatch", "ROLE_MISMATCH", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    att = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="CONTRACT_SPEC",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="AUDITOR",
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="some_hash",
+        provenance_attestation=att,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("UNVERIFIED" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_11_wrong_venue_symbol_account_tier_fails():
+    """Directive 8.11: Attestation with wrong venue, symbol, or account tier fails validation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/wrong_scope", "WRONG_SCOPE", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    att = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDITOR",
+        venue="FOREXCOM",
+        symbol="EURUSD",
+        account_tier="RAW",
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="some_hash",
+        provenance_attestation=att,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+        expected_venue="EXNESS",
+        expected_symbol="XAUUSD",
+        expected_account_tier="STANDARD",
+    )
+    assert is_valid is False
+    assert any("UNVERIFIED" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_12_parser_valid_but_provenance_unverified_fails():
+    """Directive 8.12: Parser-valid but provenance-unverified evidence fails hard gate."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw)
+    assert parsed["legal_entity_code"] == "EXNESS_SC_LTD"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/parser_valid_no_prov", "P_VAL_NO_PROV", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=None,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+
+
+@pytest.mark.django_db
+def test_hostile_13_provenance_valid_but_parser_invalid_fails():
+    """Directive 8.13: Provenance-valid but parser-invalid evidence fails hard gate."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_corrupted = b"CORRUPTED_LEGAL_ENTITY_PAYLOAD"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/prov_valid_p_invalid", "PROV_VAL_P_INV", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_corrupted, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    att = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDITOR",
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="fake_hash",
+        provenance_attestation=att,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("Independent parser recomputation failed" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hostile_14_parser_valid_and_provenance_valid_and_assertion_valid_succeeds():
+    """Directive 8.14: Parser-valid + provenance-valid + assertion-valid succeeds."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/all_valid", "ALL_VALID", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    att = create_friction_provenance_attestation(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDITOR",
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+        provenance_attestation=att,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is True
+    assert len(errors) == 0
+
+
+@pytest.mark.django_db
+def test_hostile_15_modified_bytes_invalidate_provenance_chain():
+    """Directive 8.15: Modified bytes invalidate the provenance chain."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_orig = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(raw_orig)
+    snap_orig, _ = ingest_friction_source_snapshot(
+        "http://ex.com/tampered", "TAMPERED", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_orig, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed,
+    )
+    att = create_friction_provenance_attestation(
+        source_snapshot=snap_orig,
+        component_role="LEGAL_ENTITY",
+        verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
+        verifier_identity="AUDITOR",
+    )
+    # Attestation is bound to snap_orig's raw hash. If an artifact has modified bytes:
+    raw_tampered = b"EXNESS_SC_LTD:FSA:SD026_TAMPERED"
+    snap_tampered, _ = ingest_friction_source_snapshot(
+        "http://ex.com/tampered2", "TAMPERED2", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_tampered, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap_tampered,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        provenance_attestation=att,
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap_tampered,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("UNVERIFIED" in e for e in errors)
+
+
+def test_hostile_16_production_code_cannot_invoke_test_qualification_seam(monkeypatch):
+    """Directive 8.16: Production code cannot invoke the test qualification seam."""
+    from django.conf import settings
+    monkeypatch.setattr(settings, "IS_TESTING", False, raising=False)
+    monkeypatch.setattr(settings, "DEBUG", False, raising=False)
+    monkeypatch.setattr(settings, "SETTINGS_MODULE", "config.settings.production", raising=False)
+
+    with pytest.raises(PermissionError) as exc_info:
+        build_and_bind_friction_model_version(
+            legal_entity_snapshot=None,
+            contract_spec_snapshot=None,
+            fee_schedule_snapshot=None,
+            swap_spec_snapshot=None,
+            evidence_dataset=None,
+            spread_ticks_bps=None,
+            test_qualification_seam=True,
+        )
+    assert "PRODUCTION_SECURITY_VIOLATION" in str(exc_info.value)
+
+
+def test_hostile_17_canonical_bool_representations_compare_strictly():
+    """Directive 8.17: Canonical bool representations compare strictly without isinstance(False, int) coercion bug."""
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": False},
+        {"actual_account_swap_free_status": False},
+    )
+    assert res is True
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": "false"},
+        {"actual_account_swap_free_status": False},
+    )
+    assert res is True
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": 0},
+        {"actual_account_swap_free_status": False},
+    )
+    assert res is True
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": True},
+        {"actual_account_swap_free_status": True},
+    )
+    assert res is True
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": 1},
+        {"actual_account_swap_free_status": True},
+    )
+    assert res is True
+
+    # Negative checks
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": True},
+        {"actual_account_swap_free_status": False},
+    )
+    assert res is False
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": False},
+        {"actual_account_swap_free_status": True},
+    )
+    assert res is False
+
+    res, mismatches = compare_asserted_vs_derived(
+        {"actual_account_swap_free_status": 1},
+        {"actual_account_swap_free_status": False},
+    )
+    assert res is False
+
 
 
 

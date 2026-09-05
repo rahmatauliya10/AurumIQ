@@ -28,9 +28,12 @@ from apps.market_data.models import (
     FrictionModelVersion,
     FrictionPopulationSemantics,
     FrictionQualificationStatus,
+    FrictionSourceProvenanceAttestation,
     FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
+    FrictionVerificationMethod,
+    ACCEPTED_VERIFICATION_METHODS,
     QUALIFIED_COMMISSION_SOURCE_TYPES,
     QUALIFIED_CONTRACT_SOURCE_TYPES,
     QUALIFIED_FINANCING_SOURCE_TYPES,
@@ -315,6 +318,62 @@ def validate_source_qualification_assertion(
                         f"Parsed swap_free_available_for_account_type '{parsed_data.get('swap_free_available_for_account_type')}' does not match model '{model_version.swap_free_available_for_account_type}'."
                     )
 
+    # 10. Immutable Provenance Attestation verification (Directive 2, 3, 4, 7)
+    # Hard-gate qualification requires PARSER VALID + RAW SHA VALID + PROVENANCE ATTESTATION VALID = QUALIFIED.
+    linked_att = assertion.provenance_attestation
+    if linked_att is None:
+        linked_att = FrictionSourceProvenanceAttestation.objects.filter(
+            source_snapshot_id=snapshot.snapshot_id,
+            component_role=expected_component_role,
+            raw_artifact_sha256=assertion.raw_artifact_sha256,
+        ).first()
+
+    if linked_att is None:
+        reasons.append(
+            f"Assertion lacks a valid FrictionSourceProvenanceAttestation for role '{expected_component_role}' and raw SHA '{assertion.raw_artifact_sha256}'."
+        )
+    else:
+        if linked_att.source_snapshot_id != snapshot.snapshot_id:
+            reasons.append(
+                f"Attestation source_snapshot '{linked_att.source_snapshot_id}' does not match snapshot '{snapshot.snapshot_id}'."
+            )
+        if linked_att.component_role != expected_component_role:
+            reasons.append(
+                f"Attestation component_role '{linked_att.component_role}' does not match expected role '{expected_component_role}'."
+            )
+        if linked_att.raw_artifact_sha256 != assertion.raw_artifact_sha256:
+            reasons.append(
+                f"Attestation raw_artifact_sha256 '{linked_att.raw_artifact_sha256}' does not match assertion raw SHA '{assertion.raw_artifact_sha256}'."
+            )
+        if linked_att.raw_artifact_sha256 != snapshot.raw_payload_bytes_sha256:
+            reasons.append(
+                f"Attestation raw_artifact_sha256 '{linked_att.raw_artifact_sha256}' does not match snapshot raw SHA '{snapshot.raw_payload_bytes_sha256}'."
+            )
+        if snapshot.raw_content:
+            computed_raw_sha = hashlib.sha256(snapshot.raw_content).hexdigest()
+            if linked_att.raw_artifact_sha256 != computed_raw_sha:
+                reasons.append(
+                    f"Attestation raw_artifact_sha256 '{linked_att.raw_artifact_sha256}' does not match computed SHA of snapshot content '{computed_raw_sha}'."
+                )
+        if linked_att.verification_method not in ACCEPTED_VERIFICATION_METHODS:
+            reasons.append(
+                f"Attestation verification_method '{linked_att.verification_method}' is not an accepted method: {sorted(ACCEPTED_VERIFICATION_METHODS)}."
+            )
+        if not linked_att.verifier_identity or not str(linked_att.verifier_identity).strip():
+            reasons.append("Attestation verifier_identity is empty.")
+        if linked_att.venue and expected_venue and linked_att.venue.upper() != expected_venue.upper():
+            reasons.append(
+                f"Attestation venue '{linked_att.venue}' does not match expected venue '{expected_venue}'."
+            )
+        if linked_att.symbol and expected_symbol and linked_att.symbol.upper() != expected_symbol.upper():
+            reasons.append(
+                f"Attestation symbol '{linked_att.symbol}' does not match expected symbol '{expected_symbol}'."
+            )
+        if linked_att.account_tier and expected_account_tier and linked_att.account_tier.upper() != expected_account_tier.upper():
+            reasons.append(
+                f"Attestation account_tier '{linked_att.account_tier}' does not match expected account tier '{expected_account_tier}'."
+            )
+
     return len(reasons) == 0, reasons, parsed_data
 
 
@@ -322,9 +381,9 @@ def _get_assertion_meta(
     snapshot: Optional[FrictionSourceSnapshot],
     role: str,
     model_version: Optional[FrictionModelVersion] = None,
-) -> Tuple[str, str, str]:
+) -> Tuple[str, str, str, str, str]:
     if not snapshot:
-        return "", "", ""
+        return "", "", "", "", ""
     assertion = snapshot.qualification_assertions.filter(
         component_role=role,
         qualification_status=FrictionQualificationStatus.QUALIFIED.value,
@@ -340,8 +399,11 @@ def _get_assertion_meta(
             expected_venue=model_version.venue if model_version else "EXNESS",
         )
         if is_valid:
-            return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash
-    return "", "", ""
+            att = assertion.provenance_attestation
+            att_id = att.attestation_id if att else ""
+            v_method = att.verification_method if att else ""
+            return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash, att_id, v_method
+    return "", "", "", "", ""
 
 
 @dataclass
@@ -1012,7 +1074,7 @@ def validate_friction_model_for_activation(
 
     source_evidence: Dict[str, Dict[str, str]] = {}
     if model_version.legal_entity_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY", model_version=model_version)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1026,9 +1088,11 @@ def validate_friction_model_for_activation(
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if model_version.contract_spec_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC", model_version=model_version)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1042,9 +1106,11 @@ def validate_friction_model_for_activation(
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if model_version.fee_schedule_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION", model_version=model_version)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1058,9 +1124,11 @@ def validate_friction_model_for_activation(
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     if model_version.swap_spec_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING", model_version=model_version)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1074,10 +1142,12 @@ def validate_friction_model_for_activation(
             "parser_name": p_name,
             "parser_version": p_ver,
             "normalized_evidence_hash": norm_hash,
+            "attestation_id": att_id,
+            "verification_method": v_method,
         }
     for db in dataset_bindings:
         if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET", model_version=model_version)
+            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET", model_version=model_version)
             if not norm_hash:
                 return FrictionValidationResult(
                     is_valid=False,
@@ -1091,9 +1161,11 @@ def validate_friction_model_for_activation(
                 "parser_name": p_name,
                 "parser_version": p_ver,
                 "normalized_evidence_hash": norm_hash,
+                "attestation_id": att_id,
+                "verification_method": v_method,
             }
         elif db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE) and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET", model_version=model_version)
+            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET", model_version=model_version)
             if not norm_hash:
                 return FrictionValidationResult(
                     is_valid=False,
@@ -1107,6 +1179,8 @@ def validate_friction_model_for_activation(
                 "parser_name": p_name,
                 "parser_version": p_ver,
                 "normalized_evidence_hash": norm_hash,
+                "attestation_id": att_id,
+                "verification_method": v_method,
             }
 
     dataset_hashes = [db.evidence_dataset.raw_dataset_sha256 for db in dataset_bindings]

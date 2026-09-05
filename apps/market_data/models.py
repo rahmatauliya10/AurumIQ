@@ -677,11 +677,83 @@ class FrictionSourceSnapshot(models.Model):
         return f"FrictionSnapshot {self.snapshot_id[:12]} ({self.source_name} @ {self.venue})"
 
 
+class FrictionVerificationMethod(models.TextChoices):
+    MT5_DIRECT_EXPORT = "MT5_DIRECT_EXPORT", "MT5 Direct Export"
+    BROKER_OFFICIAL_URL_CAPTURE = "BROKER_OFFICIAL_URL_CAPTURE", "Broker Official URL Capture"
+    ACCOUNT_PORTAL_EXPORT = "ACCOUNT_PORTAL_EXPORT", "Account Portal Export"
+    MANUAL_REVIEWED_OFFICIAL_DOCUMENT = "MANUAL_REVIEWED_OFFICIAL_DOCUMENT", "Manual Reviewed Official Document"
+
+
+ACCEPTED_VERIFICATION_METHODS = {m.value for m in FrictionVerificationMethod}
+
+
+class FrictionSourceProvenanceAttestation(models.Model):
+    """Immutable audit capture record establishing verified provenance and authenticity for a friction source snapshot.
+    
+    Binds raw artifact SHA-256, source snapshot, component role, verification method,
+    and collector/verifier identity. Ensures zero user-declaration trust authority.
+    """
+    attestation_id = models.CharField(max_length=64, primary_key=True)
+    source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="provenance_attestations",
+    )
+    component_role = models.CharField(max_length=32, db_index=True)
+    source_origin = models.CharField(max_length=1024)
+    source_type = models.CharField(max_length=64)
+    collection_methodology = models.CharField(max_length=128)
+    captured_at = models.DateTimeField(db_index=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    verification_method = models.CharField(
+        max_length=64,
+        choices=FrictionVerificationMethod.choices,
+        db_index=True,
+    )
+    verifier_identity = models.CharField(max_length=128)
+    venue = models.CharField(max_length=32, db_index=True)
+    symbol = models.CharField(max_length=32, db_index=True)
+    account_tier = models.CharField(max_length=32, db_index=True)
+    raw_artifact_sha256 = models.CharField(max_length=64, db_index=True)
+    provenance_metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-captured_at", "-attestation_id"]
+        verbose_name = "Friction Source Provenance Attestation"
+        verbose_name_plural = "Friction Source Provenance Assertions"
+        indexes = [
+            models.Index(fields=["component_role", "raw_artifact_sha256"]),
+            models.Index(fields=["venue", "symbol", "account_tier"]),
+            models.Index(fields=["verification_method"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionSourceProvenanceAttestation is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionSourceProvenanceAttestation.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionSourceProvenanceAttestation is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Attestation {self.attestation_id[:12]} ({self.component_role} @ {self.verification_method})"
+
+
 class FrictionSourceQualificationAssertion(models.Model):
     """Immutable audit assertion validating qualification of a friction source snapshot via trusted parser (Directive 6)."""
     assertion_id = models.CharField(max_length=64, primary_key=True)
     source_snapshot = models.ForeignKey(
         FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="qualification_assertions",
+    )
+    provenance_attestation = models.ForeignKey(
+        FrictionSourceProvenanceAttestation,
+        null=True,
+        blank=True,
         on_delete=models.PROTECT,
         related_name="qualification_assertions",
     )

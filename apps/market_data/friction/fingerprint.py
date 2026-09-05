@@ -91,6 +91,8 @@ def compute_empirical_friction_fingerprint(
                 "parser_name": str(ev_dict.get("parser_name") or ""),
                 "parser_version": str(ev_dict.get("parser_version") or ""),
                 "normalized_evidence_hash": str(ev_dict.get("normalized_evidence_hash") or ""),
+                "attestation_id": str(ev_dict.get("attestation_id") or ""),
+                "verification_method": str(ev_dict.get("verification_method") or "").upper(),
             }
 
     canonical_payload: Dict[str, Any] = {
