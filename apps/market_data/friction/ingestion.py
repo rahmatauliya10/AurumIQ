@@ -179,12 +179,12 @@ def verify_authoritative_backing_artifact(
 def create_friction_qualification_assertion(
     source_snapshot: FrictionSourceSnapshot,
     component_role: str,
-    qualification_status: str = FrictionQualificationStatus.QUALIFIED.value,
-    parser_name: str = "TRUSTED_COMPONENT_PARSER",
+    qualification_status: str = FrictionQualificationStatus.UNVERIFIED.value,
+    parser_name: str = "UNVERIFIED_PARSER",
     parser_version: str = "1.0.0",
     raw_artifact_sha256: Optional[str] = None,
     normalized_evidence_hash: Optional[str] = None,
-    qualification_reason: str = "Verified by trusted component parser",
+    qualification_reason: str = "Unverified friction source assertion",
 ) -> FrictionSourceQualificationAssertion:
     """Create and persist an immutable qualification assertion for a friction source snapshot (Directive 6)."""
     raw_sha = raw_artifact_sha256 or source_snapshot.raw_payload_bytes_sha256

@@ -77,6 +77,7 @@ def compare_asserted_vs_derived(asserted_data: Dict[str, Any], derived_data: Dic
 
 
 # =============================================================================
+# =============================================================================
 # 1. LEGAL ENTITY AUTHORITATIVE PARSER
 # =============================================================================
 
@@ -90,7 +91,7 @@ def parse_legal_entity_backing_artifact(
         derived_normalized_dict containing legal_entity_name, legal_entity_code,
         regulator, license_number, parser_name, parser_version, normalized_evidence_hash.
     Raises:
-        ValueError if artifact fails to establish legal entity, regulator, or license number.
+        ValueError if artifact fails to establish legal entity identity, regulator, or license number.
     """
     parser_name = "parse_legal_entity_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 10:
@@ -113,12 +114,32 @@ def parse_legal_entity_backing_artifact(
             lic = str(data.get("license_number") or data.get("license") or data.get("licence_number") or "").strip()
             if not (reg and lic):
                 raise ValueError(
-                    "LEGAL_ENTITY_PARSER_ERROR: Backing artifact lacks authentic Exness legal entity evidence; missing regulator or license number."
+                    "LEGAL_ENTITY_PARSER_ERROR: Backing artifact lacks authentic legal entity evidence; missing regulator or license number."
                 )
-            if not name:
-                name = "Exness (SC) Ltd" if "SC" in code else "Exness Entity"
-            if not code:
-                code = "EXNESS_SC_LTD" if "SC" in name.upper() else "EXNESS_LEGAL_ENTITY"
+            if not name and not code:
+                raise ValueError(
+                    "LEGAL_ENTITY_EVIDENCE_MISSING: Backing artifact lacks explicit legal entity identity (name or code)."
+                )
+            # Deterministic mapping backed by explicit mapping policy when one is missing
+            if name and not code:
+                if "SC" in name.upper() or "SEYCHELLES" in name.upper():
+                    code = "EXNESS_SC_LTD"
+                elif "CY" in name.upper() or "CYPRUS" in name.upper():
+                    code = "EXNESS_CY_LTD"
+                elif "UK" in name.upper():
+                    code = "EXNESS_UK_LTD"
+                else:
+                    code = re.sub(r"[^A-Za-z0-9_]+", "_", name.upper()).strip("_")
+            elif code and not name:
+                if code == "EXNESS_SC_LTD":
+                    name = "Exness (SC) Ltd"
+                elif code == "EXNESS_CY_LTD":
+                    name = "Exness (Cy) Ltd"
+                elif code == "EXNESS_UK_LTD":
+                    name = "Exness (UK) Ltd"
+                else:
+                    name = code.replace("_", " ").title()
+
             derived = {
                 "legal_entity_name": name,
                 "legal_entity_code": code,
@@ -136,17 +157,18 @@ def parse_legal_entity_backing_artifact(
     parts = [p.strip() for p in text.split(":") if p.strip()]
     if len(parts) >= 3 and not has_format_header:
         code, reg, lic = parts[0], parts[1], parts[2]
-        name = "Exness (SC) Ltd" if "SC" in code else f"Exness ({code})"
-        derived = {
-            "legal_entity_name": name,
-            "legal_entity_code": code,
-            "regulator": reg,
-            "license_number": lic,
-            "parser_name": parser_name,
-            "parser_version": parser_version,
-        }
-        derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
-        return derived
+        if code in ("EXNESS_SC_LTD", "EXNESS_CY_LTD", "EXNESS_UK_LTD") or "EXNESS" in code.upper():
+            name = "Exness (SC) Ltd" if "SC" in code else f"Exness ({code})"
+            derived = {
+                "legal_entity_name": name,
+                "legal_entity_code": code,
+                "regulator": reg,
+                "license_number": lic,
+                "parser_name": parser_name,
+                "parser_version": parser_version,
+            }
+            derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
+            return derived
 
     # Key-value / pipe format e.g. legal_entity_name=...|regulator=...
     if "=" in text:
@@ -160,9 +182,17 @@ def parse_legal_entity_backing_artifact(
         reg = kv.get("regulator")
         lic = kv.get("license_number") or kv.get("license")
         if reg and lic:
+            if not name and not code:
+                raise ValueError(
+                    "LEGAL_ENTITY_EVIDENCE_MISSING: Backing artifact lacks explicit legal entity identity (name or code)."
+                )
+            if name and not code:
+                code = "EXNESS_SC_LTD" if "SC" in name.upper() else re.sub(r"[^A-Za-z0-9_]+", "_", name.upper()).strip("_")
+            elif code and not name:
+                name = "Exness (SC) Ltd" if "SC" in code else code.replace("_", " ").title()
             derived = {
-                "legal_entity_name": name or "Exness (SC) Ltd",
-                "legal_entity_code": code or "EXNESS_SC_LTD",
+                "legal_entity_name": name,
+                "legal_entity_code": code,
                 "regulator": reg,
                 "license_number": lic,
                 "parser_name": parser_name,
@@ -177,10 +207,14 @@ def parse_legal_entity_backing_artifact(
     name_match = re.search(r"(Exness\s*(?:\([A-Za-z0-9\s]+\))?\s*(?:Ltd|Limited|B\.V\.)?)", text, re.IGNORECASE)
 
     if reg_match and lic_match:
+        if not name_match:
+            raise ValueError(
+                "LEGAL_ENTITY_EVIDENCE_MISSING: Backing artifact lacks authentic Exness legal entity identity; regulator/license without explicit entity identity cannot qualify."
+            )
         reg = reg_match.group(1).upper()
         lic = lic_match.group(1).strip()
-        name = name_match.group(1).strip() if name_match else "Exness (SC) Ltd"
-        code = "EXNESS_SC_LTD" if "SC" in name.upper() else "EXNESS_LEGAL_ENTITY"
+        name = name_match.group(1).strip()
+        code = "EXNESS_SC_LTD" if "SC" in name.upper() else re.sub(r"[^A-Za-z0-9_]+", "_", name.upper()).strip("_")
         derived = {
             "legal_entity_name": name,
             "legal_entity_code": code,
@@ -208,11 +242,11 @@ def parse_contract_spec_backing_artifact(
 ) -> Dict[str, Any]:
     """Extract and validate authoritative contract geometry from raw MT5 / broker export bytes.
 
-    Returns:
-        derived_normalized_dict containing contract spec fields, parser_name,
-        parser_version, and normalized_evidence_hash.
-    Raises:
-        ValueError if artifact lacks required contract specification fields for expected_symbol.
+    CRITICAL (Directive §1):
+    Removes all contract-spec silent defaults. Every mandatory geometry field:
+    digits, point_size, trade_tick_size, trade_tick_value, contract_size,
+    volume_min, volume_max, volume_step MUST be explicitly established.
+    Missing any field raises ValueError("CONTRACT_SPEC_EVIDENCE_MISSING: ...").
     """
     parser_name = "parse_contract_spec_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 10:
@@ -239,30 +273,51 @@ def parse_contract_spec_backing_artifact(
                 f"CONTRACT_SPEC_PARSER_ERROR: Backing artifact symbol '{sym_mentions[0]}' does not match expected '{expected_symbol}'."
             )
 
+    required_geometry_keys = {
+        "digits": ["digits"],
+        "point_size": ["point_size", "point"],
+        "trade_tick_size": ["trade_tick_size", "tick_size"],
+        "trade_tick_value": ["trade_tick_value", "tick_value"],
+        "contract_size": ["contract_size"],
+        "volume_min": ["volume_min", "vol_min"],
+        "volume_max": ["volume_max", "vol_max"],
+        "volume_step": ["volume_step", "vol_step"],
+    }
+
     # Try JSON
     if text.startswith("{"):
         try:
             data = json.loads(text)
             spec = data.get(expected_symbol) or data.get(f"{expected_symbol[:3]}/{expected_symbol[3:]}") or data
-            if isinstance(spec, dict) and "digits" in spec:
-                digits = int(spec["digits"])
-                point = Decimal(str(spec.get("point_size") or spec.get("point") or "0.01"))
-                tick_size = Decimal(str(spec.get("trade_tick_size") or spec.get("tick_size") or point))
-                tick_val = Decimal(str(spec.get("trade_tick_value") or spec.get("tick_value") or "1.00"))
-                c_size = Decimal(str(spec.get("contract_size") or "100.0"))
-                v_min = Decimal(str(spec.get("volume_min") or "0.01"))
-                v_max = Decimal(str(spec.get("volume_max") or "200.0"))
-                v_step = Decimal(str(spec.get("volume_step") or "0.01"))
+            if isinstance(spec, dict):
+                extracted = {}
+                missing = []
+                for field_name, aliases in required_geometry_keys.items():
+                    val = None
+                    for a in aliases:
+                        if a in spec and spec[a] is not None:
+                            val = spec[a]
+                            break
+                    if val is None:
+                        missing.append(field_name)
+                    else:
+                        extracted[field_name] = val
+
+                if missing:
+                    raise ValueError(
+                        f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact lacks mandatory geometry fields: {', '.join(missing)}."
+                    )
+
                 derived = {
                     "symbol": expected_symbol,
-                    "digits": digits,
-                    "point_size": point,
-                    "trade_tick_size": tick_size,
-                    "trade_tick_value": tick_val,
-                    "contract_size": c_size,
-                    "volume_min": v_min,
-                    "volume_max": v_max,
-                    "volume_step": v_step,
+                    "digits": int(extracted["digits"]),
+                    "point_size": Decimal(str(extracted["point_size"])),
+                    "trade_tick_size": Decimal(str(extracted["trade_tick_size"])),
+                    "trade_tick_value": Decimal(str(extracted["trade_tick_value"])),
+                    "contract_size": Decimal(str(extracted["contract_size"])),
+                    "volume_min": Decimal(str(extracted["volume_min"])),
+                    "volume_max": Decimal(str(extracted["volume_max"])),
+                    "volume_step": Decimal(str(extracted["volume_step"])),
                     "parser_name": parser_name,
                     "parser_version": parser_version,
                 }
@@ -282,26 +337,40 @@ def parse_contract_spec_backing_artifact(
                 k, v = token.split("=", 1)
                 kv[k.strip().upper()] = v.strip()
 
-        if "DIGITS" in kv and ("CONTRACT_SIZE" in kv or "CONTRACT" in kv):
-            digits = int(kv["DIGITS"])
-            point_str = kv.get("POINT") or kv.get("POINT_SIZE") or "0.01"
-            point = Decimal(point_str)
-            tick_size = Decimal(kv.get("TICK_SIZE") or kv.get("TRADE_TICK_SIZE") or point_str)
-            tick_val = Decimal(kv.get("TICK_VALUE") or kv.get("TRADE_TICK_VALUE") or "1.00")
-            c_size = Decimal(kv.get("CONTRACT_SIZE") or kv.get("CONTRACT") or "100.0")
-            v_min = Decimal(kv.get("VOL_MIN") or kv.get("VOLUME_MIN") or "0.01")
-            v_max = Decimal(kv.get("VOL_MAX") or kv.get("VOLUME_MAX") or "200.0")
-            v_step = Decimal(kv.get("VOL_STEP") or kv.get("VOLUME_STEP") or "0.01")
+        required_kv_map = {
+            "digits": ["DIGITS"],
+            "point_size": ["POINT_SIZE", "POINT"],
+            "trade_tick_size": ["TRADE_TICK_SIZE", "TICK_SIZE"],
+            "trade_tick_value": ["TRADE_TICK_VALUE", "TICK_VALUE"],
+            "contract_size": ["CONTRACT_SIZE", "CONTRACT"],
+            "volume_min": ["VOLUME_MIN", "VOL_MIN"],
+            "volume_max": ["VOLUME_MAX", "VOL_MAX"],
+            "volume_step": ["VOLUME_STEP", "VOL_STEP"],
+        }
+        extracted_kv = {}
+        missing_kv = []
+        for field_name, aliases in required_kv_map.items():
+            val = None
+            for a in aliases:
+                if a in kv and kv[a] is not None and kv[a] != "":
+                    val = kv[a]
+                    break
+            if val is None:
+                missing_kv.append(field_name)
+            else:
+                extracted_kv[field_name] = val
+
+        if not missing_kv:
             derived = {
                 "symbol": expected_symbol,
-                "digits": digits,
-                "point_size": point,
-                "trade_tick_size": tick_size,
-                "trade_tick_value": tick_val,
-                "contract_size": c_size,
-                "volume_min": v_min,
-                "volume_max": v_max,
-                "volume_step": v_step,
+                "digits": int(extracted_kv["digits"]),
+                "point_size": Decimal(extracted_kv["point_size"]),
+                "trade_tick_size": Decimal(extracted_kv["trade_tick_size"]),
+                "trade_tick_value": Decimal(extracted_kv["trade_tick_value"]),
+                "contract_size": Decimal(extracted_kv["contract_size"]),
+                "volume_min": Decimal(extracted_kv["volume_min"]),
+                "volume_max": Decimal(extracted_kv["volume_max"]),
+                "volume_step": Decimal(extracted_kv["volume_step"]),
                 "parser_name": parser_name,
                 "parser_version": parser_version,
             }
@@ -311,41 +380,51 @@ def parse_contract_spec_backing_artifact(
     # MT5 SymbolInfo text format
     digits_m = re.search(r"digits[:\s=]+(\d+)", text, re.IGNORECASE)
     point_m = re.search(r"point(?:_size)?[:\s=]+([\d.]+)", text, re.IGNORECASE)
+    tick_size_m = re.search(r"(?:trade_)?tick_size[:\s=]+([\d.]+)", text, re.IGNORECASE)
+    tick_val_m = re.search(r"(?:trade_)?tick_value[:\s=]+([\d.]+)", text, re.IGNORECASE)
     c_size_m = re.search(r"contract(?:_size)?[:\s=]+([\d.]+)", text, re.IGNORECASE)
+    v_min_m = re.search(r"volume_min[:\s=]+([\d.]+)", text, re.IGNORECASE)
+    v_max_m = re.search(r"volume_max[:\s=]+([\d.]+)", text, re.IGNORECASE)
+    v_step_m = re.search(r"volume_step[:\s=]+([\d.]+)", text, re.IGNORECASE)
 
-    if digits_m and c_size_m:
-        digits = int(digits_m.group(1))
-        point = Decimal(point_m.group(1)) if point_m else Decimal("0.01")
-        tick_size_m = re.search(r"tick_size[:\s=]+([\d.]+)", text, re.IGNORECASE)
-        tick_size = Decimal(tick_size_m.group(1)) if tick_size_m else point
-        tick_val_m = re.search(r"tick_value[:\s=]+([\d.]+)", text, re.IGNORECASE)
-        tick_val = Decimal(tick_val_m.group(1)) if tick_val_m else Decimal("1.00")
-        c_size = Decimal(c_size_m.group(1))
-        v_min_m = re.search(r"volume_min[:\s=]+([\d.]+)", text, re.IGNORECASE)
-        v_min = Decimal(v_min_m.group(1)) if v_min_m else Decimal("0.01")
-        v_max_m = re.search(r"volume_max[:\s=]+([\d.]+)", text, re.IGNORECASE)
-        v_max = Decimal(v_max_m.group(1)) if v_max_m else Decimal("200.0")
-        v_step_m = re.search(r"volume_step[:\s=]+([\d.]+)", text, re.IGNORECASE)
-        v_step = Decimal(v_step_m.group(1)) if v_step_m else Decimal("0.01")
-        derived = {
-            "symbol": expected_symbol,
-            "digits": digits,
-            "point_size": point,
-            "trade_tick_size": tick_size,
-            "trade_tick_value": tick_val,
-            "contract_size": c_size,
-            "volume_min": v_min,
-            "volume_max": v_max,
-            "volume_step": v_step,
-            "parser_name": parser_name,
-            "parser_version": parser_version,
-        }
-        derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
-        return derived
+    missing_regex = []
+    if not digits_m:
+        missing_regex.append("digits")
+    if not point_m:
+        missing_regex.append("point_size")
+    if not tick_size_m:
+        missing_regex.append("trade_tick_size")
+    if not tick_val_m:
+        missing_regex.append("trade_tick_value")
+    if not c_size_m:
+        missing_regex.append("contract_size")
+    if not v_min_m:
+        missing_regex.append("volume_min")
+    if not v_max_m:
+        missing_regex.append("volume_max")
+    if not v_step_m:
+        missing_regex.append("volume_step")
 
-    raise ValueError(
-        f"CONTRACT_SPEC_PARSER_ERROR: Backing artifact lacks required contract specification fields for '{expected_symbol}'."
-    )
+    if missing_regex:
+        raise ValueError(
+            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact lacks mandatory geometry fields: {', '.join(missing_regex)}."
+        )
+
+    derived = {
+        "symbol": expected_symbol,
+        "digits": int(digits_m.group(1)),
+        "point_size": Decimal(point_m.group(1)),
+        "trade_tick_size": Decimal(tick_size_m.group(1)),
+        "trade_tick_value": Decimal(tick_val_m.group(1)),
+        "contract_size": Decimal(c_size_m.group(1)),
+        "volume_min": Decimal(v_min_m.group(1)),
+        "volume_max": Decimal(v_max_m.group(1)),
+        "volume_step": Decimal(v_step_m.group(1)),
+        "parser_name": parser_name,
+        "parser_version": parser_version,
+    }
+    derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
+    return derived
 
 
 # =============================================================================
@@ -360,11 +439,10 @@ def parse_commission_backing_artifact(
 ) -> Dict[str, Any]:
     """Extract and validate authoritative commission schedule from raw broker export bytes.
 
-    Returns:
-        derived_normalized_dict containing commission schedule fields, parser_name,
-        parser_version, and normalized_evidence_hash.
-    Raises:
-        ValueError if artifact does not establish commission for expected_account_tier.
+    CRITICAL (Directive §4):
+    Commission evidence must establish account_tier, commission rate/rule, and
+    symbol/instrument applicability. Does NOT inject symbol solely from expected_symbol
+    when artifact contains no applicability evidence.
     """
     parser_name = "parse_commission_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 5:
@@ -387,9 +465,34 @@ def parse_commission_backing_artifact(
                 fee_val = tier_data.get("native_commission_usd_per_lot_per_side") or tier_data.get("commission")
                 formula = tier_data.get("commission_formula") or "DYNAMIC_NOTIONAL_BPS"
                 if fee_val is not None:
+                    # Check applicability in tier_data or top-level data
+                    is_instrument_specific = False
+                    is_global_scope = False
+
+                    tier_sym = str(tier_data.get("symbol") or "").upper()
+                    tier_syms = [str(s).upper() for s in (tier_data.get("symbols") or tier_data.get("instruments") or [])]
+                    top_sym = str(data.get("symbol") or "").upper()
+                    top_syms = [str(s).upper() for s in (data.get("symbols") or data.get("instruments") or [])]
+                    all_syms = set([tier_sym, top_sym] + tier_syms + top_syms)
+
+                    if any(s in all_syms for s in (expected_symbol.upper(), f"{expected_symbol[:3]}/{expected_symbol[3:]}".upper(), "GOLD")):
+                        is_instrument_specific = True
+
+                    scope_decl = str(tier_data.get("scope") or data.get("scope") or tier_data.get("applicability") or data.get("applicability") or "").upper()
+                    if scope_decl in ("GLOBAL", "ALL", "ALL_SYMBOLS", "ALL_INSTRUMENTS", "ACCOUNT_TIER_WIDE"):
+                        is_global_scope = True
+                    elif tier_data.get("all_instruments") is True or data.get("all_instruments") is True or tier_data.get("all_symbols") is True or data.get("all_symbols") is True:
+                        is_global_scope = True
+
+                    if not is_instrument_specific and not is_global_scope:
+                        raise ValueError(
+                            f"COMMISSION_PARSER_ERROR: Backing artifact for tier '{expected_account_tier}' lacks symbol applicability for '{expected_symbol}' or explicit global tier scope."
+                        )
+
                     derived = {
                         "account_tier": expected_account_tier,
-                        "symbol": expected_symbol,
+                        "symbol": expected_symbol if is_instrument_specific else "ALL",
+                        "applicability_scope": "INSTRUMENT" if is_instrument_specific else "GLOBAL",
                         "native_commission_usd_per_lot_per_side": Decimal(str(fee_val)),
                         "commission_formula": formula,
                         "parser_name": parser_name,
@@ -404,23 +507,30 @@ def parse_commission_backing_artifact(
         except json.JSONDecodeError:
             pass
 
-    # Try pipe / colon format e.g. "STANDARD:COMMISSION:0.00"
+    # Try pipe / colon format e.g. "STANDARD:COMMISSION:0.00:SCOPE:GLOBAL" or "STANDARD:COMMISSION:0.00:XAUUSD"
     if ":" in text or "|" in text:
         parts = [p.strip() for p in re.split(r"[:|]", text) if p.strip()]
-        # Check if tier is mentioned
         tiers_in_text = [p.upper() for p in parts if p.upper() in ("STANDARD", "RAW_SPREAD", "PRO", "ZERO")]
         if tiers_in_text and expected_account_tier.upper() not in tiers_in_text:
             raise ValueError(
                 f"COMMISSION_PARSER_ERROR: Fee document does not establish commission for requested account tier '{expected_account_tier}' (found: {tiers_in_text})."
             )
 
+        has_sym = any(p.upper() in (expected_symbol.upper(), f"{expected_symbol[:3]}/{expected_symbol[3:]}".upper(), "GOLD") for p in parts)
+        has_global = any(p.upper() in ("GLOBAL", "ALL", "ALL_SYMBOLS", "ALL_INSTRUMENTS", "ACCOUNT_WIDE") for p in parts)
+
         if "COMMISSION" in [p.upper() for p in parts]:
             idx = [p.upper() for p in parts].index("COMMISSION")
             if idx + 1 < len(parts):
                 fee_str = parts[idx + 1]
+                if not (has_sym or has_global):
+                    raise ValueError(
+                        f"COMMISSION_PARSER_ERROR: Backing artifact lacks applicability evidence for '{expected_symbol}' or explicit global tier scope."
+                    )
                 derived = {
                     "account_tier": expected_account_tier,
-                    "symbol": expected_symbol,
+                    "symbol": expected_symbol if has_sym else "ALL",
+                    "applicability_scope": "INSTRUMENT" if has_sym else "GLOBAL",
                     "native_commission_usd_per_lot_per_side": Decimal(fee_str),
                     "commission_formula": "DYNAMIC_NOTIONAL_BPS",
                     "parser_name": parser_name,
@@ -429,13 +539,20 @@ def parse_commission_backing_artifact(
                 derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
                 return derived
 
-    # Regex search for tier and commission
+    # Regex search for tier and commission with applicability requirement
     tier_re = re.search(rf"\b{re.escape(expected_account_tier)}\b.*?commission[:\s=]+([\d.]+)", text, re.IGNORECASE)
     if tier_re:
         fee_val = Decimal(tier_re.group(1))
+        has_sym = bool(re.search(rf"\b{re.escape(expected_symbol)}\b", text, re.IGNORECASE) or re.search(r"\b(XAU/USD|GOLD)\b", text, re.IGNORECASE))
+        has_global = bool(re.search(r"\b(ALL\s+SYMBOLS|ALL\s+INSTRUMENTS|GLOBAL\s+TIER|GLOBAL|ACCOUNT_WIDE)\b", text, re.IGNORECASE))
+        if not (has_sym or has_global):
+            raise ValueError(
+                f"COMMISSION_PARSER_ERROR: Backing artifact lacks applicability evidence for '{expected_symbol}' or explicit global tier scope."
+            )
         derived = {
             "account_tier": expected_account_tier,
-            "symbol": expected_symbol,
+            "symbol": expected_symbol if has_sym else "ALL",
+            "applicability_scope": "INSTRUMENT" if has_sym else "GLOBAL",
             "native_commission_usd_per_lot_per_side": fee_val,
             "commission_formula": "DYNAMIC_NOTIONAL_BPS",
             "parser_name": parser_name,
@@ -467,11 +584,10 @@ def parse_financing_backing_artifact(
 ) -> Dict[str, Any]:
     """Extract and validate authoritative swap/rollover policy from raw broker export bytes.
 
-    Returns:
-        derived_normalized_dict containing financing fields, parser_name,
-        parser_version, and normalized_evidence_hash.
-    Raises:
-        ValueError if artifact fails to establish XAUUSD swap values and rollover policy.
+    CRITICAL (Directive §2):
+    Removes all financing silent defaults. Must explicitly establish swap rate evidence,
+    rollover policy evidence (summer/winter utc hours), and triple-swap rule evidence.
+    Unknown actual swap-free status remains None (UNKNOWN), NOT False.
     """
     parser_name = "parse_financing_backing_artifact"
     if not raw_content or len(raw_content.strip()) < 10:
@@ -503,21 +619,41 @@ def parse_financing_backing_artifact(
         try:
             data = json.loads(text)
             spec = data.get(expected_symbol) or data.get(f"{expected_symbol[:3]}/{expected_symbol[3:]}") or data
-            if isinstance(spec, dict) and ("swap_long_points" in spec or "swap_long" in spec):
-                s_long = Decimal(str(spec.get("swap_long_points") if spec.get("swap_long_points") is not None else spec.get("swap_long")))
-                s_short = Decimal(str(spec.get("swap_short_points") if spec.get("swap_short_points") is not None else spec.get("swap_short")))
-                triple = str(spec.get("triple_swap_weekday") or "WEDNESDAY").upper()
-                r_sum = int(spec.get("rollover_summer_utc_hour", 21))
-                r_win = int(spec.get("rollover_winter_utc_hour", 22))
-                swap_free = bool(spec.get("actual_account_swap_free_status", False))
+            if isinstance(spec, dict):
+                s_long_val = spec.get("swap_long_points") if spec.get("swap_long_points") is not None else spec.get("swap_long")
+                s_short_val = spec.get("swap_short_points") if spec.get("swap_short_points") is not None else spec.get("swap_short")
+                if s_long_val is None or s_short_val is None:
+                    raise ValueError(
+                        f"FINANCING_PARSER_ERROR: Financing backing artifact lacks swap rate evidence (swap_long / swap_short) for '{expected_symbol}'."
+                    )
+
+                r_sum_val = spec.get("rollover_summer_utc_hour")
+                r_win_val = spec.get("rollover_winter_utc_hour")
+                if r_sum_val is None or r_win_val is None:
+                    raise ValueError(
+                        "FINANCING_PARSER_ERROR: Financing backing artifact lacks rollover policy evidence (rollover_summer_utc_hour / rollover_winter_utc_hour)."
+                    )
+
+                triple_val = spec.get("triple_swap_weekday") or spec.get("triple_swap_day")
+                if not triple_val:
+                    raise ValueError(
+                        "FINANCING_PARSER_ERROR: Financing backing artifact lacks triple-swap rule evidence (triple_swap_weekday)."
+                    )
+
+                swap_free_status = None
+                if "actual_account_swap_free_status" in spec and spec["actual_account_swap_free_status"] is not None:
+                    swap_free_status = bool(spec["actual_account_swap_free_status"])
+                elif "swap_free" in spec and spec["swap_free"] is not None:
+                    swap_free_status = bool(spec["swap_free"])
+
                 derived = {
                     "symbol": expected_symbol,
-                    "swap_long_points": s_long,
-                    "swap_short_points": s_short,
-                    "rollover_summer_utc_hour": r_sum,
-                    "rollover_winter_utc_hour": r_win,
-                    "triple_swap_weekday": triple,
-                    "actual_account_swap_free_status": swap_free,
+                    "swap_long_points": Decimal(str(s_long_val)),
+                    "swap_short_points": Decimal(str(s_short_val)),
+                    "rollover_summer_utc_hour": int(r_sum_val),
+                    "rollover_winter_utc_hour": int(r_win_val),
+                    "triple_swap_weekday": str(triple_val).upper(),
+                    "actual_account_swap_free_status": swap_free_status,
                     "parser_name": parser_name,
                     "parser_version": parser_version,
                 }
@@ -526,7 +662,7 @@ def parse_financing_backing_artifact(
         except json.JSONDecodeError:
             pass
 
-    # Try pipe format e.g. "SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE"
+    # Try pipe format e.g. "SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
     if "|" in text or ":" in text:
         kv = {}
         for token in re.split(r"[|\n;]", text):
@@ -538,42 +674,76 @@ def parse_financing_backing_artifact(
                 kv[k.strip().upper()] = v.strip()
 
         if ("SWAP_LONG" in kv or "SWAP_LONG_POINTS" in kv) and ("SWAP_SHORT" in kv or "SWAP_SHORT_POINTS" in kv):
-            s_long = Decimal(kv.get("SWAP_LONG") or kv.get("SWAP_LONG_POINTS"))
-            s_short = Decimal(kv.get("SWAP_SHORT") or kv.get("SWAP_SHORT_POINTS"))
-            triple = "WEDNESDAY"
-            for k in ("TRIPLE_SWAP_WEEKDAY", "TRIPLE", "WED"):
+            s_long_raw = kv.get("SWAP_LONG") or kv.get("SWAP_LONG_POINTS")
+            s_short_raw = kv.get("SWAP_SHORT") or kv.get("SWAP_SHORT_POINTS")
+
+            r_sum_raw = kv.get("ROLLOVER_SUMMER_UTC_HOUR") or kv.get("ROLLOVER_SUMMER")
+            r_win_raw = kv.get("ROLLOVER_WINTER_UTC_HOUR") or kv.get("ROLLOVER_WINTER")
+            if not (r_sum_raw and r_win_raw):
+                raise ValueError(
+                    "FINANCING_PARSER_ERROR: Financing backing artifact lacks rollover policy evidence (rollover summer/winter hours)."
+                )
+
+            triple_raw = None
+            for k in ("TRIPLE_SWAP_WEEKDAY", "TRIPLE_SWAP", "TRIPLE", "WED"):
                 if k in kv:
-                    triple = "WEDNESDAY" if "WED" in str(kv[k]).upper() else str(kv[k]).upper()
-            r_sum = int(kv.get("ROLLOVER_SUMMER_UTC_HOUR", 21))
-            r_win = int(kv.get("ROLLOVER_WINTER_UTC_HOUR", 22))
+                    triple_raw = "WEDNESDAY" if "WED" in str(kv[k]).upper() else str(kv[k]).upper()
+                    break
+            if not triple_raw:
+                raise ValueError(
+                    "FINANCING_PARSER_ERROR: Financing backing artifact lacks triple-swap rule evidence."
+                )
+
+            swap_free_status = None
+            if "ACTUAL_ACCOUNT_SWAP_FREE_STATUS" in kv:
+                swap_free_status = kv["ACTUAL_ACCOUNT_SWAP_FREE_STATUS"].upper() in ("TRUE", "1", "YES")
+            elif "SWAP_FREE" in kv:
+                swap_free_status = kv["SWAP_FREE"].upper() in ("TRUE", "1", "YES")
+
             derived = {
                 "symbol": expected_symbol,
-                "swap_long_points": s_long,
-                "swap_short_points": s_short,
-                "rollover_summer_utc_hour": r_sum,
-                "rollover_winter_utc_hour": r_win,
-                "triple_swap_weekday": triple,
-                "actual_account_swap_free_status": False,
+                "swap_long_points": Decimal(s_long_raw),
+                "swap_short_points": Decimal(s_short_raw),
+                "rollover_summer_utc_hour": int(r_sum_raw),
+                "rollover_winter_utc_hour": int(r_win_raw),
+                "triple_swap_weekday": triple_raw,
+                "actual_account_swap_free_status": swap_free_status,
                 "parser_name": parser_name,
                 "parser_version": parser_version,
             }
             derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
             return derived
 
-    # Regex search
+    # Regex search: must explicitly match all required fields
     long_m = re.search(r"swap_long(?:_points)?[:\s=]+(-?[\d.]+)", text, re.IGNORECASE)
     short_m = re.search(r"swap_short(?:_points)?[:\s=]+(-?[\d.]+)", text, re.IGNORECASE)
+    r_sum_m = re.search(r"rollover_summer(?:_utc_hour)?[:\s=]+(\d+)", text, re.IGNORECASE)
+    r_win_m = re.search(r"rollover_winter(?:_utc_hour)?[:\s=]+(\d+)", text, re.IGNORECASE)
+    triple_m = re.search(r"triple(?:_swap)?(?:_weekday)?[:\s=]+([A-Za-z]+)", text, re.IGNORECASE)
+
     if long_m and short_m:
-        s_long = Decimal(long_m.group(1))
-        s_short = Decimal(short_m.group(1))
+        if not (r_sum_m and r_win_m):
+            raise ValueError(
+                "FINANCING_PARSER_ERROR: Financing backing artifact lacks rollover policy evidence (rollover summer/winter hours)."
+            )
+        if not triple_m:
+            raise ValueError(
+                "FINANCING_PARSER_ERROR: Financing backing artifact lacks triple-swap rule evidence."
+            )
+
+        swap_free_status = None
+        sf_m = re.search(r"(?:actual_account_)?swap_free(?:_status)?[:\s=]+(true|false|1|0|yes|no)", text, re.IGNORECASE)
+        if sf_m:
+            swap_free_status = sf_m.group(1).lower() in ("true", "1", "yes")
+
         derived = {
             "symbol": expected_symbol,
-            "swap_long_points": s_long,
-            "swap_short_points": s_short,
-            "rollover_summer_utc_hour": 21,
-            "rollover_winter_utc_hour": 22,
-            "triple_swap_weekday": "WEDNESDAY",
-            "actual_account_swap_free_status": False,
+            "swap_long_points": Decimal(long_m.group(1)),
+            "swap_short_points": Decimal(short_m.group(1)),
+            "rollover_summer_utc_hour": int(r_sum_m.group(1)),
+            "rollover_winter_utc_hour": int(r_win_m.group(1)),
+            "triple_swap_weekday": triple_m.group(1).upper(),
+            "actual_account_swap_free_status": swap_free_status,
             "parser_name": parser_name,
             "parser_version": parser_version,
         }
@@ -583,3 +753,4 @@ def parse_financing_backing_artifact(
     raise ValueError(
         f"FINANCING_PARSER_ERROR: Backing artifact does not establish swap values for '{expected_symbol}'."
     )
+

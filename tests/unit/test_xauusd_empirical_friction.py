@@ -127,7 +127,10 @@ from apps.market_data.friction.ingestion import (
 from apps.market_data.friction.resolution import resolve_friction_model, resolve_friction_model_activation
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
-from apps.market_data.friction.validation import validate_friction_model_for_activation
+from apps.market_data.friction.validation import (
+    validate_friction_model_for_activation,
+    validate_source_qualification_assertion,
+)
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
 
@@ -251,6 +254,27 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
     """Create and persist a complete, qualified empirical friction evidence hierarchy including slippage."""
     now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
 
+    # Serialize ticks and telemetry into authentic CSV payload bytes
+    tick_lines = ["timestamp,bid,ask,symbol"]
+    for t in base_sample_ticks:
+        tick_lines.append(f"{t['timestamp'].strftime('%Y-%m-%d %H:%M:%S+00:00')},{t['bid']},{t['ask']},XAUUSD")
+    tick_raw_bytes = "\n".join(tick_lines).encode("utf-8")
+
+    telem_lines = ["venue,symbol,account_tier,side,order_type,decision_timestamp,order_send_timestamp,fill_timestamp,reference_bid,reference_ask,executed_fill_price,requested_price,volume_lots,latency_ms"]
+    for r in base_telemetry_fills:
+        telem_lines.append(
+            f"{r['venue']},{r['symbol']},{r['account_tier']},{r['side']},{r['order_type']},"
+            f"{r['decision_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['order_send_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['fill_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['reference_bid']},{r['reference_ask']},{r['executed_fill_price']},"
+            f"{r.get('requested_price') or ''},{r['volume_lots']},{r['latency_ms']}"
+        )
+    telem_raw_bytes = "\n".join(telem_lines).encode("utf-8")
+
+    parsed_ticks, _ = parse_mt5_tick_export(tick_raw_bytes, expected_symbol="XAUUSD")
+    parsed_telem, _ = parse_mt5_execution_telemetry(telem_raw_bytes, expected_venue="EXNESS", expected_symbol="XAUUSD", expected_account_tier="STANDARD")
+
     # 1. Snapshots
     legal_snap, _ = ingest_friction_source_snapshot(
         source_url="https://www.exness.com/legal/terms",
@@ -274,7 +298,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"CONTRACT_SIZE:100|POINT:0.01|DIGITS:2",
+        raw_content=b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01",
         source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value,
         source_origin="https://www.exness.com/contract-specifications/",
         collection_methodology="MT5_TERMINAL_SPEC_EXPORT",
@@ -288,7 +312,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"STANDARD:COMMISSION:0.00",
+        raw_content=b"STANDARD:COMMISSION:0.00:SCOPE:GLOBAL",
         source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
         source_origin="https://www.exness.com/fees/",
         collection_methodology="BROKER_PERSONAL_AREA_EXPORT",
@@ -302,7 +326,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE",
+        raw_content=b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE",
         source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
         source_origin="https://www.exness.com/swap/",
         collection_methodology="BROKER_PORTAL_DOCUMENT_VERIFIED",
@@ -316,7 +340,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"RAW_TICK_PAYLOAD_BYTES",
+        raw_content=tick_raw_bytes,
         source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
         source_origin="https://www.exness.com/tick-history/xauusd",
         collection_methodology="MT5_TERMINAL_TICK_EXPORT",
@@ -330,7 +354,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         account_tier="STANDARD",
         retrieved_at=now_utc,
         known_at=now_utc,
-        raw_content=b"RAW_TELEMETRY_PAYLOAD_BYTES",
+        raw_content=telem_raw_bytes,
         source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value,
         source_origin="https://www.exness.com/telemetry/xauusd",
         collection_methodology="MT5_EXECUTION_TELEMETRY_EXPORT",
@@ -343,21 +367,21 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         venue="EXNESS",
         account_tier="STANDARD",
         symbol="XAUUSD",
-        sample_start=base_sample_ticks[0]["timestamp"],
-        sample_end=base_sample_ticks[-1]["timestamp"],
-        ticks_data=base_sample_ticks,
+        sample_start=parsed_ticks[0]["timestamp"],
+        sample_end=parsed_ticks[-1]["timestamp"],
+        ticks_data=parsed_ticks,
     )
     telemetry_dataset, _ = ingest_friction_telemetry_dataset(
         source_snapshot=telem_snap,
         venue="EXNESS",
         account_tier="STANDARD",
         symbol="XAUUSD",
-        sample_start=base_telemetry_fills[0]["decision_timestamp"],
-        sample_end=base_telemetry_fills[-1]["fill_timestamp"],
-        telemetry_records=base_telemetry_fills,
+        sample_start=parsed_telem[0]["decision_timestamp"],
+        sample_end=parsed_telem[-1]["fill_timestamp"],
+        telemetry_records=parsed_telem,
     )
 
-    spread_bps_list = [t["spread_bps"] for t in base_sample_ticks]
+    spread_bps_list = [t["spread_bps"] for t in parsed_ticks]
 
     legal_info = {
         "legal_entity_code": "EXNESS_SC_LTD",
@@ -764,7 +788,7 @@ def test_14_idempotent_rerun_preserves_fingerprint(qualified_evidence_bundle):
         account_tier="STANDARD",
         retrieved_at=datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc),
         known_at=datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc),
-        raw_content=b"STANDARD:COMMISSION:0.00",
+        raw_content=b"STANDARD:COMMISSION:0.00:SCOPE:GLOBAL",
     )
     assert created is False
     assert FrictionSourceSnapshot.objects.count() == snap_count_before
@@ -833,27 +857,17 @@ def test_17_successful_friction_advances_strictly_to_quote_evidence_missing(xauu
 # =============================================================================
 
 @pytest.mark.django_db
-def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, base_sample_ticks):
+def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, qualified_evidence_bundle):
     """H01: Spread complete + slippage missing cannot pass (Directive 8 & 14.1)."""
     instrument, _ = xauusd_setup
     _create_clean_candles(instrument, count=30, tf="15m")
     now_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
 
-    legal_snap, _ = ingest_friction_source_snapshot("http://ex.com/l", "L", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"L", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value)
-    spec_snap, _ = ingest_friction_source_snapshot("http://ex.com/c", "C", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"C", source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value)
-    fee_snap, _ = ingest_friction_source_snapshot("http://ex.com/f", "F", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"F", source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value)
-    swap_snap, _ = ingest_friction_source_snapshot("http://ex.com/s", "S", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"S", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value)
-    tick_snap, _ = ingest_friction_source_snapshot("http://ex.com/t", "T", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, b"T", source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value)
-
-    spread_ds, _ = ingest_friction_evidence_dataset(
-        source_snapshot=tick_snap,
-        venue="EXNESS",
-        account_tier="STANDARD",
-        symbol="XAUUSD",
-        sample_start=base_sample_ticks[0]["timestamp"],
-        sample_end=base_sample_ticks[-1]["timestamp"],
-        ticks_data=base_sample_ticks,
-    )
+    legal_snap = qualified_evidence_bundle["legal_snapshot"]
+    spec_snap = qualified_evidence_bundle["contract_snapshot"]
+    fee_snap = qualified_evidence_bundle["fee_snapshot"]
+    swap_snap = qualified_evidence_bundle["swap_snapshot"]
+    spread_ds = qualified_evidence_bundle["dataset"]
 
     model_ver, act = build_and_bind_friction_model_version(
         legal_entity_snapshot=legal_snap,
@@ -861,13 +875,13 @@ def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, ba
         fee_schedule_snapshot=fee_snap,
         swap_spec_snapshot=swap_snap,
         evidence_dataset=spread_ds,
-        spread_ticks_bps=[t["spread_bps"] for t in base_sample_ticks],
+        spread_ticks_bps=[Decimal("1.00")] * 1200,
         telemetry_dataset=None,
         slippage_records_bps=None,
         legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness (SC) Ltd", "regulator": "FSA", "license_number": "SD025"},
-        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1"), "contract_size": Decimal("100"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200"), "volume_step": Decimal("0.01")},
-        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0"), "commission_formula": "D"},
-        financing_policy={"swap_long_points": Decimal("-10"), "swap_short_points": Decimal("5"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY"},
+        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
+        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        financing_policy={"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY", "actual_account_swap_free_status": False},
         venue="EXNESS",
         symbol="XAUUSD",
         account_tier="STANDARD",
@@ -4169,14 +4183,34 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
     legal_parsed = parse_legal_entity_backing_artifact(legal_bytes)
     assert legal_parsed["license_number"] == "SD025"
 
-    contract_bytes = b"CONTRACT_SIZE:100|POINT:0.01|DIGITS:2"
+    contract_bytes = b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
     contract_parsed = parse_contract_spec_backing_artifact(contract_bytes, expected_symbol="XAUUSD")
 
-    fee_bytes = b"STANDARD:COMMISSION:0.00"
+    fee_bytes = b"STANDARD:COMMISSION:0.00:SCOPE:GLOBAL"
     fee_parsed = parse_commission_backing_artifact(fee_bytes, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
 
-    swap_bytes = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE"
+    swap_bytes = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY|ACTUAL_ACCOUNT_SWAP_FREE_STATUS:FALSE"
     swap_parsed = parse_financing_backing_artifact(swap_bytes, expected_symbol="XAUUSD")
+
+    tick_lines = ["timestamp,bid,ask,symbol"]
+    for t in base_sample_ticks:
+        tick_lines.append(f"{t['timestamp'].strftime('%Y-%m-%d %H:%M:%S+00:00')},{t['bid']},{t['ask']},XAUUSD")
+    tick_raw_bytes = "\n".join(tick_lines).encode("utf-8")
+
+    telem_lines = ["venue,symbol,account_tier,side,order_type,decision_timestamp,order_send_timestamp,fill_timestamp,reference_bid,reference_ask,executed_fill_price,requested_price,volume_lots,latency_ms"]
+    for r in base_telemetry_fills:
+        telem_lines.append(
+            f"{r['venue']},{r['symbol']},{r['account_tier']},{r['side']},{r['order_type']},"
+            f"{r['decision_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['order_send_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['fill_timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f+00:00')},"
+            f"{r['reference_bid']},{r['reference_ask']},{r['executed_fill_price']},"
+            f"{r.get('requested_price') or ''},{r['volume_lots']},{r['latency_ms']}"
+        )
+    telem_raw_bytes = "\n".join(telem_lines).encode("utf-8")
+
+    parsed_ticks, _ = parse_mt5_tick_export(tick_raw_bytes, expected_symbol="XAUUSD")
+    parsed_telem, _ = parse_mt5_execution_telemetry(telem_raw_bytes, expected_venue="EXNESS", expected_symbol="XAUUSD", expected_account_tier="STANDARD")
 
     legal_snap, _ = ingest_friction_source_snapshot(
         "http://ex.com/l_q", "L_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
@@ -4196,20 +4230,20 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
     )
     tick_snap, _ = ingest_friction_source_snapshot(
         "http://ex.com/t_q", "T_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
-        b"TICKS", source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
+        tick_raw_bytes, source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
     )
     telem_snap, _ = ingest_friction_source_snapshot(
         "http://ex.com/e_q", "E_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
-        b"TELEMETRY", source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
+        telem_raw_bytes, source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
     )
 
     spread_ds, _ = ingest_friction_evidence_dataset(
         source_snapshot=tick_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
-        sample_start=base_sample_ticks[0]["timestamp"], sample_end=base_sample_ticks[-1]["timestamp"], ticks_data=base_sample_ticks
+        sample_start=parsed_ticks[0]["timestamp"], sample_end=parsed_ticks[-1]["timestamp"], ticks_data=parsed_ticks
     )
     telem_ds, _ = ingest_friction_telemetry_dataset(
         source_snapshot=telem_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
-        sample_start=base_telemetry_fills[0]["decision_timestamp"], sample_end=base_telemetry_fills[-1]["fill_timestamp"], telemetry_records=base_telemetry_fills
+        sample_start=parsed_telem[0]["decision_timestamp"], sample_end=parsed_telem[-1]["fill_timestamp"], telemetry_records=parsed_telem
     )
 
     create_friction_qualification_assertion(
@@ -4249,9 +4283,9 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
         fee_schedule_snapshot=fee_snap,
         swap_spec_snapshot=swap_snap,
         evidence_dataset=spread_ds,
-        spread_ticks_bps=[t["spread_bps"] for t in base_sample_ticks],
+        spread_ticks_bps=[t["spread_bps"] for t in parsed_ticks],
         telemetry_dataset=telem_ds,
-        telemetry_records=base_telemetry_fills,
+        telemetry_records=parsed_telem,
         legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness (SC) Ltd", "regulator": "FSA", "license_number": "SD025"},
         contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
         commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
@@ -4263,6 +4297,405 @@ def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidenc
     )
     assert act.activation_status == FrictionActivationStatus.ACTIVE
 
+    res = validate_friction_model_for_activation(
+        model_version=model_ver,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is True
+    assert res.status == "EMPIRICAL_FRICTION_CONFIGURED"
+
+
+# =============================================================================
+# HARDENED SPEC-DRIVEN TESTS: REMOVAL OF ALL RESIDUAL FRICTION EVIDENCE DEFAULTS
+# =============================================================================
+
+def test_hardened_01_contract_artifact_with_only_digits_and_contract_size_cannot_qualify():
+    """H-SPEC-01: Contract artifact with only digits + contract_size cannot qualify (Directive 1)."""
+    raw = b"DIGITS:2|CONTRACT_SIZE:100.0"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in err
+    assert "point_size" in err
+    assert "trade_tick_size" in err
+    assert "trade_tick_value" in err
+    assert "volume_min" in err
+    assert "volume_max" in err
+    assert "volume_step" in err
+
+
+def test_hardened_02_missing_point_size_fails():
+    """H-SPEC-02: Missing point_size fails closed; no default 0.01 (Directive 1)."""
+    raw = b"DIGITS:2|CONTRACT_SIZE:100.0|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
+    assert "point_size" in str(exc_info.value)
+
+
+def test_hardened_03_missing_trade_tick_size_fails():
+    """H-SPEC-03: Missing trade_tick_size fails closed; not defaulted to point_size (Directive 1)."""
+    raw = b"DIGITS:2|POINT:0.01|CONTRACT_SIZE:100.0|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
+    assert "trade_tick_size" in str(exc_info.value)
+
+
+def test_hardened_04_missing_trade_tick_value_fails():
+    """H-SPEC-04: Missing trade_tick_value fails closed; not defaulted to 1.00 (Directive 1)."""
+    raw = b"DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|CONTRACT_SIZE:100.0|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc_info.value)
+    assert "trade_tick_value" in str(exc_info.value)
+
+
+def test_hardened_05_missing_volume_limits_or_step_fails():
+    """H-SPEC-05: Missing volume limits or step fails closed; not defaulted to 0.01/200 (Directive 1)."""
+    raw = b"DIGITS:2|POINT:0.01|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|CONTRACT_SIZE:100.0"
+    with pytest.raises(ValueError) as exc_info:
+        parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    err = str(exc_info.value)
+    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in err
+    assert "volume_min" in err
+    assert "volume_max" in err
+    assert "volume_step" in err
+
+
+def test_hardened_06_financing_with_swap_long_short_but_no_rollover_evidence_fails():
+    """H-SPEC-06: Financing with swap long/short but no rollover evidence fails closed (Directive 2)."""
+    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|TRIPLE:WEDNESDAY"
+    with pytest.raises(ValueError) as exc_info:
+        parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert "FINANCING_PARSER_ERROR" in str(exc_info.value)
+    assert "rollover" in str(exc_info.value).lower()
+
+
+def test_hardened_07_financing_with_no_triple_swap_rule_fails():
+    """H-SPEC-07: Financing with no triple-swap rule fails closed; not defaulted to WEDNESDAY (Directive 2)."""
+    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22"
+    with pytest.raises(ValueError) as exc_info:
+        parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert "FINANCING_PARSER_ERROR" in str(exc_info.value)
+    assert "triple" in str(exc_info.value).lower()
+
+
+@pytest.mark.django_db
+def test_hardened_08_missing_actual_swap_free_status_remains_none_and_not_converted_to_false(xauusd_setup):
+    """H-SPEC-08: Missing actual swap-free status remains None/UNKNOWN and cannot be silently converted to False (Directive 2)."""
+    raw = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|ROLLOVER_SUMMER:21|ROLLOVER_WINTER:22|TRIPLE:WEDNESDAY"
+    parsed = parse_financing_backing_artifact(raw, expected_symbol="XAUUSD")
+    assert parsed["actual_account_swap_free_status"] is None
+
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/s_none", "S_NONE", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=parsed
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="MODEL_SWAP_FREE_UNKNOWN",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=snap,
+        swap_spec_source_snapshot=snap,
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        swap_long_points=Decimal("-34.80"),
+        swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        actual_account_swap_free_status=None,
+    )
+    model.refresh_from_db()
+    assert model.actual_account_swap_free_status is None
+
+
+def test_hardened_09_regulator_and_license_without_explicit_entity_identity_cannot_become_exness_sc_ltd():
+    """H-SPEC-09: Regulator/license alone without explicit entity identity cannot fabricate Exness (SC) Ltd (Directive 3)."""
+    raw = b"Regulator: FSA, License Number: SD025, Jurisdiction: Seychelles"
+    with pytest.raises(ValueError) as exc_info:
+        parse_legal_entity_backing_artifact(raw)
+    err = str(exc_info.value)
+    assert "LEGAL_ENTITY" in err
+    assert "identity" in err.lower() or "lacks" in err.lower()
+
+
+def test_hardened_10_commission_schedule_without_xauusd_or_applicability_scope_fails():
+    """H-SPEC-10: Commission schedule without XAUUSD or explicit global applicability scope fails closed (Directive 4)."""
+    raw = b"STANDARD:COMMISSION:0.00"
+    with pytest.raises(ValueError) as exc_info:
+        parse_commission_backing_artifact(raw, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
+    assert "COMMISSION_PARSER_ERROR" in str(exc_info.value)
+    assert "applicability" in str(exc_info.value).lower()
+
+
+@pytest.mark.django_db
+def test_hardened_11_manually_created_qualified_assertion_with_wrong_raw_sha_fails():
+    """H-SPEC-11: Manually created QUALIFIED assertion with wrong raw SHA fails (Directive 5)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap = FrictionSourceSnapshot.objects.create(
+        snapshot_id="L_BAD_SHA_ID",
+        source_url="http://ex.com/l_bad_sha",
+        source_name="L_BAD_SHA",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        retrieved_at=now_utc,
+        known_at=now_utc,
+        raw_content=raw,
+        raw_payload_bytes_sha256="0000" * 16,
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        source_origin="http://ex.com/l_bad_sha",
+        collection_methodology="BROKER_PORTAL_DOCUMENT_VERIFIED",
+        original_filename="doc.pdf",
+    )
+
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="some_hash",
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("SHA-256 verification failed" in e or "does not match" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hardened_12_qualified_assertion_with_fake_parser_name_fails():
+    """H-SPEC-12: QUALIFIED assertion with fake parser_name fails closed (Directive 5)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_fake_p", "L_FAKE_P", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="my_fake_custom_parser",
+        parser_version="1.0.0",
+        normalized_evidence_hash="some_hash",
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("trusted allowlist" in e or "parser_name" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hardened_13_qualified_assertion_with_unsupported_parser_version_fails():
+    """H-SPEC-13: QUALIFIED assertion with unsupported parser_version fails (Directive 5)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_bad_ver", "L_BAD_VER", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="99.0.0",
+        normalized_evidence_hash="some_hash",
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("is not supported" in e or "parser_version" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hardened_14_qualified_assertion_with_incorrect_normalized_evidence_hash_fails():
+    """H-SPEC-14: QUALIFIED assertion with incorrect normalized_evidence_hash fails (Directive 5)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_bad_nhash", "L_BAD_NHASH", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="FORGED_HASH_" + "0" * 52,
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+    )
+    assert is_valid is False
+    assert any("does not match independently recomputed hash" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hardened_15_qualified_assertion_whose_parsed_data_differs_from_model_fields_fails():
+    """H-SPEC-15: QUALIFIED assertion whose parsed data differs from model fields fails (Directive 5)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"CONTRACT_SIZE:100.0|POINT:0.01|DIGITS:2|TRADE_TICK_SIZE:0.01|TRADE_TICK_VALUE:1.00|VOLUME_MIN:0.01|VOLUME_MAX:200.0|VOLUME_STEP:0.01"
+    parsed = parse_contract_spec_backing_artifact(raw, expected_symbol="XAUUSD")
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/c_diff", "C_DIFF", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw, source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value, metadata=parsed
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="CONTRACT_SPEC",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_contract_spec_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash=parsed["normalized_evidence_hash"],
+    )
+    model = FrictionModelVersion.objects.create(
+        model_version_id="MODEL_CONTRADICTORY_SPEC",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_source_snapshot=snap,
+        contract_spec_source_snapshot=snap,
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("500.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+    )
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snap,
+        assertion=assertion,
+        expected_component_role="CONTRACT_SPEC",
+        expected_parser="parse_contract_spec_backing_artifact",
+        model_version=model,
+    )
+    assert is_valid is False
+    assert any("contract_size" in e and "does not match model" in e for e in errors)
+
+
+@pytest.mark.django_db
+def test_hardened_16_create_friction_qualification_assertion_without_explicit_trusted_qualification_defaults_unverified():
+    """H-SPEC-16: create_friction_qualification_assertion() without explicit trusted qualification defaults UNVERIFIED (Directive 6)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_default", "L_DEFAULT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"EXNESS_SC_LTD:FSA:SD025", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    assertion = create_friction_qualification_assertion(
+        source_snapshot=snap,
+        component_role="CONTRACT_SPEC",
+    )
+    assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
+    assert assertion.parser_name == "UNVERIFIED_PARSER"
+    assert assertion.qualification_reason == "Unverified friction source assertion"
+
+
+@pytest.mark.django_db
+def test_hardened_17_source_type_and_forged_qualified_assertion_cannot_active(qualified_evidence_bundle):
+    """H-SPEC-17: source_type + forged QUALIFIED assertion cannot ACTIVE (Directive 7 & 8)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    forged_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/forged_contract", "FORGED_C", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"MALFORMED_OR_FORGED_BYTES", source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=forged_snap,
+        component_role="CONTRACT_SPEC",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_contract_spec_backing_artifact",
+        parser_version="1.0.0",
+        normalized_evidence_hash="fake_hash",
+    )
+
+    model = FrictionModelVersion.objects.create(
+        model_version_id="FORGED_ASSERTION_MODEL",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        legal_entity_code="EXNESS_SC_LTD",
+        legal_entity_name="Exness (SC) Ltd",
+        regulator="FSA",
+        license_number="SD025",
+        legal_entity_source_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_source_snapshot=forged_snap,
+        fee_schedule_source_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_source_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        digits=2,
+        point_size=Decimal("0.01"),
+        trade_tick_size=Decimal("0.01"),
+        trade_tick_value=Decimal("1.00"),
+        contract_size=Decimal("100.0"),
+        volume_min=Decimal("0.01"),
+        volume_max=Decimal("200.0"),
+        volume_step=Decimal("0.01"),
+        native_commission_usd_per_lot_per_side=Decimal("0.00"),
+        commission_formula="DYNAMIC_NOTIONAL_BPS",
+        swap_long_points=Decimal("-34.80"),
+        swap_short_points=Decimal("12.40"),
+        rollover_summer_utc_hour=21,
+        rollover_winter_utc_hour=22,
+        triple_swap_weekday="WEDNESDAY",
+        base_spread_bps=Decimal("1.00"),
+        stress_spread_bps=Decimal("2.00"),
+        base_slippage_bps=Decimal("0.50"),
+        stress_slippage_bps=Decimal("1.00"),
+        empirical_friction_evidence_fingerprint="forged_fp",
+    )
+
+    res = validate_friction_model_for_activation(
+        model_version=model,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert res.status == "CONTRACT_SPEC_EVIDENCE_MISSING"
+    assert any("authoritative qualification assertion" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_hardened_18_valid_trusted_parser_assertion_still_qualifies(qualified_evidence_bundle):
+    """H-SPEC-18: Valid trusted parser assertion on genuine artifacts qualifies model as ACTIVE (Directive 8)."""
+    model_ver = qualified_evidence_bundle["model_version"]
     res = validate_friction_model_for_activation(
         model_version=model_ver,
         target_venue="EXNESS",

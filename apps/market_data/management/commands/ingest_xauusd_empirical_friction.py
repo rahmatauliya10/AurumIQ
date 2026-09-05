@@ -597,7 +597,8 @@ class Command(BaseCommand):
                     "rollover_summer_utc_hour": int(data["rollover_summer_utc_hour"]),
                     "rollover_winter_utc_hour": int(data["rollover_winter_utc_hour"]),
                     "triple_swap_weekday": str(data["triple_swap_weekday"]),
-                    "actual_account_swap_free_status": bool(data.get("actual_account_swap_free_status", False)),
+                    "swap_free_available_for_account_type": bool(data["swap_free_available_for_account_type"]) if data.get("swap_free_available_for_account_type") is not None else None,
+                    "actual_account_swap_free_status": bool(data["actual_account_swap_free_status"]) if data.get("actual_account_swap_free_status") is not None else None,
                 }
                 resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed = _resolve_source_provenance(
                     data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, "Financing Swap Spec", symbol, account_tier
@@ -612,8 +613,8 @@ class Command(BaseCommand):
                     )
                 else:
                     if swap_parsed:
-                        for k in ("swap_long_points", "swap_short_points", "rollover_summer_utc_hour", "rollover_winter_utc_hour", "triple_swap_weekday", "actual_account_swap_free_status"):
-                            if k in swap_parsed and swap_parsed[k] is not None:
+                        for k in ("swap_long_points", "swap_short_points", "rollover_summer_utc_hour", "rollover_winter_utc_hour", "triple_swap_weekday", "swap_free_available_for_account_type", "actual_account_swap_free_status"):
+                            if k in swap_parsed:
                                 financing_policy[k] = swap_parsed[k]
                     financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:

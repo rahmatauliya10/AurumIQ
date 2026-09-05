@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from apps.market_data.models import (
     FrictionBindingRole,
@@ -39,11 +39,291 @@ from apps.market_data.models import (
     QUALIFIED_SLIPPAGE_SOURCE_TYPES,
     QUALIFIED_SPREAD_SOURCE_TYPES,
 )
-from apps.market_data.friction.artifact_parsers import compute_normalized_evidence_hash
+from apps.market_data.friction.artifact_parsers import (
+    compute_normalized_evidence_hash,
+    parse_commission_backing_artifact,
+    parse_contract_spec_backing_artifact,
+    parse_financing_backing_artifact,
+    parse_legal_entity_backing_artifact,
+)
+from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 
+TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
+    "LEGAL_ENTITY": {"parse_legal_entity_backing_artifact"},
+    "CONTRACT_SPEC": {"parse_contract_spec_backing_artifact"},
+    "COMMISSION": {"parse_commission_backing_artifact"},
+    "FINANCING": {"parse_financing_backing_artifact"},
+    "SPREAD_DATASET": {"parse_mt5_tick_export"},
+    "SLIPPAGE_DATASET": {"parse_mt5_execution_telemetry"},
+}
+SUPPORTED_PARSER_VERSIONS: Set[str] = {"1.0.0"}
 
-def _get_assertion_meta(snapshot: Optional[FrictionSourceSnapshot], role: str) -> Tuple[str, str, str]:
+
+def validate_source_qualification_assertion(
+    snapshot: Optional[FrictionSourceSnapshot],
+    assertion: Optional[FrictionSourceQualificationAssertion],
+    expected_component_role: str,
+    expected_parser: Optional[str] = None,
+    model_version: Optional[FrictionModelVersion] = None,
+    expected_symbol: str = "XAUUSD",
+    expected_account_tier: str = "STANDARD",
+    expected_venue: str = "EXNESS",
+) -> Tuple[bool, List[str], Optional[Dict[str, Any]]]:
+    """Independently verify the integrity of a FrictionSourceQualificationAssertion.
+
+    Hardened qualification assertion validation (Directives §5 & §7):
+    A qualification assertion MUST NOT be trusted merely because qualification_status == QUALIFIED.
+    This function independently verifies:
+    1. assertion.source_snapshot == snapshot
+    2. assertion.component_role == expected_component_role
+    3. assertion.qualification_status == QUALIFIED
+    4. assertion.raw_artifact_sha256 == snapshot.raw_payload_bytes_sha256
+    5. assertion.raw_artifact_sha256 == sha256(snapshot.raw_content)
+    6. assertion.parser_name belongs to strict trusted allowlist for the role
+    7. assertion.parser_version is supported
+    8. assertion.normalized_evidence_hash == independently recomputed normalized evidence hash
+       produced from snapshot.raw_content by that exact trusted parser and version
+    9. parsed normalized fields match model fields used for qualification (if model_version provided).
+    """
+    reasons: List[str] = []
+    if snapshot is None:
+        return False, ["Snapshot is missing."], None
+    if assertion is None:
+        return False, ["Qualification assertion is missing."], None
+
+    # 1. Source Snapshot binding
+    if assertion.source_snapshot_id != snapshot.snapshot_id:
+        reasons.append(
+            f"Assertion source_snapshot '{assertion.source_snapshot_id}' does not match snapshot '{snapshot.snapshot_id}'."
+        )
+
+    # 2. Component role match
+    if assertion.component_role != expected_component_role:
+        reasons.append(
+            f"Assertion component_role '{assertion.component_role}' does not match expected role '{expected_component_role}'."
+        )
+
+    # 3. Status is QUALIFIED
+    if assertion.qualification_status != FrictionQualificationStatus.QUALIFIED.value:
+        reasons.append(
+            f"Assertion qualification_status is '{assertion.qualification_status}', expected '{FrictionQualificationStatus.QUALIFIED.value}'."
+        )
+
+    # 4 & 5. Raw artifact SHA256 integrity
+    if assertion.raw_artifact_sha256 != snapshot.raw_payload_bytes_sha256:
+        reasons.append(
+            f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match snapshot.raw_payload_bytes_sha256 '{snapshot.raw_payload_bytes_sha256}'."
+        )
+
+    if not snapshot.raw_content:
+        reasons.append("Snapshot raw_content is empty or null.")
+    else:
+        computed_raw_sha = hashlib.sha256(snapshot.raw_content).hexdigest()
+        if assertion.raw_artifact_sha256 != computed_raw_sha:
+            reasons.append(
+                f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match computed sha256 of snapshot.raw_content '{computed_raw_sha}'."
+            )
+
+    # 6. Strict trusted parser allowlist
+    trusted_parsers = TRUSTED_PARSERS_BY_ROLE.get(expected_component_role, set())
+    if assertion.parser_name not in trusted_parsers:
+        reasons.append(
+            f"Assertion parser_name '{assertion.parser_name}' is not in trusted allowlist for role '{expected_component_role}': {sorted(trusted_parsers)}."
+        )
+    if expected_parser and assertion.parser_name != expected_parser:
+        reasons.append(
+            f"Assertion parser_name '{assertion.parser_name}' does not match expected parser '{expected_parser}'."
+        )
+
+    # 7. Parser version supported
+    if not assertion.parser_version or assertion.parser_version not in SUPPORTED_PARSER_VERSIONS:
+        reasons.append(
+            f"Assertion parser_version '{assertion.parser_version}' is not supported (supported: {sorted(SUPPORTED_PARSER_VERSIONS)})."
+        )
+
+    if reasons:
+        return False, reasons, None
+
+    # 8. Independent recomputation of normalized evidence
+    parsed_data: Dict[str, Any] = {}
+    try:
+        if expected_component_role == "LEGAL_ENTITY":
+            parsed_data = parse_legal_entity_backing_artifact(
+                snapshot.raw_content,
+                parser_version=assertion.parser_version,
+            )
+            recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
+
+        elif expected_component_role == "CONTRACT_SPEC":
+            parsed_data = parse_contract_spec_backing_artifact(
+                snapshot.raw_content,
+                expected_symbol=expected_symbol,
+                parser_version=assertion.parser_version,
+            )
+            recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
+
+        elif expected_component_role == "COMMISSION":
+            parsed_data = parse_commission_backing_artifact(
+                snapshot.raw_content,
+                expected_symbol=expected_symbol,
+                expected_account_tier=expected_account_tier,
+                parser_version=assertion.parser_version,
+            )
+            recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
+
+        elif expected_component_role == "FINANCING":
+            parsed_data = parse_financing_backing_artifact(
+                snapshot.raw_content,
+                expected_symbol=expected_symbol,
+                parser_version=assertion.parser_version,
+            )
+            recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
+
+        elif expected_component_role == "SPREAD_DATASET":
+            ticks_data, summary = parse_mt5_tick_export(
+                snapshot.raw_content,
+                expected_symbol=expected_symbol,
+            )
+            norm_rows = [
+                f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
+                for t in ticks_data
+            ]
+            raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+            parsed_data = {
+                "raw_dataset_sha256": raw_ds_sha,
+                "sample_count": len(ticks_data),
+                "symbol": summary["symbol"],
+            }
+            recomputed_norm_hash = compute_normalized_evidence_hash({"raw_dataset_sha256": raw_ds_sha})
+
+        elif expected_component_role == "SLIPPAGE_DATASET":
+            telemetry_records, summary = parse_mt5_execution_telemetry(
+                snapshot.raw_content,
+                expected_venue=expected_venue,
+                expected_symbol=expected_symbol,
+                expected_account_tier=expected_account_tier,
+            )
+            norm_rows = [
+                f"{r['side']}|{r['order_type']}|{r['reference_bid']}|{r['reference_ask']}|{r['executed_fill_price']}|{r['signed_slippage_bps']}|{r['volume_lots']}|{r['latency_ms']}"
+                for r in telemetry_records
+            ]
+            raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+            parsed_data = {
+                "raw_dataset_sha256": raw_ds_sha,
+                "sample_count": len(telemetry_records),
+            }
+            recomputed_norm_hash = compute_normalized_evidence_hash({"raw_dataset_sha256": raw_ds_sha})
+        else:
+            reasons.append(f"Unknown component role '{expected_component_role}'.")
+            return False, reasons, None
+
+    except Exception as exc:
+        reasons.append(f"Independent parser recomputation failed on raw artifact: {exc}")
+        return False, reasons, None
+
+    valid_norm_hashes = {recomputed_norm_hash}
+    if parsed_data:
+        if parsed_data.get("normalized_evidence_hash"):
+            valid_norm_hashes.add(parsed_data["normalized_evidence_hash"])
+        trimmed = {k: v for k, v in parsed_data.items() if k not in ("symbol", "account_tier", "applicability_scope")}
+        valid_norm_hashes.add(compute_normalized_evidence_hash(trimmed))
+
+    if assertion.normalized_evidence_hash not in valid_norm_hashes:
+        reasons.append(
+            f"Assertion normalized_evidence_hash '{assertion.normalized_evidence_hash}' does not match independently recomputed hash '{recomputed_norm_hash}'."
+        )
+
+    # 9. Match parsed fields against model_version fields if model_version is provided
+    if model_version is not None:
+        if expected_component_role == "LEGAL_ENTITY":
+            if model_version.legal_entity_name and parsed_data.get("legal_entity_name") != model_version.legal_entity_name:
+                reasons.append(
+                    f"Parsed legal_entity_name '{parsed_data.get('legal_entity_name')}' does not match model '{model_version.legal_entity_name}'."
+                )
+            if model_version.legal_entity_code and parsed_data.get("legal_entity_code") != model_version.legal_entity_code:
+                reasons.append(
+                    f"Parsed legal_entity_code '{parsed_data.get('legal_entity_code')}' does not match model '{model_version.legal_entity_code}'."
+                )
+            if model_version.regulator and parsed_data.get("regulator") != model_version.regulator:
+                reasons.append(
+                    f"Parsed regulator '{parsed_data.get('regulator')}' does not match model '{model_version.regulator}'."
+                )
+            if model_version.license_number and parsed_data.get("license_number") != model_version.license_number:
+                reasons.append(
+                    f"Parsed license_number '{parsed_data.get('license_number')}' does not match model '{model_version.license_number}'."
+                )
+
+        elif expected_component_role == "CONTRACT_SPEC":
+            geom_checks = [
+                ("digits", model_version.digits, int(parsed_data["digits"])),
+                ("point_size", model_version.point_size, Decimal(str(parsed_data["point_size"]))),
+                ("trade_tick_size", model_version.trade_tick_size, Decimal(str(parsed_data["trade_tick_size"]))),
+                ("trade_tick_value", model_version.trade_tick_value, Decimal(str(parsed_data["trade_tick_value"]))),
+                ("contract_size", model_version.contract_size, Decimal(str(parsed_data["contract_size"]))),
+                ("volume_min", model_version.volume_min, Decimal(str(parsed_data["volume_min"]))),
+                ("volume_max", model_version.volume_max, Decimal(str(parsed_data["volume_max"]))),
+                ("volume_step", model_version.volume_step, Decimal(str(parsed_data["volume_step"]))),
+            ]
+            for f_name, model_val, parsed_val in geom_checks:
+                if model_val is not None and model_val != parsed_val:
+                    reasons.append(
+                        f"Parsed {f_name} '{parsed_val}' does not match model '{model_val}'."
+                    )
+
+        elif expected_component_role == "COMMISSION":
+            if model_version.native_commission_usd_per_lot_per_side is not None:
+                parsed_comm = Decimal(str(parsed_data["native_commission_usd_per_lot_per_side"]))
+                if model_version.native_commission_usd_per_lot_per_side != parsed_comm:
+                    reasons.append(
+                        f"Parsed commission '{parsed_comm}' does not match model '{model_version.native_commission_usd_per_lot_per_side}'."
+                    )
+            if model_version.commission_formula and parsed_data.get("commission_formula") != model_version.commission_formula:
+                reasons.append(
+                    f"Parsed commission_formula '{parsed_data.get('commission_formula')}' does not match model '{model_version.commission_formula}'."
+                )
+
+        elif expected_component_role == "FINANCING":
+            if model_version.swap_long_points is not None:
+                if Decimal(str(parsed_data["swap_long_points"])) != model_version.swap_long_points:
+                    reasons.append(
+                        f"Parsed swap_long_points '{parsed_data['swap_long_points']}' does not match model '{model_version.swap_long_points}'."
+                    )
+            if model_version.swap_short_points is not None:
+                if Decimal(str(parsed_data["swap_short_points"])) != model_version.swap_short_points:
+                    reasons.append(
+                        f"Parsed swap_short_points '{parsed_data['swap_short_points']}' does not match model '{model_version.swap_short_points}'."
+                    )
+            if model_version.rollover_summer_utc_hour is not None:
+                if int(parsed_data["rollover_summer_utc_hour"]) != model_version.rollover_summer_utc_hour:
+                    reasons.append(
+                        f"Parsed rollover_summer_utc_hour '{parsed_data['rollover_summer_utc_hour']}' does not match model '{model_version.rollover_summer_utc_hour}'."
+                    )
+            if model_version.rollover_winter_utc_hour is not None:
+                if int(parsed_data["rollover_winter_utc_hour"]) != model_version.rollover_winter_utc_hour:
+                    reasons.append(
+                        f"Parsed rollover_winter_utc_hour '{parsed_data['rollover_winter_utc_hour']}' does not match model '{model_version.rollover_winter_utc_hour}'."
+                    )
+            if model_version.triple_swap_weekday is not None:
+                if str(parsed_data["triple_swap_weekday"]).upper() != str(model_version.triple_swap_weekday).upper():
+                    reasons.append(
+                        f"Parsed triple_swap_weekday '{parsed_data['triple_swap_weekday']}' does not match model '{model_version.triple_swap_weekday}'."
+                    )
+            if model_version.actual_account_swap_free_status is not None and parsed_data.get("actual_account_swap_free_status") is not None:
+                if parsed_data.get("actual_account_swap_free_status") != model_version.actual_account_swap_free_status:
+                    reasons.append(
+                        f"Parsed actual_account_swap_free_status '{parsed_data.get('actual_account_swap_free_status')}' does not match model '{model_version.actual_account_swap_free_status}'."
+                    )
+
+    return len(reasons) == 0, reasons, parsed_data
+
+
+def _get_assertion_meta(
+    snapshot: Optional[FrictionSourceSnapshot],
+    role: str,
+    model_version: Optional[FrictionModelVersion] = None,
+) -> Tuple[str, str, str]:
     if not snapshot:
         return "", "", ""
     assertion = snapshot.qualification_assertions.filter(
@@ -51,12 +331,18 @@ def _get_assertion_meta(snapshot: Optional[FrictionSourceSnapshot], role: str) -
         qualification_status=FrictionQualificationStatus.QUALIFIED.value,
     ).order_by("-asserted_at").first()
     if assertion:
-        return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash
-    meta = snapshot.metadata or {}
-    p_name = meta.get("parser_name", "AUTHORITATIVE_PARSER")
-    p_ver = meta.get("parser_version", "1.0.0")
-    norm_hash = meta.get("normalized_evidence_hash") or compute_normalized_evidence_hash(meta)
-    return p_name, p_ver, norm_hash
+        is_valid, _, _ = validate_source_qualification_assertion(
+            snapshot=snapshot,
+            assertion=assertion,
+            expected_component_role=role,
+            model_version=model_version,
+            expected_symbol=model_version.symbol if model_version else "XAUUSD",
+            expected_account_tier=model_version.account_tier if model_version else "STANDARD",
+            expected_venue=model_version.venue if model_version else "EXNESS",
+        )
+        if is_valid:
+            return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash
+    return "", "", ""
 
 
 @dataclass
@@ -159,13 +445,19 @@ def validate_friction_model_for_activation(
         )
     legal_assertion = legal_snap.qualification_assertions.filter(
         component_role="LEGAL_ENTITY",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not legal_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=legal_snap,
+        assertion=legal_assertion,
+        expected_component_role="LEGAL_ENTITY",
+        expected_parser="parse_legal_entity_backing_artifact",
+        model_version=model_version,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="LEGAL_ENTITY_EVIDENCE_MISSING",
-            reasons=["Legal entity snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Legal entity snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -225,13 +517,20 @@ def validate_friction_model_for_activation(
         )
     contract_assertion = contract_snap.qualification_assertions.filter(
         component_role="CONTRACT_SPEC",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not contract_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=contract_snap,
+        assertion=contract_assertion,
+        expected_component_role="CONTRACT_SPEC",
+        expected_parser="parse_contract_spec_backing_artifact",
+        model_version=model_version,
+        expected_symbol=model_version.symbol,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="CONTRACT_SPEC_EVIDENCE_MISSING",
-            reasons=["Contract specification snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Contract specification snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -281,13 +580,21 @@ def validate_friction_model_for_activation(
         )
     fee_assertion = fee_snap.qualification_assertions.filter(
         component_role="COMMISSION",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not fee_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=fee_snap,
+        assertion=fee_assertion,
+        expected_component_role="COMMISSION",
+        expected_parser="parse_commission_backing_artifact",
+        model_version=model_version,
+        expected_symbol=model_version.symbol,
+        expected_account_tier=model_version.account_tier,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="COMMISSION_EVIDENCE_MISSING",
-            reasons=["Fee schedule snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Fee schedule snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -344,13 +651,20 @@ def validate_friction_model_for_activation(
         )
     swap_assertion = swap_snap.qualification_assertions.filter(
         component_role="FINANCING",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not swap_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=swap_snap,
+        assertion=swap_assertion,
+        expected_component_role="FINANCING",
+        expected_parser="parse_financing_backing_artifact",
+        model_version=model_version,
+        expected_symbol=model_version.symbol,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="FINANCING_EVIDENCE_MISSING",
-            reasons=["Financing specification snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Financing specification snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -425,13 +739,20 @@ def validate_friction_model_for_activation(
         )
     spread_assertion = spread_snap.qualification_assertions.filter(
         component_role="SPREAD_DATASET",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not spread_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=spread_snap,
+        assertion=spread_assertion,
+        expected_component_role="SPREAD_DATASET",
+        expected_parser="parse_mt5_tick_export",
+        model_version=model_version,
+        expected_symbol=model_version.symbol,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="SPREAD_EMPIRICAL_EVIDENCE_INVALID",
-            reasons=["Spread dataset source snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Spread dataset source snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -561,13 +882,22 @@ def validate_friction_model_for_activation(
         )
     telem_assertion = telem_snap.qualification_assertions.filter(
         component_role="SLIPPAGE_DATASET",
-        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-    ).first()
-    if not telem_assertion:
+    ).order_by("-asserted_at").first()
+    is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
+        snapshot=telem_snap,
+        assertion=telem_assertion,
+        expected_component_role="SLIPPAGE_DATASET",
+        expected_parser="parse_mt5_execution_telemetry",
+        model_version=model_version,
+        expected_symbol=model_version.symbol,
+        expected_account_tier=model_version.account_tier,
+        expected_venue=model_version.venue,
+    )
+    if not is_valid_assert:
         return FrictionValidationResult(
             is_valid=False,
             status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
-            reasons=["Execution slippage telemetry source snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            reasons=[f"Execution slippage telemetry source snapshot lacks a valid authoritative qualification assertion: {'; '.join(assert_errors)}"],
             details=details,
         )
 
@@ -683,7 +1013,14 @@ def validate_friction_model_for_activation(
 
     source_evidence: Dict[str, Dict[str, str]] = {}
     if model_version.legal_entity_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY")
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY", model_version=model_version)
+        if not norm_hash:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="LEGAL_ENTITY_EVIDENCE_MISSING",
+                reasons=["Legal entity assertion failed integrity validation for fingerprint binding."],
+                details=details,
+            )
         source_evidence["LEGAL_ENTITY"] = {
             "sha256": model_version.legal_entity_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.legal_entity_source_snapshot.source_type,
@@ -692,7 +1029,14 @@ def validate_friction_model_for_activation(
             "normalized_evidence_hash": norm_hash,
         }
     if model_version.contract_spec_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC")
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC", model_version=model_version)
+        if not norm_hash:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="CONTRACT_SPEC_EVIDENCE_MISSING",
+                reasons=["Contract specification assertion failed integrity validation for fingerprint binding."],
+                details=details,
+            )
         source_evidence["CONTRACT_SPEC"] = {
             "sha256": model_version.contract_spec_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.contract_spec_source_snapshot.source_type,
@@ -701,7 +1045,14 @@ def validate_friction_model_for_activation(
             "normalized_evidence_hash": norm_hash,
         }
     if model_version.fee_schedule_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION")
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION", model_version=model_version)
+        if not norm_hash:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="COMMISSION_EVIDENCE_MISSING",
+                reasons=["Fee schedule assertion failed integrity validation for fingerprint binding."],
+                details=details,
+            )
         source_evidence["COMMISSION"] = {
             "sha256": model_version.fee_schedule_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.fee_schedule_source_snapshot.source_type,
@@ -710,7 +1061,14 @@ def validate_friction_model_for_activation(
             "normalized_evidence_hash": norm_hash,
         }
     if model_version.swap_spec_source_snapshot:
-        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING")
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING", model_version=model_version)
+        if not norm_hash:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="FINANCING_EVIDENCE_MISSING",
+                reasons=["Financing assertion failed integrity validation for fingerprint binding."],
+                details=details,
+            )
         source_evidence["FINANCING"] = {
             "sha256": model_version.swap_spec_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.swap_spec_source_snapshot.source_type,
@@ -720,7 +1078,14 @@ def validate_friction_model_for_activation(
         }
     for db in dataset_bindings:
         if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET")
+            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET", model_version=model_version)
+            if not norm_hash:
+                return FrictionValidationResult(
+                    is_valid=False,
+                    status="SPREAD_EMPIRICAL_EVIDENCE_INVALID",
+                    reasons=["Spread dataset assertion failed integrity validation for fingerprint binding."],
+                    details=details,
+                )
             source_evidence["SPREAD_DATASET"] = {
                 "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
                 "source_type": db.evidence_dataset.source_snapshot.source_type,
@@ -729,7 +1094,14 @@ def validate_friction_model_for_activation(
                 "normalized_evidence_hash": norm_hash,
             }
         elif db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE) and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET")
+            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET", model_version=model_version)
+            if not norm_hash:
+                return FrictionValidationResult(
+                    is_valid=False,
+                    status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+                    reasons=["Execution slippage telemetry assertion failed integrity validation for fingerprint binding."],
+                    details=details,
+                )
             source_evidence["SLIPPAGE_DATASET"] = {
                 "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
                 "source_type": db.evidence_dataset.source_snapshot.source_type,
