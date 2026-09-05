@@ -15,13 +15,12 @@ from decimal import Decimal
 import hashlib
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from apps.market_data.models import (
     FrictionActivationStatus,
     FrictionBindingRole,
-    FrictionComponentType,
-    FrictionConditionType,
     FrictionComponentType,
     FrictionConditionType,
     FrictionDistributionSummary,
@@ -75,6 +74,82 @@ def resolve_slippage_cost_samples(
             f"SLIPPAGE_POLICY_INVALID: Unknown or unsupported slippage cost policy version '{slippage_cost_policy_version}'. "
             f"Must be one of ['ADVERSE_ONLY_P75_P95_V1', 'RAW_SIGNED_DISTRIBUTION_V1']."
         )
+
+
+def verify_authoritative_backing_artifact(
+    backing_file_path: Optional[str],
+    declared_sha256: Optional[str] = None,
+    expected_source_type: Optional[str] = None,
+) -> Tuple[bool, bytes, str, List[str]]:
+    """Independently verify an actual raw backing artifact on disk (Requirement 1, 2, 3).
+
+    - Reads raw bytes independently.
+    - Computes SHA-256 independently.
+    - Compares against declared SHA if supplied.
+    - Validates that content establishes the required provenance class (not arbitrary bytes).
+
+    Returns:
+        (is_verified, raw_bytes, computed_sha256, errors)
+    """
+    errors: List[str] = []
+    if not backing_file_path or not str(backing_file_path).strip():
+        if declared_sha256:
+            errors.append(f"Declared backing SHA '{declared_sha256}' supplied, but backing artifact file is missing.")
+        else:
+            errors.append("Backing artifact file path was not provided.")
+        return False, b"", "", errors
+
+    if not os.path.isfile(backing_file_path):
+        errors.append(f"Backing artifact file does not exist on disk: '{backing_file_path}'.")
+        return False, b"", "", errors
+
+    try:
+        with open(backing_file_path, "rb") as f:
+            raw_bytes = f.read()
+    except Exception as e:
+        errors.append(f"Could not read backing artifact file '{backing_file_path}': {e}")
+        return False, b"", "", errors
+
+    computed_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+    if declared_sha256:
+        if computed_sha.lower() != str(declared_sha256).strip().lower():
+            errors.append(
+                f"Backing artifact SHA-256 mismatch: computed '{computed_sha}' != declared '{declared_sha256}'."
+            )
+            return False, raw_bytes, computed_sha, errors
+
+    # Check minimum size and domain format heuristics to prevent arbitrary noise from qualifying
+    if expected_source_type and expected_source_type in QUALIFIED_FRICTION_SOURCE_TYPES:
+        if len(raw_bytes) < 32:
+            errors.append(
+                f"Backing artifact is too small ({len(raw_bytes)} bytes) to establish {expected_source_type}."
+            )
+            return False, raw_bytes, computed_sha, errors
+
+        # Source type label alone cannot upgrade arbitrary bytes
+        if expected_source_type == FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value:
+            text_sample = raw_bytes[:4096].decode("utf-8", errors="ignore").lower()
+            markers = ("digits", "symbol", "point", "contract", "tick", "trade", "currency", "spread", "mode", "margin")
+            if not any(m in text_sample for m in markers):
+                errors.append("Backing artifact lacks MT5 SymbolInfo export structure; cannot establish MT5_SYMBOL_INFO_EXPORT.")
+                return False, raw_bytes, computed_sha, errors
+        elif expected_source_type in (
+            FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+            FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+            FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+        ):
+            text_sample = raw_bytes[:4096].decode("utf-8", errors="ignore").lower()
+            has_pdf = raw_bytes.startswith(b"%PDF")
+            has_html = b"<html" in raw_bytes[:512].lower() or b"<!doctype" in raw_bytes[:512].lower()
+            has_json = raw_bytes.strip().startswith(b"{")
+            doc_terms = ("agreement", "terms", "broker", "exness", "license", "regulat", "contract", "commission", "swap", "schedule", "client", "financial", "fsa", "cysec", "fca")
+            has_terms = any(t in text_sample for t in doc_terms)
+            if not (has_pdf or has_html or (has_json and has_terms) or has_terms):
+                errors.append(f"Backing artifact lacks authentic document structure; cannot establish {expected_source_type}.")
+                return False, raw_bytes, computed_sha, errors
+
+    return True, raw_bytes, computed_sha, []
 
 
 def ingest_friction_source_snapshot(
@@ -293,15 +368,23 @@ def build_and_bind_friction_model_version(
             raise ValueError(
                 f"SLIPPAGE_POLICY_INVALID: Unknown or unsupported slippage cost policy version '{slippage_cost_policy_version}'."
             )
+        if slippage_population_semantics is None:
+            raise ValueError(
+                "Direct slippage_records_bps requires explicit slippage_population_semantics; cannot infer population semantics."
+            )
         if slippage_cost_policy_version == "ADVERSE_ONLY_P75_P95_V1":
+            if slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value:
+                raise ValueError(
+                    f"Population semantics mismatch: policy {slippage_cost_policy_version} requires SLIPPAGE_ADVERSE_ONLY, got {slippage_population_semantics}."
+                )
             if any(Decimal(str(x)) < Decimal("0") for x in slippage_records_bps):
-                raise ValueError("ADVERSE_ONLY policy cannot consume signed sample list containing negative values")
-            if slippage_population_semantics and slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value:
-                raise ValueError(f"Population semantics mismatch: policy {slippage_cost_policy_version} cannot be {slippage_population_semantics}")
+                raise ValueError("ADVERSE_ONLY policy cannot consume signed sample list containing negative values.")
             pop_semantics = FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
-        else:
-            if slippage_population_semantics and slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_SIGNED.value:
-                raise ValueError(f"Population semantics mismatch: policy {slippage_cost_policy_version} cannot be {slippage_population_semantics}")
+        elif slippage_cost_policy_version == "RAW_SIGNED_DISTRIBUTION_V1":
+            if slippage_population_semantics != FrictionPopulationSemantics.SLIPPAGE_SIGNED.value:
+                raise ValueError(
+                    f"Population semantics mismatch: policy {slippage_cost_policy_version} requires SLIPPAGE_SIGNED, got {slippage_population_semantics}."
+                )
             pop_semantics = FrictionPopulationSemantics.SLIPPAGE_SIGNED.value
         slip_samples = [Decimal(str(x)) for x in slippage_records_bps]
 

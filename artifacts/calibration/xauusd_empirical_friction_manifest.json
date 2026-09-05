@@ -3,7 +3,7 @@
   "venue": "EXNESS",
   "account_tier": "STANDARD",
   "symbol": "XAUUSD",
-  "audit_timestamp": "2026-09-04T17:54:48Z",
+  "audit_timestamp": "2026-09-05T03:43:52Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",

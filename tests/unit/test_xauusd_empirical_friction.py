@@ -111,6 +111,7 @@ from apps.market_data.friction.ingestion import (
     ingest_friction_source_snapshot,
     ingest_friction_telemetry_dataset,
     resolve_slippage_cost_samples,
+    verify_authoritative_backing_artifact,
 )
 from apps.market_data.friction.resolution import resolve_friction_model, resolve_friction_model_activation
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
@@ -3254,6 +3255,7 @@ def test_seal_27_adverse_only_policy_cannot_consume_signed_sample_list(qualified
             telemetry_dataset=telem_ds,
             slippage_records_bps=[Decimal("-0.50"), Decimal("0.80")],  # Negative signed slippage
             slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+            slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value,
         )
 
 
@@ -3577,5 +3579,249 @@ def test_seal_36_adverse_only_model_bound_to_signed_summary_fails_validation(qua
     assert val.is_valid is False
     assert val.status == "SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID"
     assert any("requires SLIPPAGE_ADVERSE_ONLY summary" in r for r in val.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_37_fake_provenance_block_without_backing_artifact_remains_unverified_and_cannot_active():
+    """T37: Handwritten normalized JSON containing fake provenance block without actual backing artifact
+    resolves to USER_PROVIDED_UNVERIFIED and cannot achieve ACTIVE (Surgical Fix 1 & 6.1)."""
+    handmade_file = "artifacts/test_seal_37_fake_prov_tmp.json"
+    manifest_file = "artifacts/test_seal_37_manifest_tmp.json"
+    report_file = "artifacts/test_seal_37_report_tmp.md"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(handmade_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "legal_entity_code": "EXNESS_SC_LTD",
+                "legal_entity_name": "Exness (SC) Ltd",
+                "regulator": "FSA",
+                "license_number": "SD025",
+                "provenance": {
+                    "source_origin": "https://www.exness.com/terms/",
+                    "collection_methodology": "MANUAL_BROWSER_DOWNLOAD",
+                    "raw_sha256": "fake_sha_256_000000000000000000000000000000000000000000000000000000",
+                },
+            }, f)
+
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--legal-entity-file", handmade_file,
+            "--legal-entity-source-type", "OFFICIAL_BROKER_DOCUMENT",
+            "--dry-run",
+            output_manifest=manifest_file,
+            output_report=report_file,
+        )
+        with open(manifest_file, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        assert manifest["evidence_inventory"]["legal_entity_scope"]["status"] == "EMPIRICAL_FRICTION_INVALID"
+        assert manifest["hard_readiness_gate"]["decision"] == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert any("USER_PROVIDED_UNVERIFIED" in r or "backing artifact file is missing" in r for r in manifest["blocking_reasons"])
+    finally:
+        for p in (handmade_file, manifest_file, report_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_seal_38_declared_backing_sha_without_backing_file_fails_closed():
+    """T38: Declared backing SHA but no backing file fails closed (Surgical Fix 1 & 6.2)."""
+    is_valid, raw_bytes, computed_sha, errors = verify_authoritative_backing_artifact(
+        backing_file_path=None,
+        declared_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        expected_source_type="OFFICIAL_BROKER_DOCUMENT",
+    )
+    assert is_valid is False
+    assert any("backing artifact file is missing" in e for e in errors)
+
+
+def test_seal_39_backing_file_sha_mismatch_fails_closed():
+    """T39: Actual backing file present but computed SHA != declared SHA fails closed (Surgical Fix 1 & 6.3)."""
+    backing_file = "artifacts/test_seal_39_mismatch_tmp.txt"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(backing_file, "wb") as f:
+            f.write(b"EXNESS_OFFICIAL_DOCUMENT_REAL_BYTES_HERE_FOR_TEST_PURPOSES")
+
+        declared_wrong_sha = "0000000000000000000000000000000000000000000000000000000000000000"
+        is_valid, raw_bytes, computed_sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=backing_file,
+            declared_sha256=declared_wrong_sha,
+            expected_source_type="OFFICIAL_BROKER_DOCUMENT",
+        )
+        assert is_valid is False
+        assert any("SHA-256 mismatch" in e for e in errors)
+    finally:
+        if os.path.exists(backing_file):
+            os.remove(backing_file)
+
+
+def test_seal_40_backing_file_sha_match_and_qualified_path_qualifies():
+    """T40: Actual backing file present + SHA matches + allowed source path qualifies (Surgical Fix 1, 3, 6.4)."""
+    backing_file = "artifacts/test_seal_40_terms_tmp.txt"
+    doc_content = b"EXNESS CLIENT AGREEMENT AND REGULATORY TERMS SPECIFICATION SD025 FSA LICENSE"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(backing_file, "wb") as f:
+            f.write(doc_content)
+        expected_sha = hashlib.sha256(doc_content).hexdigest()
+
+        is_valid, raw_bytes, computed_sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=backing_file,
+            declared_sha256=expected_sha,
+            expected_source_type="OFFICIAL_BROKER_DOCUMENT",
+        )
+        assert is_valid is True
+        assert raw_bytes == doc_content
+        assert computed_sha == expected_sha
+        assert errors == []
+    finally:
+        if os.path.exists(backing_file):
+            os.remove(backing_file)
+
+
+def test_seal_41_source_type_label_alone_cannot_upgrade_arbitrary_bytes():
+    """T41: Source type label alone cannot upgrade arbitrary noise bytes (Surgical Fix 3 & 6.5)."""
+    arbitrary_file = "artifacts/test_seal_41_noise_tmp.bin"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(arbitrary_file, "wb") as f:
+            f.write(b"arbitrary_unstructured_noise_0123456789_abcdefghijklmnop_xyz")
+
+        is_valid, raw_bytes, computed_sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=arbitrary_file,
+            declared_sha256=None,
+            expected_source_type="OFFICIAL_BROKER_DOCUMENT",
+        )
+        assert is_valid is False
+        assert any("lacks authentic document structure" in e for e in errors)
+    finally:
+        if os.path.exists(arbitrary_file):
+            os.remove(arbitrary_file)
+
+
+@pytest.mark.django_db
+def test_seal_42_direct_slippage_samples_without_explicit_semantics_fails_closed(qualified_evidence_bundle):
+    """T42: slippage_records_bps supplied with ADVERSE_ONLY policy but population_semantics=None fails closed (Surgical Fix 4 & 6.6)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    with pytest.raises(ValueError, match="Direct slippage_records_bps requires explicit slippage_population_semantics"):
+        build_and_bind_friction_model_version(
+            legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+            contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+            fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+            swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+            evidence_dataset=qualified_evidence_bundle["dataset"],
+            spread_ticks_bps=[Decimal("1.0")],
+            telemetry_dataset=telem_ds,
+            slippage_records_bps=[Decimal("0.10"), Decimal("0.20")],
+            slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+            slippage_population_semantics=None,
+        )
+
+
+@pytest.mark.django_db
+def test_seal_43_all_positive_signed_samples_cannot_be_relabelled_adverse_only(qualified_evidence_bundle):
+    """T43: All-positive signed sample list cannot be automatically relabeled ADVERSE_ONLY (Surgical Fix 4 & 6.7)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    with pytest.raises(ValueError, match="Population semantics mismatch: policy ADVERSE_ONLY_P75_P95_V1 requires SLIPPAGE_ADVERSE_ONLY, got SLIPPAGE_SIGNED"):
+        build_and_bind_friction_model_version(
+            legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+            contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+            fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+            swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+            evidence_dataset=qualified_evidence_bundle["dataset"],
+            spread_ticks_bps=[Decimal("1.0")],
+            telemetry_dataset=telem_ds,
+            slippage_records_bps=[Decimal("0.10"), Decimal("0.20")],  # all positive, but signed semantics declared
+            slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+            slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_SIGNED.value,
+        )
+
+
+@pytest.mark.django_db
+def test_seal_44_adverse_only_direct_samples_with_explicit_semantics_accepted(qualified_evidence_bundle):
+    """T44: ADVERSE_ONLY direct samples with explicit SLIPPAGE_ADVERSE_ONLY accepted when all evidence valid (Surgical Fix 4, 5, 6.8)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    samples_30 = [Decimal("0.15")] * 35
+    model_ver, activation = build_and_bind_friction_model_version(
+        model_version_id="MODEL_ADVERSE_EXPLICIT_ACCEPTED",
+        legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        evidence_dataset=qualified_evidence_bundle["dataset"],
+        spread_ticks_bps=[Decimal("1.0")] * 1000,
+        telemetry_dataset=telem_ds,
+        slippage_records_bps=samples_30,
+        slippage_cost_policy_version="ADVERSE_ONLY_P75_P95_V1",
+        slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value,
+        legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness", "regulator": "FSA", "license_number": "SD025"},
+        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
+        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        financing_policy={"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY", "actual_account_swap_free_status": False},
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+    )
+    assert model_ver is not None
+    summary_binding = FrictionModelSummaryBinding.objects.filter(
+        friction_model_version=model_ver,
+        distribution_summary__component_type=FrictionComponentType.SLIPPAGE,
+    ).first()
+    assert summary_binding is not None
+    assert summary_binding.distribution_summary.population_semantics == FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value
+
+
+@pytest.mark.django_db
+def test_seal_45_signed_direct_samples_with_explicit_semantics_accepted_under_raw_signed_policy(qualified_evidence_bundle):
+    """T45: SIGNED direct samples with explicit SLIPPAGE_SIGNED accepted under RAW_SIGNED_DISTRIBUTION_V1 (Surgical Fix 4, 5, 6.9)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    samples_30 = [Decimal("-0.10"), Decimal("0.20")] * 18
+    model_ver, activation = build_and_bind_friction_model_version(
+        model_version_id="MODEL_SIGNED_EXPLICIT_ACCEPTED",
+        legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+        contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+        fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+        swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+        evidence_dataset=qualified_evidence_bundle["dataset"],
+        spread_ticks_bps=[Decimal("1.0")] * 1000,
+        telemetry_dataset=telem_ds,
+        slippage_records_bps=samples_30,
+        slippage_cost_policy_version="RAW_SIGNED_DISTRIBUTION_V1",
+        slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_SIGNED.value,
+        legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness", "regulator": "FSA", "license_number": "SD025"},
+        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
+        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        financing_policy={"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY", "actual_account_swap_free_status": False},
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+    )
+    assert model_ver is not None
+    summary_binding = FrictionModelSummaryBinding.objects.filter(
+        friction_model_version=model_ver,
+        distribution_summary__component_type=FrictionComponentType.SLIPPAGE,
+    ).first()
+    assert summary_binding is not None
+    assert summary_binding.distribution_summary.population_semantics == FrictionPopulationSemantics.SLIPPAGE_SIGNED.value
+
+
+@pytest.mark.django_db
+def test_seal_46_explicit_population_semantics_mismatching_policy_fails_closed(qualified_evidence_bundle):
+    """T46: Explicit population semantics mismatching policy fails closed (Surgical Fix 4 & 6.10)."""
+    telem_ds = qualified_evidence_bundle["telemetry_dataset"]
+    with pytest.raises(ValueError, match="Population semantics mismatch: policy RAW_SIGNED_DISTRIBUTION_V1 requires SLIPPAGE_SIGNED, got SLIPPAGE_ADVERSE_ONLY"):
+        build_and_bind_friction_model_version(
+            legal_entity_snapshot=qualified_evidence_bundle["legal_snapshot"],
+            contract_spec_snapshot=qualified_evidence_bundle["contract_snapshot"],
+            fee_schedule_snapshot=qualified_evidence_bundle["fee_snapshot"],
+            swap_spec_snapshot=qualified_evidence_bundle["swap_snapshot"],
+            evidence_dataset=qualified_evidence_bundle["dataset"],
+            spread_ticks_bps=[Decimal("1.0")],
+            telemetry_dataset=telem_ds,
+            slippage_records_bps=[Decimal("0.10")] * 30,
+            slippage_cost_policy_version="RAW_SIGNED_DISTRIBUTION_V1",
+            slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value,
+        )
+
 
 
