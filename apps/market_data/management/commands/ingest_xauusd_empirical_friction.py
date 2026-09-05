@@ -16,6 +16,14 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 from django.core.management.base import BaseCommand
 
+from apps.market_data.friction.artifact_parsers import (
+    compare_asserted_vs_derived,
+    compute_normalized_evidence_hash,
+    parse_commission_backing_artifact,
+    parse_contract_spec_backing_artifact,
+    parse_financing_backing_artifact,
+    parse_legal_entity_backing_artifact,
+)
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
     calculate_execution_notional,
@@ -29,6 +37,7 @@ from apps.market_data.friction.distribution import (
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
+    create_friction_qualification_assertion,
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
     ingest_friction_telemetry_dataset,
@@ -48,7 +57,9 @@ from apps.market_data.models import (
     FrictionModelDatasetBinding,
     FrictionModelSummaryBinding,
     FrictionModelVersion,
+    FrictionQualificationStatus,
     FrictionSessionType,
+    FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
     QUALIFIED_COMMISSION_SOURCE_TYPES,
@@ -69,12 +80,15 @@ def _resolve_source_provenance(
     metadata_file_path: str,
     backing_file_path: Optional[str] = None,
     component_name: str = "COMPONENT",
-) -> Tuple[str, str, str, bytes, str, Optional[str]]:
-    """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA (Requirement 1, 2, 3).
+    expected_symbol: str = "XAUUSD",
+    expected_account_tier: str = "STANDARD",
+) -> Tuple[str, str, str, bytes, str, Optional[str], Dict[str, Any]]:
+    """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA.
 
     A caller must NOT be able to turn an arbitrary manually-authored file into qualified
     evidence simply by passing CLI options. A manually created normalized JSON without an
     actual authoritative backing artifact remains USER_PROVIDED_UNVERIFIED.
+    Normalized values must be derived from the backing artifact bytes by a trusted parser.
     """
     provenance = data.get("provenance") or data.get("backing_artifact") or {}
     declared_backing_sha = (
@@ -99,14 +113,25 @@ def _resolve_source_provenance(
             meta_bytes,
             hashlib.sha256(meta_bytes).hexdigest(),
             f"Declared backing SHA '{declared_backing_sha}' provided for {component_name} but backing artifact file is missing. Fails closed.",
+            {},
         )
 
-    # 2. If backing file is provided, verify it independently
+    # 2. If backing file is provided, verify and parse it independently
     if resolved_backing_path:
+        role_map = {
+            "Legal Entity": "LEGAL_ENTITY",
+            "Contract Specification": "CONTRACT_SPEC",
+            "Commission Fee Schedule": "COMMISSION",
+            "Financing Swap Spec": "FINANCING",
+        }
+        comp_role = role_map.get(component_name, component_name)
         is_verified, raw_bytes, computed_sha, errors = verify_authoritative_backing_artifact(
             backing_file_path=resolved_backing_path,
             declared_sha256=declared_backing_sha,
             expected_source_type=declared_source_type,
+            component_role=comp_role,
+            expected_symbol=expected_symbol,
+            expected_account_tier=expected_account_tier,
         )
         if not is_verified:
             return (
@@ -116,7 +141,44 @@ def _resolve_source_provenance(
                 raw_bytes or b"",
                 computed_sha or "",
                 f"Backing artifact verification failed for {component_name}: {'; '.join(errors)}",
+                {},
             )
+
+        # Execute component-specific authoritative parser
+        parsed_data: Dict[str, Any] = {}
+        try:
+            if comp_role == "LEGAL_ENTITY":
+                parsed_data = parse_legal_entity_backing_artifact(raw_bytes)
+            elif comp_role == "CONTRACT_SPEC":
+                parsed_data = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+            elif comp_role == "COMMISSION":
+                parsed_data = parse_commission_backing_artifact(raw_bytes, expected_symbol=expected_symbol, expected_account_tier=expected_account_tier)
+            elif comp_role == "FINANCING":
+                parsed_data = parse_financing_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+        except ValueError as ve:
+            return (
+                FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+                str(provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"),
+                str(provenance.get("collection_methodology") or "UNVERIFIED_BACKING_ARTIFACT"),
+                raw_bytes or b"",
+                computed_sha or "",
+                f"Authoritative parser failed for {component_name}: {ve}",
+                {},
+            )
+
+        # Check for contradictions between user-supplied metadata and derived values
+        if parsed_data:
+            is_match, mismatches = compare_asserted_vs_derived(data, parsed_data)
+            if not is_match:
+                return (
+                    FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+                    str(provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"),
+                    str(provenance.get("collection_methodology") or "UNVERIFIED_BACKING_ARTIFACT"),
+                    raw_bytes or b"",
+                    computed_sha or "",
+                    f"Normalized metadata contradicts authoritative backing artifact for {component_name}: {'; '.join(mismatches)}",
+                    parsed_data,
+                )
 
         if declared_source_type in qualified_types:
             origin = provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"
@@ -128,6 +190,7 @@ def _resolve_source_provenance(
                 raw_bytes,
                 computed_sha,
                 None,
+                parsed_data,
             )
         else:
             origin = provenance.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}"
@@ -139,6 +202,7 @@ def _resolve_source_provenance(
                 raw_bytes,
                 computed_sha,
                 None,
+                parsed_data,
             )
 
     # 3. No backing file provided: handwritten JSON alone remains USER_PROVIDED_UNVERIFIED
@@ -151,6 +215,7 @@ def _resolve_source_provenance(
         meta_bytes,
         hashlib.sha256(meta_bytes).hexdigest(),
         None,
+        {},
     )
 
 
@@ -325,8 +390,8 @@ class Command(BaseCommand):
                     "regulator": data.get("regulator", ""),
                     "license_number": data.get("license_number", ""),
                 }
-                resolved_legal_source_type, legal_origin, legal_method, legal_raw_bytes, legal_raw_sha, legal_err = _resolve_source_provenance(
-                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, "Legal Entity"
+                resolved_legal_source_type, legal_origin, legal_method, legal_raw_bytes, legal_raw_sha, legal_err, legal_parsed = _resolve_source_provenance(
+                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, "Legal Entity", symbol, account_tier
                 )
                 if legal_err:
                     legal_entity_status = "EMPIRICAL_FRICTION_INVALID"
@@ -340,6 +405,10 @@ class Command(BaseCommand):
                         f"Legal entity source provenance '{resolved_legal_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
+                    if legal_parsed:
+                        for k in ("legal_entity_code", "legal_entity_name", "regulator", "license_number"):
+                            if k in legal_parsed and legal_parsed[k]:
+                                legal_entity_info[k] = legal_parsed[k]
                     legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         effective_file = legal_backing_file or legal_file
@@ -352,12 +421,22 @@ class Command(BaseCommand):
                             retrieved_at=now_utc,
                             known_at=now_utc,
                             raw_content=legal_raw_bytes,
-                            metadata=legal_entity_info,
+                            metadata=legal_parsed or legal_entity_info,
                             source_type=resolved_legal_source_type,
                             source_origin=legal_origin,
                             collection_methodology=legal_method,
                             original_filename=os.path.basename(effective_file),
                         )
+                        if resolved_legal_source_type in QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES:
+                            create_friction_qualification_assertion(
+                                source_snapshot=legal_entity_snapshot,
+                                component_role="LEGAL_ENTITY",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                parser_name=legal_parsed.get("parser_name", "parse_legal_entity_backing_artifact"),
+                                parser_version=legal_parsed.get("parser_version", "1.0.0"),
+                                normalized_evidence_hash=compute_normalized_evidence_hash(legal_entity_info),
+                                qualification_reason="Verified by authoritative legal entity parser",
+                            )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse legal entity file: {e}"))
                 legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
@@ -385,8 +464,8 @@ class Command(BaseCommand):
                     "volume_max": Decimal(str(data["volume_max"])),
                     "volume_step": Decimal(str(data["volume_step"])),
                 }
-                resolved_contract_source_type, contract_origin, contract_method, contract_raw_bytes, contract_raw_sha, contract_err = _resolve_source_provenance(
-                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, "Contract Specification"
+                resolved_contract_source_type, contract_origin, contract_method, contract_raw_bytes, contract_raw_sha, contract_err, contract_parsed = _resolve_source_provenance(
+                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, "Contract Specification", symbol, account_tier
                 )
                 if contract_err:
                     contract_status = "EMPIRICAL_FRICTION_INVALID"
@@ -397,6 +476,10 @@ class Command(BaseCommand):
                         f"Contract specification source provenance '{resolved_contract_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
+                    if contract_parsed:
+                        for k in ("digits", "point_size", "trade_tick_size", "trade_tick_value", "contract_size", "volume_min", "volume_max", "volume_step"):
+                            if k in contract_parsed and contract_parsed[k] is not None:
+                                contract_geometry[k] = contract_parsed[k]
                     contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         effective_file = contract_backing_file or contract_file
@@ -409,12 +492,22 @@ class Command(BaseCommand):
                             retrieved_at=now_utc,
                             known_at=now_utc,
                             raw_content=contract_raw_bytes,
-                            metadata=contract_geometry,
+                            metadata=contract_parsed or contract_geometry,
                             source_type=resolved_contract_source_type,
                             source_origin=contract_origin,
                             collection_methodology=contract_method,
                             original_filename=os.path.basename(effective_file),
                         )
+                        if resolved_contract_source_type in QUALIFIED_CONTRACT_SOURCE_TYPES:
+                            create_friction_qualification_assertion(
+                                source_snapshot=contract_spec_snapshot,
+                                component_role="CONTRACT_SPEC",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                parser_name=contract_parsed.get("parser_name", "parse_contract_spec_backing_artifact"),
+                                parser_version=contract_parsed.get("parser_version", "1.0.0"),
+                                normalized_evidence_hash=compute_normalized_evidence_hash(contract_geometry),
+                                qualification_reason="Verified by authoritative contract specification parser",
+                            )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse contract spec file: {e}"))
                 contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
@@ -436,8 +529,8 @@ class Command(BaseCommand):
                     "native_commission_usd_per_lot_per_side": Decimal(str(data["native_commission_usd_per_lot_per_side"])),
                     "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
                 }
-                resolved_fee_source_type, fee_origin, fee_method, fee_raw_bytes, fee_raw_sha, fee_err = _resolve_source_provenance(
-                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, "Commission Fee Schedule"
+                resolved_fee_source_type, fee_origin, fee_method, fee_raw_bytes, fee_raw_sha, fee_err, fee_parsed = _resolve_source_provenance(
+                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, "Commission Fee Schedule", symbol, account_tier
                 )
                 if fee_err:
                     commission_status = "EMPIRICAL_FRICTION_INVALID"
@@ -448,6 +541,11 @@ class Command(BaseCommand):
                         f"Fee schedule source provenance '{resolved_fee_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
+                    if fee_parsed:
+                        if "native_commission_usd_per_lot_per_side" in fee_parsed:
+                            commission_policy["native_commission_usd_per_lot_per_side"] = fee_parsed["native_commission_usd_per_lot_per_side"]
+                        if "commission_formula" in fee_parsed:
+                            commission_policy["commission_formula"] = fee_parsed["commission_formula"]
                     commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         effective_file = fee_backing_file or fee_file
@@ -460,12 +558,22 @@ class Command(BaseCommand):
                             retrieved_at=now_utc,
                             known_at=now_utc,
                             raw_content=fee_raw_bytes,
-                            metadata=commission_policy,
+                            metadata=fee_parsed or commission_policy,
                             source_type=resolved_fee_source_type,
                             source_origin=fee_origin,
                             collection_methodology=fee_method,
                             original_filename=os.path.basename(effective_file),
                         )
+                        if resolved_fee_source_type in QUALIFIED_COMMISSION_SOURCE_TYPES:
+                            create_friction_qualification_assertion(
+                                source_snapshot=fee_schedule_snapshot,
+                                component_role="COMMISSION",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                parser_name=fee_parsed.get("parser_name", "parse_commission_backing_artifact"),
+                                parser_version=fee_parsed.get("parser_version", "1.0.0"),
+                                normalized_evidence_hash=compute_normalized_evidence_hash(commission_policy),
+                                qualification_reason="Verified by authoritative commission fee parser",
+                            )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse fee schedule file: {e}"))
                 commission_status = "COMMISSION_EVIDENCE_MISSING"
@@ -491,8 +599,8 @@ class Command(BaseCommand):
                     "triple_swap_weekday": str(data["triple_swap_weekday"]),
                     "actual_account_swap_free_status": bool(data.get("actual_account_swap_free_status", False)),
                 }
-                resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err = _resolve_source_provenance(
-                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, "Financing Swap Spec"
+                resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed = _resolve_source_provenance(
+                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, "Financing Swap Spec", symbol, account_tier
                 )
                 if swap_err:
                     financing_status = "EMPIRICAL_FRICTION_INVALID"
@@ -503,6 +611,10 @@ class Command(BaseCommand):
                         f"Swap specification source provenance '{resolved_swap_source_type}' is unverified; hard readiness requires qualified broker provenance."
                     )
                 else:
+                    if swap_parsed:
+                        for k in ("swap_long_points", "swap_short_points", "rollover_summer_utc_hour", "rollover_winter_utc_hour", "triple_swap_weekday", "actual_account_swap_free_status"):
+                            if k in swap_parsed and swap_parsed[k] is not None:
+                                financing_policy[k] = swap_parsed[k]
                     financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
                     if not dry_run:
                         effective_file = swap_backing_file or swap_file
@@ -515,12 +627,22 @@ class Command(BaseCommand):
                             retrieved_at=now_utc,
                             known_at=now_utc,
                             raw_content=swap_raw_bytes,
-                            metadata=financing_policy,
+                            metadata=swap_parsed or financing_policy,
                             source_type=resolved_swap_source_type,
                             source_origin=swap_origin,
                             collection_methodology=swap_method,
                             original_filename=os.path.basename(effective_file),
                         )
+                        if resolved_swap_source_type in QUALIFIED_FINANCING_SOURCE_TYPES:
+                            create_friction_qualification_assertion(
+                                source_snapshot=swap_spec_snapshot,
+                                component_role="FINANCING",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                parser_name=swap_parsed.get("parser_name", "parse_financing_backing_artifact"),
+                                parser_version=swap_parsed.get("parser_version", "1.0.0"),
+                                normalized_evidence_hash=compute_normalized_evidence_hash(financing_policy),
+                                qualification_reason="Verified by authoritative financing swap parser",
+                            )
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not parse swap spec file: {e}"))
                 financing_status = "FINANCING_EVIDENCE_MISSING"
@@ -584,6 +706,15 @@ class Command(BaseCommand):
                                     sample_start=summary_meta["sample_start"],
                                     sample_end=summary_meta["sample_end"],
                                     ticks_data=ticks_data,
+                                )
+                                create_friction_qualification_assertion(
+                                    source_snapshot=snap,
+                                    component_role="SPREAD_DATASET",
+                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                    parser_name="parse_mt5_tick_export",
+                                    parser_version="1.0.0",
+                                    normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
+                                    qualification_reason="Verified by authoritative MT5 tick export parser",
                                 )
                                 spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:
@@ -655,6 +786,15 @@ class Command(BaseCommand):
                                     sample_start=summary_meta["sample_start"],
                                     sample_end=summary_meta["sample_end"],
                                     telemetry_records=telemetry_data,
+                                )
+                                create_friction_qualification_assertion(
+                                    source_snapshot=snap,
+                                    component_role="SLIPPAGE_DATASET",
+                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                    parser_name="parse_mt5_execution_telemetry",
+                                    parser_version="1.0.0",
+                                    normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telemetry_dataset.raw_dataset_sha256}),
+                                    qualification_reason="Verified by authoritative MT5 execution telemetry parser",
                                 )
                                 slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:

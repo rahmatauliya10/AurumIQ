@@ -86,6 +86,9 @@ def compute_empirical_friction_fingerprint(
             normalized_source_evidence[str(role_name).upper()] = {
                 "sha256": str(ev_dict.get("sha256") or ""),
                 "source_type": str(ev_dict.get("source_type") or "").upper(),
+                "parser_name": str(ev_dict.get("parser_name") or ""),
+                "parser_version": str(ev_dict.get("parser_version") or ""),
+                "normalized_evidence_hash": str(ev_dict.get("normalized_evidence_hash") or ""),
             }
 
     canonical_payload: Dict[str, Any] = {
@@ -99,6 +102,7 @@ def compute_empirical_friction_fingerprint(
             "slippage_mandatory_policy_version": str(semantic_versions.get("slippage_mandatory_policy_version", "GOVERNED_MANDATORY_V1")),
             "selection_policy_version": str(semantic_versions.get("selection_policy_version", "BASE_P75_STRESS_P95_V1")),
             "slippage_cost_policy_version": str(resolved_slip_policy),
+            "parser_version": str(semantic_versions.get("parser_version", "1.0.0")),
         },
         "venue_and_identity": {
             "venue": str(venue).upper(),

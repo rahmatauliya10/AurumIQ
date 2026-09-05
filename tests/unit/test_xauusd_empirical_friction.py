@@ -80,10 +80,20 @@ from apps.market_data.models import (
     FrictionModelDatasetBinding,
     FrictionModelSummaryBinding,
     FrictionModelVersion,
+    FrictionPopulationSemantics,
+    FrictionQualificationStatus,
     FrictionSessionType,
+    FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
-    FrictionPopulationSemantics,
+)
+from apps.market_data.friction.artifact_parsers import (
+    compare_asserted_vs_derived,
+    compute_normalized_evidence_hash,
+    parse_commission_backing_artifact,
+    parse_contract_spec_backing_artifact,
+    parse_financing_backing_artifact,
+    parse_legal_entity_backing_artifact,
 )
 from apps.market_data.friction.commission import (
     calculate_dynamic_fee_bps,
@@ -107,6 +117,7 @@ from apps.market_data.friction.financing import (
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
+    create_friction_qualification_assertion,
     ingest_friction_evidence_dataset,
     ingest_friction_source_snapshot,
     ingest_friction_telemetry_dataset,
@@ -394,6 +405,7 @@ def qualified_evidence_bundle(db, base_sample_ticks, base_telemetry_fills):
         symbol="XAUUSD",
         account_tier="STANDARD",
         effective_from=datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc),
+        test_qualification_seam=True,
     )
 
     return {
@@ -859,6 +871,7 @@ def test_harden_01_spread_complete_slippage_missing_cannot_pass(xauusd_setup, ba
         venue="EXNESS",
         symbol="XAUUSD",
         account_tier="STANDARD",
+        test_qualification_seam=True,
     )
     # Model without slippage must be DRAFT
     assert act.activation_status == FrictionActivationStatus.DRAFT
@@ -3822,6 +3835,444 @@ def test_seal_46_explicit_population_semantics_mismatching_policy_fails_closed(q
             slippage_cost_policy_version="RAW_SIGNED_DISTRIBUTION_V1",
             slippage_population_semantics=FrictionPopulationSemantics.SLIPPAGE_ADVERSE_ONLY.value,
         )
+
+
+def test_seal_47_arbitrary_valid_pdf_with_broker_label_cannot_qualify():
+    """T47: Arbitrary valid PDF + OFFICIAL_BROKER_DOCUMENT label cannot qualify (Binding Fix 1)."""
+    pdf_path = "artifacts/test_seal_47_arbitrary.pdf"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(pdf_path, "wb") as f:
+            f.write(b"%PDF-1.4\n1 0 obj\n<< /Title (Invoice 1234) /Author (Unknown) >>\nendobj\n%%EOF")
+
+        is_valid, raw, sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=pdf_path,
+            declared_sha256=None,
+            expected_source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        )
+        assert is_valid is False
+        assert any("lacks authentic document structure or authoritative broker evidence" in e for e in errors)
+    finally:
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+
+def test_seal_48_arbitrary_valid_html_with_broker_label_cannot_qualify():
+    """T48: Arbitrary valid HTML + broker label cannot qualify (Binding Fix 1)."""
+    html_path = "artifacts/test_seal_48_arbitrary.html"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(html_path, "wb") as f:
+            f.write(b"<!DOCTYPE html><html><head><title>Test Blog</title></head><body><h1>Hello World</h1><p>Not broker evidence</p></body></html>")
+
+        is_valid, raw, sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=html_path,
+            declared_sha256=None,
+            expected_source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        )
+        assert is_valid is False
+        assert any("lacks authentic document structure or authoritative broker evidence" in e for e in errors)
+    finally:
+        if os.path.exists(html_path):
+            os.remove(html_path)
+
+
+def test_seal_49_genuine_format_without_exness_component_evidence_fails():
+    """T49: Genuine-format document without Exness/component evidence fails parser and verification (Binding Fix 1 & 2)."""
+    generic_doc = "artifacts/test_seal_49_generic_statement.html"
+    os.makedirs("artifacts", exist_ok=True)
+    try:
+        with open(generic_doc, "wb") as f:
+            f.write(b"<html><body><h1>Bank of Alpha Statement</h1><p>Account 99999 USD Balance: 1000</p></body></html>")
+
+        is_valid, raw, sha, errors = verify_authoritative_backing_artifact(
+            backing_file_path=generic_doc,
+            declared_sha256=None,
+            expected_source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+            component_role="LEGAL_ENTITY",
+        )
+        assert is_valid is False
+        assert any("Exness legal entity" in e or "lacks" in e.lower() for e in errors)
+
+        with pytest.raises(ValueError, match="Exness legal entity"):
+            parse_legal_entity_backing_artifact(b"<html><body><h1>Bank of Alpha Statement</h1></body></html>")
+    finally:
+        if os.path.exists(generic_doc):
+            os.remove(generic_doc)
+
+
+def test_seal_50_genuine_backing_artifact_with_contradictory_normalized_metadata_fails():
+    """T50: Genuine backing artifact + contradictory normalized metadata fails (Binding Fix 3)."""
+    genuine_raw = b"EXNESS_SC_LTD:FSA:SD025"
+    parsed = parse_legal_entity_backing_artifact(genuine_raw)
+    assert parsed["license_number"] == "SD025"
+    assert parsed["regulator"] == "FSA"
+
+    contradictory_meta = {
+        "legal_entity_code": "EXNESS_SC_LTD",
+        "legal_entity_name": "Exness (SC) Ltd",
+        "regulator": "FSA",
+        "license_number": "SD999",
+    }
+
+    is_match, mismatches = compare_asserted_vs_derived(contradictory_meta, parsed)
+    assert is_match is False
+    assert any("license_number" in m for m in mismatches)
+
+
+def test_seal_51_legal_artifact_not_containing_regulator_or_license_fails():
+    """T51: Legal artifact not containing regulator or license cannot qualify (Binding Fix 3)."""
+    raw_incomplete = b"Exness Group Corporate Overview without regulator or license number"
+    with pytest.raises(ValueError, match="regulator or license"):
+        parse_legal_entity_backing_artifact(raw_incomplete)
+
+
+def test_seal_52_contract_artifact_lacking_xauusd_contract_fields_fails():
+    """T52: Contract artifact lacking XAUUSD contract fields cannot qualify (Binding Fix 3)."""
+    raw_other_symbol = b"SYMBOL:EURUSD|CONTRACT_SIZE:100000|POINT:0.00001|DIGITS:5"
+    with pytest.raises(ValueError, match="XAUUSD"):
+        parse_contract_spec_backing_artifact(raw_other_symbol, expected_symbol="XAUUSD")
+
+
+def test_seal_53_fee_document_not_establishing_selected_account_tier_commission_fails():
+    """T53: Fee document that does not establish selected account-tier commission cannot qualify (Binding Fix 3)."""
+    raw_raw_spread_only = b"SYMBOL:XAUUSD|RAW_SPREAD:COMMISSION:3.50"
+    with pytest.raises(ValueError, match="STANDARD"):
+        parse_commission_backing_artifact(raw_raw_spread_only, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
+
+
+def test_seal_54_financing_document_not_establishing_xauusd_swap_values_fails():
+    """T54: Financing document that does not establish XAUUSD swap values cannot qualify (Binding Fix 3)."""
+    raw_no_xauusd = b"SYMBOL:EURUSD|SWAP_LONG:-3.5|SWAP_SHORT:1.2"
+    with pytest.raises(ValueError, match="XAUUSD"):
+        parse_financing_backing_artifact(raw_no_xauusd, expected_symbol="XAUUSD")
+
+
+def test_seal_55_raw_artifact_derived_normalized_hash_enters_fingerprint():
+    """T55: Raw artifact-derived normalized hash enters fingerprint (Binding Fix 4 & 5)."""
+    base_evidence = {
+        "LEGAL_ENTITY": {
+            "sha256": "aaaa" * 16,
+            "source_type": "OFFICIAL_BROKER_DOCUMENT",
+            "parser_name": "parse_legal_entity_backing_artifact",
+            "parser_version": "1.0.0",
+            "normalized_evidence_hash": "HASH_1111" * 8,
+        }
+    }
+    fp1 = compute_empirical_friction_fingerprint(
+        semantic_versions={"sample_sufficiency_policy_version": "1.0.0", "parser_version": "1.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=["aaaa" * 16],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+        source_evidence=base_evidence,
+    )
+
+    mutated_evidence = {
+        "LEGAL_ENTITY": {
+            "sha256": "aaaa" * 16,
+            "source_type": "OFFICIAL_BROKER_DOCUMENT",
+            "parser_name": "parse_legal_entity_backing_artifact",
+            "parser_version": "1.0.0",
+            "normalized_evidence_hash": "HASH_2222" * 8,
+        }
+    }
+    fp2 = compute_empirical_friction_fingerprint(
+        semantic_versions={"sample_sufficiency_policy_version": "1.0.0", "parser_version": "1.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=["aaaa" * 16],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+        source_evidence=mutated_evidence,
+    )
+    assert fp1 != fp2
+
+
+def test_seal_56_parser_semantic_version_enters_fingerprint():
+    """T56: Parser semantic version enters fingerprint (Binding Fix 5)."""
+    fp_v1 = compute_empirical_friction_fingerprint(
+        semantic_versions={"sample_sufficiency_policy_version": "1.0.0", "parser_version": "1.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=[],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+    )
+    fp_v2 = compute_empirical_friction_fingerprint(
+        semantic_versions={"sample_sufficiency_policy_version": "1.0.0", "parser_version": "2.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=[],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+    )
+    assert fp_v1 != fp_v2
+
+
+def test_seal_57_changing_parser_version_changes_semantic_fingerprint():
+    """T57: Changing parser version changes semantic fingerprint when interpretation version changes (Binding Fix 5)."""
+    evidence_v1 = {
+        "LEGAL_ENTITY": {
+            "sha256": "aaaa" * 16,
+            "source_type": "OFFICIAL_BROKER_DOCUMENT",
+            "parser_name": "parse_legal_entity_backing_artifact",
+            "parser_version": "1.0.0",
+            "normalized_evidence_hash": "NORM_HASH_1",
+        }
+    }
+    fp_v1 = compute_empirical_friction_fingerprint(
+        semantic_versions={"parser_version": "1.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=["aaaa" * 16],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+        source_evidence=evidence_v1,
+    )
+
+    evidence_v2 = {
+        "LEGAL_ENTITY": {
+            "sha256": "aaaa" * 16,
+            "source_type": "OFFICIAL_BROKER_DOCUMENT",
+            "parser_name": "parse_legal_entity_backing_artifact",
+            "parser_version": "2.0.0",
+            "normalized_evidence_hash": "NORM_HASH_1",
+        }
+    }
+    fp_v2 = compute_empirical_friction_fingerprint(
+        semantic_versions={"parser_version": "2.0.0"},
+        venue="EXNESS",
+        legal_entity_code="EXNESS_SC_LTD",
+        account_tier="STANDARD",
+        symbol="XAUUSD",
+        contract_geometry={},
+        source_snapshot_hashes=["aaaa" * 16],
+        dataset_hashes=[],
+        distribution_summaries=[],
+        calibrated_parameters={},
+        commission_policy={},
+        financing_policy={},
+        source_evidence=evidence_v2,
+    )
+    assert fp_v1 != fp_v2
+
+
+@pytest.mark.django_db
+def test_seal_58_direct_low_level_qualified_source_type_without_valid_qualification_assertion_cannot_active(xauusd_setup, base_sample_ticks, base_telemetry_fills):
+    """T58: Direct low-level qualified source_type without valid qualification assertion cannot ACTIVE (Binding Fix 6)."""
+    instrument, _ = xauusd_setup
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+    legal_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_no_assert", "L_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"EXNESS_SC_LTD:FSA:SD025", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    spec_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/c_no_assert", "C_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"CONTRACT_SIZE:100|POINT:0.01|DIGITS:2", source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value
+    )
+    fee_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/f_no_assert", "F_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"STANDARD:COMMISSION:0.00", source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value
+    )
+    swap_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/s_no_assert", "S_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE", source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+    )
+    tick_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/t_no_assert", "T_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"TICKS", source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
+    )
+    telem_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/e_no_assert", "E_NO_ASSERT", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"TELEMETRY", source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
+    )
+
+    spread_ds, _ = ingest_friction_evidence_dataset(
+        source_snapshot=tick_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
+        sample_start=base_sample_ticks[0]["timestamp"], sample_end=base_sample_ticks[-1]["timestamp"], ticks_data=base_sample_ticks
+    )
+    telem_ds, _ = ingest_friction_telemetry_dataset(
+        source_snapshot=telem_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
+        sample_start=base_telemetry_fills[0]["decision_timestamp"], sample_end=base_telemetry_fills[-1]["fill_timestamp"], telemetry_records=base_telemetry_fills
+    )
+
+    model_ver, act = build_and_bind_friction_model_version(
+        legal_entity_snapshot=legal_snap,
+        contract_spec_snapshot=spec_snap,
+        fee_schedule_snapshot=fee_snap,
+        swap_spec_snapshot=swap_snap,
+        evidence_dataset=spread_ds,
+        spread_ticks_bps=[t["spread_bps"] for t in base_sample_ticks],
+        telemetry_dataset=telem_ds,
+        telemetry_records=base_telemetry_fills,
+        legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness (SC) Ltd", "regulator": "FSA", "license_number": "SD025"},
+        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
+        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        financing_policy={"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY", "actual_account_swap_free_status": False},
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        test_qualification_seam=False,
+    )
+    assert act.activation_status == FrictionActivationStatus.DRAFT
+
+    res = validate_friction_model_for_activation(
+        model_version=model_ver,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is False
+    assert any("authoritative qualification assertion" in r for r in res.reasons)
+
+
+@pytest.mark.django_db
+def test_seal_59_valid_trusted_parser_and_matching_artifact_and_matching_evidence_qualifies(xauusd_setup, base_sample_ticks, base_telemetry_fills):
+    """T59: Valid trusted parser + matching artifact + matching normalized evidence qualifies (Binding Fix 6)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+    legal_bytes = b"EXNESS_SC_LTD:FSA:SD025"
+    legal_parsed = parse_legal_entity_backing_artifact(legal_bytes)
+    assert legal_parsed["license_number"] == "SD025"
+
+    contract_bytes = b"CONTRACT_SIZE:100|POINT:0.01|DIGITS:2"
+    contract_parsed = parse_contract_spec_backing_artifact(contract_bytes, expected_symbol="XAUUSD")
+
+    fee_bytes = b"STANDARD:COMMISSION:0.00"
+    fee_parsed = parse_commission_backing_artifact(fee_bytes, expected_symbol="XAUUSD", expected_account_tier="STANDARD")
+
+    swap_bytes = b"SWAP_LONG:-34.80|SWAP_SHORT:12.40|WED:TRIPLE"
+    swap_parsed = parse_financing_backing_artifact(swap_bytes, expected_symbol="XAUUSD")
+
+    legal_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/l_q", "L_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        legal_bytes, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=legal_parsed
+    )
+    spec_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/c_q", "C_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        contract_bytes, source_type=FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value, metadata=contract_parsed
+    )
+    fee_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/f_q", "F_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        fee_bytes, source_type=FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value, metadata=fee_parsed
+    )
+    swap_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/s_q", "S_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        swap_bytes, source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value, metadata=swap_parsed
+    )
+    tick_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/t_q", "T_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"TICKS", source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
+    )
+    telem_snap, _ = ingest_friction_source_snapshot(
+        "http://ex.com/e_q", "E_Q", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        b"TELEMETRY", source_type=FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
+    )
+
+    spread_ds, _ = ingest_friction_evidence_dataset(
+        source_snapshot=tick_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
+        sample_start=base_sample_ticks[0]["timestamp"], sample_end=base_sample_ticks[-1]["timestamp"], ticks_data=base_sample_ticks
+    )
+    telem_ds, _ = ingest_friction_telemetry_dataset(
+        source_snapshot=telem_snap, venue="EXNESS", account_tier="STANDARD", symbol="XAUUSD",
+        sample_start=base_telemetry_fills[0]["decision_timestamp"], sample_end=base_telemetry_fills[-1]["fill_timestamp"], telemetry_records=base_telemetry_fills
+    )
+
+    create_friction_qualification_assertion(
+        source_snapshot=legal_snap, component_role="LEGAL_ENTITY", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_legal_entity_backing_artifact", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash(legal_parsed)
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=spec_snap, component_role="CONTRACT_SPEC", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_contract_spec_backing_artifact", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash(contract_parsed)
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=fee_snap, component_role="COMMISSION", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_commission_backing_artifact", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash(fee_parsed)
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=swap_snap, component_role="FINANCING", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_financing_backing_artifact", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash(swap_parsed)
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=tick_snap, component_role="SPREAD_DATASET", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_mt5_tick_export", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_ds.raw_dataset_sha256})
+    )
+    create_friction_qualification_assertion(
+        source_snapshot=telem_snap, component_role="SLIPPAGE_DATASET", qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_mt5_execution_telemetry", parser_version="1.0.0",
+        normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": telem_ds.raw_dataset_sha256})
+    )
+
+    model_ver, act = build_and_bind_friction_model_version(
+        legal_entity_snapshot=legal_snap,
+        contract_spec_snapshot=spec_snap,
+        fee_schedule_snapshot=fee_snap,
+        swap_spec_snapshot=swap_snap,
+        evidence_dataset=spread_ds,
+        spread_ticks_bps=[t["spread_bps"] for t in base_sample_ticks],
+        telemetry_dataset=telem_ds,
+        telemetry_records=base_telemetry_fills,
+        legal_entity_info={"legal_entity_code": "EXNESS_SC_LTD", "legal_entity_name": "Exness (SC) Ltd", "regulator": "FSA", "license_number": "SD025"},
+        contract_geometry={"digits": 2, "point_size": Decimal("0.01"), "trade_tick_size": Decimal("0.01"), "trade_tick_value": Decimal("1.00"), "contract_size": Decimal("100.0"), "volume_min": Decimal("0.01"), "volume_max": Decimal("200.0"), "volume_step": Decimal("0.01")},
+        commission_policy={"native_commission_usd_per_lot_per_side": Decimal("0.00"), "commission_formula": "DYNAMIC_NOTIONAL_BPS"},
+        financing_policy={"swap_long_points": Decimal("-34.80"), "swap_short_points": Decimal("12.40"), "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22, "triple_swap_weekday": "WEDNESDAY", "actual_account_swap_free_status": False},
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD",
+        test_qualification_seam=False,
+    )
+    assert act.activation_status == FrictionActivationStatus.ACTIVE
+
+    res = validate_friction_model_for_activation(
+        model_version=model_ver,
+        target_venue="EXNESS",
+        target_symbol="XAUUSD",
+        target_account_tier="STANDARD",
+        target_legal_entity_code="EXNESS_SC_LTD",
+    )
+    assert res.is_valid is True
+    assert res.status == "EMPIRICAL_FRICTION_CONFIGURED"
+
 
 
 

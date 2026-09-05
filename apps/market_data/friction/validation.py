@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from apps.market_data.models import (
     FrictionBindingRole,
@@ -27,6 +27,8 @@ from apps.market_data.models import (
     FrictionEvidenceDataset,
     FrictionModelVersion,
     FrictionPopulationSemantics,
+    FrictionQualificationStatus,
+    FrictionSourceQualificationAssertion,
     FrictionSourceSnapshot,
     FrictionSourceType,
     QUALIFIED_COMMISSION_SOURCE_TYPES,
@@ -37,7 +39,24 @@ from apps.market_data.models import (
     QUALIFIED_SLIPPAGE_SOURCE_TYPES,
     QUALIFIED_SPREAD_SOURCE_TYPES,
 )
+from apps.market_data.friction.artifact_parsers import compute_normalized_evidence_hash
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
+
+
+def _get_assertion_meta(snapshot: Optional[FrictionSourceSnapshot], role: str) -> Tuple[str, str, str]:
+    if not snapshot:
+        return "", "", ""
+    assertion = snapshot.qualification_assertions.filter(
+        component_role=role,
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).order_by("-asserted_at").first()
+    if assertion:
+        return assertion.parser_name, assertion.parser_version, assertion.normalized_evidence_hash
+    meta = snapshot.metadata or {}
+    p_name = meta.get("parser_name", "AUTHORITATIVE_PARSER")
+    p_ver = meta.get("parser_version", "1.0.0")
+    norm_hash = meta.get("normalized_evidence_hash") or compute_normalized_evidence_hash(meta)
+    return p_name, p_ver, norm_hash
 
 
 @dataclass
@@ -138,6 +157,17 @@ def validate_friction_model_for_activation(
             reasons=["Legal entity metadata fields (name, regulator, license) are incomplete."],
             details=details,
         )
+    legal_assertion = legal_snap.qualification_assertions.filter(
+        component_role="LEGAL_ENTITY",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not legal_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="LEGAL_ENTITY_EVIDENCE_MISSING",
+            reasons=["Legal entity snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            details=details,
+        )
 
     # 3. Contract Specification Provenance (Directives 4, 7, 9, 10)
     contract_snap = model_version.contract_spec_source_snapshot
@@ -193,6 +223,17 @@ def validate_friction_model_for_activation(
             reasons=["Contract geometry parameters are incomplete (contains null values without evidence)."],
             details=details,
         )
+    contract_assertion = contract_snap.qualification_assertions.filter(
+        component_role="CONTRACT_SPEC",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not contract_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="CONTRACT_SPEC_EVIDENCE_MISSING",
+            reasons=["Contract specification snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            details=details,
+        )
 
     # 4. Commission Provenance (Directives 5, 7, 10)
     fee_snap = model_version.fee_schedule_source_snapshot
@@ -236,6 +277,17 @@ def validate_friction_model_for_activation(
             is_valid=False,
             status="COMMISSION_EVIDENCE_MISSING",
             reasons=["Commission parameters are missing (native fee is null)."],
+            details=details,
+        )
+    fee_assertion = fee_snap.qualification_assertions.filter(
+        component_role="COMMISSION",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not fee_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="COMMISSION_EVIDENCE_MISSING",
+            reasons=["Fee schedule snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
             details=details,
         )
 
@@ -288,6 +340,17 @@ def validate_friction_model_for_activation(
             is_valid=False,
             status="FINANCING_EVIDENCE_MISSING",
             reasons=["Financing parameters are incomplete (swap rates or rollover hours null)."],
+            details=details,
+        )
+    swap_assertion = swap_snap.qualification_assertions.filter(
+        component_role="FINANCING",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not swap_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="FINANCING_EVIDENCE_MISSING",
+            reasons=["Financing specification snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
             details=details,
         )
 
@@ -358,6 +421,17 @@ def validate_friction_model_for_activation(
             is_valid=False,
             status="EMPIRICAL_FRICTION_INVALID",
             reasons=["Spread dataset source snapshot scope does not match model scope."],
+            details=details,
+        )
+    spread_assertion = spread_snap.qualification_assertions.filter(
+        component_role="SPREAD_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not spread_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SPREAD_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=["Spread dataset source snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
             details=details,
         )
 
@@ -485,6 +559,17 @@ def validate_friction_model_for_activation(
             reasons=["Execution slippage telemetry source snapshot scope does not match model scope."],
             details=details,
         )
+    telem_assertion = telem_snap.qualification_assertions.filter(
+        component_role="SLIPPAGE_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+    ).first()
+    if not telem_assertion:
+        return FrictionValidationResult(
+            is_valid=False,
+            status="SLIPPAGE_EMPIRICAL_EVIDENCE_INVALID",
+            reasons=["Execution slippage telemetry source snapshot lacks a valid authoritative qualification assertion (QUALIFIED)."],
+            details=details,
+        )
 
     if telem_ds.sample_count < 30:
         return FrictionValidationResult(
@@ -598,35 +683,59 @@ def validate_friction_model_for_activation(
 
     source_evidence: Dict[str, Dict[str, str]] = {}
     if model_version.legal_entity_source_snapshot:
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY")
         source_evidence["LEGAL_ENTITY"] = {
             "sha256": model_version.legal_entity_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.legal_entity_source_snapshot.source_type,
+            "parser_name": p_name,
+            "parser_version": p_ver,
+            "normalized_evidence_hash": norm_hash,
         }
     if model_version.contract_spec_source_snapshot:
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC")
         source_evidence["CONTRACT_SPEC"] = {
             "sha256": model_version.contract_spec_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.contract_spec_source_snapshot.source_type,
+            "parser_name": p_name,
+            "parser_version": p_ver,
+            "normalized_evidence_hash": norm_hash,
         }
     if model_version.fee_schedule_source_snapshot:
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION")
         source_evidence["COMMISSION"] = {
             "sha256": model_version.fee_schedule_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.fee_schedule_source_snapshot.source_type,
+            "parser_name": p_name,
+            "parser_version": p_ver,
+            "normalized_evidence_hash": norm_hash,
         }
     if model_version.swap_spec_source_snapshot:
+        p_name, p_ver, norm_hash = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING")
         source_evidence["FINANCING"] = {
             "sha256": model_version.swap_spec_source_snapshot.raw_payload_bytes_sha256,
             "source_type": model_version.swap_spec_source_snapshot.source_type,
+            "parser_name": p_name,
+            "parser_version": p_ver,
+            "normalized_evidence_hash": norm_hash,
         }
     for db in dataset_bindings:
         if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE and db.evidence_dataset.source_snapshot:
+            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET")
             source_evidence["SPREAD_DATASET"] = {
                 "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
                 "source_type": db.evidence_dataset.source_snapshot.source_type,
+                "parser_name": p_name,
+                "parser_version": p_ver,
+                "normalized_evidence_hash": norm_hash,
             }
         elif db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE) and db.evidence_dataset.source_snapshot:
+            p_name, p_ver, norm_hash = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET")
             source_evidence["SLIPPAGE_DATASET"] = {
                 "sha256": db.evidence_dataset.source_snapshot.raw_payload_bytes_sha256,
                 "source_type": db.evidence_dataset.source_snapshot.source_type,
+                "parser_name": p_name,
+                "parser_version": p_ver,
+                "normalized_evidence_hash": norm_hash,
             }
 
     dataset_hashes = [db.evidence_dataset.raw_dataset_sha256 for db in dataset_bindings]
@@ -664,6 +773,7 @@ def validate_friction_model_for_activation(
             "slippage_mandatory_policy_version": "GOVERNED_MANDATORY_V1",
             "selection_policy_version": "BASE_P75_STRESS_P95_V1",
             "slippage_cost_policy_version": getattr(model_version, "slippage_cost_policy_version", slippage_cost_policy_version),
+            "parser_version": getattr(model_version, "parser_version", "1.0.0"),
         },
         venue=model_version.venue,
         legal_entity_code=model_version.legal_entity_code,

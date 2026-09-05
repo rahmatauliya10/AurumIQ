@@ -569,6 +569,12 @@ class FrictionPopulationSemantics(models.TextChoices):
     SLIPPAGE_SIGNED = "SLIPPAGE_SIGNED", "Slippage Raw Signed Distribution (BPS)"
 
 
+class FrictionQualificationStatus(models.TextChoices):
+    QUALIFIED = "QUALIFIED", "Qualified Broker Evidence"
+    UNVERIFIED = "UNVERIFIED", "Unverified / Format Only"
+    REJECTED = "REJECTED", "Rejected by Parser Validation"
+
+
 class FrictionSourceType(models.TextChoices):
     OFFICIAL_BROKER_DOCUMENT = "OFFICIAL_BROKER_DOCUMENT", "Official Broker Document"
     MT5_SYMBOL_INFO_EXPORT = "MT5_SYMBOL_INFO_EXPORT", "MT5 Symbol Info Export"
@@ -669,6 +675,52 @@ class FrictionSourceSnapshot(models.Model):
 
     def __str__(self) -> str:
         return f"FrictionSnapshot {self.snapshot_id[:12]} ({self.source_name} @ {self.venue})"
+
+
+class FrictionSourceQualificationAssertion(models.Model):
+    """Immutable audit assertion validating qualification of a friction source snapshot via trusted parser (Directive 6)."""
+    assertion_id = models.CharField(max_length=64, primary_key=True)
+    source_snapshot = models.ForeignKey(
+        FrictionSourceSnapshot,
+        on_delete=models.PROTECT,
+        related_name="qualification_assertions",
+    )
+    component_role = models.CharField(max_length=32, db_index=True)
+    qualification_status = models.CharField(
+        max_length=32,
+        choices=FrictionQualificationStatus.choices,
+        default=FrictionQualificationStatus.UNVERIFIED,
+        db_index=True,
+    )
+    parser_name = models.CharField(max_length=64)
+    parser_version = models.CharField(max_length=32, default="1.0.0")
+    raw_artifact_sha256 = models.CharField(max_length=64)
+    normalized_evidence_hash = models.CharField(max_length=64)
+    asserted_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    qualification_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableManager()
+
+    class Meta:
+        ordering = ["-asserted_at", "-assertion_id"]
+        verbose_name = "Friction Source Qualification Assertion"
+        verbose_name_plural = "Friction Source Qualification Assertions"
+        indexes = [
+            models.Index(fields=["component_role", "qualification_status"]),
+            models.Index(fields=["asserted_at"]),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("FrictionSourceQualificationAssertion is append-only and cannot be deleted.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and FrictionSourceQualificationAssertion.objects.filter(pk=self.pk).exists():
+            raise ValueError("FrictionSourceQualificationAssertion is immutable and append-only.")
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Assertion {self.assertion_id[:12]} ({self.component_role}: {self.qualification_status})"
 
 
 class FrictionEvidenceDataset(models.Model):
@@ -857,6 +909,7 @@ class FrictionModelVersion(models.Model):
     commission_formula_version = models.CharField(max_length=32, default="1.0.0")
     financing_rule_version = models.CharField(max_length=32, default="1.0.0")
     slippage_cost_policy_version = models.CharField(max_length=32, default="ADVERSE_ONLY_P75_P95_V1")
+    parser_version = models.CharField(max_length=32, default="1.0.0")
     empirical_friction_evidence_fingerprint = models.CharField(max_length=64, db_index=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
