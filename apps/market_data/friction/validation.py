@@ -21,6 +21,7 @@ import hashlib
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from apps.market_data.models import (
+    FrictionAttestationStatus,
     FrictionBindingRole,
     FrictionComponentType,
     FrictionDistributionSummary,
@@ -52,6 +53,7 @@ from apps.market_data.friction.artifact_parsers import (
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
+from apps.market_data.friction.provenance import verify_attestation_authenticity
 
 TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
     "LEGAL_ENTITY": {"parse_legal_entity_backing_artifact"},
@@ -333,6 +335,15 @@ def validate_source_qualification_assertion(
             f"Assertion lacks a valid FrictionSourceProvenanceAttestation for role '{expected_component_role}' and raw SHA '{assertion.raw_artifact_sha256}'."
         )
     else:
+        if linked_att.attestation_status != FrictionAttestationStatus.VERIFIED.value:
+            reasons.append(
+                f"Attestation status is '{linked_att.attestation_status}'; only independently VERIFIED attestations may satisfy hard qualification."
+            )
+        is_auth, auth_err = verify_attestation_authenticity(linked_att)
+        if not is_auth:
+            reasons.append(
+                f"Attestation authenticity verification failed: {auth_err}"
+            )
         if linked_att.source_snapshot_id != snapshot.snapshot_id:
             reasons.append(
                 f"Attestation source_snapshot '{linked_att.source_snapshot_id}' does not match snapshot '{snapshot.snapshot_id}'."

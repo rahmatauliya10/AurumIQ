@@ -687,6 +687,12 @@ class FrictionVerificationMethod(models.TextChoices):
 ACCEPTED_VERIFICATION_METHODS = {m.value for m in FrictionVerificationMethod}
 
 
+class FrictionAttestationStatus(models.TextChoices):
+    DECLARED = "DECLARED", "Declared (Unverified Submission)"
+    VERIFIED = "VERIFIED", "Verified (Authenticated Provenance Chain)"
+    REJECTED = "REJECTED", "Rejected (Failed Trust or Consistency Check)"
+
+
 class FrictionSourceProvenanceAttestation(models.Model):
     """Immutable audit capture record establishing verified provenance and authenticity for a friction source snapshot.
     
@@ -716,6 +722,15 @@ class FrictionSourceProvenanceAttestation(models.Model):
     account_tier = models.CharField(max_length=32, db_index=True)
     raw_artifact_sha256 = models.CharField(max_length=64, db_index=True)
     provenance_metadata = models.JSONField(default=dict, blank=True)
+    attestation_status = models.CharField(
+        max_length=32,
+        choices=FrictionAttestationStatus.choices,
+        default=FrictionAttestationStatus.DECLARED,
+        db_index=True,
+    )
+    verification_authority = models.CharField(max_length=128, blank=True, default="")
+    verification_proof = models.CharField(max_length=256, blank=True, default="")
+    verification_proof_version = models.CharField(max_length=32, blank=True, default="1.0.0")
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = ImmutableManager()
@@ -728,6 +743,7 @@ class FrictionSourceProvenanceAttestation(models.Model):
             models.Index(fields=["component_role", "raw_artifact_sha256"]),
             models.Index(fields=["venue", "symbol", "account_tier"]),
             models.Index(fields=["verification_method"]),
+            models.Index(fields=["attestation_status"]),
         ]
 
     def delete(self, *args, **kwargs):
@@ -736,10 +752,18 @@ class FrictionSourceProvenanceAttestation(models.Model):
     def save(self, *args, **kwargs):
         if self.pk and FrictionSourceProvenanceAttestation.objects.filter(pk=self.pk).exists():
             raise ValueError("FrictionSourceProvenanceAttestation is immutable and append-only.")
+        if self.attestation_status == FrictionAttestationStatus.VERIFIED.value:
+            from apps.market_data.friction.provenance import verify_attestation_proof, is_trusted_verifier
+            is_trusted, v_err = is_trusted_verifier(self.verification_method, self.verifier_identity)
+            if not is_trusted:
+                raise ValidationError(f"Cannot save attestation as VERIFIED: {v_err}")
+            is_valid_proof, p_err = verify_attestation_proof(self)
+            if not is_valid_proof:
+                raise ValidationError(f"Cannot save attestation as VERIFIED: {p_err}")
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
-        return f"Attestation {self.attestation_id[:12]} ({self.component_role} @ {self.verification_method})"
+        return f"Attestation {self.attestation_id[:12]} ({self.component_role} @ {self.verification_method}: {self.attestation_status})"
 
 
 class FrictionSourceQualificationAssertion(models.Model):

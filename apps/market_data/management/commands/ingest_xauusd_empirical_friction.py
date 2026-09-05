@@ -50,6 +50,7 @@ from apps.market_data.friction.slippage_parser import parse_mt5_execution_teleme
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 from apps.market_data.models import (
     FrictionActivationStatus,
+    FrictionAttestationStatus,
     FrictionBindingRole,
     FrictionComponentType,
     FrictionConditionType,
@@ -126,6 +127,12 @@ def _verify_provenance_attestation_file(
 
     if att.get("account_tier") and str(att["account_tier"]).upper() != expected_account_tier.upper():
         return False, None, f"Provenance attestation account tier '{att['account_tier']}' mismatch (expected '{expected_account_tier}')."
+
+    # Directives 1, 3: External JSON attestation files are strictly DECLARED
+    att["attestation_status"] = FrictionAttestationStatus.DECLARED.value
+    att["verification_authority"] = ""
+    att["verification_proof"] = ""
+    att["verification_proof_version"] = "1.0.0"
 
     return True, att, None
 
@@ -269,33 +276,24 @@ def _resolve_source_provenance(
                     None,
                 )
 
-            resolved_type = str(att_dict.get("source_type") or declared_source_type)
-            if resolved_type in qualified_types:
-                origin = str(att_dict.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}")
-                method = str(att_dict.get("collection_methodology") or att_dict.get("verification_method") or f"VERIFIED_{resolved_type}")
-                return (
-                    resolved_type,
-                    origin,
-                    method,
-                    raw_bytes,
-                    computed_sha,
-                    None,
-                    parsed_data,
-                    att_dict,
-                )
-            else:
-                origin = str(att_dict.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}")
-                method = str(att_dict.get("collection_methodology") or "UNQUALIFIED_SOURCE_TYPE")
-                return (
-                    FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
-                    origin,
-                    method,
-                    raw_bytes,
-                    computed_sha,
-                    None,
-                    parsed_data,
-                    None,
-                )
+            # Directives 1, 2, 3, 4: An attestation file supplied by the caller MUST be treated as DECLARED_ATTESTATION, not VERIFIED.
+            # Reading an external provenance JSON creates a DECLARED record without qualification authority.
+            # User-supplied JSON attestation files possess zero trust authority to elevate evidence to a qualified source type.
+            att_dict["attestation_status"] = FrictionAttestationStatus.DECLARED.value
+            att_dict["verification_authority"] = ""
+            att_dict["verification_proof"] = ""
+            origin = str(att_dict.get("source_origin") or f"file://{os.path.abspath(resolved_backing_path)}")
+            method = str(att_dict.get("collection_methodology") or "DECLARED_EXTERNAL_PROVENANCE_FILE")
+            return (
+                FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
+                origin,
+                method,
+                raw_bytes,
+                computed_sha,
+                None,
+                parsed_data,
+                att_dict,
+            )
 
         # No provenance attestation provided: user declaration has ZERO authority.
         # Fails closed to USER_PROVIDED_UNVERIFIED.

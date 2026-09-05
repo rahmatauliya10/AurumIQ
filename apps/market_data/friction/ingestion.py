@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from apps.market_data.models import (
     ACCEPTED_VERIFICATION_METHODS,
     FrictionActivationStatus,
+    FrictionAttestationStatus,
     FrictionBindingRole,
     FrictionComponentType,
     FrictionConditionType,
@@ -61,6 +62,13 @@ from apps.market_data.friction.distribution import (
     validate_spread_dataset_sufficiency,
 )
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
+from apps.market_data.friction.provenance import (
+    CURRENT_PROOF_VERSION,
+    GOVERNED_PROVENANCE_AUTHORITY,
+    compute_verification_proof,
+    is_test_environment,
+    verify_attestation_authenticity,
+)
 from apps.market_data.friction.validation import validate_friction_model_for_activation
 
 logger = logging.getLogger(__name__)
@@ -195,14 +203,19 @@ def create_friction_provenance_attestation(
     symbol: Optional[str] = None,
     account_tier: Optional[str] = None,
     provenance_metadata: Optional[Dict[str, Any]] = None,
+    attestation_status: str = FrictionAttestationStatus.DECLARED.value,
+    verification_authority: str = "",
+    verification_proof: str = "",
+    verification_proof_version: str = "1.0.0",
 ) -> FrictionSourceProvenanceAttestation:
     """Create and persist an immutable FrictionSourceProvenanceAttestation.
     
-    Hard-gate governance (Condition 3):
+    Hard-gate governance:
     - verification_method must belong to ACCEPTED_VERIFICATION_METHODS.
     - verifier_identity must be non-empty.
     - raw_artifact_sha256 must match source_snapshot.raw_payload_bytes_sha256.
-    - Deterministic attestation_id binding snapshot, role, method, verifier, and raw SHA.
+    - VERIFIED status requires genuine cryptographic verification proof.
+    - Deterministic attestation_id binding snapshot, role, method, verifier, raw SHA, and proof.
     """
     if not verification_method or verification_method not in ACCEPTED_VERIFICATION_METHODS:
         raise ValueError(
@@ -217,6 +230,9 @@ def create_friction_provenance_attestation(
             f"PROVENANCE_ERROR: raw_artifact_sha256 '{raw_sha}' does not match snapshot raw_payload_bytes_sha256 '{source_snapshot.raw_payload_bytes_sha256}'."
         )
 
+    if attestation_status == FrictionAttestationStatus.VERIFIED.value and not verification_proof:
+        raise ValueError("PROVENANCE_ERROR: Cannot create VERIFIED attestation without cryptographic verification proof.")
+
     att_venue = venue or source_snapshot.venue
     att_symbol = symbol or source_snapshot.symbol
     att_tier = account_tier or source_snapshot.account_tier
@@ -226,7 +242,7 @@ def create_friction_provenance_attestation(
     att_captured = captured_at or source_snapshot.retrieved_at
 
     attestation_id = hashlib.sha256(
-        f"{source_snapshot.snapshot_id}:{component_role}:{verification_method}:{verifier_identity.strip()}:{raw_sha}".encode()
+        f"{source_snapshot.snapshot_id}:{component_role}:{verification_method}:{verifier_identity.strip()}:{raw_sha}:{attestation_status}:{verification_proof}".encode()
     ).hexdigest()
 
     existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
@@ -250,6 +266,10 @@ def create_friction_provenance_attestation(
         account_tier=att_tier,
         raw_artifact_sha256=raw_sha,
         provenance_metadata=safe_meta,
+        attestation_status=attestation_status,
+        verification_authority=verification_authority,
+        verification_proof=verification_proof,
+        verification_proof_version=verification_proof_version,
     )
 
 
@@ -269,7 +289,7 @@ def create_friction_qualification_assertion(
     Hard-gate qualification governance (Directive 7 & Conditions 2, 4):
     A caller must NOT be able to create a QUALIFIED assertion solely by passing
     qualification_status="QUALIFIED". A valid linked FrictionSourceProvenanceAttestation
-    for the exact raw artifact hash and component role is mandatory.
+    with VERIFIED status and passing authenticity verification is mandatory.
     If absent or invalid, the assertion fails closed to UNVERIFIED.
     """
     raw_sha = raw_artifact_sha256 or source_snapshot.raw_payload_bytes_sha256
@@ -281,7 +301,7 @@ def create_friction_qualification_assertion(
             source_snapshot_id=source_snapshot.snapshot_id,
             component_role=component_role,
             raw_artifact_sha256=raw_sha,
-        ).first()
+        ).order_by("-created_at").first()
 
     eff_status = qualification_status
     eff_reason = qualification_reason
@@ -289,18 +309,26 @@ def create_friction_qualification_assertion(
         if linked_attestation is None:
             eff_status = FrictionQualificationStatus.UNVERIFIED.value
             eff_reason = f"Unverified: Missing valid FrictionSourceProvenanceAttestation for role '{component_role}' and raw SHA '{raw_sha}'."
-        elif (
-            linked_attestation.raw_artifact_sha256 != raw_sha
-            or linked_attestation.source_snapshot_id != source_snapshot.snapshot_id
-            or linked_attestation.component_role != component_role
-            or linked_attestation.verification_method not in ACCEPTED_VERIFICATION_METHODS
-            or not linked_attestation.verifier_identity
-            or (linked_attestation.venue and linked_attestation.venue != source_snapshot.venue)
-            or (linked_attestation.symbol and linked_attestation.symbol != source_snapshot.symbol)
-            or (linked_attestation.account_tier and linked_attestation.account_tier != source_snapshot.account_tier)
-        ):
+        elif linked_attestation.attestation_status != FrictionAttestationStatus.VERIFIED.value:
             eff_status = FrictionQualificationStatus.UNVERIFIED.value
-            eff_reason = "Unverified: Invalid or mismatched FrictionSourceProvenanceAttestation."
+            eff_reason = f"Unverified: Attestation status '{linked_attestation.attestation_status}' is not VERIFIED."
+        else:
+            is_authentic, auth_err = verify_attestation_authenticity(linked_attestation)
+            if not is_authentic:
+                eff_status = FrictionQualificationStatus.UNVERIFIED.value
+                eff_reason = f"Unverified: Attestation authenticity verification failed: {auth_err}"
+            elif (
+                linked_attestation.raw_artifact_sha256 != raw_sha
+                or linked_attestation.source_snapshot_id != source_snapshot.snapshot_id
+                or linked_attestation.component_role != component_role
+                or linked_attestation.verification_method not in ACCEPTED_VERIFICATION_METHODS
+                or not linked_attestation.verifier_identity
+                or (linked_attestation.venue and linked_attestation.venue != source_snapshot.venue)
+                or (linked_attestation.symbol and linked_attestation.symbol != source_snapshot.symbol)
+                or (linked_attestation.account_tier and linked_attestation.account_tier != source_snapshot.account_tier)
+            ):
+                eff_status = FrictionQualificationStatus.UNVERIFIED.value
+                eff_reason = "Unverified: Invalid or mismatched FrictionSourceProvenanceAttestation."
 
     att_id_part = linked_attestation.attestation_id if linked_attestation else "NO_ATT"
     assertion_id = hashlib.sha256(
@@ -582,22 +610,44 @@ def build_and_bind_friction_model_version(
     ])
 
     if test_qualification_seam:
-        from django.conf import settings
-        is_testing = (
-            getattr(settings, "IS_TESTING", False)
-            or "testing" in getattr(settings, "SETTINGS_MODULE", "").lower()
-            or getattr(settings, "DEBUG", False)
-        )
-        if not is_testing:
+        if not is_test_environment():
             raise PermissionError("PRODUCTION_SECURITY_VIOLATION: test_qualification_seam is strictly isolated to test environments.")
+
+        def _create_seam_attestation(snap, r_name, v_meth):
+            cap_dt = snap.retrieved_at or datetime.now(timezone.utc)
+            seam_proof = compute_verification_proof(
+                source_snapshot_id=snap.snapshot_id,
+                raw_artifact_sha256=snap.raw_payload_bytes_sha256,
+                component_role=r_name,
+                verification_method=v_meth,
+                source_type=snap.source_type,
+                venue=snap.venue,
+                symbol=snap.symbol,
+                account_tier=snap.account_tier,
+                captured_at=cap_dt,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+                verification_authority=GOVERNED_PROVENANCE_AUTHORITY,
+                verification_proof_version=CURRENT_PROOF_VERSION,
+            )
+            return create_friction_provenance_attestation(
+                source_snapshot=snap,
+                component_role=r_name,
+                verification_method=v_meth,
+                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+                captured_at=cap_dt,
+                reviewed_at=datetime.now(timezone.utc),
+                attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                verification_authority=GOVERNED_PROVENANCE_AUTHORITY,
+                verification_proof=seam_proof,
+                verification_proof_version=CURRENT_PROOF_VERSION,
+            )
 
         if legal_entity_snapshot and not legal_entity_snapshot.qualification_assertions.filter(component_role="LEGAL_ENTITY").exists():
             parsed = parse_legal_entity_backing_artifact(legal_entity_snapshot.raw_content, parser_version=parser_version)
-            att = create_friction_provenance_attestation(
-                source_snapshot=legal_entity_snapshot,
-                component_role="LEGAL_ENTITY",
-                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                legal_entity_snapshot,
+                "LEGAL_ENTITY",
+                FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=legal_entity_snapshot,
@@ -610,11 +660,10 @@ def build_and_bind_friction_model_version(
             )
         if contract_spec_snapshot and not contract_spec_snapshot.qualification_assertions.filter(component_role="CONTRACT_SPEC").exists():
             parsed = parse_contract_spec_backing_artifact(contract_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
-            att = create_friction_provenance_attestation(
-                source_snapshot=contract_spec_snapshot,
-                component_role="CONTRACT_SPEC",
-                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                contract_spec_snapshot,
+                "CONTRACT_SPEC",
+                FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=contract_spec_snapshot,
@@ -627,11 +676,10 @@ def build_and_bind_friction_model_version(
             )
         if fee_schedule_snapshot and not fee_schedule_snapshot.qualification_assertions.filter(component_role="COMMISSION").exists():
             parsed = parse_commission_backing_artifact(fee_schedule_snapshot.raw_content, expected_symbol=symbol, expected_account_tier=account_tier, parser_version=parser_version)
-            att = create_friction_provenance_attestation(
-                source_snapshot=fee_schedule_snapshot,
-                component_role="COMMISSION",
-                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                fee_schedule_snapshot,
+                "COMMISSION",
+                FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=fee_schedule_snapshot,
@@ -644,11 +692,10 @@ def build_and_bind_friction_model_version(
             )
         if swap_spec_snapshot and not swap_spec_snapshot.qualification_assertions.filter(component_role="FINANCING").exists():
             parsed = parse_financing_backing_artifact(swap_spec_snapshot.raw_content, expected_symbol=symbol, parser_version=parser_version)
-            att = create_friction_provenance_attestation(
-                source_snapshot=swap_spec_snapshot,
-                component_role="FINANCING",
-                verification_method=FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                swap_spec_snapshot,
+                "FINANCING",
+                FrictionVerificationMethod.MANUAL_REVIEWED_OFFICIAL_DOCUMENT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=swap_spec_snapshot,
@@ -660,11 +707,10 @@ def build_and_bind_friction_model_version(
                 provenance_attestation=att,
             )
         if evidence_dataset and evidence_dataset.source_snapshot and not evidence_dataset.source_snapshot.qualification_assertions.filter(component_role="SPREAD_DATASET").exists():
-            att = create_friction_provenance_attestation(
-                source_snapshot=evidence_dataset.source_snapshot,
-                component_role="SPREAD_DATASET",
-                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                evidence_dataset.source_snapshot,
+                "SPREAD_DATASET",
+                FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=evidence_dataset.source_snapshot,
@@ -676,11 +722,10 @@ def build_and_bind_friction_model_version(
                 provenance_attestation=att,
             )
         if telemetry_dataset and telemetry_dataset.source_snapshot and not telemetry_dataset.source_snapshot.qualification_assertions.filter(component_role="SLIPPAGE_DATASET").exists():
-            att = create_friction_provenance_attestation(
-                source_snapshot=telemetry_dataset.source_snapshot,
-                component_role="SLIPPAGE_DATASET",
-                verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
-                verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+            att = _create_seam_attestation(
+                telemetry_dataset.source_snapshot,
+                "SLIPPAGE_DATASET",
+                FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
             )
             create_friction_qualification_assertion(
                 source_snapshot=telemetry_dataset.source_snapshot,

@@ -2,6 +2,7 @@
 from .base import *  # noqa: F403
 
 DEBUG = False
+IS_TESTING = True
 SECRET_KEY = "test-secret-key-only-used-for-automated-pytest-suites"
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
