@@ -44,7 +44,7 @@ To prevent speculative abstraction and accidental breakage of historical regress
 | **MT5 Bridge Adapter** | `tools/mt5_bridge/adapter.py`, `main.py` | Optional read-only bridge for local MT5 tick and fill extraction | Standalone CLI | `test_mt5_bridge.py` | `OPTIONAL_ACTIVE` | **NO** | Keep read-only | Strictly optional; contains zero automated order execution code. |
 | **Uvicorn ASGI Runtime** | `pyproject.toml`, `docker/Dockerfile.prod` | Production ASGI web server running Django | Production Docker container | Docker build CI | `CORE_ACTIVE` | **NO** | Keep in core dependencies | Required by `Dockerfile.prod` CMD: `uvicorn config.asgi:application`. Moving would break prod build. |
 | **ML Libraries** | `scikit-learn`, `xgboost`, `lightgbm`, `optuna`, `pywavelets` | Machine learning stack for Phase 9 | Optional research | None in core runtime | `RESEARCH_ONLY` / `OPTIONAL_ML` | **NO** | Already optional in `pyproject.toml` | Already safely partitioned under `[project.optional-dependencies] ml`. |
-| **Machine Learning Celery Queue** | `config/settings/base.py` (`CELERY_TASK_QUEUES["machine_learning"]`) | Task queue reserved for Phase 9 | None (0 tasks) | None (0) | `DEAD_CONFIRMED` | **YES** | Remove from active queue configuration | Unused queue consuming broker resources with 0 active workers or tasks. |
+| **Machine Learning Celery Queue** | `config/settings/base.py` (`CELERY_TASK_QUEUES["machine_learning"]`) | Task queue reserved for Phase 9 | None (0 active tasks) | `test_celery_queues_configured` | `LEGACY_COMPATIBILITY` | **NO** | Retain for Phase 0 contract compatibility | Reclassified per governance rule: tests enforce its definition as part of Phase 0 contract verification; zero test deletion allowed. |
 | **Client IP Resolution** | `apps/accounts/views.py` (`_get_client_ip`) | Extracts client IP for user management audit logging | Admin views | Account integration tests | `SECURITY_DEFECT` | **YES** | Harden to default to `REMOTE_ADDR` | Prevent IP spoofing via untrusted `HTTP_X_FORWARDED_FOR` headers. |
 | **Admin User Creation Password Validation** | `apps/accounts/views.py` (`UserCreationView.post`) | Creates users via admin dashboard | Web admin | Account tests | `SECURITY_DEFECT` | **YES** | Add `validate_password()` call | Ensure `AUTH_PASSWORD_VALIDATORS` are strictly enforced for admin user creation. |
 | **Project Identity Metadata** | `pyproject.toml` (`name = "xaut-signal-intelligence"`) | Package naming metadata | Packaging/build | Build system | `LEGACY_COMPATIBILITY` | **YES** | Update to `aurumiq` | Aligns project identity with post-XAUT institutional Gold Intelligence. |
@@ -62,13 +62,15 @@ To prevent speculative abstraction and accidental breakage of historical regress
   - Zero external callers exist for `engine.backtesting`.
 - **Action:** Delete `engine/backtesting/` directory.
 
-### 2. Defer Inactive `machine_learning` Celery Queue
+### 2. Celery Queue Runtime Audit & Reclassification
 - **Path:** `config/settings/base.py`
 - **Findings:**
   - Audited all 12 `@shared_task` definitions across `apps/`.
-  - Tasks strictly route to: `market_data`, `analysis`, `backtest`, `maintenance`.
-  - Zero tasks route to `machine_learning`.
-- **Action:** Remove `machine_learning` from `CELERY_TASK_QUEUES`. Keep comment noting Phase 9 will define it when authorized.
+  - Active tasks strictly route to: `market_data`, `analysis`, `backtest`, `maintenance`.
+  - Zero active runtime tasks route to `machine_learning`.
+  - However, `tests/unit/test_celery.py::test_celery_queues_configured` strictly tests the Phase 0 frozen contract asserting the 5 foundational queues.
+- **Action:**
+  - In accordance with the governance rule (*"No test deletion merely to make cleanup pass. If tests expose an active dependency: reclassify instead of forcing deletion"*), `machine_learning` is reclassified as `LEGACY_COMPATIBILITY`. It is retained in settings with explicit documentation that no active workers or tasks are routed to it in the current XAUUSD pipeline.
 
 ### 3. Security Micro-Hardening in `apps/accounts/views.py`
 - **Path:** `apps/accounts/views.py`
