@@ -142,7 +142,8 @@ CELERY_TIMEZONE = "UTC"
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
 
-# 5 Named Celery Queues
+# Named Celery Queues (Active runtime: market_data, analysis, backtest, maintenance)
+# Unused/future queues (machine_learning for Phase 9, alerts) are deferred until active callers exist.
 CELERY_TASK_QUEUES = {
     "market_data": {
         "exchange": "market_data",
@@ -156,17 +157,9 @@ CELERY_TASK_QUEUES = {
         "exchange": "backtest",
         "routing_key": "backtest.#",
     },
-    "machine_learning": {
-        "exchange": "machine_learning",
-        "routing_key": "machine_learning.#",
-    },
     "maintenance": {
         "exchange": "maintenance",
         "routing_key": "maintenance.#",
-    },
-    "alerts": {
-        "exchange": "alerts",
-        "routing_key": "alerts.#",
     },
 }
 

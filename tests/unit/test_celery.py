@@ -6,13 +6,15 @@ from config.celery import app as celery_app, debug_task
 
 @pytest.mark.unit
 def test_celery_queues_configured():
-    """Verify all 5 required Celery queues are defined."""
+    """Verify active Celery queues are defined and unused queues are deferred."""
     queues = settings.CELERY_TASK_QUEUES
     assert "market_data" in queues
     assert "analysis" in queues
     assert "backtest" in queues
-    assert "machine_learning" in queues
     assert "maintenance" in queues
+    assert "machine_learning" not in queues
+    assert "alerts" not in queues
+
 
 
 @pytest.mark.unit

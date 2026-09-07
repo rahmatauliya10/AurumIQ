@@ -1,8 +1,8 @@
 [project]
-name = "xaut-signal-intelligence"
+name = "aurumiq"
 version = "0.1.0"
-description = "Research-grade XAUT Signal Intelligence decision-support web application"
-authors = [{ name = "XAUT Intelligence Team" }]
+description = "Institutional-grade multi-timeframe quantitative gold intelligence platform"
+authors = [{ name = "AurumIQ Team" }]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

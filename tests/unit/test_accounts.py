@@ -368,3 +368,83 @@ class ConcurrencyAdminLockoutTests(TransactionTestCase):
         active_admins = User.objects.filter(is_active=True, profile__role=UserRole.ADMIN).count()
         assert active_admins >= 1, f"Zero active admins remained! Results: {results}"
 
+
+@pytest.mark.unit
+def test_client_ip_defaults_to_remote_addr(rf):
+    """Ensure _get_client_ip defaults to REMOTE_ADDR and ignores untrusted X-Forwarded-For."""
+    from apps.accounts.views import _get_client_ip
+
+    request = rf.get("/accounts/profile/", HTTP_X_FORWARDED_FOR="203.0.113.195, 70.41.3.18", REMOTE_ADDR="198.51.100.1")
+    assert _get_client_ip(request) == "198.51.100.1"
+
+
+@pytest.mark.unit
+def test_client_ip_honors_forwarded_when_trusted(rf, settings):
+    """Ensure _get_client_ip honors X-Forwarded-For only when TRUST_REVERSE_PROXY is enabled."""
+    from apps.accounts.views import _get_client_ip
+
+    settings.TRUST_REVERSE_PROXY = True
+    request = rf.get("/accounts/profile/", HTTP_X_FORWARDED_FOR="203.0.113.195, 70.41.3.18", REMOTE_ADDR="198.51.100.1")
+    assert _get_client_ip(request) == "203.0.113.195"
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_user_creation_view_rejects_weak_password(rf, admin_user):
+    """Ensure UserCreateView enforces Django password validators."""
+    from apps.accounts.views import UserCreateView
+
+    request = rf.post(
+        "/accounts/users/create/",
+        {
+            "username": "newuser",
+            "email": "newuser@example.com",
+            "password": "1",  # Too short (fails MinimumLengthValidator)
+            "role": UserRole.VIEWER.value,
+        },
+    )
+    request.user = admin_user
+    # Add messages framework support
+    from django.contrib.messages.storage.fallback import FallbackStorage
+    setattr(request, "session", {})
+    messages = FallbackStorage(request)
+    setattr(request, "_messages", messages)
+
+    view = UserCreateView()
+    response = view.post(request)
+    assert response.status_code == 302
+    assert not User.objects.filter(username="newuser").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_user_creation_view_rejects_password_similar_to_user_attributes(rf, admin_user):
+    """Ensure UserCreateView passes candidate User context and rejects password similar to username."""
+    from apps.accounts.views import UserCreateView
+
+    unique_username = "SufficientlyLongUniqueOperator2026"
+    request = rf.post(
+        "/accounts/users/create/",
+        {
+            "username": unique_username,
+            "email": "unique_op@aurumiq.internal",
+            "first_name": "Unique",
+            "last_name": "Operator",
+            "password": unique_username,  # Exactly matching username (fails UserAttributeSimilarityValidator)
+            "role": UserRole.VIEWER.value,
+        },
+    )
+    request.user = admin_user
+    from django.contrib.messages.storage.fallback import FallbackStorage
+    setattr(request, "session", {})
+    messages = FallbackStorage(request)
+    setattr(request, "_messages", messages)
+
+    view = UserCreateView()
+    response = view.post(request)
+    assert response.status_code == 302
+    assert not User.objects.filter(username=unique_username).exists()
+
+    # Verify that the similarity error message from UserAttributeSimilarityValidator was captured
+    error_messages = [str(m) for m in messages]
+    assert any("too similar" in m.lower() for m in error_messages), f"Expected similarity validation error, got: {error_messages}"

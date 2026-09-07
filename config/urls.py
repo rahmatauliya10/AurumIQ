@@ -6,10 +6,11 @@ from django.http import JsonResponse
 
 def health_check(request):
     """Basic health check endpoint for container probes."""
-    return JsonResponse({"status": "ok", "service": "xaut-signal-intelligence"})
+    return JsonResponse({"status": "ok", "service": "aurumiq"})
 
 
 from apps.live_monitor.views import LivenessHealthView, ReadinessHealthView
+from django.views.generic import RedirectView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -20,5 +21,5 @@ urlpatterns = [
     path("health/ready/", ReadinessHealthView.as_view(), name="health_ready"),
     path("dashboard/", include("apps.dashboard.urls", namespace="dashboard")),
     path("live/", include("apps.live_monitor.urls", namespace="live_monitor")),
-    path("", include("apps.live_monitor.urls", namespace="root_live")),
+    path("", RedirectView.as_view(pattern_name="dashboard:overview", permanent=False), name="root_overview"),
 ]

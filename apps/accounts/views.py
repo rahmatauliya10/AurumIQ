@@ -19,10 +19,12 @@ from apps.accounts.services import disable_user_safely, update_user_role_safely
 
 
 def _get_client_ip(request: HttpRequest) -> str:
-    """Extract client IP address safely from request headers."""
-    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
+    """Extract client IP address safely, defaulting to REMOTE_ADDR unless trusted proxy is configured."""
+    from django.conf import settings
+    if getattr(settings, "TRUST_REVERSE_PROXY", False):
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        if x_forwarded_for:
+            return x_forwarded_for.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "")
 
 
@@ -131,6 +133,22 @@ class UserCreateView(RoleRequiredMixin, View):
 
         if User.objects.filter(username=username).exists():
             messages.error(request, f"User with username '{username}' already exists.")
+            return redirect("accounts:user_management")
+
+        from django.contrib.auth.password_validation import validate_password
+        from django.core.exceptions import ValidationError
+
+        candidate_user = User(
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        try:
+            validate_password(password, user=candidate_user)
+        except ValidationError as e:
+            for error in e.messages:
+                messages.error(request, error)
             return redirect("accounts:user_management")
 
         if role not in UserRole.values:

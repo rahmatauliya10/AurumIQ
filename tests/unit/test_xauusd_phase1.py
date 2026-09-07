@@ -11,6 +11,7 @@ from apps.market_data.normalization import QuoteNormalizer
 from apps.market_data.integrity import MarketIntegrityEngine
 from apps.market_data.providers.base import RawCandle
 from apps.market_data.providers.xauusd_spot import XauUsdSpotProvider
+from apps.market_data.providers.twelve_data import TwelveDataProvider
 from apps.market_data.providers.xauusd_secondary import SecondaryXauUsdSpotProvider
 from apps.market_data.providers.registry import registry
 from apps.market_data.repositories import DjangoCandleRepository
@@ -21,13 +22,13 @@ class TestXauUsdUnit(TestCase):
     """Unit test cases for XAUUSD ingestion infrastructure."""
 
     def test_registry_contains_xauusd_providers(self):
-        """Verify registry contains primary and secondary XAUUSD spot providers."""
-        assert registry.has("xauusd_primary") is True
+        """Verify registry contains active primary (Twelve Data) and secondary XAUUSD spot providers."""
+        assert registry.has("twelve_data_xauusd") is True
         assert registry.has("xauusd_secondary") is True
 
-        p1 = registry.get("xauusd_primary")
-        assert isinstance(p1, XauUsdSpotProvider)
-        assert p1.provider_id == "xauusd_primary"
+        p1 = registry.get("twelve_data_xauusd")
+        assert isinstance(p1, TwelveDataProvider)
+        assert p1.provider_id == "twelve_data_xauusd"
 
         p2 = registry.get("xauusd_secondary")
         assert isinstance(p2, SecondaryXauUsdSpotProvider)

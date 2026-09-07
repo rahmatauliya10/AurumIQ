@@ -32,7 +32,7 @@ def _get_setting(key: str, default=None):
 
 @shared_task(queue="market_data")
 def ingest_primary_candles(
-    instrument_symbol: str = "XAUT/USDT",
+    instrument_symbol: str = "XAU/USD",
     timeframes: list[str] = None,
     lookback_bars: int = 50,
     xauusd_max_divergence_pct: Optional[Decimal] = None,
@@ -134,7 +134,16 @@ def ingest_primary_candles(
             return {"status": "error", "message": f"No active listing for {instrument_symbol}."}
 
     # Provider Resolution & Health Check (PATCH C)
-    provider = registry.get(listing.provider)
+    try:
+        provider = registry.get(listing.provider)
+    except KeyError:
+        return {
+            "status": "error",
+            "reason": "LEGACY_PROVIDER_NOT_REGISTERED",
+            "message": f"Market data provider '{listing.provider}' is not registered in active registry.",
+            "instrument": instrument_symbol,
+            "candles_ingested": 0,
+        }
     if is_xauusd:
         if not provider or not provider.is_configured():
             DataQualitySnapshot.objects.create(
@@ -208,7 +217,19 @@ def ingest_primary_candles(
             "candles_ingested": 0,
         }
 
-    usdt_rate_provider = registry.get("usdt_usd") if not is_direct_usd else None
+    if not is_direct_usd:
+        try:
+            usdt_rate_provider = registry.get("usdt_usd")
+        except KeyError:
+            return {
+                "status": "error",
+                "reason": "LEGACY_PROVIDER_NOT_REGISTERED",
+                "message": "Non-USD quote normalization provider 'usdt_usd' is not registered in active registry.",
+                "instrument": instrument_symbol,
+                "candles_ingested": 0,
+            }
+    else:
+        usdt_rate_provider = None
     current_usdt_rate = getattr(usdt_rate_provider, "get_current_rate", lambda: None)() if usdt_rate_provider else None
 
     normalizer = QuoteNormalizer()
@@ -476,7 +497,7 @@ def ingest_primary_candles(
 
 @shared_task(queue="market_data")
 def ingest_resolution_candles(
-    instrument_symbol: str = "XAUT/USDT",
+    instrument_symbol: str = "XAU/USD",
     timeframes: list[str] = None,
     lookback_bars: int = 60,
 ) -> dict:

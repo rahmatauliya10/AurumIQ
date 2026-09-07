@@ -34,7 +34,7 @@ class Command(BaseCommand):
             "--symbol",
             type=str,
             default="XAU/USD",
-            help="Instrument symbol e.g. XAU/USD (or canonical XAUUSD, XAUT/USDT)",
+            help="Instrument symbol e.g. XAU/USD (legacy XAUT/USDT requires explicit historical compatibility harness/provider setup)",
         )
         parser.add_argument(
             "--timeframes",
@@ -45,7 +45,7 @@ class Command(BaseCommand):
         parser.add_argument("--days", type=int, default=30, help="Days of history to backfill (ignored if --start is provided)")
         parser.add_argument("--start", type=str, default=None, help="Start UTC timestamp (ISO 8601 e.g. 2024-01-01T00:00:00Z)")
         parser.add_argument("--end", type=str, default=None, help="End UTC timestamp (ISO 8601 e.g. 2026-09-01T00:00:00Z)")
-        parser.add_argument("--provider", type=str, default=None, help="Explicit provider ID (e.g. xauusd_primary, binance)")
+        parser.add_argument("--provider", type=str, default=None, help="Explicit provider ID (e.g. twelve_data_xauusd, xauusd_secondary)")
 
     def handle(self, *args, **options):
         raw_symbol = options["symbol"].strip().upper()
@@ -103,7 +103,10 @@ class Command(BaseCommand):
         try:
             provider = registry.get(listing.provider)
         except KeyError:
-            raise CommandError(f"Provider '{listing.provider}' is not registered in ProviderRegistry.")
+            raise CommandError(
+                f"Provider '{listing.provider}' is not registered in ProviderRegistry. "
+                "Historical legacy providers require explicit registration in a compatibility harness."
+            )
 
         if not provider.is_configured():
             if listing.provider == "xauusd_primary":
@@ -116,7 +119,12 @@ class Command(BaseCommand):
         # 4. Determine quote normalization
         is_direct_usd = (instrument.quote_asset.code == "USD")
         if not is_direct_usd:
-            usdt_rate_provider = registry.get("usdt_usd")
+            try:
+                usdt_rate_provider = registry.get("usdt_usd")
+            except KeyError:
+                raise CommandError(
+                    "Non-USD quote normalization requires 'usdt_usd' provider registered in ProviderRegistry."
+                )
             current_usdt_rate = getattr(usdt_rate_provider, "get_current_rate", lambda: Decimal("1.0"))()
             normalizer = QuoteNormalizer()
         else:

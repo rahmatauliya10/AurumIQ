@@ -5,7 +5,7 @@
 > **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**
 > **Historical Phase 7 Merge SHA:** `57f6de1405d0df8548182a166d245f1a3173363d` (Merged via PR #15; Base SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`)
 > **Phase 7 Reviewed Head:** `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`
-> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Last Verified Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged; Post-Merge CI Green)
 > **Calibration Status:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 ---
