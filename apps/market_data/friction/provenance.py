@@ -412,11 +412,71 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
 # Broker URL Capture — Governed HTTP Transport Boundary
 # --------------------------------------------------------------------------------------
 
+RECEIPT_DOMAIN_BROKER = "AURUMIQ_BROKER_RECEIPT_V1"
+RECEIPT_DOMAIN_MT5 = "AURUMIQ_MT5_RECEIPT_V1"
+
+
+def compute_broker_receipt_auth_tag(
+    requested_url: str,
+    final_url: str,
+    http_status: int,
+    content_type: str,
+    response_sha256: str,
+    captured_at_iso: str,
+    collector_version: str,
+    redirect_chain: tuple,
+) -> str:
+    """Compute cryptographic authentication tag for governed broker URL capture receipt.
+
+    Domain-separated: AURUMIQ_BROKER_RECEIPT_V1.
+    Uses HMAC-SHA256 with application-controlled provenance signing secret.
+    """
+    redirect_repr = json.dumps(list(redirect_chain), separators=(",", ":")) if redirect_chain else "[]"
+    parts = [
+        f"domain={RECEIPT_DOMAIN_BROKER}",
+        f"req_url={requested_url.strip()}",
+        f"final_url={final_url.strip()}",
+        f"status={http_status}",
+        f"content_type={content_type.strip()}",
+        f"sha256={response_sha256.strip().lower()}",
+        f"captured={captured_at_iso.strip()}",
+        f"collector_ver={collector_version.strip()}",
+        f"redirects={redirect_repr}",
+    ]
+    canonical = "|".join(parts)
+    secret = get_governed_signing_secret()
+    return hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_broker_receipt_auth_tag(receipt: Any) -> bool:
+    """Verify cryptographic authentication tag on BrokerCaptureReceipt.
+
+    Recomputes expected tag over canonical receipt payload and compares with hmac.compare_digest.
+    """
+    tag = getattr(receipt, "receipt_auth_tag", "") or ""
+    if not tag or not isinstance(tag, str) or not tag.strip():
+        return False
+    captured_at = getattr(receipt, "captured_at", None)
+    captured_iso = captured_at.isoformat() if hasattr(captured_at, "isoformat") else str(captured_at)
+    expected = compute_broker_receipt_auth_tag(
+        requested_url=str(getattr(receipt, "requested_url", "")),
+        final_url=str(getattr(receipt, "final_url", "")),
+        http_status=int(getattr(receipt, "http_status", 0)),
+        content_type=str(getattr(receipt, "content_type", "")),
+        response_sha256=str(getattr(receipt, "response_sha256", "")),
+        captured_at_iso=captured_iso,
+        collector_version=str(getattr(receipt, "collector_version", "")),
+        redirect_chain=tuple(getattr(receipt, "redirect_chain", ()) or ()),
+    )
+    return hmac.compare_digest(tag.strip().lower(), expected.strip().lower())
+
+
 @dataclass(frozen=True)
 class BrokerCaptureReceipt:
     """Immutable transport receipt from governed broker URL capture.
 
     All fields are derived from the actual HTTP transport — none are caller-supplied.
+    Carries receipt_auth_tag computed by execute_governed_broker_url_capture().
     """
     requested_url: str
     final_url: str
@@ -427,6 +487,7 @@ class BrokerCaptureReceipt:
     captured_at: datetime
     collector_version: str
     redirect_chain: tuple  # tuple of intermediate redirect URLs
+    receipt_auth_tag: str = ""
 
 
 def _validate_broker_url(url: str, *, context: str = "BROKER_CAPTURE_ERROR") -> None:
@@ -481,14 +542,19 @@ def execute_governed_broker_url_capture(
     - Redirect count bounded (MAX_BROKER_REDIRECTS).
     - Explicit timeout (BROKER_CAPTURE_TIMEOUT_SECONDS).
     - Response SHA-256 computed from actual transport bytes.
+    - Cryptographic receipt_auth_tag computed over canonical fields.
 
-    http_client: Optional test injection. Callable(url) -> (response_bytes,
-    final_url, http_status, content_type, redirect_chain_list).
-    Test mocks provide transport output; redirect/domain/HTTPS validation logic
-    still runs on the returned data.
+    http_client: Test-only injection. Outside explicit test environment,
+    caller-supplied http_client is strictly prohibited (raises PermissionError).
     """
     # 1. Validate initial URL (always runs)
     _validate_broker_url(url)
+
+    # Test transport injection is strictly test-only
+    if http_client is not None and not is_test_environment():
+        raise PermissionError(
+            "BROKER_CAPTURE_ERROR: http_client mock transport injection is strictly prohibited outside test environment."
+        )
 
     captured_at = datetime.now(timezone.utc)
 
@@ -535,8 +601,22 @@ def execute_governed_broker_url_capture(
     # Validate final URL
     _validate_broker_url(final_url, context="BROKER_CAPTURE_ERROR")
 
-    # 3. Build immutable receipt
+    # 3. Build immutable receipt with authenticated receipt tag
     response_sha256 = hashlib.sha256(response_bytes).hexdigest()
+    captured_iso = captured_at.isoformat()
+    collector_version = BROKER_COLLECTOR_VERSION
+    redirect_chain_tuple = tuple(redirect_chain)
+
+    receipt_auth_tag = compute_broker_receipt_auth_tag(
+        requested_url=url,
+        final_url=final_url,
+        http_status=http_status,
+        content_type=content_type,
+        response_sha256=response_sha256,
+        captured_at_iso=captured_iso,
+        collector_version=collector_version,
+        redirect_chain=redirect_chain_tuple,
+    )
 
     return BrokerCaptureReceipt(
         requested_url=url,
@@ -546,8 +626,9 @@ def execute_governed_broker_url_capture(
         response_bytes=response_bytes,
         response_sha256=response_sha256,
         captured_at=captured_at,
-        collector_version=BROKER_COLLECTOR_VERSION,
-        redirect_chain=tuple(redirect_chain),
+        collector_version=collector_version,
+        redirect_chain=redirect_chain_tuple,
+        receipt_auth_tag=receipt_auth_tag,
     )
 
 
@@ -563,7 +644,8 @@ def create_verified_broker_capture_attestation(
     """Create VERIFIED broker URL capture attestation from governed capture receipt.
 
     The receipt MUST come from execute_governed_broker_url_capture(). The receipt's
-    response_bytes SHA-256 must match the source_snapshot raw SHA.
+    receipt_auth_tag is independently verified. The receipt response_bytes SHA-256
+    must match the source_snapshot raw SHA.
     Derives and validates scope from parsed document structure.
     Computes capture_context_hash from receipt metadata and includes in HMAC proof.
     """
@@ -581,6 +663,14 @@ def create_verified_broker_capture_attestation(
     )
 
     norm_role = str(component_role).strip().upper()
+
+    # 0. Authenticate capture receipt tag (domain separation + HMAC verification)
+    if not getattr(capture_receipt, "receipt_auth_tag", "") or not verify_broker_receipt_auth_tag(capture_receipt):
+        raise ValueError(
+            "BROKER_CAPTURE_ERROR: BrokerCaptureReceipt authentication tag is invalid or missing. "
+            "Caller-constructed or tampered receipts cannot create VERIFIED attestation. "
+            "Receipt must originate from execute_governed_broker_url_capture()."
+        )
 
     # Validate receipt SHA matches snapshot raw SHA (ensures receipt bytes == snapshot bytes)
     if capture_receipt.response_sha256 != source_snapshot.raw_payload_bytes_sha256:
@@ -743,12 +833,73 @@ def create_verified_broker_capture_attestation(
 # MT5 Export — Governed Terminal Bridge Transport Boundary
 # --------------------------------------------------------------------------------------
 
+def compute_mt5_receipt_auth_tag(
+    server: str,
+    broker: str,
+    symbol: str,
+    account_tier: str,
+    terminal_version: str,
+    export_type: str,
+    collector_version: str,
+    capture_id: str,
+    capture_time_iso: str,
+    raw_sha256: str,
+) -> str:
+    """Compute cryptographic authentication tag for governed MT5 export receipt.
+
+    Domain-separated: AURUMIQ_MT5_RECEIPT_V1.
+    Uses HMAC-SHA256 with application-controlled provenance signing secret.
+    """
+    parts = [
+        f"domain={RECEIPT_DOMAIN_MT5}",
+        f"server={server.strip().upper()}",
+        f"broker={broker.strip().upper()}",
+        f"symbol={symbol.strip().upper()}",
+        f"tier={account_tier.strip().upper()}",
+        f"terminal_ver={terminal_version.strip()}",
+        f"export_type={export_type.strip().upper()}",
+        f"collector_ver={collector_version.strip()}",
+        f"capture_id={capture_id.strip()}",
+        f"capture_time={capture_time_iso.strip()}",
+        f"raw_sha={raw_sha256.strip().lower()}",
+    ]
+    canonical = "|".join(parts)
+    secret = get_governed_signing_secret()
+    return hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_mt5_receipt_auth_tag(receipt: Any) -> bool:
+    """Verify cryptographic authentication tag on MT5ExportReceipt.
+
+    Recomputes expected tag over canonical receipt payload and compares with hmac.compare_digest.
+    """
+    tag = getattr(receipt, "receipt_auth_tag", "") or ""
+    if not tag or not isinstance(tag, str) or not tag.strip():
+        return False
+    capture_time = getattr(receipt, "capture_time", None)
+    cap_time_iso = capture_time.isoformat() if hasattr(capture_time, "isoformat") else str(capture_time)
+    expected = compute_mt5_receipt_auth_tag(
+        server=str(getattr(receipt, "server", "")),
+        broker=str(getattr(receipt, "broker", "")),
+        symbol=str(getattr(receipt, "symbol", "")),
+        account_tier=str(getattr(receipt, "account_tier", "")),
+        terminal_version=str(getattr(receipt, "terminal_version", "")),
+        export_type=str(getattr(receipt, "export_type", "")),
+        collector_version=str(getattr(receipt, "collector_version", "")),
+        capture_id=str(getattr(receipt, "capture_id", "")),
+        capture_time_iso=cap_time_iso,
+        raw_sha256=str(getattr(receipt, "raw_sha256", "")),
+    )
+    return hmac.compare_digest(tag.strip().lower(), expected.strip().lower())
+
+
 @dataclass(frozen=True)
 class MT5ExportReceipt:
     """Immutable receipt from governed MT5 export capture transport.
 
     All fields are derived from the governed MT5 terminal bridge / collector output.
     Cannot be freely constructed by callers — must come from execute_governed_mt5_export_capture().
+    Carries receipt_auth_tag computed by execute_governed_mt5_export_capture().
     """
     server: str
     broker: str
@@ -761,6 +912,16 @@ class MT5ExportReceipt:
     capture_time: datetime
     raw_bytes: bytes
     raw_sha256: str
+    receipt_auth_tag: str = ""
+
+
+def _get_production_mt5_bridge():
+    """Internal resolver for production MT5 bridge adapter.
+
+    Returns None until a real internally configured bridge exists.
+    Never accepts caller/CLI parameters.
+    """
+    return None
 
 
 def execute_governed_mt5_export_capture(
@@ -774,17 +935,25 @@ def execute_governed_mt5_export_capture(
 ) -> MT5ExportReceipt:
     """Execute governed MT5 export capture through trusted transport bridge.
 
-    mt5_transport: callable(raw_export_bytes, component_role) -> dict with
-    derived fields from MT5 terminal/collector output. Keys: server, broker,
-    symbol, account_tier, terminal_version, export_type, collector_version,
-    capture_id, capture_time.
+    mt5_transport: Test-only injection. Outside explicit test environment,
+    caller-supplied mt5_transport is strictly prohibited (raises PermissionError).
 
-    In production, NO governed MT5 transport bridge exists yet.
-    Without mt5_transport → RuntimeError → MT5_DIRECT_EXPORT remains DECLARED.
-    Tests inject mock transport that derives fields from parsing.
-    expected_* values are comparison targets only — never fill derived scope.
+    In production, actual_transport resolves via internal bridge adapter (_get_production_mt5_bridge).
+    Since no internal bridge is configured yet, production raises RuntimeError("MT5_TRANSPORT_NOT_AVAILABLE").
+
+    The governed transport MUST explicitly provide all required values:
+    server, broker, symbol, terminal_version, export_type, collector_version,
+    capture_id, capture_time (datetime).
+    None may be synthesized or defaulted.
+    raw_sha256 is independently computed from raw_export_bytes.
     """
-    if mt5_transport is None:
+    if mt5_transport is not None and not is_test_environment():
+        raise PermissionError(
+            "MT5_TRANSPORT_ERROR: mt5_transport mock injection is strictly prohibited outside test environment."
+        )
+
+    actual_transport = mt5_transport if is_test_environment() else _get_production_mt5_bridge()
+    if actual_transport is None:
         raise RuntimeError(
             "MT5_TRANSPORT_NOT_AVAILABLE: No governed MT5 export transport bridge is configured. "
             "MT5_DIRECT_EXPORT requires a real governed MT5 terminal bridge or collector. "
@@ -792,33 +961,71 @@ def execute_governed_mt5_export_capture(
         )
 
     # Transport derives all fields from its output
-    derived = mt5_transport(raw_export_bytes, component_role)
+    derived = actual_transport(raw_export_bytes, component_role)
     if not isinstance(derived, dict):
         raise ValueError("MT5_TRANSPORT_ERROR: Transport must return a dict of derived fields.")
 
-    # Validate required transport-derived fields
-    for required_field in ("server", "broker", "symbol", "terminal_version", "export_type"):
-        if not derived.get(required_field):
+    # Validate all required transport-derived fields — no synthesis, no defaulting!
+    for required_field in (
+        "server",
+        "broker",
+        "symbol",
+        "terminal_version",
+        "export_type",
+        "collector_version",
+        "capture_id",
+        "capture_time",
+    ):
+        val = derived.get(required_field)
+        if val is None or (isinstance(val, str) and not val.strip()):
             raise ValueError(
-                f"MT5_TRANSPORT_ERROR: Transport did not derive required field '{required_field}'."
+                f"MT5_TRANSPORT_ERROR: Governed transport output missing required field '{required_field}'."
             )
 
+    capture_time = derived["capture_time"]
+    if not isinstance(capture_time, datetime):
+        raise ValueError(
+            "MT5_TRANSPORT_ERROR: Governed transport field 'capture_time' must be a datetime instance."
+        )
+
+    server = str(derived["server"]).strip()
+    broker = str(derived["broker"]).strip()
+    symbol = str(derived["symbol"]).strip()
+    account_tier = str(derived.get("account_tier") or "").strip()
+    terminal_version = str(derived["terminal_version"]).strip()
+    export_type = str(derived["export_type"]).strip()
+    collector_version = str(derived["collector_version"]).strip()
+    capture_id = str(derived["capture_id"]).strip()
+
     raw_sha = hashlib.sha256(raw_export_bytes).hexdigest()
+    cap_time_iso = capture_time.isoformat()
+
+    receipt_auth_tag = compute_mt5_receipt_auth_tag(
+        server=server,
+        broker=broker,
+        symbol=symbol,
+        account_tier=account_tier,
+        terminal_version=terminal_version,
+        export_type=export_type,
+        collector_version=collector_version,
+        capture_id=capture_id,
+        capture_time_iso=cap_time_iso,
+        raw_sha256=raw_sha,
+    )
 
     receipt = MT5ExportReceipt(
-        server=str(derived["server"]),
-        broker=str(derived["broker"]),
-        symbol=str(derived["symbol"]),
-        account_tier=str(derived.get("account_tier", "")),
-        terminal_version=str(derived["terminal_version"]),
-        export_type=str(derived["export_type"]),
-        collector_version=str(derived.get("collector_version", MT5_COLLECTOR_VERSION)),
-        capture_id=str(derived.get("capture_id") or hashlib.sha256(
-            f"{raw_sha}:{datetime.now(timezone.utc).isoformat()}".encode()
-        ).hexdigest()[:16]),
-        capture_time=derived.get("capture_time") or datetime.now(timezone.utc),
+        server=server,
+        broker=broker,
+        symbol=symbol,
+        account_tier=account_tier,
+        terminal_version=terminal_version,
+        export_type=export_type,
+        collector_version=collector_version,
+        capture_id=capture_id,
+        capture_time=capture_time,
         raw_bytes=raw_export_bytes,
         raw_sha256=raw_sha,
+        receipt_auth_tag=receipt_auth_tag,
     )
 
     # Validate derived scope matches expected (expected_* are comparison targets only)
@@ -832,7 +1039,7 @@ def execute_governed_mt5_export_capture(
             f"MT5_SCOPE_MISMATCH: Transport derived broker '{receipt.broker}' does not match "
             f"expected '{expected_venue}'."
         )
-    if expected_account_tier and receipt.account_tier:
+    if receipt.account_tier and expected_account_tier:
         if receipt.account_tier.upper() != expected_account_tier.upper():
             raise ValueError(
                 f"MT5_SCOPE_MISMATCH: Transport derived account tier '{receipt.account_tier}' does not match "
@@ -853,8 +1060,9 @@ def create_verified_mt5_export_attestation(
 ) -> Any:
     """Create VERIFIED MT5 export attestation from governed capture receipt.
 
-    The receipt MUST come from execute_governed_mt5_export_capture(). Independently
-    runs component-specific parsers on snapshot raw content as cross-verification.
+    The receipt MUST come from execute_governed_mt5_export_capture(). The receipt's
+    receipt_auth_tag is independently verified. Independently runs component-specific
+    parsers on snapshot raw content as cross-verification.
     Computes capture_context_hash from receipt metadata and includes in HMAC proof.
     """
     from apps.market_data.models import (
@@ -868,6 +1076,14 @@ def create_verified_mt5_export_attestation(
     from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 
     norm_role = str(component_role).strip().upper()
+
+    # 0. Authenticate capture receipt tag (domain separation + HMAC verification)
+    if not getattr(capture_receipt, "receipt_auth_tag", "") or not verify_mt5_receipt_auth_tag(capture_receipt):
+        raise ValueError(
+            "MT5_COLLECTOR_ERROR: MT5ExportReceipt authentication tag is invalid or missing. "
+            "Caller-constructed or tampered receipts cannot create VERIFIED attestation. "
+            "Receipt must originate from execute_governed_mt5_export_capture()."
+        )
 
     # Validate receipt SHA matches snapshot raw SHA
     if capture_receipt.raw_sha256 != source_snapshot.raw_payload_bytes_sha256:
@@ -888,13 +1104,20 @@ def create_verified_mt5_export_attestation(
     # Independent parser cross-verification
     derived_symbol: str = ""
     derived_venue: str = capture_receipt.broker.upper()
-    derived_account_tier: str = capture_receipt.account_tier.upper() or expected_account_tier.upper()
+    # Derived account tier comes ONLY from receipt — NEVER default to expected_account_tier
+    derived_account_tier: str = str(capture_receipt.account_tier or "").strip().upper()
     source_type: str = ""
 
     if norm_role == "SPREAD_DATASET":
         ticks_data, summary = parse_mt5_tick_export(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
         derived_symbol = str(summary.get("symbol") or "")
         source_type = FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
+        # For tick history, account tier is required by model scope
+        if not derived_account_tier:
+            raise ValueError(
+                f"MT5_SCOPE_MISMATCH: Account tier is required for component role '{component_role}' "
+                f"but was not derived from MT5 transport receipt."
+            )
     elif norm_role == "SLIPPAGE_DATASET":
         telemetry_records, summary = parse_mt5_execution_telemetry(
             capture_receipt.raw_bytes,
@@ -902,8 +1125,18 @@ def create_verified_mt5_export_attestation(
             expected_symbol=expected_symbol,
             expected_account_tier=expected_account_tier,
         )
-        derived_symbol = str(summary.get("symbol") or expected_symbol)
-        derived_account_tier = str(summary.get("account_tier") or expected_account_tier).upper()
+        derived_symbol = str(summary.get("symbol") or "")
+        parser_tier = str(summary.get("account_tier") or "").strip().upper()
+        if not derived_account_tier:
+            raise ValueError(
+                f"MT5_SCOPE_MISMATCH: Account tier is required for component role '{component_role}' "
+                f"but was not derived from MT5 transport receipt."
+            )
+        if parser_tier and parser_tier != derived_account_tier:
+            raise ValueError(
+                f"MT5_CROSS_VERIFICATION_FAILED: Parser derived account tier '{parser_tier}' does not match "
+                f"receipt transport-derived tier '{derived_account_tier}'."
+            )
         source_type = FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
     elif norm_role == "CONTRACT_SPEC":
         parsed = parse_contract_spec_backing_artifact(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
@@ -933,18 +1166,19 @@ def create_verified_mt5_export_attestation(
             f"MT5_SCOPE_MISMATCH: Collector derived venue '{derived_venue}' does not match "
             f"expected '{expected_venue}'."
         )
-    if derived_account_tier.upper() != expected_account_tier.upper():
-        raise ValueError(
-            f"MT5_SCOPE_MISMATCH: Collector derived account tier '{derived_account_tier}' does not match "
-            f"expected '{expected_account_tier}'."
-        )
+    if derived_account_tier:
+        if derived_account_tier.upper() != expected_account_tier.upper():
+            raise ValueError(
+                f"MT5_SCOPE_MISMATCH: Collector derived account tier '{derived_account_tier}' does not match "
+                f"expected '{expected_account_tier}'."
+            )
 
     # Validate verifier identity
     is_trusted, err = is_trusted_verifier(FrictionVerificationMethod.MT5_DIRECT_EXPORT.value, verifier_identity)
     if not is_trusted:
         raise ValueError(f"MT5_VERIFIER_ERROR: {err}")
 
-    captured_at = capture_receipt.capture_time or source_snapshot.retrieved_at or datetime.now(timezone.utc)
+    captured_at = capture_receipt.capture_time
     captured_iso = captured_at.isoformat()
 
     # Build provenance metadata with all governed receipt fields
@@ -961,6 +1195,7 @@ def create_verified_mt5_export_attestation(
         "capture_id": capture_receipt.capture_id,
         "capture_time": captured_iso,
         "raw_sha256": computed_raw_sha,
+        "receipt_auth_tag": capture_receipt.receipt_auth_tag,
     }
 
     # Compute capture context hash

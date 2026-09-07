@@ -6202,6 +6202,8 @@ def test_hostile_34_caller_expected_symbol_cannot_overwrite_collector_derived_sy
             "server": "Exness-MT5Real9", "broker": "EXNESS",
             "symbol": parsed.get("symbol", "XAUUSD"), "account_tier": "STANDARD",
             "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "1.0.0", "capture_id": "mt5_cap_34",
+            "capture_time": datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc),
         }
 
     # Transport derives XAUUSD but expected is EURUSD → scope mismatch
@@ -6310,31 +6312,45 @@ def test_hostile_37_pre_migration_existing_attestation_is_never_implicitly_verif
 
 
 @pytest.mark.django_db
-def test_hostile_38_arbitrary_bytes_plus_exness_url_not_verified():
-    """Directive: Caller providing raw bytes + Exness URL string cannot get VERIFIED (capture boundary enforced)."""
+def test_hostile_38_caller_constructed_broker_receipt_with_exact_bytes_fails():
+    """Directive: Caller constructing BrokerCaptureReceipt with exact same snapshot bytes/SHA fails without valid receipt_auth_tag."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
     url = "https://www.exness.com/legal/terms38.html"
+    raw_sha = hashlib.sha256(raw).hexdigest()
 
-    # Create snapshot from arbitrary caller bytes (NOT from governed capture)
+    # Create snapshot from raw bytes
     snap, _ = ingest_friction_source_snapshot(
         url, "URL_SNAP38", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
     )
 
-    # Caller manually constructs a receipt — but the attestation function requires SHA match
-    # with snapshot created from receipt.response_bytes. A forged receipt with different bytes
-    # than the snapshot content will fail.
+    # A. Caller manually constructs a receipt with EXACT same bytes and correct SHA, but no receipt_auth_tag
     forged_receipt = BrokerCaptureReceipt(
         requested_url=url, final_url=url, http_status=200, content_type="text/html",
-        response_bytes=b"DIFFERENT_CONTENT_THAN_SNAPSHOT",
-        response_sha256=hashlib.sha256(b"DIFFERENT_CONTENT_THAN_SNAPSHOT").hexdigest(),
+        response_bytes=raw,  # EXACT MATCH
+        response_sha256=raw_sha,  # EXACT MATCH
         captured_at=now_utc, collector_version="1.0.0", redirect_chain=(),
+        receipt_auth_tag="",  # No auth tag
     )
     with pytest.raises(ValueError) as exc:
         create_verified_broker_capture_attestation(
             source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=forged_receipt,
         )
-    assert "mismatch" in str(exc.value).lower() or "SHA" in str(exc.value)
+    assert "authentication tag" in str(exc.value).lower()
+
+    # B. Caller supplies a tampered/forged auth tag
+    tampered_receipt = BrokerCaptureReceipt(
+        requested_url=url, final_url=url, http_status=200, content_type="text/html",
+        response_bytes=raw,
+        response_sha256=raw_sha,
+        captured_at=now_utc, collector_version="1.0.0", redirect_chain=(),
+        receipt_auth_tag="forged_tag_abcdef1234567890",
+    )
+    with pytest.raises(ValueError) as exc2:
+        create_verified_broker_capture_attestation(
+            source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=tampered_receipt,
+        )
+    assert "authentication tag" in str(exc2.value).lower()
 
 
 @pytest.mark.django_db
@@ -6487,6 +6503,8 @@ def test_hostile_46_mt5_missing_server_fails():
             "server": "",  # Empty server
             "broker": "EXNESS", "symbol": "XAUUSD", "account_tier": "STANDARD",
             "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "1.0.0", "capture_id": "test_id",
+            "capture_time": datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc),
         }
 
     with pytest.raises(ValueError) as exc:
@@ -6512,6 +6530,8 @@ def test_hostile_47_mt5_missing_required_tier_fails():
             "server": "Exness-MT5Real9", "broker": "EXNESS",
             "symbol": "XAUUSD", "account_tier": "PRO",  # Mismatch with expected STANDARD
             "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "1.0.0", "capture_id": "test_id",
+            "capture_time": datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc),
         }
 
     with pytest.raises(ValueError) as exc:
@@ -6539,6 +6559,8 @@ def test_hostile_48_expected_values_cannot_fill_derived_scope():
             "server": "FXPro-MT5Real", "broker": "FXPRO",
             "symbol": "XAUUSD", "account_tier": "STANDARD",
             "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "1.0.0", "capture_id": "test_id",
+            "capture_time": datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc),
         }
 
     with pytest.raises(ValueError) as exc:
@@ -6641,20 +6663,49 @@ def test_hostile_51_valid_governed_mt5_envelope_succeeds():
 
 
 @pytest.mark.django_db
-def test_hostile_52_caller_constructed_mt5_receipt_cannot_itself_establish_trust():
-    """Directive: Caller-constructed MT5ExportReceipt cannot bypass governed transport requirement.
+def test_hostile_52_caller_constructed_mt5_receipt_with_exact_bytes_fails():
+    """Directive: Caller-constructed MT5ExportReceipt with exact bytes/SHA/metadata fails without valid receipt_auth_tag."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_spec = json.dumps({
+        "symbol": "XAUUSD", "digits": 2, "point_size": "0.01",
+        "trade_tick_size": "0.01", "trade_tick_value": "1.00",
+        "contract_size": "100.0", "volume_min": "0.01",
+        "volume_max": "200.0", "volume_step": "0.01",
+    }).encode("utf-8")
+    raw_sha = hashlib.sha256(raw_spec).hexdigest()
 
-    Even if a caller constructs a receipt dataclass directly, the execute function
-    is the only governed path. Without a transport, production remains DECLARED.
-    """
-    # The execute function with no transport raises RuntimeError
-    raw = b"some fake MT5 export data"
-    with pytest.raises(RuntimeError) as exc:
-        execute_governed_mt5_export_capture(
-            raw_export_bytes=raw, component_role="SPREAD_DATASET",
-            mt5_transport=None,
+    snap, _ = ingest_friction_source_snapshot(
+        "mt5://symbols/xauusd", "MT5_SNAP52", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw_content=raw_spec,
+    )
+
+    # A. Direct receipt construction with exact matching bytes and SHA, but empty receipt_auth_tag
+    forged_receipt = MT5ExportReceipt(
+        server="Exness-MT5Real9", broker="EXNESS", symbol="XAUUSD", account_tier="STANDARD",
+        terminal_version="5.0.4590", export_type="SYMBOL_INFO", collector_version="1.0.0",
+        capture_id="forged_cap_52", capture_time=now_utc,
+        raw_bytes=raw_spec, raw_sha256=raw_sha,
+        receipt_auth_tag="",
+    )
+    with pytest.raises(ValueError) as exc:
+        create_verified_mt5_export_attestation(
+            source_snapshot=snap, component_role="CONTRACT_SPEC", capture_receipt=forged_receipt,
         )
-    assert "MT5_TRANSPORT_NOT_AVAILABLE" in str(exc.value)
+    assert "authentication tag" in str(exc.value).lower()
+
+    # B. Direct receipt construction with tampered receipt_auth_tag
+    tampered_receipt = MT5ExportReceipt(
+        server="Exness-MT5Real9", broker="EXNESS", symbol="XAUUSD", account_tier="STANDARD",
+        terminal_version="5.0.4590", export_type="SYMBOL_INFO", collector_version="1.0.0",
+        capture_id="forged_cap_52", capture_time=now_utc,
+        raw_bytes=raw_spec, raw_sha256=raw_sha,
+        receipt_auth_tag="forged_tag_abcdef1234567890",
+    )
+    with pytest.raises(ValueError) as exc2:
+        create_verified_mt5_export_attestation(
+            source_snapshot=snap, component_role="CONTRACT_SPEC", capture_receipt=tampered_receipt,
+        )
+    assert "authentication tag" in str(exc2.value).lower()
 
 
 @pytest.mark.django_db
@@ -6767,4 +6818,160 @@ def test_hostile_58_account_portal_export_manually_forced_verified_outside_tests
         assert is_auth is False
         assert "ACCOUNT_PORTAL_EXPORT" in err
         assert "test environment" in err.lower() or "portal collector" in err.lower()
+
+
+@pytest.mark.django_db
+def test_hostile_59_http_client_injection_prohibited_outside_test_env():
+    """Directive: Injected http_client is prohibited outside explicit test environment."""
+    from unittest.mock import patch
+
+    def mock_client(req_url):
+        return (b"data", req_url, 200, "text/html", [])
+
+    with patch("apps.market_data.friction.provenance.is_test_environment", return_value=False):
+        with pytest.raises(PermissionError) as exc:
+            execute_governed_broker_url_capture("https://www.exness.com/terms", http_client=mock_client)
+        assert "prohibited outside test environment" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_60_mt5_transport_injection_prohibited_outside_test_env():
+    """Directive: Injected mt5_transport is prohibited outside explicit test environment."""
+    from unittest.mock import patch
+
+    def mock_transport(raw_bytes, comp_role):
+        return {}
+
+    with patch("apps.market_data.friction.provenance.is_test_environment", return_value=False):
+        with pytest.raises(PermissionError) as exc:
+            execute_governed_mt5_export_capture(
+                raw_export_bytes=b"raw", component_role="CONTRACT_SPEC", mt5_transport=mock_transport,
+            )
+        assert "prohibited outside test environment" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_61_mt5_transport_missing_capture_id_fails_closed():
+    """Directive: Governed MT5 transport missing capture_id fails closed (no synthesis)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_spec = json.dumps({"symbol": "XAUUSD"}).encode()
+
+    def mock_transport_no_capture_id(raw_bytes, comp_role):
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS", "symbol": "XAUUSD", "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO", "collector_version": "1.0.0",
+            "capture_id": "",  # Missing / empty
+            "capture_time": now_utc,
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_spec, component_role="CONTRACT_SPEC", mt5_transport=mock_transport_no_capture_id,
+        )
+    assert "capture_id" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_62_mt5_transport_missing_capture_time_fails_closed():
+    """Directive: Governed MT5 transport missing capture_time fails closed (no synthesis)."""
+    raw_spec = json.dumps({"symbol": "XAUUSD"}).encode()
+
+    def mock_transport_no_capture_time(raw_bytes, comp_role):
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS", "symbol": "XAUUSD", "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO", "collector_version": "1.0.0",
+            "capture_id": "cap_123",
+            "capture_time": None,  # Missing / not datetime
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_spec, component_role="CONTRACT_SPEC", mt5_transport=mock_transport_no_capture_time,
+        )
+    assert "capture_time" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_63_mt5_transport_missing_collector_version_fails_closed():
+    """Directive: Governed MT5 transport missing collector_version fails closed (no fallback)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_spec = json.dumps({"symbol": "XAUUSD"}).encode()
+
+    def mock_transport_no_collector_version(raw_bytes, comp_role):
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS", "symbol": "XAUUSD", "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "",  # Missing / empty
+            "capture_id": "cap_123",
+            "capture_time": now_utc,
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_spec, component_role="CONTRACT_SPEC", mt5_transport=mock_transport_no_collector_version,
+        )
+    assert "collector_version" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_64_mt5_transport_missing_account_tier_for_spread_fails_closed():
+    """Directive: Governed MT5 transport with missing account_tier cannot default to expected_account_tier for tick data."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    tick_lines = ["<DATE>\t<TIME>\t<BID>\t<ASK>"]
+    for i in range(10):
+        tick_lines.append(f"2026.08.29\t12:00:0{i}.000Z\t2500.00\t2500.20")
+    raw_ticks = "\n".join(tick_lines).encode("utf-8")
+
+    def mock_transport_no_tier(raw_bytes, comp_role):
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS", "symbol": "XAUUSD",
+            "account_tier": "",  # Missing account tier
+            "terminal_version": "5.0.4590", "export_type": "TICKS_CUSTOM",
+            "collector_version": "1.0.0", "capture_id": "cap_tick_64",
+            "capture_time": now_utc,
+        }
+
+    receipt = execute_governed_mt5_export_capture(
+        raw_export_bytes=raw_ticks, component_role="SPREAD_DATASET",
+        mt5_transport=mock_transport_no_tier,
+        expected_account_tier="",  # Caller passes no expected tier
+    )
+    snap, _ = ingest_friction_source_snapshot(
+        "mt5://ticks/xauusd", "MT5_TICK_64", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw_content=receipt.raw_bytes,
+    )
+
+    with pytest.raises(ValueError) as exc:
+        create_verified_mt5_export_attestation(
+            source_snapshot=snap, component_role="SPREAD_DATASET",
+            capture_receipt=receipt, expected_account_tier="STANDARD",
+        )
+    assert "account tier is required" in str(exc.value).lower()
+
+
+
+@pytest.mark.django_db
+def test_hostile_65_provenance_signing_secret_wiring():
+    """Directive: PROVENANCE_SIGNING_SECRET is wired to settings and fails closed in production when unset."""
+    from unittest.mock import patch
+    from apps.market_data.friction.provenance import get_governed_signing_secret
+    from django.conf import settings
+
+    # In test environment, uses configured secret if present, or sentinel key if None
+    with patch.object(settings, "PROVENANCE_SIGNING_SECRET", "custom-test-secret-12345", create=True):
+        secret = get_governed_signing_secret()
+        assert secret == b"custom-test-secret-12345"
+
+    # Outside test environment: unset/None fails closed
+    with patch("apps.market_data.friction.provenance.is_test_environment", return_value=False):
+        with patch.object(settings, "PROVENANCE_SIGNING_SECRET", None, create=True):
+            with pytest.raises(RuntimeError) as exc:
+                get_governed_signing_secret()
+            assert "PROVENANCE_SIGNING_SECRET is not configured" in str(exc.value)
+
+        # Outside test environment: configured secret succeeds
+        with patch.object(settings, "PROVENANCE_SIGNING_SECRET", "prod-governed-secret-xyz", create=True):
+            secret_prod = get_governed_signing_secret()
+            assert secret_prod == b"prod-governed-secret-xyz"
+
 
