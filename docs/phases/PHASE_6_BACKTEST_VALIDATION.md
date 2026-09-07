@@ -4,7 +4,7 @@
 > **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`
 > **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**
 > **Historical Phase 6 Merge SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f` (Merged via PR #14)
-> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Last Verified Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged; Post-Merge CI Green)
 > **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6**
 
 ---

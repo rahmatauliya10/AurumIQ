@@ -3,7 +3,7 @@
 > **Scope:** Multi-Timeframe Quantitative Gold Intelligence Platform
 > **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD`)
 > **Historical Baseline:** `XAUT` (Tether Gold) verified and frozen for baseline audit continuity.
-> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Last Verified Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged; Post-Merge CI Green)
 > **Calibration Status:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 ---

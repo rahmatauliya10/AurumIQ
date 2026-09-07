@@ -43,7 +43,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 
 ## 0.4 Current Verified Implementation Position
 
-> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Last Verified Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged; Post-Merge CI Green)
 > **Current Calibration Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 | Phase / Scope | XAUUSD Status | Governance & Merge Provenance |
