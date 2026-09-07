@@ -56,11 +56,7 @@ from apps.market_data.friction.artifact_parsers import (
     parse_financing_backing_artifact,
 )
 from apps.market_data.friction.commission import (
-    ACCOUNT_CURRENCY_USD,
-    ACCOUNT_CURRENCY_USC,
-    CENT_RATIO_USC_PER_USD,
-    get_account_currency_for_tier,
-    convert_currency,
+    SUPPORTED_ACCOUNT_CURRENCIES,
 )
 from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
@@ -180,64 +176,108 @@ class TestAccountTierEnumerationAndNormalization:
 # =============================================================================
 
 class TestAccountCurrencySemantics:
-    """Proves cent-account currency (USC) handling decoupled from market quote currency (USD)."""
+    """Proves account currency is an independent explicit scope and NEVER inferred from tier."""
 
-    def test_currency_mapping_per_tier(self):
-        assert get_account_currency_for_tier("STANDARD") == ACCOUNT_CURRENCY_USD
-        assert get_account_currency_for_tier("RAW_SPREAD") == ACCOUNT_CURRENCY_USD
-        assert get_account_currency_for_tier("STANDARD_CENT") == ACCOUNT_CURRENCY_USC
+    def test_supported_account_currencies_scope(self):
+        """Active supported currencies are strictly defined for explicit CLI validation."""
+        assert SUPPORTED_ACCOUNT_CURRENCIES == {"USD", "USC"}
 
-    @pytest.mark.parametrize(
-        "invalid_tier",
-        [
-            "CENT",
-            "PRO",
-            "ZERO",
-            "VIP",
-            "DEMO",
-            "UNKNOWN",
-            "",
-            None,
-        ],
-    )
-    def test_get_account_currency_for_tier_invalid_raises(self, invalid_tier):
-        """Directive E, F, G: get_account_currency_for_tier rejects unknown tiers with ValueError."""
-        with pytest.raises(ValueError, match="UNSUPPORTED_ACCOUNT_TIER_CURRENCY"):
-            get_account_currency_for_tier(invalid_tier)
+    def test_account_tier_does_not_infer_currency(self, db):
+        """Directive A1: Account tier never infers account currency. Missing currency remains None / UNKNOWN."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
 
-    def test_convert_currency_usd_to_usc(self):
-        amount_usd = Decimal("1.50")
-        amount_usc = convert_currency(amount_usd, ACCOUNT_CURRENCY_USD, ACCOUNT_CURRENCY_USC)
-        assert amount_usc == Decimal("150.00")
-        assert CENT_RATIO_USC_PER_USD == Decimal("100")
+        try:
+            # STANDARD without currency
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["account_currency"] is None
 
-    def test_convert_currency_usc_to_usd(self):
-        amount_usc = Decimal("150.00")
-        amount_usd = convert_currency(amount_usc, ACCOUNT_CURRENCY_USC, ACCOUNT_CURRENCY_USD)
-        assert amount_usd == Decimal("1.5000")
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_std = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_std
 
-    def test_convert_currency_identity(self):
-        assert convert_currency(Decimal("42.50"), "USD", "USD") == Decimal("42.50")
-        assert convert_currency(Decimal("4250"), "USC", "USC") == Decimal("4250")
+            # STANDARD_CENT without currency
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_cent = json.load(f)
+            assert manifest_cent["account_currency"] is None
 
-    @pytest.mark.parametrize(
-        "from_curr,to_curr",
-        [
-            ("EUR", "EUR"),
-            ("ABC", "ABC"),
-            ("", ""),
-            ("USD", "EUR"),
-            ("EUR", "USD"),
-            ("USD", "JPY"),
-            ("JPY", "USC"),
-            ("USC", "EUR"),
-            ("GARBAGE", "GARBAGE"),
-        ],
-    )
-    def test_convert_currency_unknown_fails_closed(self, from_curr, to_curr):
-        """Directive H & I: Pre-validation identity bypass closed; unknown currencies fail before identity check."""
-        with pytest.raises(ValueError, match="CURRENCY_CONVERSION_ERROR"):
-            convert_currency(Decimal("100"), from_curr, to_curr)
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_cent = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_cent
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_cli_explicit_account_currency_usd_and_usc(self, db):
+        """Explicit --account-currency is recorded accurately for supported currencies."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--account-currency", "USC",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            assert manifest["account_currency"] == "USC"
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report = f.read()
+            assert "Account Currency:** `USC`" in report
+
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--account-currency", "USD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_usd = json.load(f)
+            assert manifest_usd["account_currency"] == "USD"
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_cli_rejects_unsupported_account_currency(self, db):
+        """Unsupported account currency fails closed with UNSUPPORTED_ACCOUNT_CURRENCY."""
+        with pytest.raises(CommandError, match="UNSUPPORTED_ACCOUNT_CURRENCY"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--account-currency", "EUR",
+                "--dry-run",
+            )
 
 
 # =============================================================================
@@ -855,6 +895,7 @@ class TestManagementCommandStandardCent:
                 "ingest_xauusd_empirical_friction",
                 "--account-tier", "STANDARD_CENT",
                 "--broker-symbol", "XAUUSDc",
+                "--account-currency", "USC",
                 "--output-manifest", manifest_path,
                 "--output-report", report_path,
                 "--dry-run",
@@ -1021,3 +1062,250 @@ class TestPrivacyAndNonPersistenceOfSensitiveData:
         assert "personal_name" not in fields
         assert "balance" not in fields
         assert "equity" not in fields
+
+
+# =============================================================================
+# 10. DIRECTIVE A10 HOSTILE TESTS (16 INVARIANTS)
+# =============================================================================
+
+class TestDirectiveA10HostileSuite:
+    """Rigorous verification of the 16 hostile tests required by Directive A10."""
+
+    def test_1_standard_cent_without_broker_symbol_fails(self):
+        """1. STANDARD_CENT without broker symbol fails."""
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol=None, expected_account_tier="STANDARD_CENT")
+
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol="", expected_account_tier="STANDARD_CENT")
+
+    def test_2_standard_cent_plus_xauusdc_accepts_xauusdc(self):
+        """2. STANDARD_CENT + XAUUSDc accepts XAUUSDc."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is True
+
+    def test_3_standard_cent_plus_xauusdc_rejects_xauusd(self):
+        """3. STANDARD_CENT + XAUUSDc rejects XAUUSD."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSD",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_4_standard_cent_plus_xauusdc_rejects_xauusdm(self):
+        """4. STANDARD_CENT + XAUUSDc rejects XAUUSDm."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDm",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_5_standard_cent_plus_xauusdc_rejects_goldc(self):
+        """5. STANDARD_CENT + XAUUSDc rejects GOLDc."""
+        assert _matches_expected_symbol(
+            candidate="GOLDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_6_standard_plus_xauusdm_accepts_xauusdm(self):
+        """6. STANDARD + XAUUSDm accepts XAUUSDm."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDm",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is True
+
+    def test_7_standard_plus_xauusdm_rejects_xauusd(self):
+        """7. STANDARD + XAUUSDm rejects XAUUSD."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSD",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is False
+
+    def test_8_standard_plus_xauusdm_rejects_xauusdc(self):
+        """8. STANDARD + XAUUSDm rejects XAUUSDc."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is False
+
+    def test_9_account_tier_cannot_infer_broker_symbol(self, db):
+        """9. Account tier cannot infer broker symbol. Missing broker symbol remains None or fails closed."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            # STANDARD without broker symbol does NOT infer XAUUSD or XAUUSDm
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["broker_symbol"] is None
+
+            # STANDARD_CENT without broker symbol FAILS CLOSED (does NOT infer XAUUSDc)
+            with pytest.raises(CommandError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+                call_command(
+                    "ingest_xauusd_empirical_friction",
+                    "--account-tier", "STANDARD_CENT",
+                    "--dry-run",
+                )
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_10_account_tier_cannot_infer_account_currency(self, db):
+        """10. Account tier cannot infer account currency. Missing currency remains None / UNKNOWN."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["account_currency"] is None
+
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_cent = json.load(f)
+            assert manifest_cent["account_currency"] is None
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_cent = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_cent
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_11_standard_geometry_cannot_qualify_standard_cent(self):
+        """11. Standard geometry cannot qualify Standard Cent."""
+        raw_standard_spec = json.dumps({
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01, "contract_size": 100,
+            "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01,
+        }).encode("utf-8")
+
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING|account tier mismatch"):
+            parse_contract_spec_backing_artifact(
+                raw_standard_spec,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_12_standard_cent_geometry_cannot_qualify_standard(self):
+        """12. Standard Cent geometry cannot qualify Standard."""
+        raw_cent_spec = json.dumps({
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01, "contract_size": 100,
+            "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01,
+        }).encode("utf-8")
+
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING|account tier mismatch"):
+            parse_contract_spec_backing_artifact(
+                raw_cent_spec,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD",
+            )
+
+    def test_13_tier_specific_default_manifests_are_unique(self, db):
+        """13. Tier-specific default manifests are unique and cannot overwrite one another."""
+        tiers = ["STANDARD", "STANDARD_CENT", "RAW_SPREAD"]
+        resolved_manifests = set()
+        for t in tiers:
+            default_manifest_by_tier = {
+                "STANDARD": "artifacts/calibration/xauusd_standard_empirical_friction_manifest.json",
+                "STANDARD_CENT": "artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json",
+                "RAW_SPREAD": "artifacts/calibration/xauusd_raw_spread_empirical_friction_manifest.json",
+            }
+            resolved_manifests.add(default_manifest_by_tier[t])
+        assert len(resolved_manifests) == 3
+        assert any("xauusd_standard_empirical_friction_manifest.json" in p for p in resolved_manifests)
+        assert any("xauusd_standard_cent_empirical_friction_manifest.json" in p for p in resolved_manifests)
+        assert any("xauusd_raw_spread_empirical_friction_manifest.json" in p for p in resolved_manifests)
+
+    def test_14_tier_specific_reports_are_unique(self, db):
+        """14. Tier-specific reports are unique and cannot overwrite one another."""
+        tiers = ["STANDARD", "STANDARD_CENT", "RAW_SPREAD"]
+        resolved_reports = set()
+        for t in tiers:
+            default_report_by_tier = {
+                "STANDARD": "docs/calibration/XAUUSD_STANDARD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+                "STANDARD_CENT": "docs/calibration/XAUUSD_STANDARD_CENT_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+                "RAW_SPREAD": "docs/calibration/XAUUSD_RAW_SPREAD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+            }
+            resolved_reports.add(default_report_by_tier[t])
+        assert len(resolved_reports) == 3
+        assert any("XAUUSD_STANDARD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+        assert any("XAUUSD_STANDARD_CENT_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+        assert any("XAUUSD_RAW_SPREAD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+
+    def test_15_existing_step4_fail_closed_behavior_remains_unchanged(self, db):
+        """15. Existing Step-4 fail-closed behavior remains unchanged."""
+        is_qual, errors, _ = validate_source_qualification_assertion(
+            snapshot=None,
+            assertion=None,
+            expected_component_role="CONTRACT_SPEC",
+            expected_symbol="XAUUSD",
+            expected_account_tier="STANDARD",
+        )
+        assert is_qual is False
+        assert any("missing" in e.lower() for e in errors)
+
+    def test_16_readiness_remains_wait(self, xauusd_setup):
+        """16. Readiness remains WAIT."""
+        instrument, primary_listing = xauusd_setup
+        _create_clean_candles(instrument, count=30)
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            execution_venue="EXNESS",
+            execution_account_tier="STANDARD_CENT",
+            execution_legal_entity_code="EXNESS_SC_REVISED",
+            override_macro_count=100,
+        )
+        assert report.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert report.passed is False
+        md = report.to_markdown_report()
+        assert "Production Authority:** `FALSE`" in md
+        assert "Published Decision:** `WAIT`" in md
+

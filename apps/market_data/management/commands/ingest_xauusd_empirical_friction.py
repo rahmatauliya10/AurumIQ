@@ -164,8 +164,10 @@ def _resolve_source_provenance(
     """
     from apps.market_data.friction.artifact_parsers import normalize_account_tier
     norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
-    if norm_tier == "STANDARD_CENT" and expected_broker_symbol is None:
-        expected_broker_symbol = "XAUUSDc"
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        raise ValueError(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
 
     provenance = data.get("provenance") or data.get("backing_artifact") or {}
     declared_backing_sha = (
@@ -370,7 +372,13 @@ class Command(BaseCommand):
             "--broker-symbol",
             type=str,
             default=None,
-            help="Execution broker symbol (e.g. XAUUSDc for STANDARD_CENT; default: derived or canonical).",
+            help="Execution broker symbol (e.g. XAUUSDc for STANDARD_CENT, XAUUSDm for STANDARD; required for STANDARD_CENT).",
+        )
+        parser.add_argument(
+            "--account-currency",
+            type=str,
+            default=None,
+            help="Execution account balance currency (e.g. USD, USC). Defaults to None if omitted.",
         )
         parser.add_argument(
             "--legal-entity-file",
@@ -506,20 +514,19 @@ class Command(BaseCommand):
         parser.add_argument(
             "--output-manifest",
             type=str,
-            default="artifacts/calibration/xauusd_empirical_friction_manifest.json",
-            help="Path to output friction evidence manifest JSON.",
+            default=None,
+            help="Path to output friction evidence manifest JSON (defaults to tier-specific path if omitted).",
         )
         parser.add_argument(
             "--output-report",
             type=str,
-            default="docs/calibration/XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
-            help="Path to output friction audit report Markdown.",
+            default=None,
+            help="Path to output friction audit report Markdown (defaults to tier-specific path if omitted).",
         )
 
     def handle(self, *args, **options):
         venue = options["venue"].upper()
         from apps.market_data.friction.artifact_parsers import normalize_account_tier
-        from apps.market_data.friction.commission import get_account_currency_for_tier
         account_tier = normalize_account_tier(options["account_tier"]) or options["account_tier"].upper()
         symbol = "XAUUSD"
         canonical_symbol = "XAUUSD"
@@ -528,7 +535,38 @@ class Command(BaseCommand):
             raise CommandError(
                 "BROKER_SYMBOL_SCOPE_MISSING: Execution account tier 'STANDARD_CENT' requires explicit --broker-symbol (e.g. --broker-symbol XAUUSDc)."
             )
-        account_currency = get_account_currency_for_tier(account_tier)
+
+        # Explicit Account Currency (never inferred from account tier)
+        raw_currency = options.get("account_currency")
+        account_currency = None
+        if raw_currency and str(raw_currency).strip():
+            from apps.market_data.friction.commission import SUPPORTED_ACCOUNT_CURRENCIES
+            clean_curr = str(raw_currency).strip().upper()
+            if clean_curr not in SUPPORTED_ACCOUNT_CURRENCIES:
+                raise CommandError(
+                    f"UNSUPPORTED_ACCOUNT_CURRENCY: Unsupported --account-currency '{raw_currency}'. "
+                    f"Supported: {sorted(list(SUPPORTED_ACCOUNT_CURRENCIES))}."
+                )
+            account_currency = clean_curr
+
+        # Tier-isolated default output paths (explicit CLI flags always override)
+        default_manifest_by_tier = {
+            "STANDARD": "artifacts/calibration/xauusd_standard_empirical_friction_manifest.json",
+            "STANDARD_CENT": "artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json",
+            "RAW_SPREAD": "artifacts/calibration/xauusd_raw_spread_empirical_friction_manifest.json",
+        }
+        default_report_by_tier = {
+            "STANDARD": "docs/calibration/XAUUSD_STANDARD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+            "STANDARD_CENT": "docs/calibration/XAUUSD_STANDARD_CENT_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+            "RAW_SPREAD": "docs/calibration/XAUUSD_RAW_SPREAD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+        }
+
+        manifest_path = options.get("output_manifest") or default_manifest_by_tier.get(
+            account_tier, f"artifacts/calibration/xauusd_{account_tier.lower()}_empirical_friction_manifest.json"
+        )
+        report_path = options.get("output_report") or default_report_by_tier.get(
+            account_tier, f"docs/calibration/XAUUSD_{account_tier}_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md"
+        )
 
         legal_file = options["legal_entity_file"]
         legal_backing_file = options.get("legal_entity_backing_file")
@@ -541,8 +579,6 @@ class Command(BaseCommand):
         tick_file = options["tick_file"]
         slippage_file = options["slippage_file"]
         dry_run = options["dry_run"]
-        manifest_path = options["output_manifest"]
-        report_path = options["output_report"]
         legal_source_type = options["legal_entity_source_type"]
         contract_source_type = options["contract_spec_source_type"]
         fee_source_type = options["fee_schedule_source_type"]
@@ -1273,11 +1309,11 @@ class Command(BaseCommand):
         report_md = f"""# AURUMIQ — XAUUSD EMPIRICAL FRICTION EVIDENCE AUDIT REPORT
 
 > **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal  
-> **Target Venue:** `{venue}`  
-> **Account Tier:** `{account_tier}`  
-> **Canonical Market Symbol:** `{canonical_symbol}` (Twelve Data analytical feed)  
-> **Execution Broker Symbol:** `{broker_symbol}` (Exness Standard Cent execution feed)  
-> **Account Balance Currency:** `{account_currency}`  
+> **Execution Venue:** `{venue}`  
+> **Execution Account Tier:** `{account_tier}`  
+> **Canonical Market Symbol:** `XAUUSD`  
+> **Execution Broker Symbol:** `{broker_symbol or 'UNKNOWN'}`  
+> **Account Currency:** `{account_currency or 'UNKNOWN'}`  
 > **Audit Timestamp:** `{now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}`  
 > **Overall Friction Decision:** `{overall_status}`  
 > **Hard Readiness Gate:** `{gate_decision}`  

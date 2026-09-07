@@ -92,12 +92,14 @@ def _matches_expected_symbol(
 
     Hardening Rules (Pre-Phase-8 Calibration Hardening Governance):
     1. STANDARD_CENT tier:
-       The authoritative expected Exness broker symbol is strictly 'XAUUSDc' (or explicit expected_broker_symbol).
+       Requires explicit expected_broker_symbol (no implicit inference).
        Candidate must match exact expected broker symbol.
-       Fuzzy lookalikes like 'GOLDc', 'GOLD', 'XAUUSDm', or canonical 'XAUUSD' are strictly rejected.
+       Hostile lookalikes and standard symbols ('GOLDc', 'GOLD', 'XAUUSDm', 'XAUUSD') are strictly rejected.
     2. STANDARD tier:
-       Canonical 'XAUUSD', 'XAU/USD', 'GOLD' are accepted.
-       Cent symbols ('XAUUSDc', 'GOLDc') and suffix symbols ('XAUUSDm') are strictly rejected.
+       If expected_broker_symbol is provided (e.g. 'XAUUSDm'), candidate must match it exactly.
+       Cent symbols ('XAUUSDc', 'GOLDc') are strictly rejected under all circumstances.
+       If expected_broker_symbol is None, canonical 'XAUUSD', 'XAU/USD', 'GOLD' are accepted,
+       while suffix variants like 'XAUUSDm' require explicit expected_broker_symbol.
     3. Explicit expected_broker_symbol:
        If expected_broker_symbol is provided, candidate must match it exactly.
     """
@@ -112,10 +114,13 @@ def _matches_expected_symbol(
                 "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
             )
         target_broker = str(expected_broker_symbol).replace("/", "").strip().upper()
-        # Hostile lookalikes (GOLDc, GOLD, XAUUSD, XAUUSDm, EURUSDc, BTCUSDc, USOILc) are strictly rejected.
+        # Standard analytical and broker symbols (XAUUSD, XAUUSDm, GOLD, GOLDc, EURUSDc, BTCUSDc, USOILc) are strictly rejected.
         if c in ("XAUUSD", "XAUUSDM", "GOLD", "GOLDC", "EURUSDC", "BTCUSDC", "USOILC"):
             if target_broker != c:
                 return False
+        # Standard symbols cannot qualify cent tier even if passed as expected_broker_symbol
+        if target_broker in ("XAUUSD", "XAUUSDM", "GOLD"):
+            return False
         return c == target_broker
 
     # 2. Explicit broker symbol provided for other tiers
@@ -125,9 +130,12 @@ def _matches_expected_symbol(
         else None
     )
     if target_broker:
+        # Cent symbols can NEVER qualify non-cent tiers (e.g. STANDARD or RAW_SPREAD)
+        if norm_tier in ("STANDARD", "RAW_SPREAD") and c in ("XAUUSDC", "GOLDC"):
+            return False
         return c == target_broker
 
-    # Cent symbols and suffix variants are strictly rejected for STANDARD tier
+    # Cent symbols and suffix variants are strictly rejected for STANDARD tier when no broker symbol is specified
     if c in ("XAUUSDC", "GOLDC", "XAUUSDM"):
         return False
 
@@ -427,24 +435,27 @@ def parse_contract_spec_backing_artifact(
             explicit_symbol_found = False
             detected_key = None
 
-            # For STANDARD_CENT, check target_broker_sym first and do NOT fallback to canonical XAUUSD or GOLD
-            if target_broker_sym and target_broker_sym in data and isinstance(data[target_broker_sym], dict):
-                spec = data[target_broker_sym]
-                explicit_symbol_found = True
-                detected_key = target_broker_sym
-            elif norm_tier != "STANDARD_CENT" and expected_symbol in data and isinstance(data[expected_symbol], dict):
-                spec = data[expected_symbol]
-                explicit_symbol_found = True
-                detected_key = expected_symbol
-            elif norm_tier != "STANDARD_CENT" and f"{expected_symbol[:3]}/{expected_symbol[3:]}" in data and isinstance(data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"], dict):
-                spec = data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"]
-                explicit_symbol_found = True
-                detected_key = f"{expected_symbol[:3]}/{expected_symbol[3:]}"
-            elif norm_tier != "STANDARD_CENT" and expected_symbol == "XAUUSD" and "GOLD" in data and isinstance(data["GOLD"], dict):
-                spec = data["GOLD"]
-                explicit_symbol_found = True
-                detected_key = "GOLD"
-            else:
+            # If target_broker_sym is explicitly provided, look only for target_broker_sym or matches via _matches_expected_symbol
+            if target_broker_sym:
+                if target_broker_sym in data and isinstance(data[target_broker_sym], dict):
+                    spec = data[target_broker_sym]
+                    explicit_symbol_found = True
+                    detected_key = target_broker_sym
+            elif norm_tier != "STANDARD_CENT":
+                if expected_symbol in data and isinstance(data[expected_symbol], dict):
+                    spec = data[expected_symbol]
+                    explicit_symbol_found = True
+                    detected_key = expected_symbol
+                elif f"{expected_symbol[:3]}/{expected_symbol[3:]}" in data and isinstance(data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"], dict):
+                    spec = data[f"{expected_symbol[:3]}/{expected_symbol[3:]}"]
+                    explicit_symbol_found = True
+                    detected_key = f"{expected_symbol[:3]}/{expected_symbol[3:]}"
+                elif expected_symbol == "XAUUSD" and "GOLD" in data and isinstance(data["GOLD"], dict):
+                    spec = data["GOLD"]
+                    explicit_symbol_found = True
+                    detected_key = "GOLD"
+
+            if not explicit_symbol_found:
                 for k, v in data.items():
                     if isinstance(v, dict) and _matches_expected_symbol(k, expected_symbol, target_broker_sym, expected_account_tier):
                         spec = v
@@ -452,10 +463,26 @@ def parse_contract_spec_backing_artifact(
                         detected_key = k
                         break
 
-            if explicit_symbol_found and norm_tier == "STANDARD" and str(detected_key).replace("/", "").upper() in ("XAUUSDC", "GOLDC", "XAUUSDM"):
-                raise ValueError(
-                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent/suffix symbol '{detected_key}' which is incompatible with STANDARD account tier."
-                )
+            if explicit_symbol_found:
+                det_clean = str(detected_key).replace("/", "").upper()
+                if norm_tier == "STANDARD":
+                    if det_clean in ("XAUUSDC", "GOLDC"):
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent symbol '{detected_key}' which is incompatible with STANDARD account tier."
+                        )
+                    if not target_broker_sym and det_clean in ("XAUUSDM",):
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains suffix symbol '{detected_key}' which requires explicit broker symbol."
+                        )
+                    if target_broker_sym and det_clean != str(target_broker_sym).replace("/", "").upper():
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{detected_key}' does not match expected broker symbol '{target_broker_sym}'."
+                        )
+                elif norm_tier == "STANDARD_CENT":
+                    if det_clean in ("XAUUSD", "XAUUSDM", "GOLD", "GOLDC") and det_clean != str(target_broker_sym).replace("/", "").upper():
+                        raise ValueError(
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{detected_key}' does not match expected broker symbol '{target_broker_sym}'."
+                        )
 
             if not explicit_symbol_found:
                 other_sym_keys = [
@@ -472,15 +499,30 @@ def parse_contract_spec_backing_artifact(
                 if "symbol" in data and data["symbol"]:
                     sym_val = str(data["symbol"])
                     if _matches_expected_symbol(sym_val, expected_symbol, target_broker_sym, expected_account_tier):
-                        if norm_tier == "STANDARD" and sym_val.replace("/", "").upper() in ("XAUUSDC", "GOLDC"):
-                            raise ValueError(
-                                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent symbol '{sym_val}' which is incompatible with STANDARD account tier."
-                            )
+                        det_clean = sym_val.replace("/", "").upper()
+                        if norm_tier == "STANDARD":
+                            if det_clean in ("XAUUSDC", "GOLDC"):
+                                raise ValueError(
+                                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent symbol '{sym_val}' which is incompatible with STANDARD account tier."
+                                )
+                            if not target_broker_sym and det_clean in ("XAUUSDM",):
+                                raise ValueError(
+                                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains suffix symbol '{sym_val}' which requires explicit broker symbol."
+                                )
+                            if target_broker_sym and det_clean != str(target_broker_sym).replace("/", "").upper():
+                                raise ValueError(
+                                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym_val}' does not match expected broker symbol '{target_broker_sym}'."
+                                )
+                        elif norm_tier == "STANDARD_CENT":
+                            if det_clean in ("XAUUSD", "XAUUSDM", "GOLD", "GOLDC") and det_clean != str(target_broker_sym).replace("/", "").upper():
+                                raise ValueError(
+                                    f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym_val}' does not match expected broker symbol '{target_broker_sym}'."
+                                )
                         spec = data
                         explicit_symbol_found = True
                     else:
                         raise ValueError(
-                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{data['symbol']}' does not match expected '{expected_symbol}'."
+                            f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{data['symbol']}' does not match expected '{target_broker_sym or expected_symbol}'."
                         )
                 elif "symbols" in data or "instruments" in data:
                     sym_list = [str(s).upper() for s in (data.get("symbols") or data.get("instruments") or [])]
@@ -558,11 +600,15 @@ def parse_contract_spec_backing_artifact(
         sym = sym_tag.group(1).replace("/", "").upper()
         if not _matches_expected_symbol(sym, expected_symbol, target_broker_sym, expected_account_tier):
             raise ValueError(
-                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym}' does not match expected '{expected_symbol}'."
+                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbol '{sym}' does not match expected '{target_broker_sym or expected_symbol}'."
             )
         if norm_tier == "STANDARD" and sym in ("XAUUSDC", "GOLDC"):
             raise ValueError(
                 f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent symbol '{sym}' which is incompatible with STANDARD account tier."
+            )
+        if not target_broker_sym and norm_tier == "STANDARD" and sym in ("XAUUSDM",):
+            raise ValueError(
+                f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains suffix symbol '{sym}' which requires explicit broker symbol."
             )
     else:
         ignore_words = {
@@ -579,14 +625,22 @@ def parse_contract_spec_backing_artifact(
                 target_broker_sym and re.search(rf"\b{re.escape(target_broker_sym)}\b", text, re.IGNORECASE)
             )
         else:
-            has_expected = bool(
-                re.search(rf"\b{re.escape(expected_symbol)}\b", text, re.IGNORECASE)
-                or (expected_symbol.upper() == "XAUUSD" and re.search(r"\b(XAU/USD|GOLD)\b", text, re.IGNORECASE))
-            )
-        if norm_tier == "STANDARD" and any(s in ("XAUUSDC", "GOLDC", "XAUUSDM") for s in sym_mentions):
-            raise ValueError(
-                "CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent/suffix symbol for STANDARD account tier."
-            )
+            if target_broker_sym:
+                has_expected = bool(re.search(rf"\b{re.escape(target_broker_sym)}\b", text, re.IGNORECASE))
+            else:
+                has_expected = bool(
+                    re.search(rf"\b{re.escape(expected_symbol)}\b", text, re.IGNORECASE)
+                    or (expected_symbol.upper() == "XAUUSD" and re.search(r"\b(XAU/USD|GOLD)\b", text, re.IGNORECASE))
+                )
+        if norm_tier == "STANDARD":
+            if any(s in ("XAUUSDC", "GOLDC") for s in sym_mentions):
+                raise ValueError(
+                    "CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains cent symbol for STANDARD account tier."
+                )
+            if not target_broker_sym and any(s in ("XAUUSDM",) for s in sym_mentions):
+                raise ValueError(
+                    "CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact contains suffix symbol for STANDARD account tier."
+                )
         if sym_mentions and not has_expected:
             raise ValueError(
                 f"CONTRACT_SPEC_EVIDENCE_MISSING: Backing artifact symbols '{sym_mentions[:3]}' do not match expected '{target_broker_sym or expected_symbol}'."
@@ -839,7 +893,11 @@ def parse_commission_backing_artifact(
             )
 
         if norm_tier == "STANDARD_CENT":
-            target_sym = (target_broker_sym or "XAUUSDC").upper()
+            if not target_broker_sym:
+                raise ValueError(
+                    "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+                )
+            target_sym = str(target_broker_sym).replace("/", "").strip().upper()
             has_sym = any(p.upper() == target_sym for p in parts)
         else:
             has_sym = any(
@@ -879,7 +937,11 @@ def parse_commission_backing_artifact(
     if tier_re:
         fee_val = Decimal(tier_re.group(1))
         if norm_tier == "STANDARD_CENT":
-            target_sym = target_broker_sym or "XAUUSDc"
+            if not target_broker_sym:
+                raise ValueError(
+                    "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+                )
+            target_sym = str(target_broker_sym).strip()
             has_sym = bool(re.search(rf"\b{re.escape(target_sym)}\b", text, re.IGNORECASE))
         else:
             has_sym = bool(
@@ -1075,9 +1137,9 @@ def parse_financing_backing_artifact(
     sym_tag = re.search(r"\bSYMBOL[:\s=]+([A-Za-z0-9/_-]+)", text, re.IGNORECASE)
     if sym_tag:
         sym = sym_tag.group(1).replace("/", "").upper()
-        if not _matches_expected_symbol(sym, expected_symbol, expected_broker_symbol=expected_broker_symbol, expected_account_tier=norm_tier):
+        if not _matches_expected_symbol(sym, expected_symbol, expected_broker_symbol=target_broker_sym, expected_account_tier=norm_tier):
             raise ValueError(
-                f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{sym}' does not match expected '{expected_symbol}'."
+                f"FINANCING_EVIDENCE_MISSING: Financing backing artifact symbol '{sym}' does not match expected '{target_broker_sym or expected_symbol}'."
             )
     else:
         ignore_words = {"DIGITS", "VOLUME", "SPREAD", "MARGIN", "SYMBOL", "POINTS", "STATUS", "TRIPLE", "POLICY", "SWAP", "LONG", "SHORT", "HOURS", "WEDNESDAY", "SUMMER", "WINTER", "ROLLOVER"}
@@ -1091,7 +1153,11 @@ def parse_financing_backing_artifact(
         )
         if not has_expected:
             if norm_tier == "STANDARD_CENT":
-                target_sym = target_broker_sym or "XAUUSDc"
+                if not target_broker_sym:
+                    raise ValueError(
+                        "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+                    )
+                target_sym = str(target_broker_sym).strip()
                 has_expected = bool(re.search(rf"\b{re.escape(target_sym)}\b", text, re.IGNORECASE))
             else:
                 has_expected = bool(
