@@ -1,7 +1,8 @@
 # Phase 8: Live Paper Observation & Forward Execution Audit (XAUUSD BUY + SELL)
 
-> **Historical XAUT Baseline Status:** ⚪ `N/A`  
-> **Current XAUUSD Target Status:** 📋 `HOLD — TARGET SPECIFICATION (NOT YET IMPLEMENTED)`  
+> **Historical XAUT Baseline Status:** ⚪ `N/A`
+> **Current XAUUSD Target Status:** 📋 `HOLD — TARGET SPECIFICATION (NOT AUTHORIZED / BLOCKED BY CALIBRATION GATE)`
+> **Current Blocking Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 > **Primary Goal:** Specify continuous, live paper decision-support observation for **XAUUSD (both BUY and SELL setups)** in a production-like environment without placing real orders, logging all decisions immutably, and tracking side-aware triple-barrier outcomes to audit parity against historical backtesting.
 
 ---
@@ -9,13 +10,15 @@
 ## 1. Operating Protocol & Governance Boundaries
 
 1. **Zero Exchange Trading Access (R1):** The live paper runner operates exclusively on public/read-only market feeds. The codebase contains zero exchange trading keys, broker execution integrations, or order placement capabilities.
-2. **Upstream Dependencies:** Phase 8 requires:
+2. **Upstream Mandatory Prerequisites:** Phase 8 may NOT start until all of the following are satisfied:
    - Verified empirical backtest configuration from Phase 6 (`XAU-P6-01..03`).
    - Operational live multi-timeframe ingestion and monitor pipeline from Phase 7 (`XAU-P7-01`).
+   - **XAUUSD Empirical Friction Calibration Readiness:** The system is currently blocked at `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`. Forward paper observation requires authentic broker execution evidence (Legal Entity, Contract Geometry, Commission Fee Schedule, Financing/Swap Schedule, Empirical Bid/Ask Spread Distribution, and Execution Slippage Telemetry) qualified and sealed within the governed profile scope.
 3. **One Engine & Exact Provenance Invariant:** Live paper observation resolves the exact same `Phase 4` signal engine, `Phase 5` risk planner, policy fingerprints, caller-injected code revision, and data provenance as backtesting and analysis pipelines.
 4. **Immutable Append-Only Logging (R5, R10):** Every live signal emitted upon candle close is stored permanently in `SignalRecord` with its complete feature vector, version metadata, and reason tree.
 5. **Side-Aware Dual Direction Support:** Full monitoring and outcome resolution for both `BUY` (Long) and `SELL` (Short) candidate setups.
-6. **14-Day Continuity-Only Gate:** The 14-day observation period functions strictly as an **operational continuity and infrastructure stability gate** (zero pipeline crashes, zero missed candle intervals, zero unhandled exceptions), **NOT a statistical proof of profitability or standalone live trading authorization**.
+6. **14-Day Continuity-Only Gate:** The 14-day observation period functions strictly as an **operational continuity and infrastructure stability gate** (zero pipeline crashes, zero missed candle intervals, zero unhandled exceptions), **NOT a statistical proof of profitability, trading edge, or standalone live trading authorization**. Calendar time alone is insufficient authorization.
+
 
 ---
 
@@ -64,6 +67,7 @@ The system will calculate discrepancy metrics comparing live paper observations 
 
 ## 4. Definition of Done Checklist (Pending Phase 8 Implementation)
 
+- [ ] Prior empirical friction calibration gate fully resolved from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` to qualified status across all 6 evidence categories.
 - [ ] Live analysis Celery beat task runs autonomously for all closed candle intervals.
 - [ ] Side-aware `SignalOutcome` tracker monitors and resolves BUY and SELL barriers.
 - [ ] Verify SELL live-paper barrier chronology (`XAU-P8-01`).

@@ -1,9 +1,10 @@
 # AurumIQ — Summary of Phased Deliverables
 
-> **Scope:** Multi-Timeframe Quantitative Gold Intelligence Platform  
-> **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD`)  
-> **Historical Baseline:** `XAUT` (Tether Gold) verified and frozen for baseline audit continuity.  
-> **Authoritative Main Baseline:** `9011764958d31c5e96860488da7c54568def1352` (Phase 5 Merged via PR #12)
+> **Scope:** Multi-Timeframe Quantitative Gold Intelligence Platform
+> **Target Instrument:** `XAU/USD` (Canonical: `XAUUSD`)
+> **Historical Baseline:** `XAUT` (Tether Gold) verified and frozen for baseline audit continuity.
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Calibration Status:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 ---
 
@@ -20,8 +21,9 @@
 | [**PHASE 5**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Side-Aware Risk Planning, Causal Execution, Intrabar Resolver | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
 | [**PHASE 6**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #14 @ dab3b6f)` |
 | [**PHASE 7**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Multi-Timeframe Charts, Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
-| [**PHASE 8**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
-| [**PHASE 9**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+| [**Calibration Architecture**](../calibration/XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) | Empirical Friction Calibration & Execution Scopes | ⚪ `N/A` | 🟡 `SEALED ARCHITECTURE (PR #20 @ 92b0bd6, PR #21 @ fcbe1a9; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
+| [**PHASE 8**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (BLOCKED BY CALIBRATION GATE)` |
+| [**PHASE 9**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (DEPENDS ON PHASE 8 STABILITY)` |
 
 ---
 
@@ -30,7 +32,8 @@
 1. **Pure Engine Isolation:** The mathematical calculation core (`engine/`) has zero dependencies on Django ORM, Celery, Redis, or Channels.
 2. **Two-Path Invariant:** Live streaming quote presentation (Path A) is strictly decoupled from closed-candle decision scoring and persistence (Path B).
 3. **Decoupled Risk Planning:** Phase 4 emits candidate signal states; Phase 5 independently evaluates structural and volatility risk and may demote candidates to `WAIT`, but never promote `WAIT` to `BUY`/`SELL`.
-4. **Publication Authority Guard:** Even after Phase 5 verification, Layer B publication user decision remains strictly `WAIT` (`is_production_authorized = False`).
+4. **Publication Authority Guard:** Even after Phase 4, Phase 5, Phase 6, Phase 7, and calibration architecture (PR #20, PR #21) verification, Layer B publication user decision remains strictly `WAIT` (`is_production_authorized = False`, `production_weight = 0.0`), with gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
 5. **One Engine Rule:** Backtesting, paper trading observation, and live monitoring resolve the exact same pure-Python calculation engine.
 6. **Zero Real-Order Execution Policy:** The codebase contains zero exchange trading keys, order dispatch endpoints, or testnet trading capabilities.
-7. **Position Sizing Boundary:** Position sizing is strictly out of scope for Phase 5 and Phase 6.
+7. **Position Sizing Boundary:** Position sizing is strictly out of scope for all completed phases.
+8. **Independent Execution Profile Scopes:** Supported tiers `STANDARD`, `STANDARD_CENT`, and `RAW_SPREAD` are strictly partitioned (`account_tier != broker_symbol != account_currency`). Analytical candles remain canonical `XAUUSD` via Twelve Data, while broker execution geometry and frictions remain profile-specific evidence.

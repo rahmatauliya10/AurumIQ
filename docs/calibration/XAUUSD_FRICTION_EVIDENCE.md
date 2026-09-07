@@ -1,11 +1,13 @@
 # AurumIQ — XAUUSD Empirical Friction Evidence & Cost Provenance
 
-> **Governance Authority:** Post Phase 7 / Pre Phase 8 Calibration Campaign Protocol  
-> **Status:** `EMPIRICAL_FRICTION_NOT_CONFIGURED`  
-> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)  
-> **Backtest Scenario:** `XauUsdCostScenario.EMPIRICAL` (Blocked pending provenance)  
-> **Authoritative Baseline Main SHA:** `57f6de1405d0df8548182a166d245f1a3173363d`  
-> **Working Branch:** `research/xauusd-data-readiness`
+> **Governance Authority:** Post Phase 7 / Pre Phase 8 Calibration Campaign Protocol
+> **Status:** `EMPIRICAL_FRICTION_NOT_CONFIGURED` / `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
+> **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)
+> **Backtest Scenario:** `XauUsdCostScenario.EMPIRICAL` (Blocked pending provenance)
+> **Historical Baseline Main SHA:** `57f6de1405d0df8548182a166d245f1a3173363d` (Phase 7 Initial Formulation)
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Current Calibration Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
+> **Governing Active Artifacts:** [`XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md`](./XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) & [`xauusd_empirical_friction_manifest.json`](../../artifacts/calibration/xauusd_empirical_friction_manifest.json) (Expanded to 6 mandatory categories under PR #20 and PR #21).
 
 ---
 
