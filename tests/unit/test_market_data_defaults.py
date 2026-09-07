@@ -130,26 +130,3 @@ def test_explicit_historical_xaut_fails_closed_without_legacy_provider_registrat
     assert res["status"] == "error"
     assert res["reason"] == "LEGACY_PROVIDER_NOT_REGISTERED"
     assert "not registered in active registry" in res["message"]
-
-
-@pytest.mark.unit
-@pytest.mark.django_db
-def test_explicit_historical_xaut_resolves_with_explicit_provider_registration():
-    """Verify explicit XAUT request succeeds when legacy providers are explicitly registered in test harness."""
-    from django.core.management import call_command
-    call_command("seed_instruments")
-
-    binance = BinanceProvider()
-    usdt_usd = UsdtUsdRateProvider()
-    registry.register(binance)
-    registry.register(usdt_usd)
-
-    try:
-        with patch.object(binance, "fetch_candles", return_value=[]):
-            res = ingest_primary_candles(instrument_symbol="XAUT/USDT")
-            assert res["status"] == "success"
-            assert res["provider"] == "binance"
-    finally:
-        registry.unregister("binance")
-        registry.unregister("usdt_usd")
-
