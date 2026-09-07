@@ -1057,6 +1057,7 @@ def create_verified_mt5_export_attestation(
     expected_venue: str = "EXNESS",
     expected_account_tier: str = "STANDARD",
     verifier_identity: str = "AURUMIQ_MT5_COLLECTOR_V1",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Any:
     """Create VERIFIED MT5 export attestation from governed capture receipt.
 
@@ -1109,7 +1110,12 @@ def create_verified_mt5_export_attestation(
     source_type: str = ""
 
     if norm_role == "SPREAD_DATASET":
-        ticks_data, summary = parse_mt5_tick_export(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
+        ticks_data, summary = parse_mt5_tick_export(
+            capture_receipt.raw_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
+        )
         derived_symbol = str(summary.get("symbol") or "")
         source_type = FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
         # For tick history, account tier is required by model scope
@@ -1124,6 +1130,7 @@ def create_verified_mt5_export_attestation(
             expected_venue=expected_venue,
             expected_symbol=expected_symbol,
             expected_account_tier=expected_account_tier,
+            expected_broker_symbol=expected_broker_symbol,
         )
         derived_symbol = str(summary.get("symbol") or "")
         parser_tier = str(summary.get("account_tier") or "").strip().upper()
@@ -1139,7 +1146,12 @@ def create_verified_mt5_export_attestation(
             )
         source_type = FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
     elif norm_role == "CONTRACT_SPEC":
-        parsed = parse_contract_spec_backing_artifact(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
+        parsed = parse_contract_spec_backing_artifact(
+            capture_receipt.raw_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
+        )
         derived_symbol = str(parsed.get("symbol") or "")
         source_type = FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value
     else:

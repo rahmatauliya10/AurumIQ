@@ -75,6 +75,7 @@ def validate_source_qualification_assertion(
     expected_symbol: str = "XAUUSD",
     expected_account_tier: str = "STANDARD",
     expected_venue: str = "EXNESS",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Tuple[bool, List[str], Optional[Dict[str, Any]]]:
     """Independently verify the integrity of a FrictionSourceQualificationAssertion.
 
@@ -98,10 +99,26 @@ def validate_source_qualification_assertion(
     if assertion is None:
         return False, ["Qualification assertion is missing."], None
 
-    # 1. Source Snapshot binding
-    if assertion.source_snapshot_id != snapshot.snapshot_id:
+    if model_version is not None:
+        if model_version.account_tier:
+            expected_account_tier = model_version.account_tier
+        if model_version.symbol:
+            expected_symbol = model_version.symbol
+        if model_version.venue:
+            expected_venue = model_version.venue
+
+    from apps.market_data.friction.artifact_parsers import normalize_account_tier
+    norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
         reasons.append(
-            f"Assertion source_snapshot '{assertion.source_snapshot_id}' does not match snapshot '{snapshot.snapshot_id}'."
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
+        return False, reasons, None
+
+    # 1. Snapshot integrity
+    if assertion.source_snapshot_id != snapshot.pk:
+        reasons.append(
+            f"Assertion snapshot '{assertion.source_snapshot_id}' does not match snapshot '{snapshot.pk}'."
         )
 
     # 2. Component role match
@@ -110,28 +127,29 @@ def validate_source_qualification_assertion(
             f"Assertion component_role '{assertion.component_role}' does not match expected role '{expected_component_role}'."
         )
 
-    # 3. Status is QUALIFIED
+    # 3. Qualification status must be QUALIFIED
     if assertion.qualification_status != FrictionQualificationStatus.QUALIFIED.value:
         reasons.append(
-            f"Assertion qualification_status is '{assertion.qualification_status}', expected '{FrictionQualificationStatus.QUALIFIED.value}'."
+            f"Assertion qualification_status is '{assertion.qualification_status}', required '{FrictionQualificationStatus.QUALIFIED.value}'."
         )
 
-    # 4 & 5. Raw artifact SHA256 integrity
+    # 4. Raw artifact SHA-256 match
     if assertion.raw_artifact_sha256 != snapshot.raw_payload_bytes_sha256:
         reasons.append(
-            f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match snapshot.raw_payload_bytes_sha256 '{snapshot.raw_payload_bytes_sha256}'."
+            f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match snapshot raw SHA '{snapshot.raw_payload_bytes_sha256}'."
         )
 
+    # 5. Recompute snapshot raw SHA-256
     if not snapshot.raw_content:
         reasons.append("Snapshot raw_content is empty or null.")
     else:
-        computed_raw_sha = hashlib.sha256(snapshot.raw_content).hexdigest()
-        if assertion.raw_artifact_sha256 != computed_raw_sha:
+        computed_sha = hashlib.sha256(snapshot.raw_content).hexdigest()
+        if assertion.raw_artifact_sha256 != computed_sha:
             reasons.append(
-                f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match computed sha256 of snapshot.raw_content '{computed_raw_sha}'."
+                f"Assertion raw_artifact_sha256 '{assertion.raw_artifact_sha256}' does not match computed SHA of snapshot content '{computed_sha}'."
             )
 
-    # 6. Strict trusted parser allowlist
+    # 6. Parser name in trusted allowlist
     trusted_parsers = TRUSTED_PARSERS_BY_ROLE.get(expected_component_role, set())
     if assertion.parser_name not in trusted_parsers:
         reasons.append(
@@ -143,9 +161,9 @@ def validate_source_qualification_assertion(
         )
 
     # 7. Parser version supported
-    if not assertion.parser_version or assertion.parser_version not in SUPPORTED_PARSER_VERSIONS:
+    if assertion.parser_version not in SUPPORTED_PARSER_VERSIONS:
         reasons.append(
-            f"Assertion parser_version '{assertion.parser_version}' is not supported (supported: {sorted(SUPPORTED_PARSER_VERSIONS)})."
+            f"Parser version '{assertion.parser_version}' is not supported: {sorted(SUPPORTED_PARSER_VERSIONS)}."
         )
 
     if reasons:
@@ -166,6 +184,8 @@ def validate_source_qualification_assertion(
                 snapshot.raw_content,
                 expected_symbol=expected_symbol,
                 parser_version=assertion.parser_version,
+                expected_broker_symbol=expected_broker_symbol,
+                expected_account_tier=norm_tier,
             )
             recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
 
@@ -173,7 +193,8 @@ def validate_source_qualification_assertion(
             parsed_data = parse_commission_backing_artifact(
                 snapshot.raw_content,
                 expected_symbol=expected_symbol,
-                expected_account_tier=expected_account_tier,
+                expected_account_tier=norm_tier,
+                expected_broker_symbol=expected_broker_symbol,
                 parser_version=assertion.parser_version,
             )
             recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
@@ -183,6 +204,8 @@ def validate_source_qualification_assertion(
                 snapshot.raw_content,
                 expected_symbol=expected_symbol,
                 parser_version=assertion.parser_version,
+                expected_broker_symbol=expected_broker_symbol,
+                expected_account_tier=norm_tier,
             )
             recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
 
@@ -190,6 +213,8 @@ def validate_source_qualification_assertion(
             ticks_data, summary = parse_mt5_tick_export(
                 snapshot.raw_content,
                 expected_symbol=expected_symbol,
+                expected_broker_symbol=expected_broker_symbol,
+                expected_account_tier=norm_tier,
             )
             norm_rows = [
                 f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
@@ -208,7 +233,8 @@ def validate_source_qualification_assertion(
                 snapshot.raw_content,
                 expected_venue=expected_venue,
                 expected_symbol=expected_symbol,
-                expected_account_tier=expected_account_tier,
+                expected_account_tier=norm_tier,
+                expected_broker_symbol=expected_broker_symbol,
             )
             norm_rows = [
                 f"{r['side']}|{r['order_type']}|{r['reference_bid']}|{r['reference_ask']}|{r['executed_fill_price']}|{r['signed_slippage_bps']}|{r['volume_lots']}|{r['latency_ms']}"

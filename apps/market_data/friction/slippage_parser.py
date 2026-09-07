@@ -74,6 +74,7 @@ def parse_mt5_execution_telemetry(
     expected_symbol: Optional[str] = "XAUUSD",
     expected_account_tier: Optional[str] = "STANDARD",
     server_tz: Optional[timezone] = None,
+    expected_broker_symbol: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Parse raw MT5 execution telemetry bytes into normalized telemetry fills.
     
@@ -82,6 +83,9 @@ def parse_mt5_execution_telemetry(
     Raises:
         ValueError if schema or rows are invalid.
     """
+    if not isinstance(raw_content, (bytes, bytearray)):
+        raise TypeError(f"SLIPPAGE_PARSER_ERROR: Expected raw artifact bytes, got {type(raw_content).__name__}.")
+
     if not raw_content or len(raw_content.strip()) == 0:
         raise ValueError("Execution telemetry payload is empty.")
 
@@ -151,6 +155,13 @@ def parse_mt5_execution_telemetry(
     records: List[Dict[str, Any]] = []
     now_utc = datetime.now(timezone.utc)
 
+    from apps.market_data.friction.artifact_parsers import _matches_expected_symbol, normalize_account_tier
+    norm_expected_tier = normalize_account_tier(expected_account_tier)
+    if norm_expected_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        raise ValueError(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
+
     for row_idx, row in enumerate(reader, start=2):
         if not row or all(c.strip() == "" for c in row):
             continue
@@ -161,20 +172,24 @@ def parse_mt5_execution_telemetry(
 
         # Scope validation
         row_venue = row[col_map["venue"]].strip().upper()
-        row_symbol = row[col_map["symbol"]].strip().upper()
-        row_tier = row[col_map["account_tier"]].strip().upper()
+        raw_sym = row[col_map["symbol"]].strip()
+        row_symbol = expected_broker_symbol if (expected_broker_symbol and raw_sym.upper() == expected_broker_symbol.upper()) else raw_sym
+        row_tier = row[col_map["account_tier"]].strip()
+        norm_row_tier = normalize_account_tier(row_tier)
 
         if expected_venue and row_venue != expected_venue.upper():
             raise ValueError(
                 f"Row {row_idx}: Telemetry venue mismatch. Expected '{expected_venue}', observed '{row_venue}'."
             )
-        if expected_symbol and row_symbol != expected_symbol.upper():
+        if expected_symbol and not _matches_expected_symbol(
+            row_symbol, expected_symbol, expected_broker_symbol=expected_broker_symbol, expected_account_tier=norm_expected_tier
+        ):
             raise ValueError(
-                f"Row {row_idx}: Telemetry symbol mismatch. Expected '{expected_symbol}', observed '{row_symbol}'."
+                f"Row {row_idx}: Telemetry symbol mismatch. Expected '{expected_symbol}' (or broker symbol '{expected_broker_symbol}'), observed '{row_symbol}'."
             )
-        if expected_account_tier and row_tier != expected_account_tier.upper():
+        if norm_expected_tier and norm_row_tier != norm_expected_tier:
             raise ValueError(
-                f"Row {row_idx}: Telemetry account tier mismatch. Expected '{expected_account_tier}', observed '{row_tier}'."
+                f"Row {row_idx}: Telemetry account tier mismatch. Expected '{norm_expected_tier}', observed '{norm_row_tier}'."
             )
 
         side_raw = row[col_map["side"]].strip().upper()
@@ -279,6 +294,7 @@ def parse_mt5_execution_telemetry(
         "sample_end": max(r["fill_timestamp"] for r in records),
         "venue": expected_venue.upper() if expected_venue else records[0]["venue"],
         "symbol": expected_symbol.upper() if expected_symbol else records[0]["symbol"],
+        "broker_symbol": records[0]["symbol"],
         "account_tier": expected_account_tier.upper() if expected_account_tier else records[0]["account_tier"],
     }
     return records, summary

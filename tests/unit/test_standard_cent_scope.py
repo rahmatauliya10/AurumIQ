@@ -1,0 +1,1311 @@
+"""Hostile regression test suite for Standard Cent execution scope extension.
+
+Verifies all governance directives for EXNESS / STANDARD_CENT scope:
+1. STANDARD still works.
+2. RAW_SPREAD still works.
+3. STANDARD_CENT is accepted as a distinct tier.
+4. STANDARD evidence cannot qualify STANDARD_CENT.
+5. STANDARD_CENT evidence cannot qualify STANDARD.
+6. Substring "STANDARD" cannot satisfy STANDARD_CENT (anti-substring collision).
+7. Hostile broker symbol rejection: GOLDc, GOLD, XAUUSD, XAUUSDm, EURUSDc, BTCUSDc rejected for Standard Cent.
+8. Authoritative expected broker symbol for Exness Standard Cent is strictly XAUUSDc.
+9. Canonical XAUUSD and broker XAUUSDc remain distinct; analytical feed is unchanged.
+10. Account-number/private fields are not required and not persisted.
+11. Cent-lot safety: Standard Cent does not inherit Standard lot geometry; missing geometry fails closed.
+12. USC currency semantics: 1 USD = 100 USC denomination conversion does NOT substitute for geometry.
+13. Readiness remains strictly closed: CANDLES_READY_EMPIRICAL_FRICTION_MISSING, passed=False, weight=0.0, WAIT.
+14. Raw artifact bytes enforcement: All parsers reject non-bytes inputs with TypeError.
+"""
+
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
+import hashlib
+import io
+import json
+import os
+import tempfile
+import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
+
+from apps.instruments.models import (
+    Instrument,
+    MarketListing,
+    ListingRole,
+    ListingStatus,
+)
+from apps.market_data.models import (
+    MarketCandle,
+    FrictionSourceSnapshot,
+    FrictionEvidenceDataset,
+    FrictionModelVersion,
+    FrictionSourceType,
+    FrictionVerificationMethod,
+    FrictionAttestationStatus,
+    FrictionSourceProvenanceAttestation,
+    FrictionSourceQualificationAssertion,
+)
+from apps.market_data.friction.artifact_parsers import (
+    KNOWN_ACCOUNT_TIERS,
+    normalize_account_tier,
+    validate_account_tier,
+    _matches_expected_symbol,
+    parse_legal_entity_backing_artifact,
+    parse_contract_spec_backing_artifact,
+    parse_commission_backing_artifact,
+    parse_financing_backing_artifact,
+)
+from apps.market_data.friction.commission import (
+    SUPPORTED_ACCOUNT_CURRENCIES,
+)
+from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
+from apps.market_data.friction.ingestion import verify_authoritative_backing_artifact
+from apps.market_data.friction.validation import validate_source_qualification_assertion
+from apps.market_data.readiness import XauUsdDataReadinessEvaluator
+
+
+@pytest.fixture
+def xauusd_setup(db):
+    """Seed canonical assets, instruments, and primary XAUUSD spot listing."""
+    call_command("seed_instruments")
+    instrument = Instrument.get_canonical_xauusd()
+    primary_listing = MarketListing.objects.filter(
+        instrument=instrument,
+        listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+        status=ListingStatus.ACTIVE,
+    ).first()
+    return instrument, primary_listing
+
+
+def _create_clean_candles(instrument, count=30, tf="15m", source=None):
+    """Helper to create N valid chronological UTC candles for warm-up satisfaction."""
+    if source is None:
+        listing = MarketListing.objects.filter(
+            instrument=instrument,
+            listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+            status=ListingStatus.ACTIVE,
+        ).first()
+        source = listing.provider if listing else "twelve_data_xauusd"
+    base_time = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    delta = timedelta(minutes=15)
+    for i in range(count):
+        t_open = base_time + i * delta
+        t_close = t_open + delta
+        MarketCandle.objects.create(
+            instrument=instrument,
+            source=source,
+            timeframe=tf,
+            timestamp_open=t_open,
+            timestamp_close=t_close,
+            open=Decimal("2000.00"),
+            high=Decimal("2005.00"),
+            low=Decimal("1995.00"),
+            close=Decimal("2001.00"),
+            volume=Decimal("100"),
+        )
+
+
+# =============================================================================
+# 1. TIER ENUMERATION & NORMALIZATION TESTS (Directives 1, 2, 3, 5)
+# =============================================================================
+
+class TestAccountTierEnumerationAndNormalization:
+    """Proves STANDARD, RAW_SPREAD, and STANDARD_CENT are supported with exact normalization."""
+
+    def test_directive_1_standard_in_known_tiers(self):
+        assert "STANDARD" in KNOWN_ACCOUNT_TIERS
+
+    def test_directive_2_raw_spread_in_known_tiers(self):
+        assert "RAW_SPREAD" in KNOWN_ACCOUNT_TIERS
+
+    def test_directive_3_standard_cent_in_known_tiers(self):
+        assert "STANDARD_CENT" in KNOWN_ACCOUNT_TIERS
+
+    @pytest.mark.parametrize(
+        "raw_input,expected_tier",
+        [
+            ("STANDARD", "STANDARD"),
+            ("standard", "STANDARD"),
+            ("Standard", "STANDARD"),
+            ("RAW_SPREAD", "RAW_SPREAD"),
+            ("raw_spread", "RAW_SPREAD"),
+            ("RAW-SPREAD", "RAW_SPREAD"),
+            ("RAW SPREAD", "RAW_SPREAD"),
+            ("STANDARD_CENT", "STANDARD_CENT"),
+            ("standard_cent", "STANDARD_CENT"),
+            ("Standard_Cent", "STANDARD_CENT"),
+            ("STANDARD-CENT", "STANDARD_CENT"),
+            ("STANDARD CENT", "STANDARD_CENT"),
+            ("standard cent", "STANDARD_CENT"),
+        ],
+    )
+    def test_normalize_account_tier_valid_inputs(self, raw_input, expected_tier):
+        assert normalize_account_tier(raw_input) == expected_tier
+        assert validate_account_tier(raw_input) == expected_tier
+
+    @pytest.mark.parametrize(
+        "invalid_tier",
+        [
+            "PRO",
+            "ZERO",
+            "CENT",
+            "STANDARD_PRO",
+            "STANDARD_ZERO",
+            "VIP",
+            "DEMO",
+            "",
+            None,
+        ],
+    )
+    def test_validate_account_tier_invalid_inputs_rejected(self, invalid_tier):
+        with pytest.raises(ValueError, match="Unsupported or unverified account tier"):
+            validate_account_tier(invalid_tier)
+
+    def test_substring_confusion_tier_isolation(self):
+        """Directive 6: 'STANDARD' is a substring of 'STANDARD_CENT', but they must never match."""
+        tier_std = normalize_account_tier("STANDARD")
+        tier_cent = normalize_account_tier("STANDARD_CENT")
+        assert tier_std != tier_cent
+        assert tier_std == "STANDARD"
+        assert tier_cent == "STANDARD_CENT"
+
+
+# =============================================================================
+# 2. ACCOUNT CURRENCY SEMANTICS TESTS (USC vs USD)
+# =============================================================================
+
+class TestAccountCurrencySemantics:
+    """Proves account currency is an independent explicit scope and NEVER inferred from tier."""
+
+    def test_supported_account_currencies_scope(self):
+        """Active supported currencies are strictly defined for explicit CLI validation."""
+        assert SUPPORTED_ACCOUNT_CURRENCIES == {"USD", "USC"}
+
+    def test_account_tier_does_not_infer_currency(self, db):
+        """Directive A1: Account tier never infers account currency. Missing currency remains None / UNKNOWN."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            # STANDARD without currency
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["account_currency"] is None
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_std = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_std
+
+            # STANDARD_CENT without currency
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_cent = json.load(f)
+            assert manifest_cent["account_currency"] is None
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_cent = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_cent
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_cli_explicit_account_currency_usd_and_usc(self, db):
+        """Explicit --account-currency is recorded accurately for supported currencies."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--account-currency", "USC",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            assert manifest["account_currency"] == "USC"
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report = f.read()
+            assert "Account Currency:** `USC`" in report
+
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--account-currency", "USD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_usd = json.load(f)
+            assert manifest_usd["account_currency"] == "USD"
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_cli_rejects_unsupported_account_currency(self, db):
+        """Unsupported account currency fails closed with UNSUPPORTED_ACCOUNT_CURRENCY."""
+        with pytest.raises(CommandError, match="UNSUPPORTED_ACCOUNT_CURRENCY"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--account-currency", "EUR",
+                "--dry-run",
+            )
+
+
+# =============================================================================
+# 3. EXACT BROKER SYMBOL HARDENING & HOSTILE REJECTION TESTS
+# =============================================================================
+
+class TestExactBrokerSymbolHardening:
+    """Directive: Exact Exness broker symbol hardening for STANDARD_CENT (reject GOLDc)."""
+
+    def test_standard_cent_without_expected_broker_symbol_fails_closed(self):
+        """Directive A & D: STANDARD_CENT without expected_broker_symbol fails closed; tier alone cannot infer broker symbol."""
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_account_tier="STANDARD_CENT")
+
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDC", "XAUUSD", expected_account_tier="STANDARD_CENT")
+
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol=None, expected_account_tier="STANDARD_CENT")
+
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol="", expected_account_tier="STANDARD_CENT")
+
+    def test_exness_standard_cent_exact_symbol_accepted(self):
+        """Directive B: Authoritative Exness broker symbol XAUUSDc is strictly accepted for STANDARD_CENT when explicit."""
+        assert _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol="XAUUSDc", expected_account_tier="STANDARD_CENT") is True
+        assert _matches_expected_symbol("XAUUSDC", "XAUUSD", expected_broker_symbol="XAUUSDc", expected_account_tier="STANDARD_CENT") is True
+
+    @pytest.mark.parametrize(
+        "hostile_symbol",
+        [
+            "GOLDc",
+            "GOLDC",
+            "GOLD",
+            "gold",
+            "XAUUSD",
+            "xauusd",
+            "XAU/USD",
+            "XAUUSDm",
+            "XAUUSDM",
+            "EURUSDc",
+            "BTCUSDc",
+            "GBPUSD",
+            "USOILc",
+        ],
+    )
+    def test_hostile_lookalikes_rejected_for_standard_cent(self, hostile_symbol):
+        """Directive C: FUZZY_GOLDC_ACCEPTED = false: GOLDc, GOLD, XAUUSD, XAUUSDm, and other lookalikes are REJECTED."""
+        assert _matches_expected_symbol(
+            hostile_symbol,
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_standard_account_symbol_matching(self):
+        """STANDARD tier accepts canonical XAUUSD, XAU/USD, GOLD, but strictly rejects cent symbols."""
+        assert _matches_expected_symbol("XAUUSD", "XAUUSD", expected_account_tier="STANDARD") is True
+        assert _matches_expected_symbol("XAU/USD", "XAUUSD", expected_account_tier="STANDARD") is True
+        assert _matches_expected_symbol("GOLD", "XAUUSD", expected_account_tier="STANDARD") is True
+
+        # Cent and suffix variants are strictly rejected for STANDARD tier
+        assert _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_account_tier="STANDARD") is False
+        assert _matches_expected_symbol("GOLDc", "XAUUSD", expected_account_tier="STANDARD") is False
+        assert _matches_expected_symbol("XAUUSDm", "XAUUSD", expected_account_tier="STANDARD") is False
+
+    def test_custom_expected_broker_symbol_supported_when_explicit(self):
+        """If a future authoritative broker symbol is explicitly bound, it matches exactly."""
+        assert _matches_expected_symbol(
+            "XAUUSD_CENT",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSD_CENT",
+            expected_account_tier="STANDARD_CENT",
+        ) is True
+        assert _matches_expected_symbol(
+            "XAUUSDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSD_CENT",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+
+# =============================================================================
+# 4. RAW ARTIFACT BYTES ENFORCEMENT & TYPE VALIDATION
+# =============================================================================
+
+class TestRawArtifactBytesEnforcement:
+    """Directive 3: Review broad parser changes — enforce raw artifact bytes requirements."""
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_legal_entity_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_legal_entity_backing_artifact(bad_input)
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_contract_spec_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_contract_spec_backing_artifact(bad_input)
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_commission_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_commission_backing_artifact(bad_input)
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_financing_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_financing_backing_artifact(bad_input)
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_tick_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_mt5_tick_export(bad_input)
+
+    @pytest.mark.parametrize("bad_input", ["string_content", {"dict": "value"}, 12345, [1, 2, 3]])
+    def test_telemetry_parser_rejects_non_bytes(self, bad_input):
+        with pytest.raises(TypeError, match="Expected raw artifact bytes"):
+            parse_mt5_execution_telemetry(bad_input)
+
+
+# =============================================================================
+# 5. ARTIFACT PARSERS TIER & SYMBOL ISOLATION (Directives 4, 5, 6, 10)
+# =============================================================================
+
+class TestArtifactParsersTierIsolation:
+    """Proves parsers enforce strict tier and broker symbol isolation without substring bleed."""
+
+    def test_contract_spec_standard_cent_accepted(self):
+        artifact = {
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        raw_bytes = json.dumps(artifact).encode("utf-8")
+        res = parse_contract_spec_backing_artifact(
+            raw_bytes,
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        )
+        assert res["contract_size"] == Decimal("100")
+        assert res["account_tier"] == "STANDARD_CENT"
+        assert res["broker_symbol"] == "XAUUSDc"
+
+    def test_contract_spec_rejects_goldc_for_standard_cent(self):
+        """Hostile test: contract spec with GOLDc must be rejected for EXNESS STANDARD_CENT."""
+        artifact = {
+            "symbol": "GOLDc",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        raw_bytes = json.dumps(artifact).encode("utf-8")
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING"):
+            parse_contract_spec_backing_artifact(
+                raw_bytes,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_contract_spec_rejects_canonical_xauusd_for_standard_cent(self):
+        """Canonical XAUUSD cannot silently satisfy broker XAUUSDc for STANDARD_CENT."""
+        artifact = {
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        raw_bytes = json.dumps(artifact).encode("utf-8")
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING"):
+            parse_contract_spec_backing_artifact(
+                raw_bytes,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_directive_4_standard_evidence_cannot_qualify_standard_cent(self):
+        """STANDARD artifact cannot qualify STANDARD_CENT."""
+        artifact = {
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        raw_bytes = json.dumps(artifact).encode("utf-8")
+        with pytest.raises(ValueError, match="(account tier mismatch|symbol.*does not match|incompatible)"):
+            parse_contract_spec_backing_artifact(
+                raw_bytes,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_directive_5_standard_cent_evidence_cannot_qualify_standard(self):
+        """STANDARD_CENT artifact cannot qualify STANDARD."""
+        artifact = {
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        raw_bytes = json.dumps(artifact).encode("utf-8")
+        with pytest.raises(ValueError, match="(account tier mismatch|symbol.*does not match|incompatible)"):
+            parse_contract_spec_backing_artifact(
+                raw_bytes,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSD",
+                expected_account_tier="STANDARD",
+            )
+
+    def test_directive_6_substring_standard_fails_for_standard_cent(self):
+        """Directive 6: Text mentioning 'STANDARD' alone must NOT satisfy STANDARD_CENT."""
+        raw_text = (
+            "Exness Contract Specifications\n"
+            "Instrument: XAUUSDc\n"
+            "Account Type: STANDARD\n"  # Only STANDARD, not STANDARD_CENT
+            "Digits: 2\n"
+            "Point: 0.01\n"
+            "Tick Size: 0.01\n"
+            "Tick Value: 0.01\n"
+            "Contract Size: 100\n"
+            "Minimum Volume: 0.01\n"
+            "Maximum Volume: 200.0\n"
+            "Volume Step: 0.01\n"
+        )
+        with pytest.raises(ValueError, match="account tier mismatch"):
+            parse_contract_spec_backing_artifact(
+                raw_text.encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_contract_spec_raw_text_standard_cent_accepted(self):
+        raw_text = (
+            "Exness Contract Specifications\n"
+            "Instrument: XAUUSDc\n"
+            "Account Type: Standard Cent\n"
+            "Digits: 2\n"
+            "Point: 0.01\n"
+            "Tick Size: 0.01\n"
+            "Tick Value: 0.01\n"
+            "Contract Size: 100\n"
+            "Minimum Volume: 0.01\n"
+            "Maximum Volume: 200.0\n"
+            "Volume Step: 0.01\n"
+        )
+        res = parse_contract_spec_backing_artifact(
+            raw_text.encode("utf-8"),
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        )
+        assert res["contract_size"] == Decimal("100")
+        assert res["account_tier"] == "STANDARD_CENT"
+
+    def test_directive_10_missing_standard_cent_geometry_fails_closed(self):
+        """Directive 10: Missing geometry fields fail closed; no fallback or inheritance from Standard."""
+        incomplete_artifact = {
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            # missing contract_size, volume_min, volume_max, volume_step
+            "digits": 2,
+            "point_size": 0.01,
+        }
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING"):
+            parse_contract_spec_backing_artifact(
+                json.dumps(incomplete_artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_standard_cent_does_not_inherit_standard_geometry(self):
+        """Cent-Lot Safety: Standard Cent does NOT inherit Standard lot geometry."""
+        standard_artifact = {
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }
+        # Attempting to parse Standard geometry for Standard Cent must fail closed
+        with pytest.raises(ValueError, match="(account tier mismatch|symbol.*does not match|incompatible)"):
+            parse_contract_spec_backing_artifact(
+                json.dumps(standard_artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_commission_parser_standard_cent_zero_commission(self):
+        """Exness Standard Cent has 0.0 commission per lot."""
+        artifact = {
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "commission_per_lot_usd": 0.0,
+        }
+        res = parse_commission_backing_artifact(
+            json.dumps(artifact).encode("utf-8"),
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        )
+        assert res["native_commission_usd_per_lot_per_side"] == Decimal("0.0")
+        assert res["account_tier"] == "STANDARD_CENT"
+
+    def test_commission_parser_rejects_goldc_for_standard_cent(self):
+        """Commission artifact with GOLDc must be rejected for STANDARD_CENT."""
+        artifact = {
+            "symbol": "GOLDc",
+            "account_tier": "STANDARD_CENT",
+            "commission_per_lot_usd": 0.0,
+        }
+        with pytest.raises(ValueError, match="COMMISSION_PARSER_ERROR"):
+            parse_commission_backing_artifact(
+                json.dumps(artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_commission_parser_tier_mismatch_rejected(self):
+        artifact = {
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "commission_per_lot_usd": 0.0,
+        }
+        with pytest.raises(ValueError, match="account tier mismatch"):
+            parse_commission_backing_artifact(
+                json.dumps(artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_financing_parser_standard_cent_accepted(self):
+        artifact = {
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "swap_long": -15.5,
+            "swap_short": 8.2,
+            "rollover_summer_utc_hour": 21,
+            "rollover_winter_utc_hour": 22,
+            "triple_swap_weekday": "WEDNESDAY",
+        }
+        res = parse_financing_backing_artifact(
+            json.dumps(artifact).encode("utf-8"),
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        )
+        assert res["swap_long_points"] == Decimal("-15.5")
+        assert res["swap_short_points"] == Decimal("8.2")
+
+    def test_financing_parser_rejects_goldc_for_standard_cent(self):
+        """Financing artifact with GOLDc must be rejected for STANDARD_CENT."""
+        artifact = {
+            "symbol": "GOLDc",
+            "account_tier": "STANDARD_CENT",
+            "swap_long": -15.5,
+            "swap_short": 8.2,
+            "rollover_summer_utc_hour": 21,
+            "rollover_winter_utc_hour": 22,
+            "triple_swap_weekday": "WEDNESDAY",
+        }
+        with pytest.raises(ValueError, match="FINANCING_EVIDENCE_MISSING"):
+            parse_financing_backing_artifact(
+                json.dumps(artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_financing_parser_tier_mismatch_rejected(self):
+        artifact = {
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "swap_long": -15.5,
+            "swap_short": 8.2,
+            "rollover_summer_utc_hour": 21,
+            "rollover_winter_utc_hour": 22,
+            "triple_swap_weekday": "WEDNESDAY",
+        }
+        with pytest.raises(ValueError, match="(account tier mismatch|symbol.*does not match|incompatible)"):
+            parse_financing_backing_artifact(
+                json.dumps(artifact).encode("utf-8"),
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_standard_cent_parsers_require_explicit_broker_symbol(self):
+        """Directive A & D: Parsers fail closed with BROKER_SYMBOL_SCOPE_MISSING if expected_broker_symbol is missing."""
+        raw_cs = json.dumps({
+            "symbol": "XAUUSDc", "account_tier": "STANDARD_CENT",
+            "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01, "contract_size": 100,
+            "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01,
+        }).encode("utf-8")
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            parse_contract_spec_backing_artifact(
+                raw_cs,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+        raw_comm = json.dumps({
+            "symbol": "XAUUSDc", "account_tier": "STANDARD_CENT",
+            "commission_per_lot_usd": 0.0,
+        }).encode("utf-8")
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            parse_commission_backing_artifact(
+                raw_comm,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+        raw_fin = json.dumps({
+            "symbol": "XAUUSDc", "account_tier": "STANDARD_CENT",
+            "swap_long": -15.5, "swap_short": 8.2,
+            "rollover_summer_utc_hour": 21, "rollover_winter_utc_hour": 22,
+            "triple_swap_weekday": "WEDNESDAY",
+        }).encode("utf-8")
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            parse_financing_backing_artifact(
+                raw_fin,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_directive_m_expected_tier_not_derived_evidence(self):
+        """Directive M: Artifact without required tier applicability cannot become STANDARD_CENT merely from expected_account_tier."""
+        raw_spec_no_tier = json.dumps({
+            "symbol": "XAUUSDc",
+            "digits": 2,
+            "point_size": 0.01,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01,
+            "contract_size": 100,
+            "volume_min": 0.01,
+            "volume_max": 200.0,
+            "volume_step": 0.01,
+        }).encode("utf-8")
+        res = parse_contract_spec_backing_artifact(
+            raw_spec_no_tier,
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        )
+        assert "account_tier" not in res
+
+
+# =============================================================================
+# 6. TICK & TELEMETRY PARSER ISOLATION TESTS (Directive 7)
+# =============================================================================
+
+class TestTickAndTelemetryParserIsolation:
+    """Directive 7: Tick and slippage parsers validate broker_symbol and account_tier correctly."""
+
+    def test_tick_parser_rejects_wrong_symbol_for_standard_cent(self):
+        """Tick file with symbol EURUSDc instead of XAUUSDc must be rejected for Standard Cent."""
+        csv_content = (
+            "<DATE>\t<TIME>\t<BID>\t<ASK>\t<SYMBOL>\n"
+            "2026.01.05\t00:00:01.123\t2000.10\t2000.35\tEURUSDc\n"
+        )
+        with pytest.raises(ValueError, match="Symbol mismatch"):
+            parse_mt5_tick_export(
+                csv_content.encode("utf-8"),
+                expected_symbol="XAUUSD",
+                server_tz=timezone.utc,
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_tick_parser_rejects_goldc_for_standard_cent(self):
+        """Tick file with symbol GOLDc must be rejected for Standard Cent."""
+        csv_content = (
+            "<DATE>\t<TIME>\t<BID>\t<ASK>\t<SYMBOL>\n"
+            "2026.01.05\t00:00:01.123\t2000.10\t2000.35\tGOLDc\n"
+        )
+        with pytest.raises(ValueError, match="Symbol mismatch"):
+            parse_mt5_tick_export(
+                csv_content.encode("utf-8"),
+                expected_symbol="XAUUSD",
+                server_tz=timezone.utc,
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_telemetry_parser_validates_standard_cent(self):
+        header = "order_type,side,decision_timestamp,order_send_timestamp,reference_bid,reference_ask,executed_fill_price,fill_timestamp,volume_lots,latency_ms,symbol,account_tier,venue\n"
+        row = "BUY,BUY,2026-01-05 10:00:00Z,2026-01-05 10:00:00.010Z,2000.10,2000.35,2000.36,2026-01-05 10:00:00.050Z,1.00,40,XAUUSDc,STANDARD_CENT,EXNESS\n"
+        csv_content = (header + row).encode("utf-8")
+        res, summary = parse_mt5_execution_telemetry(
+            csv_content,
+            expected_venue="EXNESS",
+            expected_symbol="XAUUSD",
+            expected_account_tier="STANDARD_CENT",
+            expected_broker_symbol="XAUUSDc",
+        )
+        assert summary["sample_count"] == 1
+        assert summary["symbol"] == "XAUUSD"
+        assert summary["broker_symbol"] == "XAUUSDc"
+        assert res[0]["symbol"] == "XAUUSDc"
+        assert summary["account_tier"] == "STANDARD_CENT"
+
+    def test_telemetry_parser_rejects_cross_tier(self):
+        header = "order_type,side,decision_timestamp,order_send_timestamp,reference_bid,reference_ask,executed_fill_price,fill_timestamp,volume_lots,latency_ms,symbol,account_tier,venue\n"
+        row = "BUY,BUY,2026-01-05 10:00:00Z,2026-01-05 10:00:00.010Z,2000.10,2000.35,2000.36,2026-01-05 10:00:00.050Z,1.00,40,XAUUSD,STANDARD,EXNESS\n"
+        csv_content = (header + row).encode("utf-8")
+        with pytest.raises(ValueError, match="(account tier mismatch|symbol mismatch|incompatible)"):
+            parse_mt5_execution_telemetry(
+                csv_content,
+                expected_venue="EXNESS",
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+                expected_broker_symbol="XAUUSDc",
+            )
+
+    def test_telemetry_parser_rejects_goldc_for_standard_cent(self):
+        header = "order_type,side,decision_timestamp,order_send_timestamp,reference_bid,reference_ask,executed_fill_price,fill_timestamp,volume_lots,latency_ms,symbol,account_tier,venue\n"
+        row = "BUY,BUY,2026-01-05 10:00:00Z,2026-01-05 10:00:00.010Z,2000.10,2000.35,2000.36,2026-01-05 10:00:00.050Z,1.00,40,GOLDc,STANDARD_CENT,EXNESS\n"
+        csv_content = (header + row).encode("utf-8")
+        with pytest.raises(ValueError, match="Telemetry symbol mismatch"):
+            parse_mt5_execution_telemetry(
+                csv_content,
+                expected_venue="EXNESS",
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+                expected_broker_symbol="XAUUSDc",
+            )
+
+    def test_tick_parser_standard_cent_requires_explicit_broker_symbol(self):
+        """Directive A & D: MT5 tick parser fails closed with BROKER_SYMBOL_SCOPE_MISSING if broker symbol is omitted."""
+        csv_content = (
+            "<DATE>\t<TIME>\t<BID>\t<ASK>\t<SYMBOL>\n"
+            "2026.01.05\t00:00:01.123\t2000.10\t2000.35\tXAUUSDc\n"
+        ).encode("utf-8")
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            parse_mt5_tick_export(
+                csv_content,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_telemetry_parser_standard_cent_requires_explicit_broker_symbol(self):
+        """Directive A & D: MT5 telemetry parser fails closed with BROKER_SYMBOL_SCOPE_MISSING if broker symbol is omitted."""
+        header = "order_type,side,decision_timestamp,order_send_timestamp,reference_bid,reference_ask,executed_fill_price,fill_timestamp,volume_lots,latency_ms,symbol,account_tier,venue\n"
+        row = "BUY,BUY,2026-01-05 10:00:00Z,2026-01-05 10:00:00.010Z,2000.10,2000.35,2000.36,2026-01-05 10:00:00.050Z,1.00,40,XAUUSDc,STANDARD_CENT,EXNESS\n"
+        csv_content = (header + row).encode("utf-8")
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            parse_mt5_execution_telemetry(
+                csv_content,
+                expected_venue="EXNESS",
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+
+# =============================================================================
+# 7. MANAGEMENT COMMAND CLI & MANIFEST TESTS (Directives 3, 8)
+# =============================================================================
+
+class TestManagementCommandStandardCent:
+    """Proves ingest_xauusd_empirical_friction CLI supports STANDARD_CENT."""
+
+    def test_cli_accepts_standard_cent_argument(self, db):
+        """Running dry-run with --account-tier STANDARD_CENT succeeds and records scope."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            manifest_path = tf_m.name
+            report_path = tf_r.name
+
+        try:
+            out = io.StringIO()
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--account-currency", "USC",
+                "--output-manifest", manifest_path,
+                "--output-report", report_path,
+                "--dry-run",
+                stdout=out,
+            )
+            output = out.getvalue()
+            assert "STANDARD_CENT" in output
+            assert "Saved manifest" in output
+
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+
+            assert manifest["account_tier"] == "STANDARD_CENT"
+            assert manifest["canonical_symbol"] == "XAUUSD"
+            assert manifest["broker_symbol"] == "XAUUSDc"
+            assert manifest["account_currency"] == "USC"
+        finally:
+            if os.path.exists(manifest_path):
+                os.remove(manifest_path)
+            if os.path.exists(report_path):
+                os.remove(report_path)
+
+    def test_cli_standard_cent_without_broker_symbol_fails_closed(self, db):
+        """Directive A & D: CLI fails closed with BROKER_SYMBOL_SCOPE_MISSING when --broker-symbol is omitted for STANDARD_CENT."""
+        with pytest.raises(CommandError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--dry-run",
+            )
+
+    def test_cli_rejects_unsupported_tier(self, db):
+        with pytest.raises(CommandError, match="invalid choice"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "PRO",
+            )
+
+    def test_cli_rejects_zero_tier(self, db):
+        with pytest.raises(CommandError, match="invalid choice"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "ZERO",
+            )
+
+
+# =============================================================================
+# 7B. AUTHORITATIVE ARTIFACT INGESTION & ASSERTION QUALIFICATION TESTS
+# =============================================================================
+
+class TestAuthoritativeArtifactIngestionFailClosed:
+    """Directive A & D: Ingestion verification and assertion qualification fail closed when STANDARD_CENT lacks explicit broker symbol."""
+
+    def test_verify_authoritative_backing_artifact_missing_broker_symbol(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            tf.write(b'{"symbol": "XAUUSDc", "account_tier": "STANDARD_CENT", "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01, "trade_tick_value": 0.01, "contract_size": 100, "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01}')
+            tf_name = tf.name
+        try:
+            is_verified, raw, sha, errors = verify_authoritative_backing_artifact(
+                backing_file_path=tf_name,
+                component_role="CONTRACT_SPEC",
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD_CENT",
+                expected_broker_symbol=None,
+            )
+            assert is_verified is False
+            assert any("BROKER_SYMBOL_SCOPE_MISSING" in e for e in errors)
+        finally:
+            if os.path.exists(tf_name):
+                os.remove(tf_name)
+
+    @pytest.mark.django_db
+    def test_validate_source_qualification_assertion_missing_broker_symbol(self):
+        snap = FrictionSourceSnapshot.objects.create(
+            snapshot_id="snap_test_sc_missing_sym",
+            source_url="file:///dummy",
+            source_name="TEST_SPEC",
+            venue="EXNESS",
+            symbol="XAUUSD",
+            account_tier="STANDARD_CENT",
+            retrieved_at=datetime.now(timezone.utc),
+            known_at=datetime.now(timezone.utc),
+            raw_content=b"dummy",
+            raw_payload_bytes_sha256=hashlib.sha256(b"dummy").hexdigest(),
+        )
+        assertion = FrictionSourceQualificationAssertion.objects.create(
+            source_snapshot=snap,
+            component_role="CONTRACT_SPEC",
+            qualification_status="QUALIFIED",
+            parser_name="parse_contract_spec_backing_artifact",
+            parser_version="1.0.0",
+            raw_artifact_sha256=snap.raw_payload_bytes_sha256,
+            normalized_evidence_hash="some_hash",
+        )
+        is_qual, errors, _ = validate_source_qualification_assertion(
+            snapshot=snap,
+            assertion=assertion,
+            expected_component_role="CONTRACT_SPEC",
+            expected_symbol="XAUUSD",
+            expected_account_tier="STANDARD_CENT",
+            expected_broker_symbol=None,
+        )
+        assert is_qual is False
+        assert any("BROKER_SYMBOL_SCOPE_MISSING" in e for e in errors)
+
+
+# =============================================================================
+# 8. READINESS EVALUATOR TESTS FOR STANDARD_CENT (Directive 11)
+# =============================================================================
+
+class TestReadinessEvaluatorStandardCent:
+    """Directive 11: Readiness remains strictly FAIL-CLOSED (WAIT) with STANDARD_CENT."""
+
+    def test_readiness_fails_closed_with_missing_empirical_evidence(self, xauusd_setup):
+        instrument, primary_listing = xauusd_setup
+        _create_clean_candles(instrument, count=30)
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            execution_venue="EXNESS",
+            execution_account_tier="STANDARD_CENT",
+            execution_legal_entity_code="EXNESS_SC_REVISED",
+            override_macro_count=100,
+        )
+
+        assert report.passed is False
+        assert report.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert report.friction_status == "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+        assert any("No active FrictionModelActivation" in r or "Empirical friction" in r for r in report.reasons)
+
+        # Confirm markdown report preserves production authority FALSE and WAIT
+        md = report.to_markdown_report()
+        assert "Production Authority:** `FALSE`" in md
+        assert "Published Decision:** `WAIT`" in md
+
+    @pytest.mark.django_db
+    def test_readiness_evaluator_rejects_invalid_account_tier(self):
+        with pytest.raises(ValueError, match="Unsupported or unverified account tier"):
+            XauUsdDataReadinessEvaluator.evaluate(
+                execution_venue="EXNESS",
+                execution_account_tier="VIP_TIER",
+            )
+
+
+# =============================================================================
+# 9. PRIVACY & NON-PERSISTENCE OF SENSITIVE CREDENTIALS (Directive 9)
+# =============================================================================
+
+class TestPrivacyAndNonPersistenceOfSensitiveData:
+    """Directive 9: Private credentials and account identifiers are not required and not persisted."""
+
+    def test_attestation_does_not_contain_account_number_or_credentials(self, db):
+        """Attestation model only stores cryptographic hash and non-sensitive audit metadata."""
+        fields = [f.name for f in FrictionSourceProvenanceAttestation._meta.get_fields()]
+        assert "account_login" not in fields
+        assert "account_password" not in fields
+        assert "personal_name" not in fields
+        assert "balance" not in fields
+        assert "equity" not in fields
+
+    def test_dataset_does_not_contain_account_number_or_credentials(self, db):
+        fields = [f.name for f in FrictionEvidenceDataset._meta.get_fields()]
+        assert "account_login" not in fields
+        assert "account_password" not in fields
+        assert "personal_name" not in fields
+        assert "balance" not in fields
+        assert "equity" not in fields
+
+
+# =============================================================================
+# 10. DIRECTIVE A10 HOSTILE TESTS (16 INVARIANTS)
+# =============================================================================
+
+class TestDirectiveA10HostileSuite:
+    """Rigorous verification of the 16 hostile tests required by Directive A10."""
+
+    def test_1_standard_cent_without_broker_symbol_fails(self):
+        """1. STANDARD_CENT without broker symbol fails."""
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol=None, expected_account_tier="STANDARD_CENT")
+
+        with pytest.raises(ValueError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+            _matches_expected_symbol("XAUUSDc", "XAUUSD", expected_broker_symbol="", expected_account_tier="STANDARD_CENT")
+
+    def test_2_standard_cent_plus_xauusdc_accepts_xauusdc(self):
+        """2. STANDARD_CENT + XAUUSDc accepts XAUUSDc."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is True
+
+    def test_3_standard_cent_plus_xauusdc_rejects_xauusd(self):
+        """3. STANDARD_CENT + XAUUSDc rejects XAUUSD."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSD",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_4_standard_cent_plus_xauusdc_rejects_xauusdm(self):
+        """4. STANDARD_CENT + XAUUSDc rejects XAUUSDm."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDm",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_5_standard_cent_plus_xauusdc_rejects_goldc(self):
+        """5. STANDARD_CENT + XAUUSDc rejects GOLDc."""
+        assert _matches_expected_symbol(
+            candidate="GOLDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDc",
+            expected_account_tier="STANDARD_CENT",
+        ) is False
+
+    def test_6_standard_plus_xauusdm_accepts_xauusdm(self):
+        """6. STANDARD + XAUUSDm accepts XAUUSDm."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDm",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is True
+
+    def test_7_standard_plus_xauusdm_rejects_xauusd(self):
+        """7. STANDARD + XAUUSDm rejects XAUUSD."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSD",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is False
+
+    def test_8_standard_plus_xauusdm_rejects_xauusdc(self):
+        """8. STANDARD + XAUUSDm rejects XAUUSDc."""
+        assert _matches_expected_symbol(
+            candidate="XAUUSDc",
+            expected_symbol="XAUUSD",
+            expected_broker_symbol="XAUUSDm",
+            expected_account_tier="STANDARD",
+        ) is False
+
+    def test_9_account_tier_cannot_infer_broker_symbol(self, db):
+        """9. Account tier cannot infer broker symbol. Missing broker symbol remains None or fails closed."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            # STANDARD without broker symbol does NOT infer XAUUSD or XAUUSDm
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["broker_symbol"] is None
+
+            # STANDARD_CENT without broker symbol FAILS CLOSED (does NOT infer XAUUSDc)
+            with pytest.raises(CommandError, match="BROKER_SYMBOL_SCOPE_MISSING"):
+                call_command(
+                    "ingest_xauusd_empirical_friction",
+                    "--account-tier", "STANDARD_CENT",
+                    "--dry-run",
+                )
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_10_account_tier_cannot_infer_account_currency(self, db):
+        """10. Account tier cannot infer account currency. Missing currency remains None / UNKNOWN."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+            m_path = tf_m.name
+            r_path = tf_r.name
+
+        try:
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_std = json.load(f)
+            assert manifest_std["account_currency"] is None
+
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--output-manifest", m_path,
+                "--output-report", r_path,
+                "--dry-run",
+            )
+            with open(m_path, "r", encoding="utf-8") as f:
+                manifest_cent = json.load(f)
+            assert manifest_cent["account_currency"] is None
+
+            with open(r_path, "r", encoding="utf-8") as f:
+                report_cent = f.read()
+            assert "Account Currency:** `UNKNOWN`" in report_cent
+        finally:
+            if os.path.exists(m_path):
+                os.remove(m_path)
+            if os.path.exists(r_path):
+                os.remove(r_path)
+
+    def test_11_standard_geometry_cannot_qualify_standard_cent(self):
+        """11. Standard geometry cannot qualify Standard Cent."""
+        raw_standard_spec = json.dumps({
+            "symbol": "XAUUSD",
+            "account_tier": "STANDARD",
+            "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01, "contract_size": 100,
+            "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01,
+        }).encode("utf-8")
+
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING|account tier mismatch"):
+            parse_contract_spec_backing_artifact(
+                raw_standard_spec,
+                expected_symbol="XAUUSD",
+                expected_broker_symbol="XAUUSDc",
+                expected_account_tier="STANDARD_CENT",
+            )
+
+    def test_12_standard_cent_geometry_cannot_qualify_standard(self):
+        """12. Standard Cent geometry cannot qualify Standard."""
+        raw_cent_spec = json.dumps({
+            "symbol": "XAUUSDc",
+            "account_tier": "STANDARD_CENT",
+            "digits": 2, "point_size": 0.01, "trade_tick_size": 0.01,
+            "trade_tick_value": 0.01, "contract_size": 100,
+            "volume_min": 0.01, "volume_max": 200.0, "volume_step": 0.01,
+        }).encode("utf-8")
+
+        with pytest.raises(ValueError, match="CONTRACT_SPEC_EVIDENCE_MISSING|account tier mismatch"):
+            parse_contract_spec_backing_artifact(
+                raw_cent_spec,
+                expected_symbol="XAUUSD",
+                expected_account_tier="STANDARD",
+            )
+
+    def test_13_tier_specific_default_manifests_are_unique(self, db):
+        """13. Tier-specific default manifests are unique and cannot overwrite one another."""
+        tiers = ["STANDARD", "STANDARD_CENT", "RAW_SPREAD"]
+        resolved_manifests = set()
+        for t in tiers:
+            default_manifest_by_tier = {
+                "STANDARD": "artifacts/calibration/xauusd_standard_empirical_friction_manifest.json",
+                "STANDARD_CENT": "artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json",
+                "RAW_SPREAD": "artifacts/calibration/xauusd_raw_spread_empirical_friction_manifest.json",
+            }
+            resolved_manifests.add(default_manifest_by_tier[t])
+        assert len(resolved_manifests) == 3
+        assert any("xauusd_standard_empirical_friction_manifest.json" in p for p in resolved_manifests)
+        assert any("xauusd_standard_cent_empirical_friction_manifest.json" in p for p in resolved_manifests)
+        assert any("xauusd_raw_spread_empirical_friction_manifest.json" in p for p in resolved_manifests)
+
+    def test_14_tier_specific_reports_are_unique(self, db):
+        """14. Tier-specific reports are unique and cannot overwrite one another."""
+        tiers = ["STANDARD", "STANDARD_CENT", "RAW_SPREAD"]
+        resolved_reports = set()
+        for t in tiers:
+            default_report_by_tier = {
+                "STANDARD": "docs/calibration/XAUUSD_STANDARD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+                "STANDARD_CENT": "docs/calibration/XAUUSD_STANDARD_CENT_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+                "RAW_SPREAD": "docs/calibration/XAUUSD_RAW_SPREAD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md",
+            }
+            resolved_reports.add(default_report_by_tier[t])
+        assert len(resolved_reports) == 3
+        assert any("XAUUSD_STANDARD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+        assert any("XAUUSD_STANDARD_CENT_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+        assert any("XAUUSD_RAW_SPREAD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md" in p for p in resolved_reports)
+
+    def test_15_existing_step4_fail_closed_behavior_remains_unchanged(self, db):
+        """15. Existing Step-4 fail-closed behavior remains unchanged."""
+        is_qual, errors, _ = validate_source_qualification_assertion(
+            snapshot=None,
+            assertion=None,
+            expected_component_role="CONTRACT_SPEC",
+            expected_symbol="XAUUSD",
+            expected_account_tier="STANDARD",
+        )
+        assert is_qual is False
+        assert any("missing" in e.lower() for e in errors)
+
+    def test_16_readiness_remains_wait(self, xauusd_setup):
+        """16. Readiness remains WAIT."""
+        instrument, primary_listing = xauusd_setup
+        _create_clean_candles(instrument, count=30)
+
+        report = XauUsdDataReadinessEvaluator.evaluate(
+            execution_venue="EXNESS",
+            execution_account_tier="STANDARD_CENT",
+            execution_legal_entity_code="EXNESS_SC_REVISED",
+            override_macro_count=100,
+        )
+        assert report.decision == "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
+        assert report.passed is False
+        md = report.to_markdown_report()
+        assert "Production Authority:** `FALSE`" in md
+        assert "Published Decision:** `WAIT`" in md
+

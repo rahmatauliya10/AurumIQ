@@ -105,6 +105,7 @@ def verify_authoritative_backing_artifact(
     component_role: Optional[str] = None,
     expected_symbol: str = "XAUUSD",
     expected_account_tier: str = "STANDARD",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Tuple[bool, bytes, str, List[str]]:
     """Independently verify an actual raw backing artifact on disk (Requirement 1, 2, 3).
 
@@ -150,6 +151,14 @@ def verify_authoritative_backing_artifact(
         errors.append(f"Backing artifact is too small ({len(raw_bytes)} bytes) to establish authoritative evidence.")
         return False, raw_bytes, computed_sha, errors
 
+    from apps.market_data.friction.artifact_parsers import normalize_account_tier
+    norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        errors.append(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
+        return False, raw_bytes, computed_sha, errors
+
     # Component-specific authoritative parser validation (Format-only %PDF or <html> CANNOT qualify)
     if component_role:
         norm_role = str(component_role).upper()
@@ -157,11 +166,26 @@ def verify_authoritative_backing_artifact(
             if norm_role in ("LEGAL_ENTITY", "LEGAL"):
                 parse_legal_entity_backing_artifact(raw_bytes)
             elif norm_role in ("CONTRACT_SPEC", "CONTRACT"):
-                parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+                parse_contract_spec_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
             elif norm_role in ("COMMISSION", "FEE"):
-                parse_commission_backing_artifact(raw_bytes, expected_symbol=expected_symbol, expected_account_tier=expected_account_tier)
+                parse_commission_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_account_tier=norm_tier,
+                    expected_broker_symbol=expected_broker_symbol,
+                )
             elif norm_role in ("FINANCING", "SWAP"):
-                parse_financing_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+                parse_financing_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
         except ValueError as ve:
             errors.append(str(ve))
             return False, raw_bytes, computed_sha, errors
@@ -171,9 +195,24 @@ def verify_authoritative_backing_artifact(
         has_any_success = False
         for parser_fn in (
             lambda: parse_legal_entity_backing_artifact(raw_bytes),
-            lambda: parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol),
-            lambda: parse_commission_backing_artifact(raw_bytes, expected_symbol=expected_symbol, expected_account_tier=expected_account_tier),
-            lambda: parse_financing_backing_artifact(raw_bytes, expected_symbol=expected_symbol),
+            lambda: parse_contract_spec_backing_artifact(
+                raw_bytes,
+                expected_symbol=expected_symbol,
+                expected_broker_symbol=expected_broker_symbol,
+                expected_account_tier=norm_tier,
+            ),
+            lambda: parse_commission_backing_artifact(
+                raw_bytes,
+                expected_symbol=expected_symbol,
+                expected_account_tier=norm_tier,
+                expected_broker_symbol=expected_broker_symbol,
+            ),
+            lambda: parse_financing_backing_artifact(
+                raw_bytes,
+                expected_symbol=expected_symbol,
+                expected_broker_symbol=expected_broker_symbol,
+                expected_account_tier=norm_tier,
+            ),
         ):
             try:
                 parser_fn()

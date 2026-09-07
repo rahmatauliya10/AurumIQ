@@ -8,7 +8,7 @@ Adheres strictly to Pre-Phase-8 Calibration Governance:
 - Fixed reference-price bps are excluded from calibration models.
 """
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 def calculate_execution_notional(
@@ -90,3 +90,10 @@ def calculate_round_trip_cost_bps(
         raise ValueError("Slippage bps cannot be negative.")
     
     return base_spread_bps + entry_fee_bps + exit_fee_bps + entry_slippage_bps + exit_slippage_bps
+
+
+# -----------------------------------------------------------------------------
+# Explicit Account Currency Scope Support (Zero Implicit Inference)
+# -----------------------------------------------------------------------------
+
+SUPPORTED_ACCOUNT_CURRENCIES = {"USD", "USC"}
