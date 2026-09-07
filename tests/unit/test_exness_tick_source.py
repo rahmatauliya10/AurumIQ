@@ -385,13 +385,15 @@ def test_exness_source_qualification_assertion_success():
 
     # Create snapshot using ingestion helper
     from apps.market_data.friction.ingestion import ingest_friction_source_snapshot
+    from apps.market_data.friction.provenance import compute_capture_context_hash
+    source_url = "https://www.exness.com/tick-history/XAUUSDc_2026_09_01.csv"
     snapshot, _ = ingest_friction_source_snapshot(
         source_name="EXNESS_OFFICIAL_TICK_HISTORY",
         venue="EXNESS",
         symbol="XAUUSD",
         account_tier="STANDARD_CENT",
         source_type=FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
-        source_url="https://ticks.ex2archive.com/2026/09/Exness_XAUUSDc_2026_09_01.zip",
+        source_url=source_url,
         raw_content=raw_bytes,
         retrieved_at=datetime.now(timezone.utc),
         known_at=datetime.now(timezone.utc),
@@ -414,28 +416,40 @@ def test_exness_source_qualification_assertion_success():
 
     # Create provenance attestation
     cap_dt = snapshot.retrieved_at or datetime.now(timezone.utc)
+    meta = {
+        "requested_url": source_url,
+        "final_url": source_url,
+        "hostname": "www.exness.com",
+        "http_status": 200,
+        "raw_response_sha256": raw_sha,
+        "collector_version": "1.0.0",
+        "captured_at": cap_dt.isoformat(),
+    }
+    ctx_hash = compute_capture_context_hash(meta, FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value)
     proof = compute_verification_proof(
         source_snapshot_id=snapshot.snapshot_id,
         raw_artifact_sha256=raw_sha,
         component_role="SPREAD_DATASET",
-        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
         source_type=snapshot.source_type,
         venue=snapshot.venue,
         symbol=snapshot.symbol,
         account_tier=snapshot.account_tier,
         captured_at=cap_dt,
         verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        capture_context_hash=ctx_hash,
     )
     from apps.market_data.friction.ingestion import create_friction_provenance_attestation
     attestation = create_friction_provenance_attestation(
         source_snapshot=snapshot,
         component_role="SPREAD_DATASET",
-        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
         verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
         captured_at=cap_dt,
         reviewed_at=datetime.now(timezone.utc),
         attestation_status=FrictionAttestationStatus.VERIFIED.value,
         verification_proof=proof,
+        provenance_metadata=meta,
     )
 
     # Create assertion
@@ -507,3 +521,341 @@ def test_exness_source_cannot_qualify_slippage_assertion():
     )
     assert not is_valid
     assert any("not in trusted allowlist" in err for err in errors)
+
+
+# =============================================================================
+# 7. Hostile Provenance Method & Source Type Binding Tests
+# =============================================================================
+
+@pytest.mark.django_db
+def test_exness_with_mt5_direct_export_rejected():
+    """EXNESS_OFFICIAL_TICK_HISTORY authenticated via MT5_DIRECT_EXPORT must be REJECTED."""
+    rows = _generate_synthetic_exness_ticks(distinct_days=5, samples_per_session=110)
+    raw_bytes = _make_exness_csv_bytes(rows)
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+    from apps.market_data.friction.ingestion import ingest_friction_source_snapshot, create_friction_provenance_attestation
+    snapshot, _ = ingest_friction_source_snapshot(
+        source_name="EXNESS_OFFICIAL_TICK_HISTORY",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD_CENT",
+        source_type=FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
+        source_url="https://ticks.ex2archive.com/2026/09/Exness_XAUUSDc_2026_09_01.zip",
+        raw_content=raw_bytes,
+        retrieved_at=datetime.now(timezone.utc),
+        known_at=datetime.now(timezone.utc),
+    )
+
+    cap_dt = snapshot.retrieved_at
+    proof = compute_verification_proof(
+        source_snapshot_id=snapshot.snapshot_id,
+        raw_artifact_sha256=raw_sha,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        source_type=snapshot.source_type,
+        venue=snapshot.venue,
+        symbol=snapshot.symbol,
+        account_tier=snapshot.account_tier,
+        captured_at=cap_dt,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+    )
+    attestation = create_friction_provenance_attestation(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        captured_at=cap_dt,
+        reviewed_at=datetime.now(timezone.utc),
+        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+        verification_proof=proof,
+    )
+
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_exness_official_tick_history",
+        parser_version="1.0.0",
+        raw_artifact_sha256=raw_sha,
+        normalized_evidence_hash="dummy_hash",
+        provenance_attestation=attestation,
+    )
+
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snapshot,
+        assertion=assertion,
+        expected_component_role="SPREAD_DATASET",
+        expected_parser="parse_exness_official_tick_history",
+        expected_symbol="XAUUSD",
+        expected_account_tier="STANDARD_CENT",
+        expected_venue="EXNESS",
+        expected_broker_symbol="XAUUSDc",
+    )
+    assert not is_valid
+    assert any("PROVENANCE_METHOD_SOURCE_MISMATCH" in err for err in errors)
+
+
+@pytest.mark.django_db
+def test_mt5_source_with_mt5_direct_export_accepted():
+    """MT5_TICK_HISTORY_EXPORT + MT5_DIRECT_EXPORT is ACCEPTED."""
+    mt5_lines = [
+        "<DATE>\t<TIME>\t<BID>\t<ASK>\t<SYMBOL>",
+        "2026.09.01\t00:00:01.123+00:00\t2500.000\t2500.250\tXAUUSDc",
+    ]
+    raw_bytes = "\n".join(mt5_lines).encode("utf-8")
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+    from apps.market_data.friction.ingestion import ingest_friction_source_snapshot, create_friction_provenance_attestation
+    from apps.market_data.friction.artifact_parsers import compute_normalized_evidence_hash
+    from apps.market_data.friction.provenance import compute_capture_context_hash
+    snapshot, _ = ingest_friction_source_snapshot(
+        source_name="EXNESS_MT5_TICKS",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD_CENT",
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+        source_url="file:///mock/ticks.csv",
+        raw_content=raw_bytes,
+        retrieved_at=datetime.now(timezone.utc),
+        known_at=datetime.now(timezone.utc),
+    )
+
+    ticks, _ = parse_mt5_tick_export(
+        raw_bytes,
+        expected_symbol="XAUUSD",
+        expected_broker_symbol="XAUUSDc",
+        expected_account_tier="STANDARD_CENT",
+    )
+    norm_rows = [
+        f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
+        for t in ticks
+    ]
+    raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+    norm_hash = compute_normalized_evidence_hash({"raw_dataset_sha256": raw_ds_sha})
+
+    cap_dt = snapshot.retrieved_at
+    meta = {
+        "server": "Exness-Real25",
+        "export_type": "TICKS",
+        "collector_version": "1.0.0",
+        "raw_sha256": raw_sha,
+    }
+    ctx_hash = compute_capture_context_hash(meta, FrictionVerificationMethod.MT5_DIRECT_EXPORT.value)
+    proof = compute_verification_proof(
+        source_snapshot_id=snapshot.snapshot_id,
+        raw_artifact_sha256=raw_sha,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        source_type=snapshot.source_type,
+        venue=snapshot.venue,
+        symbol=snapshot.symbol,
+        account_tier=snapshot.account_tier,
+        captured_at=cap_dt,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        capture_context_hash=ctx_hash,
+    )
+    attestation = create_friction_provenance_attestation(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        captured_at=cap_dt,
+        reviewed_at=datetime.now(timezone.utc),
+        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+        verification_proof=proof,
+        provenance_metadata=meta,
+    )
+
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_mt5_tick_export",
+        parser_version="1.0.0",
+        raw_artifact_sha256=raw_sha,
+        normalized_evidence_hash=norm_hash,
+        provenance_attestation=attestation,
+    )
+
+    is_valid, errors, parsed_data = validate_source_qualification_assertion(
+        snapshot=snapshot,
+        assertion=assertion,
+        expected_component_role="SPREAD_DATASET",
+        expected_parser="parse_mt5_tick_export",
+        expected_symbol="XAUUSD",
+        expected_account_tier="STANDARD_CENT",
+        expected_venue="EXNESS",
+        expected_broker_symbol="XAUUSDc",
+    )
+    assert is_valid, f"MT5 direct export should be valid: {errors}"
+    assert parsed_data["sample_count"] == 1
+
+
+@pytest.mark.django_db
+def test_mt5_source_with_broker_url_capture_rejected():
+    """MT5_TICK_HISTORY_EXPORT authenticated via BROKER_OFFICIAL_URL_CAPTURE must be REJECTED."""
+    mt5_lines = [
+        "<DATE>\t<TIME>\t<BID>\t<ASK>\t<SYMBOL>",
+        "2026.09.01\t00:00:01.123+00:00\t2500.000\t2500.250\tXAUUSDc",
+    ]
+    raw_bytes = "\n".join(mt5_lines).encode("utf-8")
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+    from apps.market_data.friction.ingestion import ingest_friction_source_snapshot, create_friction_provenance_attestation
+    from apps.market_data.friction.artifact_parsers import compute_normalized_evidence_hash
+    from apps.market_data.friction.provenance import compute_capture_context_hash
+    snapshot, _ = ingest_friction_source_snapshot(
+        source_name="EXNESS_MT5_TICKS",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD_CENT",
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+        source_url="https://www.exness.com/tick-history/data.csv",
+        raw_content=raw_bytes,
+        retrieved_at=datetime.now(timezone.utc),
+        known_at=datetime.now(timezone.utc),
+    )
+
+    ticks, _ = parse_mt5_tick_export(
+        raw_bytes,
+        expected_symbol="XAUUSD",
+        expected_broker_symbol="XAUUSDc",
+        expected_account_tier="STANDARD_CENT",
+    )
+    norm_rows = [
+        f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
+        for t in ticks
+    ]
+    raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+    norm_hash = compute_normalized_evidence_hash({"raw_dataset_sha256": raw_ds_sha})
+
+    cap_dt = snapshot.retrieved_at
+    meta = {
+        "requested_url": "https://www.exness.com/tick-history/data.csv",
+        "final_url": "https://www.exness.com/tick-history/data.csv",
+        "hostname": "www.exness.com",
+        "http_status": 200,
+        "raw_response_sha256": raw_sha,
+        "collector_version": "1.0.0",
+        "captured_at": cap_dt.isoformat(),
+    }
+    ctx_hash = compute_capture_context_hash(meta, FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value)
+    proof = compute_verification_proof(
+        source_snapshot_id=snapshot.snapshot_id,
+        raw_artifact_sha256=raw_sha,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        source_type=snapshot.source_type,
+        venue=snapshot.venue,
+        symbol=snapshot.symbol,
+        account_tier=snapshot.account_tier,
+        captured_at=cap_dt,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        capture_context_hash=ctx_hash,
+    )
+    attestation = create_friction_provenance_attestation(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        captured_at=cap_dt,
+        reviewed_at=datetime.now(timezone.utc),
+        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+        verification_proof=proof,
+        provenance_metadata=meta,
+    )
+
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_mt5_tick_export",
+        parser_version="1.0.0",
+        raw_artifact_sha256=raw_sha,
+        normalized_evidence_hash=norm_hash,
+        provenance_attestation=attestation,
+    )
+
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snapshot,
+        assertion=assertion,
+        expected_component_role="SPREAD_DATASET",
+        expected_parser="parse_mt5_tick_export",
+        expected_symbol="XAUUSD",
+        expected_account_tier="STANDARD_CENT",
+        expected_venue="EXNESS",
+        expected_broker_symbol="XAUUSDc",
+    )
+    assert not is_valid
+    assert any("PROVENANCE_METHOD_SOURCE_MISMATCH" in err for err in errors)
+
+
+@pytest.mark.django_db
+def test_attestation_source_type_mismatch_rejected():
+    """Attestation source_type mismatching snapshot source_type must be REJECTED."""
+    rows = _generate_synthetic_exness_ticks(distinct_days=5, samples_per_session=110)
+    raw_bytes = _make_exness_csv_bytes(rows)
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+    from apps.market_data.friction.ingestion import ingest_friction_source_snapshot, create_friction_provenance_attestation
+    snapshot, _ = ingest_friction_source_snapshot(
+        source_name="EXNESS_OFFICIAL_TICK_HISTORY",
+        venue="EXNESS",
+        symbol="XAUUSD",
+        account_tier="STANDARD_CENT",
+        source_type=FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
+        source_url="https://ticks.ex2archive.com/2026/09/Exness_XAUUSDc_2026_09_01.zip",
+        raw_content=raw_bytes,
+        retrieved_at=datetime.now(timezone.utc),
+        known_at=datetime.now(timezone.utc),
+    )
+
+    cap_dt = snapshot.retrieved_at
+    proof = compute_verification_proof(
+        source_snapshot_id=snapshot.snapshot_id,
+        raw_artifact_sha256=raw_sha,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+        venue=snapshot.venue,
+        symbol=snapshot.symbol,
+        account_tier=snapshot.account_tier,
+        captured_at=cap_dt,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+    )
+    attestation = create_friction_provenance_attestation(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+        verifier_identity="TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+        captured_at=cap_dt,
+        reviewed_at=datetime.now(timezone.utc),
+        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+        verification_proof=proof,
+    )
+
+    assertion = FrictionSourceQualificationAssertion.objects.create(
+        source_snapshot=snapshot,
+        component_role="SPREAD_DATASET",
+        qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+        parser_name="parse_exness_official_tick_history",
+        parser_version="1.0.0",
+        raw_artifact_sha256=raw_sha,
+        normalized_evidence_hash="dummy_hash",
+        provenance_attestation=attestation,
+    )
+
+    is_valid, errors, _ = validate_source_qualification_assertion(
+        snapshot=snapshot,
+        assertion=assertion,
+        expected_component_role="SPREAD_DATASET",
+        expected_parser="parse_exness_official_tick_history",
+        expected_symbol="XAUUSD",
+        expected_account_tier="STANDARD_CENT",
+        expected_venue="EXNESS",
+        expected_broker_symbol="XAUUSDc",
+    )
+    assert not is_valid
+    assert any("ATTESTATION_SOURCE_TYPE_MISMATCH" in err for err in errors)

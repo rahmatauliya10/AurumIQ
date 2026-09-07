@@ -42,6 +42,7 @@ from apps.market_data.models import (
     QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES,
     QUALIFIED_SLIPPAGE_SOURCE_TYPES,
     QUALIFIED_SPREAD_SOURCE_TYPES,
+    QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE,
 )
 from apps.market_data.friction.artifact_parsers import (
     compute_normalized_evidence_hash,
@@ -389,6 +390,18 @@ def validate_source_qualification_assertion(
             reasons.append(
                 f"Attestation component_role '{linked_att.component_role}' does not match expected role '{expected_component_role}'."
             )
+        if linked_att.source_type != snapshot.source_type:
+            reasons.append(
+                f"ATTESTATION_SOURCE_TYPE_MISMATCH: Attestation source_type '{linked_att.source_type}' does not match snapshot source_type '{snapshot.source_type}'."
+            )
+        if (
+            linked_att.source_origin
+            and snapshot.source_origin
+            and linked_att.source_origin.strip() != snapshot.source_origin.strip()
+        ):
+            reasons.append(
+                f"ATTESTATION_SOURCE_ORIGIN_MISMATCH: Attestation source_origin '{linked_att.source_origin}' does not match snapshot source_origin '{snapshot.source_origin}'."
+            )
         if linked_att.raw_artifact_sha256 != assertion.raw_artifact_sha256:
             reasons.append(
                 f"Attestation raw_artifact_sha256 '{linked_att.raw_artifact_sha256}' does not match assertion raw SHA '{assertion.raw_artifact_sha256}'."
@@ -407,6 +420,14 @@ def validate_source_qualification_assertion(
             reasons.append(
                 f"Attestation verification_method '{linked_att.verification_method}' is not an accepted method: {sorted(ACCEPTED_VERIFICATION_METHODS)}."
             )
+        if expected_component_role == "SPREAD_DATASET":
+            allowed_methods = QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE.get(snapshot.source_type, set())
+            if linked_att.verification_method not in allowed_methods:
+                reasons.append(
+                    f"PROVENANCE_METHOD_SOURCE_MISMATCH: Spread source '{snapshot.source_type}' "
+                    f"cannot be verified via '{linked_att.verification_method}'. "
+                    f"Allowed verification methods: {sorted(allowed_methods)}."
+                )
         if not linked_att.verifier_identity or not str(linked_att.verifier_identity).strip():
             reasons.append("Attestation verifier_identity is empty.")
         if linked_att.venue and expected_venue and linked_att.venue.upper() != expected_venue.upper():

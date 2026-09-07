@@ -5893,6 +5893,7 @@ def test_hostile_24_verified_trusted_collector_attestation_may_qualify():
     snap, _ = ingest_friction_source_snapshot(
         url, "URL_SNAP24", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
         raw_content=receipt.response_bytes,
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
     )
     att = create_verified_broker_capture_attestation(
         source_snapshot=snap,

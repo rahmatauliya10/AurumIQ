@@ -688,6 +688,15 @@ class FrictionVerificationMethod(models.TextChoices):
 
 ACCEPTED_VERIFICATION_METHODS = {m.value for m in FrictionVerificationMethod}
 
+QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE = {
+    FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value: {
+        FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+    },
+    FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value: {
+        FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+    },
+}
+
 
 class FrictionAttestationStatus(models.TextChoices):
     DECLARED = "DECLARED", "Declared (Unverified Submission)"
