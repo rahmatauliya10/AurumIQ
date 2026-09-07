@@ -1,9 +1,10 @@
 # AurumIQ — Master Phased Implementation Roadmap
 
-> **Target Instrument Scope:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD)  
-> **Historical Baseline:** `XAUT` (Tether Gold) historical baseline verified, frozen, and permanently retained for audit integrity.  
-> **User Decision Scope:** `BUY / WAIT / SELL` (Human decision support only — zero automated order execution).  
-> **Authoritative Main Baseline:** `9011764958d31c5e96860488da7c54568def1352` (Phase 5 Merged via PR #12)
+> **Target Instrument Scope:** `XAU/USD` (Canonical: `XAUUSD` Spot Gold denominated in USD)
+> **Historical Baseline:** `XAUT` (Tether Gold) historical baseline verified, frozen, and permanently retained for audit integrity.
+> **User Decision Scope:** `BUY / WAIT / SELL` (Human decision support only — zero automated order execution).
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Calibration Status:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 ---
 
@@ -22,8 +23,9 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 | [**PHASE 5: Risk Engine**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Risk Planning, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
 | [**PHASE 6: Backtest Validation & Ablation**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #14 @ dab3b6f)` |
 | [**PHASE 7: LiveMonitor & Alerts**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
-| [**PHASE 8: Live Paper Observation**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
-| [**PHASE 9: ML Meta-Filter**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION` |
+| [**Calibration Architecture**](../calibration/XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) | Empirical Friction Calibration & Execution Scopes | ⚪ `N/A` | 🟡 `SEALED ARCHITECTURE (PR #20 @ 92b0bd6, PR #21 @ fcbe1a9; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
+| [**PHASE 8: Live Paper Observation**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (BLOCKED BY CALIBRATION GATE)` |
+| [**PHASE 9: ML Meta-Filter**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (DEPENDS ON PHASE 8 STABILITY)` |
 
 ---
 
@@ -63,9 +65,19 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 - **Phase 3B Contracts:** Experimental spectral cycle engine (ACF, FFT, Wavelet, Hilbert) with hard-locked `production_weight = 0.0`.
 - **Phase 4 Contracts:** `XAU-P4-01` (`BUY_WINDOW` $\rightarrow$ `BUY`), `XAU-P4-02` (`SELL_WINDOW` $\rightarrow$ `SELL`), `XAU-P4-03` (`CONFLICT` $\rightarrow$ `WAIT`), `XAU-P4-04` (`SYSTEM_SAFETY_HOLD` $\rightarrow$ `WAIT`). Baseline SHA: `b619a140391e5e308241246e105b9767a1b0716d`.
 - **Phase 5 Contracts:** `XAU-P5-01` (LONG side-aware risk planning), `XAU-P5-02` (SHORT side-aware risk planning), `XAU-P5-03` (side-aware market bid/ask causal execution). Hostile matrix `H1`–`H74` fully verified. Merge SHA: `9011764958d31c5e96860488da7c54568def1352`.
+- **Phase 6 Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation). Merge SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`.
+- **Phase 7 Contracts:** `XAU-P7-01` (BUY / WAIT / SELL presentation and dual-side alerting). Merge SHA: `57f6de1405d0df8548182a166d245f1a3173363d`.
+- **Calibration Governance & Scope Contracts:**
+  - `XAU-CAL-01`: Macro blackout event evidence qualification and revision-safe ingestion (PR #19 @ `06425ba`).
+  - `XAU-CAL-02`: Six-category empirical friction qualification architecture without silent defaults (PR #20 @ `92b0bd6`).
+  - `XAU-CAL-03`: Isolated Exness Standard Cent execution profile scope with fail-closed symbol binding and zero cross-profile contamination (PR #21 @ `fcbe1a9`).
 
 ### B. Planned Future XAUUSD Contracts
-- **Phase 6 Planned Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation).
-- **Phase 7 Planned Contracts:** `XAU-P7-01` (BUY / WAIT / SELL presentation and dual-side alerting).
-- **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit).
+- **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit — blocked until empirical friction evidence is qualified).
 - **Phase 9 Planned Contracts:** `XAU-P9-01` (point-in-time machine learning meta-labeling filter).
+
+---
+
+> [!IMPORTANT]
+> **GOVERNANCE & PRODUCTION AUTHORITY NOTICE:**
+> Implementation of Phases 5, 6, and 7, as well as the calibration qualification architecture (PR #20, PR #21), does NOT grant live production authority. Published decision remains strictly `WAIT` (`is_production_authorized = False`, `production_weight = 0.0`), with gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`. Phase 8 forward observation requires authentic empirical friction calibration as a mandatory precondition.

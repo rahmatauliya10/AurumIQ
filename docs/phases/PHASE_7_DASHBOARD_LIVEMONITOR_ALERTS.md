@@ -1,12 +1,12 @@
 # Phase 7: Dashboard, LiveMonitor & Alerts
 
-> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
-> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**  
-> **Phase 7 Reviewed Head:** `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`  
-> **Phase 7 Merge/Main SHA:** `57f6de1405d0df8548182a166d245f1a3173363d`  
-> **PR:** `#15`  
-> **Base SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`
+> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**
+> **Historical Phase 7 Merge SHA:** `57f6de1405d0df8548182a166d245f1a3173363d` (Merged via PR #15; Base SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`)
+> **Phase 7 Reviewed Head:** `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Calibration Status:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
 
 ---
 
@@ -18,7 +18,7 @@
 - **Dual-Side Metric Dashboard:**
   - **Live Feed & Health:** Live XAUUSD price, feed freshness (configuration-driven), provider health status (`HEALTHY`, `DEGRADED`, `UNHEALTHY`, `NOT_CONFIGURED`).
   - **Direction & Timing Scores:** Long Direction Score, Short Direction Score, Long Timing Score, Short Timing Score.
-  - **Dual-Layer State Presentation:** Candidate State (`candidate_state`), Candidate Decision (`candidate_user_decision`), Published State (`state`), Published Decision (`user_decision` — held at `WAIT` pending Phase 6 validation).
+  - **Dual-Layer State Presentation:** Candidate State (`candidate_state`), Candidate Decision (`candidate_user_decision`), Published State (`state`), Published Decision (`user_decision` — held at `WAIT` pending empirical friction calibration readiness).
   - **Risk Planning Geometry:** Selected Entry Zone ($[\text{Min}, \text{Max}]$), Invalidation Stop (`Stop_Final`), Structural $\text{TP1}$, $\text{TP2}$, and unrounded Reward-to-Risk ratio.
   - **Diagnostics & Governance:** Risk candidate status, calibration profile status (`PENDING_DATA` / `CALIBRATION_REQUIRED`), hard-gate reasons, and Phase 3B research status (`production_weight = 0.0`).
 - **Live Cache Architecture:** Active quote streaming and monitoring utilize Redis cache key `livequote:XAUUSD` with configuration-driven Redis TTL. (Historical `livequote:XAUTUSDT` is superseded).
@@ -51,7 +51,7 @@ Alerts provide pure real-time notification support for human traders. **Zero ale
 
 ## Historical XAUT Frozen Specification (Verbatim Baseline)
 
-> **Status:** ✅ **APPROVED (HISTORICAL XAUT REFERENCE)**  
+> **Status:** ✅ **APPROVED (HISTORICAL XAUT REFERENCE)**
 > **Primary Goal:** Build a responsive, server-rendered Django dashboard with interactive Plotly visual analytics, a real-time `LiveMonitor` (WebSocket + Redis with TTL and freshness guards), REST API endpoints, and informational alert dispatchers.
 
 ### 1. Dashboard Architecture (`apps/dashboard/`)

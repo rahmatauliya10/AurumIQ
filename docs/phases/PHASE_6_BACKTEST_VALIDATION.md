@@ -1,10 +1,10 @@
 # Phase 6: XAUUSD Point-in-Time Backtesting, Walk-Forward Validation & Ablation
 
-> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**  
-> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`  
-> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**  
-> **Verified Main SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`  
-> **Merged via:** PR #14  
+> **Historical XAUT Baseline Status:** ✅ **COMPLETED, VERIFIED & FROZEN**
+> **Historical Source:** `main` @ `0bd9dbe38ea41594377f0fb0ce4b539b1037ac9a`
+> **Current XAUUSD Target Status:** ✅ **COMPLETED & VERIFIED**
+> **Historical Phase 6 Merge SHA:** `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f` (Merged via PR #14)
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
 > **Canonical Status:** **SINGLE ACTIVE GOVERNING SPECIFICATION FOR PHASE 6**
 
 ---
@@ -17,7 +17,7 @@ Phase 6 is the unified empirical governance and validation laboratory for spot X
 1. **Zero Look-Ahead Bias:** Point-in-time historical simulation strictly uses data knowable at evaluation step $T$.
 2. **Zero Speculative Sizing:** Position sizing, capital allocation, account balance tracking, margin calculations, and leverage compounding are **STRICTLY OUT OF SCOPE**. Performance is evaluated exclusively in normalized $R$ units.
 3. **Zero Order Execution:** The backtest lab contains zero live exchange connectivity, broker execution bindings, or order dispatch endpoints.
-4. **Publication Guard Invariant:** Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`) until Phase 6 empirical validation and calibration criteria are explicitly frozen.
+4. **Publication Guard Invariant:** Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Phase 6 infrastructure verification does NOT confer production authority; live execution authority remains blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -165,8 +165,8 @@ Every backtest report calculates comprehensive, normalized risk-adjusted statist
 
 ## 13. Historical XAUT Frozen Specification (Verbatim Baseline)
 
-> **Status:** 🟢 **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**  
-> **Baseline Commit SHA:** `f22483addd7cc5095c46e4f1c928a8b6651d83eb`  
+> **Status:** 🟢 **COMPLETED, RIGOROUSLY VERIFIED & FROZEN**
+> **Baseline Commit SHA:** `f22483addd7cc5095c46e4f1c928a8b6651d83eb`
 > **Primary Goal:** Construct a point-in-time historical simulation, walk-forward validation, and component ablation engine that directly resolves the production `SignalEngine` and `RiskPlanner` without look-ahead bias, double-counted costs, or speculative account sizing.
 
 ### 1. Core Operating Principles

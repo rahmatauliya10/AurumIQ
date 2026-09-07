@@ -2,19 +2,19 @@
 
 ## Full-Python Django Engineering Blueprint — XAUUSD Canonical Edition
 
-**Document Status:** Implementation Blueprint v2.0  
-**Date:** 1 September 2026  
-**Active Target Instrument:** `XAU/USD` — canonical internal identifier `XAUUSD`  
-**Historical Baseline:** `XAUT` / Tether Gold — retained strictly as frozen audit and regression evidence  
-**Decision Scope:** `BUY / WAIT / SELL` candidate intelligence with human decision support only  
-**Order Execution:** FORBIDDEN — zero live or testnet order placement  
+**Document Status:** Implementation Blueprint v2.0
+**Date:** 1 September 2026
+**Active Target Instrument:** `XAU/USD` — canonical internal identifier `XAUUSD`
+**Historical Baseline:** `XAUT` / Tether Gold — retained strictly as frozen audit and regression evidence
+**Decision Scope:** `BUY / WAIT / SELL` candidate intelligence with human decision support only
+**Order Execution:** FORBIDDEN — zero live or testnet order placement
 
 > [!CAUTION]
 > ### CRITICAL MIGRATION RULE
 > `XAUUSD` is the only active operational signal target.
-> 
+>
 > Historical `XAUT`, `XAUTUSDT`, USDT/USD normalization, XAUT basis, XAUT exchange fee examples, `XautSignalEngine`, and long-only `BUY_WINDOW` logic may remain only inside explicitly marked **Historical XAUT Frozen Specification / legacy regression** sections.
-> 
+>
 > They must never be interpreted as current XAUUSD production requirements.
 
 ---
@@ -43,7 +43,10 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 
 ## 0.4 Current Verified Implementation Position
 
-| Phase | XAUUSD Status | Governance |
+> **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
+> **Current Calibration Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
+
+| Phase / Scope | XAUUSD Status | Governance & Merge Provenance |
 | :--- | :--- | :--- |
 | **Phase 0** | REUSABLE | Foundation is instrument agnostic |
 | **Phase 1** | CORE MIGRATION IMPLEMENTED | Live provider binding and empirical integrity thresholds remain not frozen |
@@ -51,11 +54,12 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **Phase 3A** | ARCHITECTURE IMPLEMENTED | Empirical calibration pending data |
 | **Phase 3B** | IMPLEMENTED / RESEARCH ONLY | Production weight hard locked to 0.0 |
 | **Phase 4** | COMPLETED & VERIFIED | Sealed dual-side candidate architecture (Baseline: `b619a140391e5e308241246e105b9767a1b0716d`) |
-| **Phase 5** | COMPLETED & VERIFIED | Merged via PR #12 | Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` | Reviewed Head: `da20e956e25fa8ed353c37fbbaa9adebc7890749` |
-| **Phase 6** | COMPLETED & VERIFIED | Merged via PR #14 (Main SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) |
-| **Phase 7** | COMPLETED & VERIFIED | Merged via PR #15 (Main SHA: `57f6de1405d0df8548182a166d245f1a3173363d`, Reviewed Head: `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`) |
-| **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation only after Phase 6/7 dependencies |
-| **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter only after deterministic baseline is empirically validated |
+| **Phase 5** | COMPLETED & VERIFIED | Merged via PR #12 \| Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` \| Reviewed Head: `da20e956e25fa8ed353c37fbbaa9adebc7890749` |
+| **Phase 6** | COMPLETED & VERIFIED | Merged via PR #14 (Historical Merge SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) |
+| **Phase 7** | COMPLETED & VERIFIED | Merged via PR #15 (Historical Merge SHA: `57f6de1405d0df8548182a166d245f1a3173363d`, Reviewed Head: `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`) |
+| **Calibration Architecture** | SEALED / MERGED | Merged via PR #20 (`92b0bd61763d9a5b22484d3d58e19da3ea4e2d5c`) and PR #21 (`fcbe1a934d9ac125426ec6c64c77f078e0bb7df5`). Gate: `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` |
+| **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation strictly blocked until empirical friction calibration evidence is qualified |
+| **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter strictly blocked until Phase 8 forward observation and baseline stability are proven |
 
 ## 0.5 Historical XAUT Architecture Provenance
 - AurumIQ originated from a historical XAUT/Tether Gold architecture.
@@ -63,6 +67,31 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 - Historical XAUT specifications and regression evidence remain preserved within frozen historical phase sections.
 - XAUT is NOT an active signal target.
 - No historical XAUT numerical defaults may silently govern XAUUSD.
+
+## 0.6 Execution Profile & Empirical Calibration Governance (PR #20 & PR #21)
+1. **Analytical vs Execution Boundary:**
+   - Canonical market data derives exclusively from the primary analytical provider (Twelve Data) for spot `XAUUSD`.
+   - Broker execution evidence (Exness) is partitioned into execution profiles and never mutates analytical candles.
+2. **Independent Profile Scopes:**
+   - Supported account tiers: `STANDARD`, `STANDARD_CENT`, and `RAW_SPREAD`.
+   - Strict decoupling: `account_tier != broker_symbol != account_currency`.
+   - Broker symbols are explicit scope (e.g. `STANDARD + expected_broker_symbol=XAUUSDm`, `STANDARD_CENT + expected_broker_symbol=XAUUSDc`). No global inference rules or hidden defaults exist.
+   - For `STANDARD_CENT`, missing required broker symbol fails closed with `BROKER_SYMBOL_SCOPE_MISSING`.
+   - Account currency is explicit declared scope (`USD`, `USC`), defaults to `None`/`UNKNOWN`, carries zero evidence qualification authority, and introduces no conversion engine.
+3. **Six Empirical Friction Categories (Zero Silent Defaults):**
+   - Legal Entity Scope (`LEGAL_ENTITY_EVIDENCE_MISSING`)
+   - Contract Geometry (`CONTRACT_SPEC_EVIDENCE_MISSING`)
+   - Commission Fee Schedule (`COMMISSION_EVIDENCE_MISSING`)
+   - Financing / Swap Schedule (`FINANCING_EVIDENCE_MISSING`)
+   - Bid/Ask Spread Distribution (`SPREAD_EMPIRICAL_EVIDENCE_MISSING`)
+   - Execution Slippage Telemetry (`SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING`)
+4. **Production Authority Lock:**
+   - `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
+   - `passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`.
+   - Zero real execution authority is granted. Live order placement is forbidden.
+5. **Artifact Scope Isolation & Slippage Telemetry Source:**
+   - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the `STANDARD` account tier evidence scope. `STANDARD_CENT` artifacts are strictly isolated under separate filenames and cannot cross-contaminate.
+   - Slippage telemetry resolves strictly from authentic broker execution fill telemetry ($N \ge 30$), eliminating circular dependency on Phase 8 paper observation.
 
 ---
 
@@ -81,7 +110,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **R9** | Engine purity | `engine/` has zero Django ORM, Celery, Redis, Channels or network dependencies |
 | **R10** | Canonical target | Operational instrument must normalize to XAUUSD; generic GOLD/XAU labels do not silently map to it |
 | **R11** | Dual-side independence | SHORT is not implemented as a sign-negated LONG shortcut |
-| **R12** | Candidate/publication separation | Phase 4/5 candidate actions may be BUY/SELL; publication remains WAIT until Phase 6 authority is explicitly frozen |
+| **R12** | Candidate/publication separation | Phase 4/5 candidate actions may be BUY/SELL; publication remains WAIT until empirical friction calibration and Phase 6 governance explicitly authorize promotion (blocked at CANDLES_READY_EMPIRICAL_FRICTION_MISSING) |
 | **R13** | Causal Execution Timestamp | No execution evidence before earliest_exec_ts is eligible; equality at earliest_exec_ts is valid (timestamp >= earliest_exec_ts) |
 | **R14** | Decimal risk math | XAUUSD ATR, prices, stops, targets and RR use Decimal in Phase 5 |
 | **R15** | Structural TP1 only | Phase 5 must never fabricate TP1 from a minimum-RR formula |
@@ -93,7 +122,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **R21** | Canonical fingerprints | Authoritative inputs are serialized deterministically and SHA-256 fingerprinted |
 | **R22** | Human decision support | UI/API may explain candidates but cannot place trades |
 | **R23** | Tests before completion | A phase is incomplete until its required tests and regression gates pass |
-| **R24** | No Phase skipping | Phase 6 empirical validation precedes production authority, Phase 8 paper observation and Phase 9 ML promotion |
+| **R24** | No Phase skipping | Phase 6 empirical validation and empirical friction calibration readiness precede production authority, Phase 8 paper observation and Phase 9 ML promotion |
 | **R25** | Historical XAUT preservation | Frozen XAUT tests/data remain for audit continuity and must not become active XAUUSD behavior |
 | **R26** | Sample Quality Gate | Sample quality must fail closed when insufficient; required sample threshold is configuration-driven |
 | **R27** | Phase 3B Production Lock | Spectral research production weight remains locked at 0.0 |
@@ -555,7 +584,7 @@ Every authoritative timestamp must:
 
 ## 20.2 StructureZone Fingerprint
 Binds all authoritative fields:
-`zone_type`, `price_low`, `price_high`, `created_at`, `touches`, `is_active`.  
+`zone_type`, `price_low`, `price_high`, `created_at`, `touches`, `is_active`.
 Canonical sorted compact JSON $\to$ SHA-256.
 
 ## 20.3 Quote Evidence Fingerprint
@@ -756,7 +785,11 @@ Phase 8 is not real trading. It observes production-like read-only feeds and rec
 - Feed continuity & errors
 - Parity against identical-window Phase 6 replay
 
-*The 14-day continuity concept is an infrastructure stability gate only and is not statistical proof of profitability. Phase 8 must not start before Phase 6/7 dependencies are explicitly approved.*
+*Governance and Mandatory Prerequisites:*
+- Upstream prerequisites: Phase 6 backtest validation, Phase 7 live monitor pipeline, AND authentic empirical friction calibration readiness.
+- Current blocking readiness gate: `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`).
+- The 14-day continuity concept is an infrastructure stability and operational continuity gate only; it is NOT statistical proof of profitability or standalone trading authorization.
+- Phase 8 must not start before preceding empirical friction calibration evidence across all six categories is qualified and sealed.
 
 ---
 
@@ -934,7 +967,7 @@ You are the principal Python/Django engineer for AurumIQ.
 - **ACTIVE TARGET:** `XAU/USD`, canonical `XAUUSD`.
 - **HISTORICAL BASELINE:** `XAUT` exists only as frozen audit/regression evidence. Do not reactivate `XAUTUSDT`, XAUT basis, USDT normalization, `XautSignalEngine`, AVOID-oriented, or long-only behavior in active XAUUSD code.
 - **PRODUCT GOAL:** Build a deterministic, point-in-time, side-aware XAUUSD decision-support platform with independent LONG and SHORT candidate logic.
-- **CURRENT DECISION AUTHORITY:** Candidate layer may resolve `BUY / SELL / WAIT`. Published production decision remains `WAIT` until empirical Phase 6 governance explicitly authorizes promotion.
+- **CURRENT DECISION AUTHORITY:** Candidate layer may resolve `BUY / SELL / WAIT`. Published production decision remains strictly `WAIT` (`is_production_authorized = False`, `production_weight = 0.0`), blocked at hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`. Production promotion requires genuine empirical friction calibration evidence qualified and sealed across all six required categories.
 - **NON-NEGOTIABLES:**
   - No order execution
   - One pure engine for live/backtest/paper
