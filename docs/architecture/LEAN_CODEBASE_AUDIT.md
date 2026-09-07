@@ -1,121 +1,104 @@
 # AurumIQ — Stage C: Lean Codebase Audit & Runtime Classification
 
-> **Document Status:** Authoritative Audit Report
+> **Document Status:** Authoritative Audit Report (PR #23 Targeted Lean Runtime Remediation)
 > **Source Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged)
 > **Branch:** `chore/lean-codebase-cleanup`
-> **Audit Objective:** Systematically identify confirmed dead code, redundant compatibility aliases, inactive queue configurations, and security micro-gaps to simplify the runtime footprint without altering active analytical/risk behavior, data readiness gates, or historical audit baselines.
+> **Audit Objective:** Systematically eliminate legacy runtime defaults, seal active XAUUSD operational defaults, cleanly isolate historical compatibility layers, remove unused Celery queue overhead, and harden account security boundaries without altering mathematical risk invariants or historical audit baselines.
 
 ---
 
 ## 1. Executive Summary & Classification Methodology
 
-AurumIQ has successfully unified its documentation, sealed its empirical friction governance (PR #20), isolated execution profile scopes (PR #21), and validated all 1,223 tests on GitHub CI.
+Following independent audit review of PR #23, remaining active legacy defaults in presentation, market data ingestion, and provider registration have been remediated. Current operational runtime is strictly sealed to canonical `XAUUSD`.
 
-To prevent speculative abstraction and accidental breakage of historical regression suites, every component in this audit is classified under strict criteria:
+Every component in the audited cleanup candidate set is classified under strict, mutually exclusive operational tiers:
 
-| Classification | Definition | Governance Action |
+| Operational Tier | Definition | Runtime Status |
 |---|---|---|
-| **CORE_ACTIVE** | Actively executed in the primary `XAUUSD` signal, risk, data, or dashboard path. | **PRESERVE** unmodified. |
-| **OPTIONAL_ACTIVE** | Secondary/fallback mechanism or optional bridge invoked under explicit configuration. | **PRESERVE**; ensure clean boundaries. |
-| **RESEARCH_ONLY** | Experimental modules (e.g. Phase 3B spectral cycles) isolated with `weight = 0.0`. | **FREEZE**; zero runtime impact. |
-| **LEGACY_COMPATIBILITY** | Historical frozen baseline (e.g. Phase 5/6 single-side XAUT) retained for acceptance audits. | **RETAIN**; do not use as active default. |
-| **DEAD_CONFIRMED** | Proven to have 0 runtime callers, 0 test callers, and 0 migration dependencies. | **DELETE** safely. |
-| **DUPLICATED_CONFIRMED** | Pure redundant alias or duplicate implementation of an existing canonical module. | **CONSOLIDATE / DELETE ALIAS**. |
-| **UNKNOWN_USAGE** | Usage pattern cannot be definitively proven inactive with 100% confidence. | **STRICTLY PRESERVE** (Rule: Never delete unknown). |
+| **CURRENT XAUUSD DEFAULT** | Actively executed in the canonical XAUUSD signal, risk, ingestion, or dashboard path by default. | **ACTIVE DEFAULT** |
+| **LEGACY AVAILABLE EXPLICITLY** | Historical modules, providers, or endpoints retained for regression and audit evidence; invoked only when explicitly requested or registered. | **EXPLICIT ONLY** |
+| **LEGACY ACTIVE DEFAULT** | Legacy code unintentionally executed on the default operational path. | **ELIMINATED (0 remaining in audited paths)** |
+| **RESEARCH_ONLY** | Experimental modules (e.g. Phase 3B spectral cycles) isolated with `production_weight = 0.0`. | **FROZEN / ISOLATED** |
+| **DEAD_CONFIRMED** | Proven to have 0 runtime callers, 0 test callers, and 0 migration dependencies. | **DELETED** |
+| **UNKNOWN_USAGE** | Usage pattern cannot be definitively proven inactive with 100% confidence. | **NONE in audited cleanup candidate set** |
 
 ---
 
 ## 2. Comprehensive Subsystem Audit Matrix
 
-| Subsystem / Component | Path | Current Purpose | Runtime Callers | Test Callers | Classification | Safe to Change? | Proposed Action | Rationale |
-|---|---|---|---|---|:---:|:---:|---|---|
-| **Backtest Alias** | `engine/backtesting/__init__.py` | Compatibility re-export alias of `engine.backtest` | None (0) | None (0) | `DUPLICATED_CONFIRMED` / `DEAD_CONFIRMED` | **YES** | Delete `engine/backtesting/` directory | All 37 callers import from canonical `engine.backtest`. Alias has 0 external callers. |
-| **Twelve Data Provider** | `apps/market_data/providers/twelve_data.py` | Primary market data ingestion adapter for canonical `XAUUSD` | Tasks, backfill commands | 4 test suites | `CORE_ACTIVE` | **NO** | Keep unchanged | Core analytical ingestion provider. |
-| **XAUUSD Spot Providers** | `apps/market_data/providers/xauusd_spot.py`, `xauusd_secondary.py` | Direct spot gold reference adapters for Phase 1 contracts | Registry, tasks | Acceptance tests (`test_xau_p1_*`) | `CORE_ACTIVE` / `OPTIONAL_ACTIVE` | **NO** | Keep unchanged | Required by Phase 1 contract integrity tests. |
-| **Historical Providers** | `binance.py`, `okx.py`, `gold_reference.py`, `usdt_usd.py` | Historical `XAUT/USDT` crypto exchange adapters | Registry fallback | Historical unit tests (`test_providers.py`) | `LEGACY_COMPATIBILITY` | **NO** (Keep files) | Preserve files; optimize default registration | Preserves historical regression evidence. |
-| **Generic Risk Modules** | `engine/risk/execution.py`, `planner.py`, `stops.py`, `targets.py` | Historical Phase 5 single-side XAUT risk planning baseline | Historical replay/tasks | Historical acceptance tests (`test_a19`, `test_a25`, `test_a27`) | `LEGACY_COMPATIBILITY` | **NO** | Keep unchanged | Frozen historical baseline. Merging with dual-side XAUUSD would violate frozen contract specs. |
-| **XAUUSD Risk Modules** | `engine/risk/xauusd_execution.py`, `xauusd_planner.py`, `xauusd_stops.py`, etc. | Active dual-side side-aware XAUUSD risk planner (H1–H74) | Live monitor, backtest runner | Hostile tests, contract tests | `CORE_ACTIVE` | **NO** | Keep unchanged | Production-critical mathematical planning engine. |
-| **Generic Backtest Replay** | `engine/backtest/runner.py`, `replay.py`, `metrics.py`, `walkforward.py` | Historical Phase 6 backtest replay engine | Generic tasks | Historical acceptance tests (`test_phase6_acceptance`) | `LEGACY_COMPATIBILITY` | **NO** | Keep unchanged | Preserves Phase 6 frozen acceptance suite. |
-| **XAUUSD Backtest Replay** | `engine/backtest/xauusd_runner.py`, `xauusd_replay.py`, etc. | Active point-in-time XAUUSD replay and fold engine | `apps/backtests/tasks.py` | Acceptance & unit tests | `CORE_ACTIVE` | **NO** | Keep unchanged | Active backtest execution pipeline. |
-| **Live Monitor CSS/JS** | `static/css/dashboard.css`, `static/js/dashboard.js` | Styling and client script for live monitor interface | `templates/live_monitor/base.html` | UI manual/e2e | `CORE_ACTIVE` | **NO** | Keep unchanged | Used specifically by Live Monitor templates. |
-| **Main Dashboard CSS/JS** | `static/dashboard/css/dashboard.css`, `static/dashboard/js/dashboard.js` | Styling and client script for administrative dashboard | `templates/dashboard/base.html` | Dashboard views | `CORE_ACTIVE` | **NO** | Keep unchanged | Distinct visual asset for overview, analysis, signals, and backtest views. |
-| **Spectral Cycles** | `engine/cycles/experimental/` (`acf.py`, `fft.py`, `wavelet.py`, `hilbert.py`) | Phase 3B frequency domain cycle detection research | None in live decision | Targeted research tests (`test_phase3b_targeted.py`) | `RESEARCH_ONLY` | **NO** | Keep frozen (`weight = 0.0`) | Verified isolated; does not participate in active production signals. |
-| **God Modules** | `apps/live_monitor/services.py` (1,731 LOC), `apps/market_data/readiness.py` (1,447 LOC), `friction/artifact_parsers.py` (1,280 LOC) | Monolithic domain service modules | Live pipelines, readiness gate, ingestion commands | Extensive test coverage | `CORE_ACTIVE` | **NO** | Keep intact | High cohesion; file size is not a defect. Splitting would introduce artificial service wrappers. |
-| **MT5 Bridge Adapter** | `tools/mt5_bridge/adapter.py`, `main.py` | Optional read-only bridge for local MT5 tick and fill extraction | Standalone CLI | `test_mt5_bridge.py` | `OPTIONAL_ACTIVE` | **NO** | Keep read-only | Strictly optional; contains zero automated order execution code. |
-| **Uvicorn ASGI Runtime** | `pyproject.toml`, `docker/Dockerfile.prod` | Production ASGI web server running Django | Production Docker container | Docker build CI | `CORE_ACTIVE` | **NO** | Keep in core dependencies | Required by `Dockerfile.prod` CMD: `uvicorn config.asgi:application`. Moving would break prod build. |
-| **ML Libraries** | `scikit-learn`, `xgboost`, `lightgbm`, `optuna`, `pywavelets` | Machine learning stack for Phase 9 | Optional research | None in core runtime | `RESEARCH_ONLY` / `OPTIONAL_ML` | **NO** | Already optional in `pyproject.toml` | Already safely partitioned under `[project.optional-dependencies] ml`. |
-| **Machine Learning Celery Queue** | `config/settings/base.py` (`CELERY_TASK_QUEUES["machine_learning"]`) | Task queue reserved for Phase 9 | None (0 active tasks) | `test_celery_queues_configured` | `LEGACY_COMPATIBILITY` | **NO** | Retain for Phase 0 contract compatibility | Reclassified per governance rule: tests enforce its definition as part of Phase 0 contract verification; zero test deletion allowed. |
-| **Client IP Resolution** | `apps/accounts/views.py` (`_get_client_ip`) | Extracts client IP for user management audit logging | Admin views | Account integration tests | `SECURITY_DEFECT` | **YES** | Harden to default to `REMOTE_ADDR` | Prevent IP spoofing via untrusted `HTTP_X_FORWARDED_FOR` headers. |
-| **Admin User Creation Password Validation** | `apps/accounts/views.py` (`UserCreationView.post`) | Creates users via admin dashboard | Web admin | Account tests | `SECURITY_DEFECT` | **YES** | Add `validate_password()` call | Ensure `AUTH_PASSWORD_VALIDATORS` are strictly enforced for admin user creation. |
-| **Project Identity Metadata** | `pyproject.toml` (`name = "xaut-signal-intelligence"`) | Package naming metadata | Packaging/build | Build system | `LEGACY_COMPATIBILITY` | **YES** | Update to `aurumiq` | Aligns project identity with post-XAUT institutional Gold Intelligence. |
-| **Documentation SHA Governance** | Multiple documents (`README.md`, blueprint, `docs/phases/*`) | Records baseline SHA for audit integrity | Documentation readers | Governance audit | `GOVERNANCE_DRIFT` | **YES** | Replace "Current Main SHA" with "Last Verified Baseline SHA" | Stops endless circular documentation PR churn upon merge. |
+| Subsystem / Component | Path | Current Purpose | Runtime Callers | Test Callers | Classification | Operational Status | Remediated Action |
+|---|---|---|---|---|:---:|:---:|---|
+| **Root Routing** | `config/urls.py` (`path("")`) | Entrypoint for application root URL | Browser / HTTP root | Smoke & routing tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Redirects (302) to `dashboard:overview` (`/dashboard/`). Legacy live monitor moved exclusively to `/live/`. |
+| **Current Dashboard** | `apps/dashboard/*` | Primary institutional XAUUSD presentation and analytics dashboard | Web navigation | Dashboard test suite | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Server-rendered views and REST APIs for XAUUSD live projection and lab. |
+| **Live Monitor Presentation** | `apps/live_monitor/views.py` (Dashboard & history views) | Historical XAUT presentation endpoints | Explicit `/live/` path | `test_auth_flow.py` | `LEGACY_COMPATIBILITY` | **LEGACY AVAILABLE EXPLICITLY** | Retained strictly under `/live/` and `/live/history/` as historical compatibility surface. |
+| **Live Monitor Shared Infrastructure** | `apps/live_monitor/services.py`, `models.py` | Shared projection and state services (`XauUsdLiveProjectionService`, `LiveMonitorState`) | Dashboard, live pipelines | Phase 7 acceptance, hostile tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Preserved intact; shared core infrastructure. |
+| **Dashboard Static Assets** | `static/dashboard/*` | Styling and client scripts for active XAUUSD dashboard | `templates/dashboard/base.html` | Dashboard views | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Active frontend presentation assets. |
+| **Live Monitor Static Assets** | `static/js/dashboard.js`, `static/css/dashboard.css` | Client scripts for historical XAUT live monitor | `templates/live_monitor/base.html` | Legacy UI tests | `LEGACY_COMPATIBILITY` | **LEGACY AVAILABLE EXPLICITLY** | Retained for explicit `/live/` compatibility surface. |
+| **Ingestion Tasks Defaults** | `apps/market_data/tasks.py` (`ingest_primary_candles`, `ingest_resolution_candles`) | Celery candle ingestion tasks | Celery beat, management commands | Ingestion test suites | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Default `instrument_symbol` sealed to `"XAU/USD"`. Historical `"XAUT/USDT"` remains possible only when explicitly passed. |
+| **Primary Provider** | `apps/market_data/providers/twelve_data.py` | Authoritative analytical spot gold market data provider | Ingestion tasks | Twelve Data tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Registered by default in global `ProviderRegistry`. |
+| **Secondary Provider** | `apps/market_data/providers/xauusd_secondary.py` | Independent secondary spot gold integrity verification feed | Ingestion tasks | Integrity tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Registered by default in global `ProviderRegistry`. |
+| **Legacy Exchange Providers** | `binance.py`, `okx.py`, `gold_reference.py`, `usdt_usd.py` | Historical XAUT/USDT exchange adapters | Explicit test registration | `test_providers.py`, `test_ingestion_pipeline.py` | `LEGACY_COMPATIBILITY` | **LEGACY AVAILABLE EXPLICITLY** | Removed from automatic default registration. Instantiated/registered only when explicitly required in historical test scopes. |
+| **Placeholder Spot Provider** | `apps/market_data/providers/xauusd_spot.py` | Pre-TwelveData mock placeholder | Explicit test instantiation | `test_xauusd_phase1.py` | `LEGACY_COMPATIBILITY` | **LEGACY AVAILABLE EXPLICITLY** | Removed from default registration (MarketListing is HALTED). |
+| **Provider Health Task** | `apps/market_data/tasks.py` (`check_provider_health_task`) | Periodic health probe for registered providers | Celery maintenance queue | Health task tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Loops `registry.all_providers()`, probing only active default XAUUSD providers (`TwelveData`, `SecondaryXauUsd`). Legacy providers are NOT probed. |
+| **Celery Queues: Active** | `config/settings/base.py` (`market_data`, `analysis`, `backtest`, `maintenance`) | Asynchronous task execution queues | 12 active tasks | Celery tests | `CORE_ACTIVE` | **CURRENT XAUUSD DEFAULT** | Preserved with active tasks and worker configuration. |
+| **Celery Queues: Machine Learning** | `config/settings/base.py` (`machine_learning`) | Task queue reserved for Phase 9 | None (0 active tasks) | None | `RESEARCH_ONLY` | **DEFERRED** | Removed from active `CELERY_TASK_QUEUES` and worker `-Q` arguments. Phase 9 remains HOLD. |
+| **Celery Queues: Alerts** | `config/settings/base.py` (`alerts`) | Task queue reserved for asynchronous alerts | None (alerts are synchronous) | None | `RESEARCH_ONLY` | **DEFERRED** | Removed from active `CELERY_TASK_QUEUES` and worker `-Q` arguments. |
+| **Dead Backtest Alias** | `engine/backtesting/__init__.py` | Compatibility re-export alias of `engine.backtest` | None (0) | None (0) | `DEAD_CONFIRMED` | **DELETED** | Deleted directory. All callers import from `engine.backtest`. |
+| **User Password Validation** | `apps/accounts/views.py` (`UserCreateView.post`) | Admin user creation validation | Web admin | `test_accounts.py` | `SECURITY_HARDENING` | **CURRENT XAUUSD DEFAULT** | Builds candidate `User` and invokes `validate_password(password, user=candidate_user)`, enforcing `UserAttributeSimilarityValidator`. Hostile test added. |
+| **Client IP Resolution** | `apps/accounts/views.py` (`_get_client_ip`) | IP extraction for audit logging | Admin views | `test_accounts.py` | `SECURITY_HARDENING` | **CURRENT XAUUSD DEFAULT** | Defaults to `REMOTE_ADDR`, only inspecting `X-Forwarded-For` when `TRUST_REVERSE_PROXY` is explicitly enabled. |
 
 ---
 
-## 3. High-Confidence Cleanup Action Plan
+## 3. Detailed Remediation Evidence
 
-### 1. Delete `engine/backtesting/` (Zero Caller Alias)
-- **Path:** `engine/backtesting/__init__.py`
-- **Findings:**
-  - Contains 15 lines re-exporting `from engine.backtest import *`.
-  - Audited all 37 backtest importers in repository: 100% already import directly from `engine.backtest`.
-  - Zero external callers exist for `engine.backtesting`.
-- **Action:** Delete `engine/backtesting/` directory.
+### 1. Presentation Root Boundary Seal
+- **Before:** Root `/` routed directly to `apps.live_monitor.urls`, rendering legacy XAUT/USDT UI and filtering `base_asset__code="XAUT"`.
+- **After:** Root `/` issues an HTTP 302 redirect to `dashboard:overview` (`/dashboard/`), immediately landing users on the active XAUUSD institutional overview.
+- **Historical Preservation:** Historical Live Monitor is preserved intact at `/live/` and `/live/history/`.
+- **Verification:** Tested in `tests/unit/test_routing_remediation.py` and `tests/integration/test_auth_flow.py`.
 
-### 2. Celery Queue Runtime Audit & Reclassification
-- **Path:** `config/settings/base.py`
-- **Findings:**
-  - Audited all 12 `@shared_task` definitions across `apps/`.
-  - Active tasks strictly route to: `market_data`, `analysis`, `backtest`, `maintenance`.
-  - Zero active runtime tasks route to `machine_learning`.
-  - However, `tests/unit/test_celery.py::test_celery_queues_configured` strictly tests the Phase 0 frozen contract asserting the 5 foundational queues.
-- **Action:**
-  - In accordance with the governance rule (*"No test deletion merely to make cleanup pass. If tests expose an active dependency: reclassify instead of forcing deletion"*), `machine_learning` is reclassified as `LEGACY_COMPATIBILITY`. It is retained in settings with explicit documentation that no active workers or tasks are routed to it in the current XAUUSD pipeline.
+### 2. Ingestion Task Defaults Seal
+- **Before:** `ingest_primary_candles()` and `ingest_resolution_candles()` defaulted to `instrument_symbol="XAUT/USDT"`.
+- **After:** Defaults changed to `instrument_symbol="XAU/USD"`.
+- **Historical Preservation:** Explicit invocation with `instrument_symbol="XAUT/USDT"` remains fully functional for historical audits.
+- **Verification:** Tested in `tests/unit/test_market_data_defaults.py`.
 
-### 3. Security Micro-Hardening in `apps/accounts/views.py`
-- **Path:** `apps/accounts/views.py`
-- **Findings:**
-  - `_get_client_ip()`: Directly reads `HTTP_X_FORWARDED_FOR.split(',')[0]` without verifying whether the request came from a trusted reverse proxy, allowing trivial header spoofing.
-  - `UserCreationView.post()`: Invokes `User.objects.create_user()` without calling `django.contrib.auth.password_validation.validate_password()`, bypassing configured password complexity rules.
-- **Action:**
-  - Update `_get_client_ip()` to use `request.META.get("REMOTE_ADDR")` by default, only inspecting `HTTP_X_FORWARDED_FOR` if a trusted proxy setting is enabled.
-  - Add explicit `validate_password(password, user=None)` check in `UserCreationView.post()`, returning clear validation errors if password requirements are not met.
+### 3. Provider Auto-Registration Elimination
+- **Before:** Global `ProviderRegistry` automatically instantiated Binance, OKX, GoldReference, UsdtUsdRate, and XauUsdSpot providers on import.
+- **After:** Global `registry` initializes ONLY:
+  - `TwelveDataProvider` (`twelve_data_xauusd`, active primary)
+  - `SecondaryXauUsdSpotProvider` (`xauusd_secondary`, active secondary integrity feed)
+- **Historical Preservation:** Legacy provider classes are preserved in code. Historical integration tests (`test_ingestion_pipeline.py`) explicitly register them in test scope.
+- **Health Probing:** `check_provider_health_task()` loops `registry.all_providers()` and therefore probes only active XAUUSD providers. Legacy providers are never probed by default.
+- **Verification:** Tested in `tests/unit/test_market_data_defaults.py`.
 
-### 4. Align Project Metadata in `pyproject.toml`
-- **Path:** `pyproject.toml`
-- **Findings:**
-  - Name is still `xaut-signal-intelligence` with description `Research-grade XAUT Signal Intelligence decision-support web application`.
-- **Action:**
-  - Update to `name = "aurumiq"` and `description = "Institutional-grade multi-timeframe quantitative gold intelligence platform"`.
-  - Maintain all runtime dependencies and optional groups (`dev`, `ml`).
+### 4. Celery Queue Truth
+- **Before:** `CELERY_TASK_QUEUES` declared 6 queues: `market_data`, `analysis`, `backtest`, `machine_learning`, `maintenance`, `alerts`.
+- **Audit Findings:**
+  - 12 active tasks strictly map to: `market_data`, `analysis`, `backtest`, `maintenance`.
+  - `machine_learning`: 0 active tasks (Phase 9 on HOLD).
+  - `alerts`: 0 queued tasks (alerts generate synchronously via `AlertGenerationService`).
+- **After:** `machine_learning` and `alerts` removed from `CELERY_TASK_QUEUES`, `docker-compose.yml`, and `docker-compose.prod.yml`.
+- **Test Updated:** `tests/unit/test_celery.py::test_celery_queues_configured` updated to assert active queues and ensure deferred queues remain absent.
 
-### 5. Documentation Baseline SHA Governance Fix
-- **Path:** `README.md`, `XAUUSD_Signal_Intelligence_Blueprint_Django_Python_v2.md`, `docs/phases/*`, `docs/calibration/*`
-- **Findings:**
-  - Documenting "Current Authoritative Main SHA" within a branch that gets merged creates an immediate post-merge contradiction (since the merge creates a new SHA).
-- **Action:**
-  - Standardize header badge to: `> **Last Verified Baseline SHA:** 2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0 (PR #22 Documentation Truth Sealed & Merged)`.
+### 5. Account Password Validation Security Completion
+- **Before:** `validate_password(password)` called without `user`, bypassing `UserAttributeSimilarityValidator`.
+- **After:** An unsaved candidate `User(username=username, email=email, first_name=first_name, last_name=last_name)` is built and passed: `validate_password(password, user=candidate_user)`.
+- **Verification:** Hostile test `test_user_creation_view_rejects_password_similar_to_user_attributes` added to `tests/unit/test_accounts.py` proving passwords similar to user attributes are rejected.
 
 ---
 
-## 4. Branch Protection Governance Report
+## 4. Remediation Metrics (Compared to Baseline `2ee19143...`)
 
-- **Target:** Branch `main` on GitHub repository `rahmatauliya10/AurumIQ`
-- **Ruleset Identified:** Ruleset ID `21851214` (*"AurumIQ Main Protection"*), `enforcement: active`
-- **Configured Rules:**
-  - `deletion`: Active
-  - `non_fast_forward`: Active
-  - `pull_request`: Active (`required_approving_review_count: 0`, allowed methods: `merge`, `squash`, `rebase`)
-  - `required_status_checks`: Active with context `Regression & Compliance Suite`
-  - `bypass_actors`: `[]` (Empty)
-- **Governance Recommendation:** Status checks are properly targeted to `Regression & Compliance Suite`. Keep ruleset intact; do not modify repository administration.
-
----
-
-## 5. Items Preserved & Kept Intact (No Code Changes)
-
-1. **Generic vs XAUUSD Modules:** Kept strictly separate. The generic modules are frozen historical regression baselines for single-side XAUT; the XAUUSD modules are the active dual-side spot gold engine. No inheritance or base classes invented.
-2. **Static Assets:** Both `static/css/dashboard.css` and `static/dashboard/css/dashboard.css` are preserved because they serve two distinct template hierarchies (`live_monitor/base.html` vs `dashboard/base.html`).
-3. **God Modules:** Preserved intact. High cohesion, low external leakage, and verified stability make splitting counter-productive.
-4. **Phase 3B Research Modules:** Kept frozen with `production_weight = 0.0`.
-5. **Uvicorn Dependency:** Preserved in core dependencies because it serves as the production ASGI entrypoint in `Dockerfile.prod`.
+| Metric | Measurement |
+|---|---|
+| **PYTHON_FILES_BEFORE** | 343 |
+| **PYTHON_FILES_AFTER** | 344 (343 - 1 deleted alias `engine/backtesting/__init__.py`, 2 focused new test suites added) |
+| **FILES_REMOVED** | 1 (`engine/backtesting/__init__.py`) |
+| **RUNTIME_COMPONENTS_DEACTIVATED** | 5 legacy providers from default global registration; 2 unused Celery queues |
+| **LEGACY_PROVIDER_DEFAULTS_REMOVED** | 5 (`binance`, `okx`, `gold_reference`, `usdt_usd`, `xauusd_primary`) |
+| **LEGACY_UI_DEFAULT_REMOVED** | 1 (Root `/` redirected to active `/dashboard/`) |
+| **LEGACY_INGESTION_DEFAULTS_REMOVED** | 2 (`ingest_primary_candles`, `ingest_resolution_candles` defaulted to XAU/USD) |
+| **CELERY_QUEUES_DEFERRED** | 2 (`machine_learning`, `alerts`) |
+| **SECURITY_FIXES** | 2 (Client IP `REMOTE_ADDR` hardening + Candidate user password similarity validation) |
+| **UNKNOWN_USAGE** | 0 in audited cleanup candidate set |

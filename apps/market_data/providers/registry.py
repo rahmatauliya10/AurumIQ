@@ -35,6 +35,10 @@ class ProviderRegistry:
         """Check if a provider ID is registered."""
         return provider_id.lower() in self._providers
 
+    def unregister(self, provider_id: str) -> None:
+        """Unregister a provider instance if present."""
+        self._providers.pop(provider_id.lower(), None)
+
     def all_providers(self) -> list[MarketDataProvider]:
         """Return list of all registered provider instances."""
         return list(self._providers.values())
@@ -52,12 +56,9 @@ def get_configured_gold_reference_url() -> Optional[str]:
         return os.environ.get("GOLD_REFERENCE_URL")
 
 
-# Global registry singleton with default providers
+# Global registry singleton with current active XAUUSD default providers.
+# Legacy providers (BinanceProvider, OKXProvider, GoldReferenceProvider, UsdtUsdRateProvider)
+# are preserved for historical compatibility and must be registered explicitly in test scope.
 registry = ProviderRegistry()
-registry.register(BinanceProvider())
-registry.register(OKXProvider())
-registry.register(GoldReferenceProvider(canonical_url=get_configured_gold_reference_url()))
-registry.register(UsdtUsdRateProvider())
-registry.register(XauUsdSpotProvider())
-registry.register(SecondaryXauUsdSpotProvider())
 registry.register(TwelveDataProvider())
+registry.register(SecondaryXauUsdSpotProvider())

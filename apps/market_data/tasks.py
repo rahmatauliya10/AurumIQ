@@ -32,7 +32,7 @@ def _get_setting(key: str, default=None):
 
 @shared_task(queue="market_data")
 def ingest_primary_candles(
-    instrument_symbol: str = "XAUT/USDT",
+    instrument_symbol: str = "XAU/USD",
     timeframes: list[str] = None,
     lookback_bars: int = 50,
     xauusd_max_divergence_pct: Optional[Decimal] = None,
@@ -476,7 +476,7 @@ def ingest_primary_candles(
 
 @shared_task(queue="market_data")
 def ingest_resolution_candles(
-    instrument_symbol: str = "XAUT/USDT",
+    instrument_symbol: str = "XAU/USD",
     timeframes: list[str] = None,
     lookback_bars: int = 60,
 ) -> dict:

@@ -23,6 +23,7 @@ from apps.market_data.integrity import MarketIntegrityEngine
 from apps.market_data.providers.base import RawCandle, ProviderHealth
 from apps.market_data.providers.xauusd_spot import XauUsdSpotProvider
 from apps.market_data.providers.xauusd_secondary import SecondaryXauUsdSpotProvider
+from apps.market_data.providers.registry import registry
 from apps.market_data.repositories import DjangoCandleRepository
 from apps.market_data.tasks import ingest_primary_candles, check_provider_health_task
 from engine.core.types import VolumeEvidenceType as EngineVolumeEvidenceType
@@ -93,6 +94,12 @@ class TestXauP1Contracts(TestCase):
                 "status": ListingStatus.ACTIVE,
             },
         )
+        if not registry.has("xauusd_primary"):
+            registry.register(XauUsdSpotProvider())
+
+    def tearDown(self):
+        registry.unregister("xauusd_primary")
+        super().tearDown()
 
     def test_xau_p1_01_canonical_xauusd_primary_target(self):
         """

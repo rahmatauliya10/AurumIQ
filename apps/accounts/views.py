@@ -138,8 +138,14 @@ class UserCreateView(RoleRequiredMixin, View):
         from django.contrib.auth.password_validation import validate_password
         from django.core.exceptions import ValidationError
 
+        candidate_user = User(
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+        )
         try:
-            validate_password(password)
+            validate_password(password, user=candidate_user)
         except ValidationError as e:
             for error in e.messages:
                 messages.error(request, error)
