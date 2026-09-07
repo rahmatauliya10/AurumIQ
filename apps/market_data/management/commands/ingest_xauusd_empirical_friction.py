@@ -47,7 +47,10 @@ from apps.market_data.friction.ingestion import (
     verify_authoritative_backing_artifact,
 )
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
-from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.tick_parser import (
+    parse_exness_official_tick_history,
+    parse_mt5_tick_export,
+)
 from apps.market_data.models import (
     FrictionActivationStatus,
     FrictionAttestationStatus,
@@ -964,12 +967,30 @@ class Command(BaseCommand):
                     tick_bytes = f.read()
                 try:
                     # PARSED + SCHEMA_VALID
-                    ticks_data, summary_meta = parse_mt5_tick_export(
-                        tick_bytes,
-                        expected_symbol=symbol,
-                        expected_broker_symbol=broker_symbol,
-                        expected_account_tier=account_tier,
-                    )
+                    first_line = tick_bytes[:256].decode("utf-8", errors="ignore").splitlines()[0] if tick_bytes else ""
+                    is_exness_official = "exness" in first_line.lower() and "bid" in first_line.lower() and "ask" in first_line.lower()
+                    if is_exness_official:
+                        ticks_data, summary_meta = parse_exness_official_tick_history(
+                            tick_bytes,
+                            expected_symbol=symbol,
+                            expected_broker_symbol=broker_symbol,
+                            expected_account_tier=account_tier,
+                        )
+                        tick_source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY
+                        tick_source_name = "EXNESS_OFFICIAL_TICK_HISTORY"
+                        tick_collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
+                        tick_parser_name = "parse_exness_official_tick_history"
+                    else:
+                        ticks_data, summary_meta = parse_mt5_tick_export(
+                            tick_bytes,
+                            expected_symbol=symbol,
+                            expected_broker_symbol=broker_symbol,
+                            expected_account_tier=account_tier,
+                        )
+                        tick_source_type = FrictionSourceType.MT5_TICK_HISTORY_EXPORT
+                        tick_source_name = "EXNESS_MT5_TICKS"
+                        tick_collection_method = "MT5_TERMINAL_TICK_EXPORT"
+                        tick_parser_name = "parse_mt5_tick_export"
                     spread_ticks = ticks_data
 
                     # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
@@ -989,7 +1010,7 @@ class Command(BaseCommand):
                             else:
                                 snap, _ = ingest_friction_source_snapshot(
                                     source_url=f"file://{os.path.abspath(tick_file)}",
-                                    source_name="EXNESS_MT5_TICKS",
+                                    source_name=tick_source_name,
                                     venue=venue,
                                     symbol=symbol,
                                     account_tier=account_tier,
@@ -997,9 +1018,9 @@ class Command(BaseCommand):
                                     known_at=now_utc,
                                     raw_content=tick_bytes,
                                     metadata=summary_meta,
-                                    source_type=FrictionSourceType.MT5_TICK_HISTORY_EXPORT,
+                                    source_type=tick_source_type,
                                     source_origin=f"file://{os.path.abspath(tick_file)}",
-                                    collection_methodology="MT5_TERMINAL_TICK_EXPORT",
+                                    collection_methodology=tick_collection_method,
                                     original_filename=os.path.basename(tick_file),
                                 )
                                 spread_dataset, _ = ingest_friction_evidence_dataset(
@@ -1031,8 +1052,8 @@ class Command(BaseCommand):
                                             reviewed_at=att_dict.get("reviewed_at"),
                                             raw_artifact_sha256=hashlib.sha256(tick_bytes).hexdigest(),
                                             source_origin=str(att_dict.get("source_origin") or f"file://{os.path.abspath(tick_file)}"),
-                                            source_type=str(att_dict.get("source_type") or FrictionSourceType.MT5_TICK_HISTORY_EXPORT),
-                                            collection_methodology=str(att_dict.get("collection_methodology") or "MT5_TERMINAL_TICK_EXPORT"),
+                                            source_type=str(att_dict.get("source_type") or tick_source_type),
+                                            collection_methodology=str(att_dict.get("collection_methodology") or tick_collection_method),
                                             venue=venue,
                                             symbol=symbol,
                                             account_tier=account_tier,
@@ -1043,16 +1064,16 @@ class Command(BaseCommand):
                                     provenance_attestation=spread_att_obj,
                                     component_role="SPREAD_DATASET",
                                     qualification_status=FrictionQualificationStatus.QUALIFIED.value if spread_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
-                                    parser_name="parse_mt5_tick_export",
+                                    parser_name=tick_parser_name,
                                     parser_version="1.0.0",
                                     normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
-                                    qualification_reason="Verified by authoritative MT5 tick export parser and provenance attestation" if spread_att_obj is not None else "Unattested MT5 tick export",
+                                    qualification_reason=f"Verified by authoritative {tick_source_name} parser and provenance attestation" if spread_att_obj is not None else f"Unattested {tick_source_name}",
                                 )
                                 spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:
                     self.stdout.write(self.style.WARNING(f"Could not parse tick file: {e}"))
                     spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                    reasons.append(f"MT5 tick export parse failure: {e}")
+                    reasons.append(f"Tick export parse failure: {e}")
         else:
             reasons.append("MT5 tick export dataset missing (--tick-file is None).")
 

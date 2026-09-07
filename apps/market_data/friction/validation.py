@@ -50,7 +50,10 @@ from apps.market_data.friction.artifact_parsers import (
     parse_financing_backing_artifact,
     parse_legal_entity_backing_artifact,
 )
-from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.tick_parser import (
+    parse_exness_official_tick_history,
+    parse_mt5_tick_export,
+)
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.provenance import verify_attestation_authenticity
@@ -60,7 +63,7 @@ TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
     "CONTRACT_SPEC": {"parse_contract_spec_backing_artifact"},
     "COMMISSION": {"parse_commission_backing_artifact"},
     "FINANCING": {"parse_financing_backing_artifact"},
-    "SPREAD_DATASET": {"parse_mt5_tick_export"},
+    "SPREAD_DATASET": {"parse_mt5_tick_export", "parse_exness_official_tick_history"},
     "SLIPPAGE_DATASET": {"parse_mt5_execution_telemetry"},
 }
 SUPPORTED_PARSER_VERSIONS: Set[str] = {"1.0.0"}
@@ -210,12 +213,20 @@ def validate_source_qualification_assertion(
             recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
 
         elif expected_component_role == "SPREAD_DATASET":
-            ticks_data, summary = parse_mt5_tick_export(
-                snapshot.raw_content,
-                expected_symbol=expected_symbol,
-                expected_broker_symbol=expected_broker_symbol,
-                expected_account_tier=norm_tier,
-            )
+            if assertion.parser_name == "parse_exness_official_tick_history":
+                ticks_data, summary = parse_exness_official_tick_history(
+                    snapshot.raw_content,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
+            else:
+                ticks_data, summary = parse_mt5_tick_export(
+                    snapshot.raw_content,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
             norm_rows = [
                 f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
                 for t in ticks_data
@@ -838,11 +849,16 @@ def validate_friction_model_for_activation(
     spread_assertion = spread_snap.qualification_assertions.filter(
         component_role="SPREAD_DATASET",
     ).order_by("-asserted_at").first()
+    expected_spread_parser = (
+        "parse_exness_official_tick_history"
+        if spread_snap.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        else "parse_mt5_tick_export"
+    )
     is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
         snapshot=spread_snap,
         assertion=spread_assertion,
         expected_component_role="SPREAD_DATASET",
-        expected_parser="parse_mt5_tick_export",
+        expected_parser=expected_spread_parser,
         model_version=model_version,
         expected_symbol=model_version.symbol,
     )
