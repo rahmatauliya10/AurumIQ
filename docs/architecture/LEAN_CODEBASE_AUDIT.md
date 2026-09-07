@@ -1,8 +1,8 @@
 # AurumIQ — Stage C: Lean Codebase Audit & Runtime Classification
 
-> **Document Status:** Authoritative Audit Report  
-> **Source Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged)  
-> **Branch:** `chore/lean-codebase-cleanup`  
+> **Document Status:** Authoritative Audit Report
+> **Source Baseline SHA:** `2ee19143aa98ccf15f25b1dec0ec4c2f2fc0bfc0` (PR #22 Documentation Truth Sealed & Merged)
+> **Branch:** `chore/lean-codebase-cleanup`
 > **Audit Objective:** Systematically identify confirmed dead code, redundant compatibility aliases, inactive queue configurations, and security micro-gaps to simplify the runtime footprint without altering active analytical/risk behavior, data readiness gates, or historical audit baselines.
 
 ---

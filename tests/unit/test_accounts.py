@@ -415,4 +415,3 @@ def test_user_creation_view_rejects_weak_password(rf, admin_user):
     assert response.status_code == 302
     assert not User.objects.filter(username="newuser").exists()
 
-
