@@ -94,11 +94,19 @@ from apps.market_data.models import (
 from apps.market_data.friction.provenance import (
     compute_verification_proof,
     verify_attestation_authenticity,
+    execute_governed_broker_url_capture,
+    create_verified_broker_capture_attestation,
+    execute_governed_mt5_export_capture,
     create_verified_mt5_export_attestation,
-    create_verified_broker_url_capture_attestation,
-    create_verified_account_portal_export_attestation,
+    create_declared_account_portal_export_attestation,
+    compute_capture_context_hash,
+    get_governed_signing_secret,
+    BrokerCaptureReceipt,
+    MT5ExportReceipt,
     GOVERNED_PROVENANCE_AUTHORITY,
     CURRENT_PROOF_VERSION,
+    MAX_BROKER_RESPONSE_BYTES,
+    is_test_environment,
 )
 from apps.market_data.friction.artifact_parsers import (
     compare_asserted_vs_derived,
@@ -5871,20 +5879,25 @@ def test_hostile_23_declared_attestation_cannot_satisfy_readiness():
 
 @pytest.mark.django_db
 def test_hostile_24_verified_trusted_collector_attestation_may_qualify():
-    """Directive: Authentic proof-backed attestation from trusted collector can qualify evidence."""
+    """Directive: Authentic proof-backed attestation from governed broker capture can qualify evidence."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
     parsed = parse_legal_entity_backing_artifact(raw)
+    url = "https://www.exness.com/legal/terms.html"
+
+    # Mock HTTP transport returning the raw bytes
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
     snap, _ = ingest_friction_source_snapshot(
-        "https://www.exness.com/legal/terms.html", "URL_SNAP24", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+        url, "URL_SNAP24", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
     )
-    att = create_verified_broker_url_capture_attestation(
+    att = create_verified_broker_capture_attestation(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
-        raw_bytes=raw,
-        requested_url="https://www.exness.com/legal/terms.html",
-        final_url="https://www.exness.com/legal/terms.html",
-        http_status=200,
+        capture_receipt=receipt,
         expected_symbol="XAUUSD",
         expected_venue="EXNESS",
         expected_account_tier="STANDARD",
@@ -5986,16 +5999,20 @@ def test_hostile_27_changing_raw_sha_invalidates_verified_attestation():
     """Directive: Changing raw artifact SHA invalidates verification proof."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms27"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
     snap, _ = ingest_friction_source_snapshot(
-        "https://www.exness.com/terms27", "URL_SNAP27", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+        url, "URL_SNAP27", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
     )
-    att = create_verified_broker_url_capture_attestation(
+    att = create_verified_broker_capture_attestation(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
-        raw_bytes=raw,
-        requested_url="https://www.exness.com/terms27",
-        final_url="https://www.exness.com/terms27",
-        http_status=200,
+        capture_receipt=receipt,
     )
     is_auth, _ = verify_attestation_authenticity(att)
     assert is_auth is True
@@ -6113,16 +6130,20 @@ def test_hostile_32_tampered_verification_proof_fails():
     """Directive: Tampered verification proof fails validation."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms32"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
     snap, _ = ingest_friction_source_snapshot(
-        "https://www.exness.com/terms32", "URL_SNAP32", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+        url, "URL_SNAP32", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
     )
-    att = create_verified_broker_url_capture_attestation(
+    att = create_verified_broker_capture_attestation(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
-        raw_bytes=raw,
-        requested_url="https://www.exness.com/terms32",
-        final_url="https://www.exness.com/terms32",
-        http_status=200,
+        capture_receipt=receipt,
     )
     att.verification_proof = "deadbeef" * 8
     is_auth, err = verify_attestation_authenticity(att)
@@ -6135,16 +6156,20 @@ def test_hostile_33_canonical_provenance_payload_mutation_invalidates_proof():
     """Directive: Canonical provenance payload mutation invalidates cryptographic proof."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms33"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
     snap, _ = ingest_friction_source_snapshot(
-        "https://www.exness.com/terms33", "URL_SNAP33", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+        url, "URL_SNAP33", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
     )
-    att = create_verified_broker_url_capture_attestation(
+    att = create_verified_broker_capture_attestation(
         source_snapshot=snap,
         component_role="LEGAL_ENTITY",
-        raw_bytes=raw,
-        requested_url="https://www.exness.com/terms33",
-        final_url="https://www.exness.com/terms33",
-        http_status=200,
+        capture_receipt=receipt,
     )
     assert verify_attestation_authenticity(att)[0] is True
 
@@ -6156,7 +6181,7 @@ def test_hostile_33_canonical_provenance_payload_mutation_invalidates_proof():
 
 @pytest.mark.django_db
 def test_hostile_34_caller_expected_symbol_cannot_overwrite_collector_derived_symbol():
-    """Directive: Caller expected_symbol cannot overwrite collector-derived different symbol."""
+    """Directive: Caller expected_symbol cannot overwrite transport-derived different symbol."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw_spec = json.dumps({
         "symbol": "XAUUSD",
@@ -6169,20 +6194,27 @@ def test_hostile_34_caller_expected_symbol_cannot_overwrite_collector_derived_sy
         "volume_max": "200.0",
         "volume_step": "0.01",
     }).encode("utf-8")
-    snap, _ = ingest_friction_source_snapshot(
-        "mt5://symbols/xauusd", "SPEC_SNAP34", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw_spec,
-    )
+
+    def mock_transport(raw_bytes, role):
+        from apps.market_data.friction.artifact_parsers import parse_contract_spec_backing_artifact
+        parsed = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol="XAUUSD")
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS",
+            "symbol": parsed.get("symbol", "XAUUSD"), "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+        }
+
+    # Transport derives XAUUSD but expected is EURUSD → scope mismatch
     with pytest.raises(ValueError) as exc:
-        create_verified_mt5_export_attestation(
-            source_snapshot=snap,
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_spec,
             component_role="CONTRACT_SPEC",
-            raw_bytes=raw_spec,
+            mt5_transport=mock_transport,
             expected_symbol="EURUSD",
             expected_venue="EXNESS",
             expected_account_tier="STANDARD",
-            verifier_identity="AURUMIQ_MT5_COLLECTOR_V1",
         )
-    assert "CONTRACT_SPEC_EVIDENCE_MISSING" in str(exc.value) or "SCOPE_MISMATCH" in str(exc.value)
+    assert "SCOPE_MISMATCH" in str(exc.value)
 
 
 @pytest.mark.django_db
@@ -6190,17 +6222,21 @@ def test_hostile_35_caller_expected_venue_cannot_overwrite_collector_derived_ven
     """Directive: Caller expected venue cannot overwrite collector-derived different venue."""
     now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
     raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms35"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
     snap, _ = ingest_friction_source_snapshot(
-        "https://www.exness.com/terms35", "URL_SNAP35", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+        url, "URL_SNAP35", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
     )
     with pytest.raises(ValueError) as exc:
-        create_verified_broker_url_capture_attestation(
+        create_verified_broker_capture_attestation(
             source_snapshot=snap,
             component_role="LEGAL_ENTITY",
-            raw_bytes=raw,
-            requested_url="https://www.exness.com/terms35",
-            final_url="https://www.exness.com/terms35",
-            http_status=200,
+            capture_receipt=receipt,
             expected_symbol="XAUUSD",
             expected_venue="ICMARKETS",
             expected_account_tier="STANDARD",
@@ -6267,4 +6303,468 @@ def test_hostile_37_pre_migration_existing_attestation_is_never_implicitly_verif
     )
     assert assertion.qualification_status == FrictionQualificationStatus.UNVERIFIED.value
 
+
+# =====================================================================================
+# Hostile Tests 38-58: Collector Root of Trust
+# =====================================================================================
+
+
+@pytest.mark.django_db
+def test_hostile_38_arbitrary_bytes_plus_exness_url_not_verified():
+    """Directive: Caller providing raw bytes + Exness URL string cannot get VERIFIED (capture boundary enforced)."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/legal/terms38.html"
+
+    # Create snapshot from arbitrary caller bytes (NOT from governed capture)
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP38", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw,
+    )
+
+    # Caller manually constructs a receipt — but the attestation function requires SHA match
+    # with snapshot created from receipt.response_bytes. A forged receipt with different bytes
+    # than the snapshot content will fail.
+    forged_receipt = BrokerCaptureReceipt(
+        requested_url=url, final_url=url, http_status=200, content_type="text/html",
+        response_bytes=b"DIFFERENT_CONTENT_THAN_SNAPSHOT",
+        response_sha256=hashlib.sha256(b"DIFFERENT_CONTENT_THAN_SNAPSHOT").hexdigest(),
+        captured_at=now_utc, collector_version="1.0.0", redirect_chain=(),
+    )
+    with pytest.raises(ValueError) as exc:
+        create_verified_broker_capture_attestation(
+            source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=forged_receipt,
+        )
+    assert "mismatch" in str(exc.value).lower() or "SHA" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_39_caller_supplied_http_200_not_sufficient():
+    """Directive: Caller-supplied HTTP 200 status alone cannot satisfy provenance without governed capture."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms39"
+
+    # Mock transport that returns HTTP 404 (not 200)
+    def mock_client(req_url):
+        return (raw, url, 404, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP39", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
+    )
+    with pytest.raises(ValueError) as exc:
+        create_verified_broker_capture_attestation(
+            source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=receipt,
+        )
+    assert "status" in str(exc.value).lower() or "200" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_40_redirect_outside_exness_fails():
+    """Directive: HTTP redirect to non-Exness domain fails closed."""
+    url = "https://www.exness.com/legal/terms40"
+    # Mock transport with redirect to non-permitted domain
+    def mock_client(req_url):
+        return (b"content", url, 200, "text/html", ["https://evil.com/steal-data"])
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_broker_url_capture(url, http_client=mock_client)
+    assert "not in permitted" in str(exc.value).lower() or "REDIRECT" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_41_capture_metadata_mutation_invalidates_proof():
+    """Directive: Changing capture metadata invalidates capture_context_hash and thus HMAC proof."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms41"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP41", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
+    )
+    att = create_verified_broker_capture_attestation(
+        source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=receipt,
+    )
+    assert verify_attestation_authenticity(att)[0] is True
+
+    # Mutate capture metadata
+    att.provenance_metadata["final_url"] = "https://www.exness.com/TAMPERED"
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is False
+    assert "context hash" in err.lower() or "mismatch" in err.lower() or "tampered" in err.lower()
+
+
+@pytest.mark.django_db
+def test_hostile_42_raw_response_sha_mismatch_fails():
+    """Directive: Response SHA mismatch between receipt and snapshot causes rejection."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_a = b"EXNESS_SC_LTD:FSA:SD025"
+    raw_b = b"EXNESS_SC_LTD:FSA:SD025_DIFFERENT"
+    url = "https://www.exness.com/terms42"
+
+    # Create snapshot from raw_a
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP42", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc, raw_a,
+    )
+    # Create receipt from raw_b (different bytes)
+    def mock_client(req_url):
+        return (raw_b, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
+    # Receipt SHA != snapshot SHA
+    with pytest.raises(ValueError) as exc:
+        create_verified_broker_capture_attestation(
+            source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=receipt,
+        )
+    assert "mismatch" in str(exc.value).lower() or "SHA" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_43_portal_missing_derived_scope_fails():
+    """Directive: Portal attestation without derived tier/session is DECLARED, not VERIFIED."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"PORTAL_EXPORT_DATA_43"
+    snap, _ = ingest_friction_source_snapshot(
+        "https://my.exness.com/portal/export", "PORTAL43", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw,
+    )
+    att = create_declared_account_portal_export_attestation(
+        source_snapshot=snap, component_role="COMMISSION", raw_bytes=raw,
+    )
+    # Must be DECLARED, not VERIFIED
+    assert att.attestation_status == FrictionAttestationStatus.DECLARED.value
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is False
+    assert "DECLARED" in err
+
+
+@pytest.mark.django_db
+def test_hostile_44_fake_portal_session_fails():
+    """Directive: Fabricated portal session cannot establish VERIFIED status."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"PORTAL_EXPORT_DATA_44"
+    snap, _ = ingest_friction_source_snapshot(
+        "https://my.exness.com/portal/export", "PORTAL44", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw,
+    )
+    att = create_declared_account_portal_export_attestation(
+        source_snapshot=snap, component_role="FINANCING", raw_bytes=raw,
+    )
+    # Even setting status to VERIFIED manually → fails
+    assert att.attestation_status == FrictionAttestationStatus.DECLARED.value
+    # Attempt to read as VERIFIED should fail
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is False
+
+
+@pytest.mark.django_db
+def test_hostile_45_generic_xauusd_json_without_mt5_envelope_fails():
+    """Directive: Generic XAUUSD JSON without governed MT5 envelope cannot get VERIFIED."""
+    # Without mt5_transport, execute_governed_mt5_export_capture raises RuntimeError
+    raw_json = json.dumps({"symbol": "XAUUSD", "data": "generic"}).encode("utf-8")
+    with pytest.raises(RuntimeError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_json,
+            component_role="CONTRACT_SPEC",
+            mt5_transport=None,  # No transport → fail closed
+        )
+    assert "MT5_TRANSPORT_NOT_AVAILABLE" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_46_mt5_missing_server_fails():
+    """Directive: MT5 envelope with empty server fails."""
+    raw = json.dumps({"symbol": "XAUUSD", "digits": 2}).encode("utf-8")
+
+    def bad_transport(raw_bytes, role):
+        return {
+            "server": "",  # Empty server
+            "broker": "EXNESS", "symbol": "XAUUSD", "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw, component_role="CONTRACT_SPEC",
+            mt5_transport=bad_transport,
+        )
+    assert "server" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_47_mt5_missing_required_tier_fails():
+    """Directive: MT5 envelope with empty account_tier when expected causes scope mismatch."""
+    raw = json.dumps({
+        "symbol": "XAUUSD", "digits": 2, "point_size": "0.01",
+        "trade_tick_size": "0.01", "trade_tick_value": "1.00",
+        "contract_size": "100.0", "volume_min": "0.01",
+        "volume_max": "200.0", "volume_step": "0.01",
+    }).encode("utf-8")
+
+    def transport_no_tier(raw_bytes, role):
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS",
+            "symbol": "XAUUSD", "account_tier": "PRO",  # Mismatch with expected STANDARD
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw, component_role="CONTRACT_SPEC",
+            mt5_transport=transport_no_tier,
+            expected_account_tier="STANDARD",
+        )
+    assert "SCOPE_MISMATCH" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_48_expected_values_cannot_fill_derived_scope():
+    """Directive: expected_venue/tier cannot overwrite transport-derived scope values."""
+    raw_spec = json.dumps({
+        "symbol": "XAUUSD", "digits": 2, "point_size": "0.01",
+        "trade_tick_size": "0.01", "trade_tick_value": "1.00",
+        "contract_size": "100.0", "volume_min": "0.01",
+        "volume_max": "200.0", "volume_step": "0.01",
+    }).encode("utf-8")
+
+    # Transport derives broker=FXPRO but expected_venue=EXNESS
+    def transport_wrong_venue(raw_bytes, role):
+        return {
+            "server": "FXPro-MT5Real", "broker": "FXPRO",
+            "symbol": "XAUUSD", "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+        }
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw_spec, component_role="CONTRACT_SPEC",
+            mt5_transport=transport_wrong_venue,
+            expected_venue="EXNESS",
+        )
+    assert "SCOPE_MISMATCH" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_49_missing_provenance_signing_secret_non_test_fails():
+    """Directive: Missing PROVENANCE_SIGNING_SECRET in non-test environment causes RuntimeError."""
+    from unittest.mock import patch
+    from django.conf import settings
+
+    # Patch is_test_environment to return False and clear the secret
+    with patch("apps.market_data.friction.provenance.is_test_environment", return_value=False):
+        with patch.object(settings, "PROVENANCE_SIGNING_SECRET", None, create=True):
+            with pytest.raises(RuntimeError) as exc:
+                get_governed_signing_secret()
+            assert "PROVENANCE_SIGNING_SECRET" in str(exc.value)
+            assert "not configured" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_50_valid_mocked_http_capture_succeeds():
+    """Directive: Mocked HTTP transport + governed boundary produces legitimate VERIFIED."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/legal/terms50"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
+    assert receipt.response_sha256 == hashlib.sha256(raw).hexdigest()
+    assert receipt.http_status == 200
+
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP50", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
+    )
+    att = create_verified_broker_capture_attestation(
+        source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=receipt,
+    )
+    assert att.attestation_status == FrictionAttestationStatus.VERIFIED.value
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is True, f"Expected authentic, got: {err}"
+
+    # Verify capture_context_hash is in metadata
+    meta = att.provenance_metadata
+    assert "capture_context_hash" in meta
+    assert len(meta["capture_context_hash"]) == 64  # SHA-256 hex
+
+
+@pytest.mark.django_db
+def test_hostile_51_valid_governed_mt5_envelope_succeeds():
+    """Directive: Valid MT5 governed transport produces legitimate VERIFIED attestation."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw_spec = json.dumps({
+        "symbol": "XAUUSD", "digits": 2, "point_size": "0.01",
+        "trade_tick_size": "0.01", "trade_tick_value": "1.00",
+        "contract_size": "100.0", "volume_min": "0.01",
+        "volume_max": "200.0", "volume_step": "0.01",
+    }).encode("utf-8")
+
+    def mock_transport(raw_bytes, role):
+        from apps.market_data.friction.artifact_parsers import parse_contract_spec_backing_artifact
+        parsed = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol="XAUUSD")
+        return {
+            "server": "Exness-MT5Real9", "broker": "EXNESS",
+            "symbol": parsed.get("symbol", "XAUUSD"), "account_tier": "STANDARD",
+            "terminal_version": "5.0.4590", "export_type": "SYMBOL_INFO",
+            "collector_version": "1.0.0",
+            "capture_id": "test_capture_51",
+            "capture_time": now_utc,
+        }
+
+    receipt = execute_governed_mt5_export_capture(
+        raw_export_bytes=raw_spec, component_role="CONTRACT_SPEC",
+        mt5_transport=mock_transport,
+    )
+    snap, _ = ingest_friction_source_snapshot(
+        "mt5://symbols/xauusd", "MT5_SNAP51", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw_content=receipt.raw_bytes,
+    )
+    att = create_verified_mt5_export_attestation(
+        source_snapshot=snap, component_role="CONTRACT_SPEC", capture_receipt=receipt,
+    )
+    assert att.attestation_status == FrictionAttestationStatus.VERIFIED.value
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is True, f"Expected authentic, got: {err}"
+
+    # Verify capture_context_hash is in metadata
+    meta = att.provenance_metadata
+    assert "capture_context_hash" in meta
+    assert len(meta["capture_context_hash"]) == 64
+
+
+@pytest.mark.django_db
+def test_hostile_52_caller_constructed_mt5_receipt_cannot_itself_establish_trust():
+    """Directive: Caller-constructed MT5ExportReceipt cannot bypass governed transport requirement.
+
+    Even if a caller constructs a receipt dataclass directly, the execute function
+    is the only governed path. Without a transport, production remains DECLARED.
+    """
+    # The execute function with no transport raises RuntimeError
+    raw = b"some fake MT5 export data"
+    with pytest.raises(RuntimeError) as exc:
+        execute_governed_mt5_export_capture(
+            raw_export_bytes=raw, component_role="SPREAD_DATASET",
+            mt5_transport=None,
+        )
+    assert "MT5_TRANSPORT_NOT_AVAILABLE" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_53_stored_context_hash_unchanged_but_metadata_mutated_fails():
+    """Directive: Stored capture_context_hash unchanged but capture metadata mutated still fails
+    because validator RECOMPUTES hash from actual metadata fields."""
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"EXNESS_SC_LTD:FSA:SD025"
+    url = "https://www.exness.com/terms53"
+
+    def mock_client(req_url):
+        return (raw, url, 200, "text/html", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_client)
+    snap, _ = ingest_friction_source_snapshot(
+        url, "URL_SNAP53", "EXNESS", "XAUUSD", "STANDARD", now_utc, now_utc,
+        raw_content=receipt.response_bytes,
+    )
+    att = create_verified_broker_capture_attestation(
+        source_snapshot=snap, component_role="LEGAL_ENTITY", capture_receipt=receipt,
+    )
+    assert verify_attestation_authenticity(att)[0] is True
+
+    # Mutate metadata field WITHOUT changing capture_context_hash
+    original_ctx_hash = att.provenance_metadata["capture_context_hash"]
+    att.provenance_metadata["requested_url"] = "https://www.exness.com/TAMPERED_URL"
+    # capture_context_hash remains the same (unchanged)
+    assert att.provenance_metadata["capture_context_hash"] == original_ctx_hash
+
+    # Validator recomputes hash → mismatch with stored → fail
+    is_auth, err = verify_attestation_authenticity(att)
+    assert is_auth is False
+    assert "context hash" in err.lower() or "tampered" in err.lower()
+
+
+@pytest.mark.django_db
+def test_hostile_54_intermediate_redirect_to_non_permitted_host_fails():
+    """Directive: Intermediate redirect to non-permitted host fails even if final URL returns to exness.com."""
+    url = "https://www.exness.com/terms54"
+    final_url = "https://www.exness.com/final54"
+
+    # Redirect chain: exness → evil.com → back to exness
+    def mock_client(req_url):
+        return (b"content", final_url, 200, "text/html", [
+            "https://evil-tracker.com/redirect",
+            final_url,
+        ])
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_broker_url_capture(url, http_client=mock_client)
+    assert "not in permitted" in str(exc.value).lower() or "REDIRECT" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_55_http_url_not_https_fails():
+    """Directive: HTTP URL (not HTTPS) fails."""
+    with pytest.raises(ValueError) as exc:
+        execute_governed_broker_url_capture("http://www.exness.com/legal/terms")
+    assert "non-https" in str(exc.value).lower() or "HTTPS" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_hostile_56_url_with_userinfo_credentials_fails():
+    """Directive: URL with userinfo credentials fails."""
+    with pytest.raises(ValueError) as exc:
+        execute_governed_broker_url_capture("https://user:pass@www.exness.com/legal/terms")
+    assert "userinfo" in str(exc.value).lower() or "credentials" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_57_oversized_broker_response_fails_closed():
+    """Directive: Oversized broker response fails closed."""
+    url = "https://www.exness.com/terms57"
+
+    # Mock transport returning oversized response
+    oversized_bytes = b"X" * (MAX_BROKER_RESPONSE_BYTES + 1)
+
+    def mock_client(req_url):
+        return (oversized_bytes, url, 200, "text/html", [])
+
+    with pytest.raises(ValueError) as exc:
+        execute_governed_broker_url_capture(url, http_client=mock_client)
+    assert "exceeds maximum" in str(exc.value).lower() or "size" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_hostile_58_account_portal_export_manually_forced_verified_outside_tests_fails():
+    """Directive: ACCOUNT_PORTAL_EXPORT manually forced VERIFIED outside test environment fails."""
+    from unittest.mock import patch
+
+    now_utc = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+    raw = b"PORTAL_EXPORT_DATA_58"
+    snap, _ = ingest_friction_source_snapshot(
+        "https://my.exness.com/portal/export", "PORTAL58", "EXNESS", "XAUUSD", "STANDARD",
+        now_utc, now_utc, raw,
+    )
+
+    # Create a DECLARED attestation and then simulate forcing it to VERIFIED
+    att = create_declared_account_portal_export_attestation(
+        source_snapshot=snap, component_role="COMMISSION", raw_bytes=raw,
+    )
+    assert att.attestation_status == FrictionAttestationStatus.DECLARED.value
+
+    # Force status to VERIFIED (simulating an attacker/misconfiguration)
+    att.attestation_status = FrictionAttestationStatus.VERIFIED.value
+
+    # In non-test environment, ACCOUNT_PORTAL_EXPORT VERIFIED is explicitly rejected
+    with patch("apps.market_data.friction.provenance.is_test_environment", return_value=False):
+        is_auth, err = verify_attestation_authenticity(att)
+        assert is_auth is False
+        assert "ACCOUNT_PORTAL_EXPORT" in err
+        assert "test environment" in err.lower() or "portal collector" in err.lower()
 

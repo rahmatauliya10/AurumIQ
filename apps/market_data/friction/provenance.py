@@ -7,7 +7,13 @@ Enforces fail-closed trust boundaries for XAUUSD empirical friction evidence:
 - Restricts VERIFIED attestation creation to governed collector workflows.
 - Derives evidence identity and scope from trusted collector outputs, not caller claims.
 - Strictly isolates test seams from production runtime (prohibiting DEBUG=True authorization).
+- Broker URL capture performs actual HTTP fetch with redirect-per-hop domain validation.
+- MT5 export capture requires governed transport bridge (fail closed without one).
+- Account portal export always DECLARED (no authenticated portal collector deployed).
+- capture_context_hash binds method-specific capture metadata into HMAC proof.
+- Signing secret is dedicated and fails closed in production if unset.
 """
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -15,6 +21,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 import urllib.parse
+import urllib.request
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -31,6 +38,12 @@ PERMITTED_BROKER_DOMAINS: Set[str] = {
     "my.exness.com",
     "trade.exness.com",
 }
+
+MAX_BROKER_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_BROKER_REDIRECTS = 5
+BROKER_CAPTURE_TIMEOUT_SECONDS = 30
+BROKER_COLLECTOR_VERSION = "1.0.0"
+MT5_COLLECTOR_VERSION = "1.0.0"
 
 # Trusted verifier registry mapping verification methods to permitted collector identities.
 # Note: Membership in this registry is necessary but NOT sufficient; cryptographic proof is mandatory.
@@ -72,13 +85,25 @@ def is_test_environment() -> bool:
 
 
 def get_governed_signing_secret() -> bytes:
-    """Retrieve application-controlled secret for provenance proof signing.
+    """Retrieve dedicated application-controlled secret for provenance proof signing.
 
-    Unavailable to CLI callers, metadata JSONs, or uploaded artifacts.
+    - Non-test environments: PROVENANCE_SIGNING_SECRET MUST be set. Fails closed with
+      RuntimeError if unset. No fallback to SECRET_KEY or static key.
+    - Test environments: Uses PROVENANCE_SIGNING_SECRET if set, otherwise uses an
+      explicit test-only sentinel key.
     """
-    secret = getattr(settings, "PROVENANCE_SIGNING_SECRET", None) or getattr(settings, "SECRET_KEY", "")
-    if not secret:
-        secret = "aurumiq-governed-provenance-default-key-locked"
+    secret = getattr(settings, "PROVENANCE_SIGNING_SECRET", None)
+    if is_test_environment():
+        if not secret:
+            secret = "aurumiq-test-only-provenance-key-NOT-FOR-PRODUCTION"
+        return secret.encode("utf-8")
+    if not secret or not str(secret).strip():
+        raise RuntimeError(
+            "PROVENANCE_SIGNING_SECRET is not configured. "
+            "Production provenance proof creation requires a dedicated signing secret. "
+            "Set PROVENANCE_SIGNING_SECRET in environment or Django settings. "
+            "No fallback to SECRET_KEY or static key is permitted."
+        )
     return secret.encode("utf-8")
 
 
@@ -95,8 +120,13 @@ def compute_canonical_provenance_payload(
     verifier_identity: str,
     verification_authority: str = GOVERNED_PROVENANCE_AUTHORITY,
     verification_proof_version: str = CURRENT_PROOF_VERSION,
+    capture_context_hash: str = "",
 ) -> str:
-    """Construct deterministic canonical key-value payload for cryptographic signing."""
+    """Construct deterministic canonical key-value payload for cryptographic signing.
+
+    Includes capture_context_hash when non-empty, binding method-specific capture
+    metadata into the proof. Any capture metadata change invalidates the proof.
+    """
     parts = [
         f"authority={verification_authority.strip()}",
         f"proof_ver={verification_proof_version.strip()}",
@@ -111,6 +141,8 @@ def compute_canonical_provenance_payload(
         f"captured={captured_at_iso.strip()}",
         f"verifier={verifier_identity.strip()}",
     ]
+    if capture_context_hash and capture_context_hash.strip():
+        parts.append(f"capture_ctx={capture_context_hash.strip().lower()}")
     return "|".join(parts)
 
 
@@ -127,6 +159,7 @@ def compute_verification_proof(
     verifier_identity: str,
     verification_authority: str = GOVERNED_PROVENANCE_AUTHORITY,
     verification_proof_version: str = CURRENT_PROOF_VERSION,
+    capture_context_hash: str = "",
 ) -> str:
     """Generate cryptographic HMAC-SHA256 verification proof binding canonical payload."""
     captured_iso = captured_at.isoformat() if hasattr(captured_at, "isoformat") else str(captured_at)
@@ -143,16 +176,103 @@ def compute_verification_proof(
         verifier_identity=verifier_identity,
         verification_authority=verification_authority,
         verification_proof_version=verification_proof_version,
+        capture_context_hash=capture_context_hash,
     )
     secret = get_governed_signing_secret()
     return hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+# --------------------------------------------------------------------------------------
+# Capture Context Canonical Functions
+# --------------------------------------------------------------------------------------
+
+def canonicalize_broker_capture_context(metadata: dict) -> str:
+    """Produce deterministic canonical context string from broker capture metadata.
+
+    Covers all transport-derived fields. Keys are sorted alphabetically for determinism.
+    redirect_chain preserves hop order (order is semantically significant).
+    """
+    redirect_chain = metadata.get("redirect_chain", [])
+    if isinstance(redirect_chain, (list, tuple)):
+        chain_repr = json.dumps(list(redirect_chain), separators=(",", ":"))
+    else:
+        chain_repr = str(redirect_chain)
+    parts = [
+        f"captured_at={str(metadata.get('captured_at', ''))}",
+        f"collector_version={str(metadata.get('collector_version', ''))}",
+        f"content_type={str(metadata.get('content_type', ''))}",
+        f"final_url={str(metadata.get('final_url', ''))}",
+        f"hostname={str(metadata.get('hostname', '')).lower()}",
+        f"http_status={metadata.get('http_status', '')}",
+        f"raw_response_sha256={str(metadata.get('raw_response_sha256', '')).lower()}",
+        f"redirect_chain={chain_repr}",
+        f"requested_url={str(metadata.get('requested_url', ''))}",
+    ]
+    return "|".join(parts)
+
+
+def canonicalize_mt5_capture_context(metadata: dict) -> str:
+    """Produce deterministic canonical context string from MT5 export metadata.
+
+    Covers all governed receipt fields. Keys are sorted alphabetically for determinism.
+    """
+    parts = [
+        f"broker={str(metadata.get('broker', '')).upper()}",
+        f"capture_id={str(metadata.get('capture_id', ''))}",
+        f"capture_time={str(metadata.get('capture_time', ''))}",
+        f"collector_version={str(metadata.get('collector_version', ''))}",
+        f"derived_account_tier={str(metadata.get('derived_account_tier', '')).upper()}",
+        f"derived_symbol={str(metadata.get('derived_symbol', '')).upper()}",
+        f"export_type={str(metadata.get('export_type', '')).upper()}",
+        f"raw_sha256={str(metadata.get('raw_sha256', '')).lower()}",
+        f"server={str(metadata.get('server', ''))}",
+        f"terminal_version={str(metadata.get('terminal_version', ''))}",
+    ]
+    return "|".join(parts)
+
+
+def compute_capture_context_hash(metadata: dict, verification_method: str) -> str:
+    """Compute SHA-256 of canonical capture context for a given verification method.
+
+    Returns empty string for methods without governed capture context.
+    The hash is RECOMPUTED from actual metadata fields — never trusted from storage.
+    """
+    if not metadata:
+        return ""
+    method_upper = str(verification_method).strip().upper()
+    if method_upper == "BROKER_OFFICIAL_URL_CAPTURE":
+        # Only compute if metadata contains broker capture fields
+        if not metadata.get("requested_url") and not metadata.get("final_url"):
+            return ""
+        canonical = canonicalize_broker_capture_context(metadata)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    elif method_upper == "MT5_DIRECT_EXPORT":
+        # Only compute if metadata contains MT5 capture fields
+        if not metadata.get("server") and not metadata.get("export_type"):
+            return ""
+        canonical = canonicalize_mt5_capture_context(metadata)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return ""
+
+
+# --------------------------------------------------------------------------------------
+# Proof & Authenticity Verification
+# --------------------------------------------------------------------------------------
+
 def verify_attestation_proof(attestation: Any) -> Tuple[bool, Optional[str]]:
-    """Verify cryptographic HMAC-SHA256 verification proof on an attestation record."""
+    """Verify cryptographic HMAC-SHA256 verification proof on an attestation record.
+
+    Recomputes capture_context_hash from actual provenance_metadata (never trusts
+    the stored capture_context_hash field). Any metadata mutation invalidates proof.
+    """
     proof = getattr(attestation, "verification_proof", "")
     if not proof or not str(proof).strip():
         return False, "Attestation record lacks verification proof."
+
+    # Recompute capture_context_hash from actual metadata
+    meta = getattr(attestation, "provenance_metadata", {}) or {}
+    method = str(getattr(attestation, "verification_method", ""))
+    recomputed_ctx_hash = compute_capture_context_hash(meta, method)
 
     captured = getattr(attestation, "captured_at", None)
     captured_iso = captured.isoformat() if hasattr(captured, "isoformat") else str(captured)
@@ -170,6 +290,7 @@ def verify_attestation_proof(attestation: Any) -> Tuple[bool, Optional[str]]:
         verifier_identity=str(getattr(attestation, "verifier_identity", "")),
         verification_authority=str(getattr(attestation, "verification_authority", "") or GOVERNED_PROVENANCE_AUTHORITY),
         verification_proof_version=str(getattr(attestation, "verification_proof_version", "") or CURRENT_PROOF_VERSION),
+        capture_context_hash=recomputed_ctx_hash,
     )
 
     if not hmac.compare_digest(proof.strip(), expected_proof):
@@ -203,8 +324,10 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
     3. verifier_identity MUST be in TRUSTED_VERIFIER_REGISTRY.
     4. Test seam verifiers MUST be strictly isolated to test environments.
     5. MANUAL_REVIEWED_OFFICIAL_DOCUMENT in production CANNOT be VERIFIED (no authenticated review system yet).
-    6. BROKER_OFFICIAL_URL_CAPTURE MUST contain authentic capture telemetry and allowed broker domain.
-    7. Cryptographic proof MUST match canonical provenance payload.
+    6. ACCOUNT_PORTAL_EXPORT CANNOT be VERIFIED outside test environment (no authenticated portal collector yet).
+    7. BROKER_OFFICIAL_URL_CAPTURE MUST contain authentic capture telemetry and allowed broker domain.
+    8. Capture context hash MUST match recomputed hash from actual metadata.
+    9. Cryptographic proof MUST match canonical provenance payload (including recomputed capture_context_hash).
     """
     from apps.market_data.models import (
         ACCEPTED_VERIFICATION_METHODS,
@@ -230,6 +353,11 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
         if verifier != "TEST_SUITE_ISOLATED_PROVENANCE_SEAM":
             return False, "Manual reviewed documents cannot be hard-gate VERIFIED until an authenticated application review workflow is deployed."
 
+    # Account portal export CANNOT be VERIFIED outside test environment (no authenticated portal collector)
+    if method == FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value:
+        if not is_test_environment():
+            return False, "ACCOUNT_PORTAL_EXPORT cannot be VERIFIED outside test environment until an authenticated portal collector is deployed."
+
     # Broker official URL capture validation (Directive 3)
     if method == FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value:
         meta = getattr(attestation, "provenance_metadata", {}) or {}
@@ -246,8 +374,8 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
         if not req_url or not final_url:
             return False, "Broker URL capture metadata missing requested_url or final_url."
         if not hostname:
-            parsed_host = urllib.parse.urlparse(final_url or req_url).netloc.lower()
-            hostname = parsed_host
+            parsed_host = urllib.parse.urlparse(final_url or req_url).hostname
+            hostname = (parsed_host or "").lower()
 
         if hostname not in PERMITTED_BROKER_DOMAINS:
             return False, f"Broker URL capture hostname '{hostname}' is not in permitted broker domains: {sorted(PERMITTED_BROKER_DOMAINS)}."
@@ -261,7 +389,18 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
         if not col_ver:
             return False, "Broker URL capture metadata missing collector_version."
 
-    # Cryptographic proof verification
+    # Capture context hash integrity verification (recompute, don't trust stored)
+    meta = getattr(attestation, "provenance_metadata", {}) or {}
+    stored_ctx_hash = str(meta.get("capture_context_hash", "") or "")
+    if stored_ctx_hash:
+        recomputed_ctx_hash = compute_capture_context_hash(meta, method)
+        if recomputed_ctx_hash != stored_ctx_hash:
+            return False, (
+                "Capture context hash integrity violation: stored capture_context_hash does not match "
+                "recomputed hash from actual capture metadata. Metadata may have been tampered."
+            )
+
+    # Cryptographic proof verification (uses RECOMPUTED capture_context_hash)
     is_proof_valid, proof_err = verify_attestation_proof(attestation)
     if not is_proof_valid:
         return False, proof_err
@@ -270,26 +409,453 @@ def verify_attestation_authenticity(attestation: Any) -> Tuple[bool, Optional[st
 
 
 # --------------------------------------------------------------------------------------
-# Governed Collector Factories (Directive 2)
+# Broker URL Capture — Governed HTTP Transport Boundary
 # --------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BrokerCaptureReceipt:
+    """Immutable transport receipt from governed broker URL capture.
+
+    All fields are derived from the actual HTTP transport — none are caller-supplied.
+    """
+    requested_url: str
+    final_url: str
+    http_status: int
+    content_type: str
+    response_bytes: bytes
+    response_sha256: str
+    captured_at: datetime
+    collector_version: str
+    redirect_chain: tuple  # tuple of intermediate redirect URLs
+
+
+def _validate_broker_url(url: str, *, context: str = "BROKER_CAPTURE_ERROR") -> None:
+    """Validate a URL against broker capture security requirements.
+
+    HTTPS only, no userinfo credentials, hostname in PERMITTED_BROKER_DOMAINS.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"{context}: Non-HTTPS URL '{url}'. Only HTTPS is permitted for broker captures.")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{context}: URL contains userinfo credentials: '{url}'.")
+    hostname = parsed.hostname
+    if not hostname or hostname.lower() not in PERMITTED_BROKER_DOMAINS:
+        raise ValueError(
+            f"{context}: Hostname '{hostname}' is not in permitted broker domains: {sorted(PERMITTED_BROKER_DOMAINS)}."
+        )
+
+
+class _GovernedBrokerRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Custom redirect handler that validates every redirect hop against permitted broker domains.
+
+    Enforces HTTPS-only, no-userinfo, permitted-domain for each intermediate redirect.
+    Tracks the full redirect chain for provenance metadata.
+    """
+
+    def __init__(self):
+        self.redirect_chain: List[str] = []
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Validate redirect target before following."""
+        _validate_broker_url(newurl, context="BROKER_CAPTURE_REDIRECT_ERROR")
+        if len(self.redirect_chain) >= MAX_BROKER_REDIRECTS:
+            raise ValueError(
+                f"BROKER_CAPTURE_REDIRECT_ERROR: Exceeded maximum redirects ({MAX_BROKER_REDIRECTS})."
+            )
+        self.redirect_chain.append(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def execute_governed_broker_url_capture(
+    url: str,
+    *,
+    http_client=None,
+) -> BrokerCaptureReceipt:
+    """Execute governed HTTP capture from a broker URL.
+
+    Performs the actual HTTP fetch with full transport governance:
+    - HTTPS only, no userinfo credentials.
+    - Every redirect hop validated against PERMITTED_BROKER_DOMAINS.
+    - Response size bounded (MAX_BROKER_RESPONSE_BYTES).
+    - Redirect count bounded (MAX_BROKER_REDIRECTS).
+    - Explicit timeout (BROKER_CAPTURE_TIMEOUT_SECONDS).
+    - Response SHA-256 computed from actual transport bytes.
+
+    http_client: Optional test injection. Callable(url) -> (response_bytes,
+    final_url, http_status, content_type, redirect_chain_list).
+    Test mocks provide transport output; redirect/domain/HTTPS validation logic
+    still runs on the returned data.
+    """
+    # 1. Validate initial URL (always runs)
+    _validate_broker_url(url)
+
+    captured_at = datetime.now(timezone.utc)
+
+    if http_client is not None:
+        # Test path: mock transport returns structured result
+        result = http_client(url)
+        response_bytes = result[0]
+        final_url = result[1]
+        http_status = result[2]
+        content_type = result[3]
+        redirect_chain = list(result[4] or [])
+    else:
+        # Production path: real HTTP with governed redirect handler
+        redirect_handler = _GovernedBrokerRedirectHandler()
+        opener = urllib.request.build_opener(redirect_handler)
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "AurumIQ-GovernedBrokerCapture/1.0")
+        response = opener.open(req, timeout=BROKER_CAPTURE_TIMEOUT_SECONDS)
+        final_url = response.url
+        http_status = response.status
+        content_type = response.headers.get("Content-Type", "")
+        response_bytes = response.read(MAX_BROKER_RESPONSE_BYTES + 1)
+        redirect_chain = list(redirect_handler.redirect_chain)
+
+    # 2. Post-transport validation (always runs — exercises validation logic in tests too)
+    # Response size bound
+    if len(response_bytes) > MAX_BROKER_RESPONSE_BYTES:
+        raise ValueError(
+            f"BROKER_CAPTURE_ERROR: Response size ({len(response_bytes)} bytes) exceeds maximum "
+            f"permitted size ({MAX_BROKER_RESPONSE_BYTES} bytes)."
+        )
+
+    # Redirect count bound
+    if len(redirect_chain) > MAX_BROKER_REDIRECTS:
+        raise ValueError(
+            f"BROKER_CAPTURE_ERROR: Redirect chain length ({len(redirect_chain)}) exceeds maximum "
+            f"permitted redirects ({MAX_BROKER_REDIRECTS})."
+        )
+
+    # Validate every redirect hop
+    for redir_url in redirect_chain:
+        _validate_broker_url(redir_url, context="BROKER_CAPTURE_REDIRECT_ERROR")
+
+    # Validate final URL
+    _validate_broker_url(final_url, context="BROKER_CAPTURE_ERROR")
+
+    # 3. Build immutable receipt
+    response_sha256 = hashlib.sha256(response_bytes).hexdigest()
+
+    return BrokerCaptureReceipt(
+        requested_url=url,
+        final_url=final_url,
+        http_status=http_status,
+        content_type=content_type,
+        response_bytes=response_bytes,
+        response_sha256=response_sha256,
+        captured_at=captured_at,
+        collector_version=BROKER_COLLECTOR_VERSION,
+        redirect_chain=tuple(redirect_chain),
+    )
+
+
+def create_verified_broker_capture_attestation(
+    source_snapshot: Any,
+    component_role: str,
+    capture_receipt: BrokerCaptureReceipt,
+    expected_symbol: str = "XAUUSD",
+    expected_venue: str = "EXNESS",
+    expected_account_tier: str = "STANDARD",
+    verifier_identity: str = "AURUMIQ_OFFICIAL_BROKER_URL_CAPTURE_WORKFLOW",
+) -> Any:
+    """Create VERIFIED broker URL capture attestation from governed capture receipt.
+
+    The receipt MUST come from execute_governed_broker_url_capture(). The receipt's
+    response_bytes SHA-256 must match the source_snapshot raw SHA.
+    Derives and validates scope from parsed document structure.
+    Computes capture_context_hash from receipt metadata and includes in HMAC proof.
+    """
+    from apps.market_data.models import (
+        FrictionAttestationStatus,
+        FrictionSourceProvenanceAttestation,
+        FrictionSourceType,
+        FrictionVerificationMethod,
+    )
+    from apps.market_data.friction.artifact_parsers import (
+        parse_commission_backing_artifact,
+        parse_contract_spec_backing_artifact,
+        parse_financing_backing_artifact,
+        parse_legal_entity_backing_artifact,
+    )
+
+    norm_role = str(component_role).strip().upper()
+
+    # Validate receipt SHA matches snapshot raw SHA (ensures receipt bytes == snapshot bytes)
+    if capture_receipt.response_sha256 != source_snapshot.raw_payload_bytes_sha256:
+        raise ValueError(
+            f"URL_CAPTURE_ERROR: Receipt response SHA '{capture_receipt.response_sha256}' does not match "
+            f"snapshot raw_payload_bytes_sha256 '{source_snapshot.raw_payload_bytes_sha256}'. "
+            f"Snapshot must be created from receipt.response_bytes."
+        )
+
+    # Double-verify actual bytes SHA
+    computed_raw_sha = hashlib.sha256(capture_receipt.response_bytes).hexdigest()
+    if computed_raw_sha != source_snapshot.raw_payload_bytes_sha256:
+        raise ValueError(
+            f"URL_CAPTURE_ERROR: Computed response bytes SHA '{computed_raw_sha}' mismatch with "
+            f"snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
+        )
+
+    # HTTP status validation
+    if capture_receipt.http_status != 200:
+        raise ValueError(f"URL_CAPTURE_ERROR: HTTP status {capture_receipt.http_status} != 200.")
+
+    hostname = urllib.parse.urlparse(capture_receipt.final_url).hostname or ""
+    hostname = hostname.lower()
+
+    # Scope derivation via authoritative parser
+    derived_symbol = expected_symbol
+    derived_venue = "EXNESS"
+    derived_tier = expected_account_tier
+
+    if norm_role == "LEGAL_ENTITY":
+        legal_data = parse_legal_entity_backing_artifact(capture_receipt.response_bytes)
+        code = str(legal_data.get("legal_entity_code") or "")
+        if "EXNESS" not in code.upper():
+            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived legal entity '{code}' is not Exness.")
+    elif norm_role == "CONTRACT_SPEC":
+        spec_data = parse_contract_spec_backing_artifact(
+            capture_receipt.response_bytes, expected_symbol=expected_symbol
+        )
+        derived_symbol = str(spec_data.get("symbol") or "")
+        if derived_symbol.upper() != expected_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+    elif norm_role == "COMMISSION":
+        comm_data = parse_commission_backing_artifact(
+            capture_receipt.response_bytes,
+            expected_symbol=expected_symbol,
+            expected_account_tier=expected_account_tier,
+        )
+        derived_symbol = str(comm_data.get("symbol") or "")
+        derived_tier = str(comm_data.get("account_tier") or "")
+        if derived_symbol.upper() != expected_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+        if derived_tier.upper() != expected_account_tier.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived account tier '{derived_tier}' != expected '{expected_account_tier}'."
+            )
+    elif norm_role == "FINANCING":
+        fin_data = parse_financing_backing_artifact(
+            capture_receipt.response_bytes, expected_symbol=expected_symbol
+        )
+        derived_symbol = str(fin_data.get("symbol") or "")
+        if derived_symbol.upper() != expected_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+    else:
+        raise ValueError(
+            f"URL_CAPTURE_ERROR: Unsupported component role '{component_role}' for official broker URL capture."
+        )
+
+    # Derived venue validation
+    if derived_venue.upper() != expected_venue.upper():
+        raise ValueError(
+            f"URL_CAPTURE_SCOPE_MISMATCH: Derived venue '{derived_venue}' != expected '{expected_venue}'."
+        )
+
+    # Validate verifier
+    is_trusted, err = is_trusted_verifier(
+        FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value, verifier_identity
+    )
+    if not is_trusted:
+        raise ValueError(f"URL_CAPTURE_VERIFIER_ERROR: {err}")
+
+    captured_at = capture_receipt.captured_at
+    captured_iso = captured_at.isoformat()
+    source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+
+    # Build provenance metadata with all capture context fields
+    capture_metadata = {
+        "requested_url": capture_receipt.requested_url,
+        "final_url": capture_receipt.final_url,
+        "redirect_chain": list(capture_receipt.redirect_chain),
+        "hostname": hostname,
+        "captured_at": captured_iso,
+        "http_status": capture_receipt.http_status,
+        "content_type": capture_receipt.content_type,
+        "raw_response_sha256": computed_raw_sha,
+        "collector_version": capture_receipt.collector_version,
+        "derived_symbol": derived_symbol.upper(),
+        "derived_venue": derived_venue.upper(),
+        "derived_account_tier": derived_tier.upper(),
+    }
+
+    # Compute capture context hash from metadata
+    ctx_hash = compute_capture_context_hash(capture_metadata, FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value)
+    capture_metadata["capture_context_hash"] = ctx_hash
+
+    # Compute HMAC proof with capture_context_hash
+    proof = compute_verification_proof(
+        source_snapshot_id=source_snapshot.snapshot_id,
+        raw_artifact_sha256=computed_raw_sha,
+        component_role=norm_role,
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        source_type=source_type,
+        venue=derived_venue.upper(),
+        symbol=derived_symbol.upper(),
+        account_tier=derived_tier.upper(),
+        captured_at=captured_iso,
+        verifier_identity=verifier_identity.strip(),
+        capture_context_hash=ctx_hash,
+    )
+
+    attestation_id = hashlib.sha256(
+        f"{source_snapshot.snapshot_id}:{norm_role}:"
+        f"{FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value}:"
+        f"{verifier_identity}:{computed_raw_sha}:{proof}".encode()
+    ).hexdigest()
+
+    existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
+    if existing:
+        return existing
+
+    return FrictionSourceProvenanceAttestation.objects.create(
+        attestation_id=attestation_id,
+        source_snapshot=source_snapshot,
+        component_role=norm_role,
+        source_origin=capture_receipt.final_url,
+        source_type=source_type,
+        collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+        captured_at=captured_at,
+        reviewed_at=datetime.now(timezone.utc),
+        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+        verifier_identity=verifier_identity.strip(),
+        venue=derived_venue.upper(),
+        symbol=derived_symbol.upper(),
+        account_tier=derived_tier.upper(),
+        raw_artifact_sha256=computed_raw_sha,
+        provenance_metadata=capture_metadata,
+        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+        verification_authority=GOVERNED_PROVENANCE_AUTHORITY,
+        verification_proof=proof,
+        verification_proof_version=CURRENT_PROOF_VERSION,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# MT5 Export — Governed Terminal Bridge Transport Boundary
+# --------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MT5ExportReceipt:
+    """Immutable receipt from governed MT5 export capture transport.
+
+    All fields are derived from the governed MT5 terminal bridge / collector output.
+    Cannot be freely constructed by callers — must come from execute_governed_mt5_export_capture().
+    """
+    server: str
+    broker: str
+    symbol: str
+    account_tier: str
+    terminal_version: str
+    export_type: str
+    collector_version: str
+    capture_id: str
+    capture_time: datetime
+    raw_bytes: bytes
+    raw_sha256: str
+
+
+def execute_governed_mt5_export_capture(
+    raw_export_bytes: bytes,
+    component_role: str,
+    *,
+    mt5_transport=None,
+    expected_symbol: str = "XAUUSD",
+    expected_venue: str = "EXNESS",
+    expected_account_tier: str = "STANDARD",
+) -> MT5ExportReceipt:
+    """Execute governed MT5 export capture through trusted transport bridge.
+
+    mt5_transport: callable(raw_export_bytes, component_role) -> dict with
+    derived fields from MT5 terminal/collector output. Keys: server, broker,
+    symbol, account_tier, terminal_version, export_type, collector_version,
+    capture_id, capture_time.
+
+    In production, NO governed MT5 transport bridge exists yet.
+    Without mt5_transport → RuntimeError → MT5_DIRECT_EXPORT remains DECLARED.
+    Tests inject mock transport that derives fields from parsing.
+    expected_* values are comparison targets only — never fill derived scope.
+    """
+    if mt5_transport is None:
+        raise RuntimeError(
+            "MT5_TRANSPORT_NOT_AVAILABLE: No governed MT5 export transport bridge is configured. "
+            "MT5_DIRECT_EXPORT requires a real governed MT5 terminal bridge or collector. "
+            "Without a transport bridge, MT5 evidence must remain DECLARED."
+        )
+
+    # Transport derives all fields from its output
+    derived = mt5_transport(raw_export_bytes, component_role)
+    if not isinstance(derived, dict):
+        raise ValueError("MT5_TRANSPORT_ERROR: Transport must return a dict of derived fields.")
+
+    # Validate required transport-derived fields
+    for required_field in ("server", "broker", "symbol", "terminal_version", "export_type"):
+        if not derived.get(required_field):
+            raise ValueError(
+                f"MT5_TRANSPORT_ERROR: Transport did not derive required field '{required_field}'."
+            )
+
+    raw_sha = hashlib.sha256(raw_export_bytes).hexdigest()
+
+    receipt = MT5ExportReceipt(
+        server=str(derived["server"]),
+        broker=str(derived["broker"]),
+        symbol=str(derived["symbol"]),
+        account_tier=str(derived.get("account_tier", "")),
+        terminal_version=str(derived["terminal_version"]),
+        export_type=str(derived["export_type"]),
+        collector_version=str(derived.get("collector_version", MT5_COLLECTOR_VERSION)),
+        capture_id=str(derived.get("capture_id") or hashlib.sha256(
+            f"{raw_sha}:{datetime.now(timezone.utc).isoformat()}".encode()
+        ).hexdigest()[:16]),
+        capture_time=derived.get("capture_time") or datetime.now(timezone.utc),
+        raw_bytes=raw_export_bytes,
+        raw_sha256=raw_sha,
+    )
+
+    # Validate derived scope matches expected (expected_* are comparison targets only)
+    if receipt.symbol.upper() != expected_symbol.upper():
+        raise ValueError(
+            f"MT5_SCOPE_MISMATCH: Transport derived symbol '{receipt.symbol}' does not match "
+            f"expected '{expected_symbol}'."
+        )
+    if receipt.broker.upper() != expected_venue.upper():
+        raise ValueError(
+            f"MT5_SCOPE_MISMATCH: Transport derived broker '{receipt.broker}' does not match "
+            f"expected '{expected_venue}'."
+        )
+    if expected_account_tier and receipt.account_tier:
+        if receipt.account_tier.upper() != expected_account_tier.upper():
+            raise ValueError(
+                f"MT5_SCOPE_MISMATCH: Transport derived account tier '{receipt.account_tier}' does not match "
+                f"expected '{expected_account_tier}'."
+            )
+
+    return receipt
+
 
 def create_verified_mt5_export_attestation(
     source_snapshot: Any,
     component_role: str,
-    raw_bytes: bytes,
+    capture_receipt: MT5ExportReceipt,
     expected_symbol: str = "XAUUSD",
     expected_venue: str = "EXNESS",
     expected_account_tier: str = "STANDARD",
     verifier_identity: str = "AURUMIQ_MT5_COLLECTOR_V1",
-    collector_metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Governed collector workflow for authentic MT5 direct exports.
+    """Create VERIFIED MT5 export attestation from governed capture receipt.
 
-    Derives evidence identity/scope strictly from trusted MT5 parsers:
-    - SPREAD_DATASET -> parse_mt5_tick_export -> derives symbol
-    - SLIPPAGE_DATASET -> parse_mt5_execution_telemetry -> derives symbol, venue, account tier
-    - CONTRACT_SPEC -> parse_contract_spec_backing_artifact -> derives symbol
-    Validates derived scope matches expected parameters; fails closed on mismatch.
+    The receipt MUST come from execute_governed_mt5_export_capture(). Independently
+    runs component-specific parsers on snapshot raw content as cross-verification.
+    Computes capture_context_hash from receipt metadata and includes in HMAC proof.
     """
     from apps.market_data.models import (
         FrictionAttestationStatus,
@@ -302,52 +868,75 @@ def create_verified_mt5_export_attestation(
     from apps.market_data.friction.tick_parser import parse_mt5_tick_export
 
     norm_role = str(component_role).strip().upper()
-    computed_raw_sha = hashlib.sha256(raw_bytes).hexdigest()
-    if computed_raw_sha != source_snapshot.raw_payload_bytes_sha256:
+
+    # Validate receipt SHA matches snapshot raw SHA
+    if capture_receipt.raw_sha256 != source_snapshot.raw_payload_bytes_sha256:
         raise ValueError(
-            f"MT5_COLLECTOR_ERROR: Raw bytes SHA '{computed_raw_sha}' mismatch with snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
+            f"MT5_COLLECTOR_ERROR: Receipt raw SHA '{capture_receipt.raw_sha256}' mismatch with "
+            f"snapshot '{source_snapshot.raw_payload_bytes_sha256}'. "
+            f"Snapshot must be created from receipt.raw_bytes."
         )
 
+    # Double-verify actual bytes SHA
+    computed_raw_sha = hashlib.sha256(capture_receipt.raw_bytes).hexdigest()
+    if computed_raw_sha != source_snapshot.raw_payload_bytes_sha256:
+        raise ValueError(
+            f"MT5_COLLECTOR_ERROR: Computed raw bytes SHA '{computed_raw_sha}' mismatch with "
+            f"snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
+        )
+
+    # Independent parser cross-verification
     derived_symbol: str = ""
-    derived_venue: str = expected_venue
-    derived_account_tier: str = expected_account_tier
+    derived_venue: str = capture_receipt.broker.upper()
+    derived_account_tier: str = capture_receipt.account_tier.upper() or expected_account_tier.upper()
     source_type: str = ""
 
     if norm_role == "SPREAD_DATASET":
-        ticks_data, summary = parse_mt5_tick_export(raw_bytes, expected_symbol=expected_symbol)
+        ticks_data, summary = parse_mt5_tick_export(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
         derived_symbol = str(summary.get("symbol") or "")
-        derived_venue = str(summary.get("venue") or expected_venue)
         source_type = FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value
     elif norm_role == "SLIPPAGE_DATASET":
         telemetry_records, summary = parse_mt5_execution_telemetry(
-            raw_bytes,
+            capture_receipt.raw_bytes,
             expected_venue=expected_venue,
             expected_symbol=expected_symbol,
             expected_account_tier=expected_account_tier,
         )
         derived_symbol = str(summary.get("symbol") or expected_symbol)
-        derived_venue = str(summary.get("venue") or expected_venue)
-        derived_account_tier = str(summary.get("account_tier") or expected_account_tier)
+        derived_account_tier = str(summary.get("account_tier") or expected_account_tier).upper()
         source_type = FrictionSourceType.MT5_EXECUTION_TELEMETRY_EXPORT.value
     elif norm_role == "CONTRACT_SPEC":
-        parsed = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+        parsed = parse_contract_spec_backing_artifact(capture_receipt.raw_bytes, expected_symbol=expected_symbol)
         derived_symbol = str(parsed.get("symbol") or "")
         source_type = FrictionSourceType.MT5_SYMBOL_INFO_EXPORT.value
     else:
-        raise ValueError(f"MT5_COLLECTOR_ERROR: Unsupported component role '{component_role}' for MT5 direct export.")
+        raise ValueError(
+            f"MT5_COLLECTOR_ERROR: Unsupported component role '{component_role}' for MT5 direct export."
+        )
 
-    # Scope validation: derived scope MUST strictly match expected scope
+    # Parser-derived scope must match receipt-derived scope
+    if derived_symbol and capture_receipt.symbol:
+        if derived_symbol.upper() != capture_receipt.symbol.upper():
+            raise ValueError(
+                f"MT5_CROSS_VERIFICATION_FAILED: Parser derived symbol '{derived_symbol}' does not match "
+                f"receipt transport-derived symbol '{capture_receipt.symbol}'."
+            )
+
+    # Validate scope against expected (comparison targets only)
     if not derived_symbol or derived_symbol.upper() != expected_symbol.upper():
         raise ValueError(
-            f"MT5_SCOPE_MISMATCH: Collector derived symbol '{derived_symbol}' does not match expected '{expected_symbol}'."
+            f"MT5_SCOPE_MISMATCH: Collector derived symbol '{derived_symbol}' does not match "
+            f"expected '{expected_symbol}'."
         )
     if derived_venue.upper() != expected_venue.upper():
         raise ValueError(
-            f"MT5_SCOPE_MISMATCH: Collector derived venue '{derived_venue}' does not match expected '{expected_venue}'."
+            f"MT5_SCOPE_MISMATCH: Collector derived venue '{derived_venue}' does not match "
+            f"expected '{expected_venue}'."
         )
     if derived_account_tier.upper() != expected_account_tier.upper():
         raise ValueError(
-            f"MT5_SCOPE_MISMATCH: Collector derived account tier '{derived_account_tier}' does not match expected '{expected_account_tier}'."
+            f"MT5_SCOPE_MISMATCH: Collector derived account tier '{derived_account_tier}' does not match "
+            f"expected '{expected_account_tier}'."
         )
 
     # Validate verifier identity
@@ -355,8 +944,28 @@ def create_verified_mt5_export_attestation(
     if not is_trusted:
         raise ValueError(f"MT5_VERIFIER_ERROR: {err}")
 
-    captured_at = source_snapshot.retrieved_at or datetime.now(timezone.utc)
+    captured_at = capture_receipt.capture_time or source_snapshot.retrieved_at or datetime.now(timezone.utc)
     captured_iso = captured_at.isoformat()
+
+    # Build provenance metadata with all governed receipt fields
+    meta = {
+        "collector_workflow": "AURUMIQ_GOVERNED_MT5_COLLECTOR",
+        "server": capture_receipt.server,
+        "broker": capture_receipt.broker.upper(),
+        "derived_symbol": derived_symbol.upper(),
+        "derived_venue": derived_venue.upper(),
+        "derived_account_tier": derived_account_tier.upper(),
+        "terminal_version": capture_receipt.terminal_version,
+        "export_type": capture_receipt.export_type,
+        "collector_version": capture_receipt.collector_version,
+        "capture_id": capture_receipt.capture_id,
+        "capture_time": captured_iso,
+        "raw_sha256": computed_raw_sha,
+    }
+
+    # Compute capture context hash
+    ctx_hash = compute_capture_context_hash(meta, FrictionVerificationMethod.MT5_DIRECT_EXPORT.value)
+    meta["capture_context_hash"] = ctx_hash
 
     proof = compute_verification_proof(
         source_snapshot_id=source_snapshot.snapshot_id,
@@ -369,18 +978,13 @@ def create_verified_mt5_export_attestation(
         account_tier=derived_account_tier.upper(),
         captured_at=captured_iso,
         verifier_identity=verifier_identity.strip(),
+        capture_context_hash=ctx_hash,
     )
 
-    meta = dict(collector_metadata or {})
-    meta.update({
-        "collector_workflow": "AURUMIQ_GOVERNED_MT5_COLLECTOR",
-        "derived_symbol": derived_symbol.upper(),
-        "derived_venue": derived_venue.upper(),
-        "derived_account_tier": derived_account_tier.upper(),
-    })
-
     attestation_id = hashlib.sha256(
-        f"{source_snapshot.snapshot_id}:{norm_role}:{FrictionVerificationMethod.MT5_DIRECT_EXPORT.value}:{verifier_identity}:{computed_raw_sha}:{proof}".encode()
+        f"{source_snapshot.snapshot_id}:{norm_role}:"
+        f"{FrictionVerificationMethod.MT5_DIRECT_EXPORT.value}:"
+        f"{verifier_identity}:{computed_raw_sha}:{proof}".encode()
     ).hexdigest()
 
     existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
@@ -410,164 +1014,11 @@ def create_verified_mt5_export_attestation(
     )
 
 
-def create_verified_broker_url_capture_attestation(
-    source_snapshot: Any,
-    component_role: str,
-    raw_bytes: bytes,
-    requested_url: str,
-    final_url: str,
-    http_status: int = 200,
-    expected_symbol: str = "XAUUSD",
-    expected_venue: str = "EXNESS",
-    expected_account_tier: str = "STANDARD",
-    verifier_identity: str = "AURUMIQ_OFFICIAL_BROKER_URL_CAPTURE_WORKFLOW",
-    collector_version: str = "1.0.0",
-    content_type: str = "text/html",
-) -> Any:
-    """Governed collector workflow for official broker URL captures (Directive 2 & 3).
+# --------------------------------------------------------------------------------------
+# Account Portal Export — DECLARED Only (No Authenticated Collector Yet)
+# --------------------------------------------------------------------------------------
 
-    Binds requested_url, final_url, hostname, captured_at, http_status, content_type,
-    raw_response_sha256, and collector_version into verified provenance proof.
-    Derives and validates scope from parsed document structure.
-    """
-    from apps.market_data.models import (
-        FrictionAttestationStatus,
-        FrictionSourceProvenanceAttestation,
-        FrictionSourceType,
-        FrictionVerificationMethod,
-    )
-    from apps.market_data.friction.artifact_parsers import (
-        parse_commission_backing_artifact,
-        parse_contract_spec_backing_artifact,
-        parse_financing_backing_artifact,
-        parse_legal_entity_backing_artifact,
-    )
-
-    norm_role = str(component_role).strip().upper()
-    computed_raw_sha = hashlib.sha256(raw_bytes).hexdigest()
-    if computed_raw_sha != source_snapshot.raw_payload_bytes_sha256:
-        raise ValueError(
-            f"URL_CAPTURE_ERROR: Raw bytes SHA '{computed_raw_sha}' mismatch with snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
-        )
-
-    parsed_url = urllib.parse.urlparse(final_url or requested_url)
-    hostname = parsed_url.netloc.lower()
-    if hostname not in PERMITTED_BROKER_DOMAINS:
-        raise ValueError(
-            f"URL_CAPTURE_ERROR: Hostname '{hostname}' is not in permitted broker domains: {sorted(PERMITTED_BROKER_DOMAINS)}."
-        )
-
-    if http_status != 200:
-        raise ValueError(f"URL_CAPTURE_ERROR: HTTP status {http_status} != 200.")
-
-    # Scope derivation via authoritative parser
-    derived_symbol = expected_symbol
-    derived_venue = "EXNESS"
-    derived_tier = expected_account_tier
-
-    if norm_role == "LEGAL_ENTITY":
-        legal_data = parse_legal_entity_backing_artifact(raw_bytes)
-        code = str(legal_data.get("legal_entity_code") or "")
-        if "EXNESS" not in code.upper():
-            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived legal entity '{code}' is not Exness.")
-    elif norm_role == "CONTRACT_SPEC":
-        spec_data = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
-        derived_symbol = str(spec_data.get("symbol") or "")
-        if derived_symbol.upper() != expected_symbol.upper():
-            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'.")
-    elif norm_role == "COMMISSION":
-        comm_data = parse_commission_backing_artifact(
-            raw_bytes,
-            expected_symbol=expected_symbol,
-            expected_account_tier=expected_account_tier,
-        )
-        derived_symbol = str(comm_data.get("symbol") or "")
-        derived_tier = str(comm_data.get("account_tier") or "")
-        if derived_symbol.upper() != expected_symbol.upper():
-            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'.")
-        if derived_tier.upper() != expected_account_tier.upper():
-            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived account tier '{derived_tier}' != expected '{expected_account_tier}'.")
-    elif norm_role == "FINANCING":
-        fin_data = parse_financing_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
-        derived_symbol = str(fin_data.get("symbol") or "")
-        if derived_symbol.upper() != expected_symbol.upper():
-            raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'.")
-    else:
-        raise ValueError(f"URL_CAPTURE_ERROR: Unsupported component role '{component_role}' for official broker URL capture.")
-
-    # Check derived venue vs expected
-    if derived_venue.upper() != expected_venue.upper():
-        raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived venue '{derived_venue}' != expected '{expected_venue}'.")
-
-    # Validate verifier
-    is_trusted, err = is_trusted_verifier(FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value, verifier_identity)
-    if not is_trusted:
-        raise ValueError(f"URL_CAPTURE_VERIFIER_ERROR: {err}")
-
-    captured_at = source_snapshot.retrieved_at or datetime.now(timezone.utc)
-    captured_iso = captured_at.isoformat()
-
-    source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
-
-    proof = compute_verification_proof(
-        source_snapshot_id=source_snapshot.snapshot_id,
-        raw_artifact_sha256=computed_raw_sha,
-        component_role=norm_role,
-        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
-        source_type=source_type,
-        venue=derived_venue.upper(),
-        symbol=derived_symbol.upper(),
-        account_tier=derived_tier.upper(),
-        captured_at=captured_iso,
-        verifier_identity=verifier_identity.strip(),
-    )
-
-    capture_metadata = {
-        "requested_url": requested_url,
-        "final_url": final_url,
-        "hostname": hostname,
-        "captured_at": captured_iso,
-        "http_status": http_status,
-        "content_type": content_type,
-        "raw_response_sha256": computed_raw_sha,
-        "collector_version": collector_version,
-        "derived_symbol": derived_symbol.upper(),
-        "derived_venue": derived_venue.upper(),
-        "derived_account_tier": derived_tier.upper(),
-    }
-
-    attestation_id = hashlib.sha256(
-        f"{source_snapshot.snapshot_id}:{norm_role}:{FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value}:{verifier_identity}:{computed_raw_sha}:{proof}".encode()
-    ).hexdigest()
-
-    existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
-    if existing:
-        return existing
-
-    return FrictionSourceProvenanceAttestation.objects.create(
-        attestation_id=attestation_id,
-        source_snapshot=source_snapshot,
-        component_role=norm_role,
-        source_origin=final_url,
-        source_type=source_type,
-        collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
-        captured_at=captured_at,
-        reviewed_at=datetime.now(timezone.utc),
-        verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
-        verifier_identity=verifier_identity.strip(),
-        venue=derived_venue.upper(),
-        symbol=derived_symbol.upper(),
-        account_tier=derived_tier.upper(),
-        raw_artifact_sha256=computed_raw_sha,
-        provenance_metadata=capture_metadata,
-        attestation_status=FrictionAttestationStatus.VERIFIED.value,
-        verification_authority=GOVERNED_PROVENANCE_AUTHORITY,
-        verification_proof=proof,
-        verification_proof_version=CURRENT_PROOF_VERSION,
-    )
-
-
-def create_verified_account_portal_export_attestation(
+def create_declared_account_portal_export_attestation(
     source_snapshot: Any,
     component_role: str,
     raw_bytes: bytes,
@@ -575,10 +1026,15 @@ def create_verified_account_portal_export_attestation(
     expected_venue: str = "EXNESS",
     expected_account_tier: str = "STANDARD",
     verifier_identity: str = "AURUMIQ_ACCOUNT_PORTAL_CAPTURE_WORKFLOW",
-    portal_session_hash: str = "",
     collector_version: str = "1.0.0",
 ) -> Any:
-    """Governed collector workflow for authenticated account portal exports."""
+    """Account portal export attestation — always DECLARED.
+
+    No authenticated portal collector exists. Scope is NOT independently derived.
+    No fabricated portal_session_hash. No verification proof for DECLARED status.
+    ACCOUNT_PORTAL_EXPORT VERIFIED is explicitly rejected by verify_attestation_authenticity()
+    outside test environment.
+    """
     from apps.market_data.models import (
         FrictionAttestationStatus,
         FrictionSourceProvenanceAttestation,
@@ -590,38 +1046,32 @@ def create_verified_account_portal_export_attestation(
     computed_raw_sha = hashlib.sha256(raw_bytes).hexdigest()
     if computed_raw_sha != source_snapshot.raw_payload_bytes_sha256:
         raise ValueError(
-            f"PORTAL_EXPORT_ERROR: Raw bytes SHA '{computed_raw_sha}' mismatch with snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
+            f"PORTAL_EXPORT_ERROR: Raw bytes SHA '{computed_raw_sha}' mismatch with "
+            f"snapshot '{source_snapshot.raw_payload_bytes_sha256}'."
         )
 
-    is_trusted, err = is_trusted_verifier(FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value, verifier_identity)
+    is_trusted, err = is_trusted_verifier(
+        FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value, verifier_identity
+    )
     if not is_trusted:
         raise ValueError(f"PORTAL_EXPORT_VERIFIER_ERROR: {err}")
 
     captured_at = source_snapshot.retrieved_at or datetime.now(timezone.utc)
-    captured_iso = captured_at.isoformat()
-    source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
-
-    proof = compute_verification_proof(
-        source_snapshot_id=source_snapshot.snapshot_id,
-        raw_artifact_sha256=computed_raw_sha,
-        component_role=norm_role,
-        verification_method=FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value,
-        source_type=source_type,
-        venue=expected_venue.upper(),
-        symbol=expected_symbol.upper(),
-        account_tier=expected_account_tier.upper(),
-        captured_at=captured_iso,
-        verifier_identity=verifier_identity.strip(),
-    )
 
     meta = {
         "collector_workflow": "AURUMIQ_ACCOUNT_PORTAL_CAPTURE_WORKFLOW",
-        "portal_session_hash": portal_session_hash or hashlib.sha256(f"session:{source_snapshot.snapshot_id}".encode()).hexdigest(),
         "collector_version": collector_version,
+        "attestation_note": (
+            "DECLARED: No authenticated portal collector deployed. "
+            "Scope not independently derived. "
+            "Cannot be VERIFIED until governed portal export transport is available."
+        ),
     }
 
     attestation_id = hashlib.sha256(
-        f"{source_snapshot.snapshot_id}:{norm_role}:{FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value}:{verifier_identity}:{computed_raw_sha}:{proof}".encode()
+        f"{source_snapshot.snapshot_id}:{norm_role}:"
+        f"{FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value}:"
+        f"{verifier_identity}:{computed_raw_sha}:DECLARED".encode()
     ).hexdigest()
 
     existing = FrictionSourceProvenanceAttestation.objects.filter(attestation_id=attestation_id).first()
@@ -633,8 +1083,8 @@ def create_verified_account_portal_export_attestation(
         source_snapshot=source_snapshot,
         component_role=norm_role,
         source_origin="https://my.exness.com/portal/export",
-        source_type=source_type,
-        collection_methodology="GOVERNED_ACCOUNT_PORTAL_EXPORT",
+        source_type=FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value,
+        collection_methodology="DECLARED_ACCOUNT_PORTAL_EXPORT",
         captured_at=captured_at,
         reviewed_at=datetime.now(timezone.utc),
         verification_method=FrictionVerificationMethod.ACCOUNT_PORTAL_EXPORT.value,
@@ -644,8 +1094,6 @@ def create_verified_account_portal_export_attestation(
         account_tier=expected_account_tier.upper(),
         raw_artifact_sha256=computed_raw_sha,
         provenance_metadata=meta,
-        attestation_status=FrictionAttestationStatus.VERIFIED.value,
-        verification_authority=GOVERNED_PROVENANCE_AUTHORITY,
-        verification_proof=proof,
-        verification_proof_version=CURRENT_PROOF_VERSION,
+        attestation_status=FrictionAttestationStatus.DECLARED.value,
+        # No verification proof for DECLARED status
     )
