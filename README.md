@@ -40,11 +40,13 @@ AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative ma
 3. **Analytical vs Execution Boundary:**
    - **Analytical Market Data:** Derived exclusively from the primary market-data feed (Twelve Data) for canonical `XAUUSD`.
    - **Execution & Friction Evidence:** Broker-specific evidence (Exness) is strictly partitioned into execution profiles and never contaminates analytical candles.
-4. **Independent Execution Profile Scopes:**
+4. **Independent Execution Profile Scopes & Artifact Isolation:**
    - Supported account tiers: `STANDARD`, `STANDARD_CENT`, `RAW_SPREAD`.
    - Strict decoupling: `account_tier != broker_symbol != account_currency`.
    - Broker execution symbols are explicit scope (e.g. `STANDARD + expected_broker_symbol=XAUUSDm`, `STANDARD_CENT + expected_broker_symbol=XAUUSDc`). No hidden inference defaults exist.
    - Account currency is explicit declared scope (`USD`, `USC`), carries zero evidence qualification authority, and introduces no conversion engine.
+   - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the `STANDARD` account tier evidence scope. `STANDARD_CENT` artifacts are strictly isolated under separate filenames and cannot cross-contaminate.
+   - Slippage telemetry for calibration resolves strictly from authentic broker execution fill telemetry, eliminating circular dependency on Phase 8 paper observation.
 5. **Intrabar Replay Segregation:** 1m and 5m streams are strictly isolated for causal fill simulation, execution latency, and intrabar barrier collision resolution during backtesting and forward paper observation.
 6. **TradingView Policy (R18 & A18):** TradingView is permitted exclusively for external visual reference or rendering via Lightweight Charts. The calculation engine contains zero scraping dependencies or network calls to TradingView.
 7. **Production Publication Authority Invariant:** Even with Phase 4, Phase 5, Phase 6, Phase 7, and calibration architecture (PR #20, PR #21) merged, Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Live execution authority is blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.

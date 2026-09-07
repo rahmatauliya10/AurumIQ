@@ -1,118 +1,106 @@
-# AurumIQ — XAUUSD Empirical Friction Evidence & Cost Provenance
+# AurumIQ — XAUUSD Empirical Friction Evidence & Calibration Architecture
 
-> **Governance Authority:** Post Phase 7 / Pre Phase 8 Calibration Campaign Protocol
-> **Status:** `EMPIRICAL_FRICTION_NOT_CONFIGURED` / `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
 > **Target Instrument:** `XAUUSD` (Canonical Spot Gold denominated in USD)
-> **Backtest Scenario:** `XauUsdCostScenario.EMPIRICAL` (Blocked pending provenance)
-> **Historical Baseline Main SHA:** `57f6de1405d0df8548182a166d245f1a3173363d` (Phase 7 Initial Formulation)
+> **Active Target Venue:** `EXNESS`
 > **Current Authoritative Main SHA:** `fcbe1a934d9ac125426ec6c64c77f078e0bb7df5` (PR #21 Standard Cent Scope Merged; Post-Merge CI Green)
-> **Current Calibration Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
-> **Governing Active Artifacts:** [`XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md`](./XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) & [`xauusd_empirical_friction_manifest.json`](../../artifacts/calibration/xauusd_empirical_friction_manifest.json) (Expanded to 6 mandatory categories under PR #20 and PR #21).
+> **Historical Baseline Main SHA:** `57f6de1405d0df8548182a166d245f1a3173363d` (Phase 7 Baseline Provenance)
+> **Friction Status:** `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
+> **Hard Readiness Gate:** `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING` (`passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`)
+> **Governing Specifications:** PR #20 (Empirical Friction Provenance Seal @ `92b0bd6`), PR #21 (Isolated Standard Cent Scope @ `fcbe1a9`)
+> **Governing Report & Artifact:** [`XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md`](./XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) & [`xauusd_empirical_friction_manifest.json`](../../artifacts/calibration/xauusd_empirical_friction_manifest.json)
 
 ---
 
-## 1. Governance Mandate
+## 1. Governance Mandate & Six-Category Model
 
-In quantitative backtesting and empirical policy evaluation for spot gold (`XAUUSD`), transaction frictions exert an overwhelming influence on real expectancy. Under Phase 5/6 governance rules (Spec §33, §34, R17–R20):
+In quantitative backtesting, risk planning, and empirical policy evaluation for spot gold (`XAUUSD`), transaction frictions exert an overwhelming influence on real expectancy. Under Phase 5/6 and Pre-Phase-8 calibration hardening governance (Directives 1–18, R17–R20):
 
-1. **No Guesswork / No Synthetic Approximations as Empirical:** Values for transaction fees, spreads, and slippage cannot be arbitrarily assumed or guessed.
-2. **Strict Provenance Separation:** Every basis-point parameter must trace directly to one of three authoritative empirical evidence categories.
-3. **Fail-Closed Blocking:** Until all five required empirical cost components have documented, defensible provenance, backtests under `XauUsdCostScenario.EMPIRICAL` remain strictly **BLOCKED** and execution policy evaluation cannot be claimed as validated.
+1. **Zero Silent Fallback Defaults:** Values for contract geometry, trading fees, financing swap points, spreads, and execution slippage cannot be guessed, approximated, or defaulted.
+2. **Six Mandatory Evidence Categories:** All empirical friction parameters resolve exclusively from six verified evidence categories:
+   - **Category 1: Legal Entity Scope** (`legal_entity_code`, `regulator`, `license`)
+   - **Category 2: Contract Geometry** (`digits`, `point_size`, `tick_size`, `tick_value`, `contract_size`, `volume_min`, `volume_max`, `volume_step`)
+   - **Category 3: Commission Policy** (`account_tier`, `commission_usd_per_lot_per_side`, `commission_formula`)
+   - **Category 4: Financing / Swap Policy** (`swap_long_points`, `swap_short_points`, `rollover_schedule`, `triple_swap_weekday`, `actual_account_swap_free_status`)
+   - **Category 5: Empirical Bid/Ask Spread Distribution** (`base_spread_bps`, `stress_spread_bps`, $N \ge 1000$, $\ge 5$ distinct dates, 4 sessions)
+   - **Category 6: Execution Slippage Telemetry** (`base_slippage_bps`, `stress_slippage_bps`, $N \ge 30$, directional adverse displacement)
+3. **Fail-Closed Blocking:** If any required category is absent or unverified, the system transitions to `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED` with gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`, locking production authority to `FALSE / 0.0 / WAIT`.
 
 ---
 
-## 2. Required Empirical Friction Components
+## 2. Execution Profile Isolation & Artifact Scope
 
-The platform mandates empirical calibration across five discrete friction parameters:
+AurumIQ enforces strict partitioning between execution profiles and analytical market data:
 
+1. **Analytical vs Execution Boundary:**
+   - **Analytical Market Data:** Canonical 15m, 1H, 4H, and 1D candles, indicators, and regime models derive strictly from Twelve Data for `XAUUSD`.
+   - **Execution & Friction Evidence:** Sourced from broker-specific exports (Exness) and strictly partitioned by account tier.
+2. **Profile Decoupling Rule:**
+   ```text
+   account_tier != broker_symbol != account_currency
+   ```
+   - Supported tiers: `STANDARD`, `STANDARD_CENT`, `RAW_SPREAD`.
+   - Broker execution symbols are explicit scope (e.g. `STANDARD + expected_broker_symbol=XAUUSDm`, `STANDARD_CENT + expected_broker_symbol=XAUUSDc`).
+   - Account currency is explicit declared scope (`USD`, `USC`), defaults to `None`/`UNKNOWN`, carries zero evidence qualification authority, and introduces no conversion engine.
+3. **Artifact Scope Truth:**
+   - The canonical manifest [`artifacts/calibration/xauusd_empirical_friction_manifest.json`](../../artifacts/calibration/xauusd_empirical_friction_manifest.json) is explicitly bound to `account_tier: "STANDARD"` with symbol `XAUUSD`.
+   - `STANDARD_CENT` maintains an isolated output path (`artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json`).
+   - `STANDARD` evidence artifacts must **NEVER** be mutated or described as representing `STANDARD_CENT`, and vice versa.
+
+---
+
+## 3. Elimination of Phase 8 Slippage Circularity
+
+Prior exploratory notes incorrectly suggested compiling slippage telemetry from Phase 8 paper trading. This circularity is explicitly prohibited:
+
+```text
+[INVALID CIRCULARITY - FORBIDDEN]
+Calibration Qualification ──► Requires Slippage ──► Compiled from Phase 8 Paper ──► Blocked by Calibration Gate
+
+[GOVERNED CAUSAL LINEAGE - ACTIVE TRUTH]
+Real MT5 Execution Fill Telemetry (N >= 30)
+         │
+         ▼
+Qualify Category 6 (Slippage Telemetry)
+         │
+         ▼
+Empirical Friction Calibration Qualified (All 6 Categories)
+         │
+         ▼
+Unblock Calibration Gate ──► Authorize Phase 8 Live Paper Observation
 ```
-Total Roundtrip Friction = entry_fee_bps + exit_fee_bps + synthetic_spread_bps + entry_slippage_bps + exit_slippage_bps
+
+- **Slippage Evidence Source:** Sourced strictly from authentic broker execution fill telemetry ($N \ge 30$ real order fills, broker execution reports, or institutional FIX telemetry).
+- **Phase 8 Prerequisite:** Phase 8 live paper observation is strictly downstream of calibration qualification and cannot execute until all six friction categories (including slippage) are sealed.
+
+---
+
+## 4. Current Friction Evidence Inventory Status
+
+| Evidence Category | Target Parameters | Status | Governance Rule & Finding |
+| :--- | :--- | :---: | :--- |
+| **1. Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `LEGAL_ENTITY_EVIDENCE_MISSING` | Requires verified account agreement snapshot. |
+| **2. Contract Geometry** | `point_size`, `tick_size`, `contract_size`, volumes | `CONTRACT_SPEC_EVIDENCE_MISSING` | Requires MT5 contract spec export. Zero silent defaults. |
+| **3. Commission Policy** | Native commission per lot per side, formula | `COMMISSION_EVIDENCE_MISSING` | Requires broker fee schedule snapshot. Zero silent defaults. |
+| **4. Financing Policy** | Swap long/short points, triple-swap day, swap-free status | `FINANCING_EVIDENCE_MISSING` | Requires broker swap schedule snapshot. Zero silent defaults. |
+| **5. Spread Distribution** | Base & stress spread bps ($N \ge 1000$, 5 days, 4 sessions) | `SPREAD_EMPIRICAL_EVIDENCE_MISSING` | Requires authentic MT5 tick history export. |
+| **6. Slippage Telemetry** | Directional adverse slippage bps ($N \ge 30$) | `SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING` | Requires authentic MT5 execution telemetry fills. Not sourced from Phase 8. |
+
+**Overall Gate Status:**
+```text
+STATUS:   EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED
+GATE:     CANDLES_READY_EMPIRICAL_FRICTION_MISSING
+WEIGHT:   0.0
+DECISION: WAIT
 ```
 
-| Parameter Name | Target Unit | Current Status | Description |
-| :--- | :---: | :---: | :--- |
-| **`entry_fee_bps`** | Basis Points ($0.0001$) | `NOT_CONFIGURED` | Effective broker/exchange commission on trade entry. |
-| **`exit_fee_bps`** | Basis Points ($0.0001$) | `NOT_CONFIGURED` | Effective broker/exchange commission on trade liquidation. |
-| **`synthetic_spread_bps`** | Basis Points ($0.0001$) | `NOT_CONFIGURED` | Expected half/full bid-ask spread cost for closed-candle simulation. |
-| **`entry_slippage_bps`** | Basis Points ($0.0001$) | `NOT_CONFIGURED` | Adverse price displacement between signal generation and entry fill. |
-| **`exit_slippage_bps`** | Basis Points ($0.0001$) | `NOT_CONFIGURED` | Adverse price displacement during stop-loss or take-profit execution. |
-
 ---
 
-## 3. Provenance Hierarchy & Evidence Classification
+## 5. Next Steps for Calibration Unblocking
 
-To transition any friction parameter from `NOT_CONFIGURED` to `CONFIGURED`, evidence must be sourced from one of three distinct channels:
-
-```mermaid
-graph TD
-    subgraph Provenance Hierarchy
-        A["Source A: Contract / Specification Evidence"] -->|"Determines"| F1["entry_fee_bps, exit_fee_bps"]
-        B["Source B: Quote Evidence"] -->|"Determines"| F2["synthetic_spread_bps"]
-        C["Source C: Execution Telemetry Evidence"] -->|"Determines"| F3["entry_slippage_bps, exit_slippage_bps"]
-    end
-    F1 --> G{"Empirical Friction Matrix"}
-    F2 --> G
-    F3 --> G
-    G -->|"All 5 Provenance Confirmed"| H["EMPIRICAL_FRICTION_CONFIGURED"]
-    G -->|"Any Component Missing"| I["EMPIRICAL_FRICTION_NOT_CONFIGURED (Gate Blocked)"]
-```
-
-### Source A: Contract / Specification Evidence (Commissions & Clearing Fees)
-- **Applicability:** Governs `entry_fee_bps` and `exit_fee_bps`.
-- **Evidence Source:** Formal broker schedule, institutional ECN rate card, or prime brokerage clearing contract.
-- **Conversion Formulation:**
-  $$\text{Fee (bps)} = \left( \frac{\text{Commission Per Ounce / Lot}}{\text{Spot Reference Price}} \right) \times 10{,}000$$
-- **Audit Requirement:** The signed fee schedule or institutional tier specification must be archived alongside the calibration artifact.
-
-### Source B: Quote Evidence (Historical Bid/Ask Spreads)
-- **Applicability:** Governs `synthetic_spread_bps`.
-- **Evidence Source:** Authoritative point-in-time bid/ask quote series covering all trading sessions (London, New York, Asian, and session transitions).
-- **Conversion Formulation:**
-  $$\text{Spread (bps)} = \left( \frac{\text{Ask} - \text{Bid}}{\text{Mid Price}} \right) \times 10{,}000$$
-- **Audit Requirement:** Spread distributions must be segmented by session and volatility regime. Static spread assumptions must represent at least the 75th percentile of observed liquid spreads.
-
-### Source C: Execution Telemetry Evidence (Empirical Fill Slippage)
-- **Applicability:** Governs `entry_slippage_bps` and `exit_slippage_bps`.
-- **Evidence Source:** Execution timestamps and executed prices recorded during live paper observation, test orders, or institutional fix logs.
-- **Conversion Formulation:**
-  $$\text{Slippage (bps)} = \left( \frac{|\text{Executed Price} - \text{Decision Price}|}{\text{Decision Price}} \right) \times 10{,}000$$
-- **Audit Requirement:** Must reflect actual latency (order transmission + matching queue) and adverse selection around liquidity sweeps.
-
----
-
-## 4. Current Friction Provenance Audit Table
-
-| Component | Provenance Category | Documented Source Reference | Observed Value | Gate Status |
-| :--- | :--- | :--- | :---: | :---: |
-| **`entry_fee_bps`** | Source A (Contract) | None (Awaiting broker onboarding) | `None` | ❌ `NOT_CONFIGURED` |
-| **`exit_fee_bps`** | Source A (Contract) | None (Awaiting broker onboarding) | `None` | ❌ `NOT_CONFIGURED` |
-| **`synthetic_spread_bps`** | Source B (Quotes) | None (Quote evidence count = 0) | `None` | ❌ `NOT_CONFIGURED` |
-| **`entry_slippage_bps`** | Source C (Telemetry) | None (Phase 8 on HOLD; zero live fills) | `None` | ❌ `NOT_CONFIGURED` |
-| **`exit_slippage_bps`** | Source C (Telemetry) | None (Phase 8 on HOLD; zero live fills) | `None` | ❌ `NOT_CONFIGURED` |
-
-**Overall State:** **`EMPIRICAL_FRICTION_NOT_CONFIGURED`**
-
----
-
-## 5. Execution Policy Governance Matrix
-
-The platform supports multiple execution policies under research evaluation. Each policy has specific empirical friction prerequisites:
-
-| Execution Policy | Required Evidence | Permissible Status Without Evidence | Notes |
-| :--- | :--- | :--- | :--- |
-| **`MARKET_AFTER_SIGNAL`** | Historical Bid/Ask Quotes (Source B) + Slippage Telemetry (Source C) | **`STRICTLY_BLOCKED`** | Requires real quotes at decision time; cannot be calibrated from OHLC alone. |
-| **`NEXT_BAR_OPEN`** | Closed Candle Data + Validated Synthetic Spread/Slippage (Sources A, B, C) | **`RESEARCH_ONLY_WITH_IDEALIZED`** | May be tested with idealized zero-cost or explicit synthetic sensitivity grids. |
-| **`LIMIT_ZONE`** | 1m/5m Intrabar Candlestick Replay (Phase 5 Causal Engine) | **`RESEARCH_ONLY_WITH_IDEALIZED`** | Evaluates passive limit fills; requires queue latency assumption and fee model. |
-
-> [!IMPORTANT]
-> `LIMIT_ZONE` is **not** declared the single defensible policy. All three execution policies remain under research governance. Their empirical viability will be determined comparatively once authentic evidence is ingested.
-
----
-
-## 6. Sign-Off & Unblocking Criteria
-
-To achieve `EMPIRICAL_FRICTION_CONFIGURED` and permit empirical walk-forward calibration:
-1. Broker contract fee schedules must be archived in `docs/calibration/evidence/broker_rate_card.pdf`.
-2. Historical quote spread analysis must be published in `docs/calibration/evidence/xauusd_spread_distribution.json`.
-3. Fill slippage observation telemetry must be compiled from Phase 8 paper trading or certified broker execution reports.
-4. Human review and explicit governance sign-off must authorize the configured parameter values.
+To advance from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` toward empirical qualification:
+1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
+2. Provide authoritative MT5 contract specification snapshot for the designated account tier.
+3. Provide authoritative broker fee schedule snapshot.
+4. Provide authoritative broker financing swap schedule snapshot.
+5. Provide authentic Exness tick history export covering $\ge 5$ distinct trading days and all 4 sessions.
+6. Provide authentic Exness execution telemetry fills ($N \ge 30$) from verified order executions.

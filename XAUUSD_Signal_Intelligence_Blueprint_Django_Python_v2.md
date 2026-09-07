@@ -89,6 +89,9 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
    - `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
    - `passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`.
    - Zero real execution authority is granted. Live order placement is forbidden.
+5. **Artifact Scope Isolation & Slippage Telemetry Source:**
+   - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the `STANDARD` account tier evidence scope. `STANDARD_CENT` artifacts are strictly isolated under separate filenames and cannot cross-contaminate.
+   - Slippage telemetry resolves strictly from authentic broker execution fill telemetry ($N \ge 30$), eliminating circular dependency on Phase 8 paper observation.
 
 ---
 
