@@ -42,6 +42,7 @@ from apps.market_data.models import (
     QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES,
     QUALIFIED_SLIPPAGE_SOURCE_TYPES,
     QUALIFIED_SPREAD_SOURCE_TYPES,
+    QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE,
 )
 from apps.market_data.friction.artifact_parsers import (
     compute_normalized_evidence_hash,
@@ -50,7 +51,10 @@ from apps.market_data.friction.artifact_parsers import (
     parse_financing_backing_artifact,
     parse_legal_entity_backing_artifact,
 )
-from apps.market_data.friction.tick_parser import parse_mt5_tick_export
+from apps.market_data.friction.tick_parser import (
+    parse_exness_official_tick_history,
+    parse_mt5_tick_export,
+)
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.provenance import verify_attestation_authenticity
@@ -60,7 +64,7 @@ TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
     "CONTRACT_SPEC": {"parse_contract_spec_backing_artifact"},
     "COMMISSION": {"parse_commission_backing_artifact"},
     "FINANCING": {"parse_financing_backing_artifact"},
-    "SPREAD_DATASET": {"parse_mt5_tick_export"},
+    "SPREAD_DATASET": {"parse_mt5_tick_export", "parse_exness_official_tick_history"},
     "SLIPPAGE_DATASET": {"parse_mt5_execution_telemetry"},
 }
 SUPPORTED_PARSER_VERSIONS: Set[str] = {"1.0.0"}
@@ -210,12 +214,20 @@ def validate_source_qualification_assertion(
             recomputed_norm_hash = compute_normalized_evidence_hash(parsed_data)
 
         elif expected_component_role == "SPREAD_DATASET":
-            ticks_data, summary = parse_mt5_tick_export(
-                snapshot.raw_content,
-                expected_symbol=expected_symbol,
-                expected_broker_symbol=expected_broker_symbol,
-                expected_account_tier=norm_tier,
-            )
+            if assertion.parser_name == "parse_exness_official_tick_history":
+                ticks_data, summary = parse_exness_official_tick_history(
+                    snapshot.raw_content,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
+            else:
+                ticks_data, summary = parse_mt5_tick_export(
+                    snapshot.raw_content,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
             norm_rows = [
                 f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
                 for t in ticks_data
@@ -378,6 +390,18 @@ def validate_source_qualification_assertion(
             reasons.append(
                 f"Attestation component_role '{linked_att.component_role}' does not match expected role '{expected_component_role}'."
             )
+        if linked_att.source_type != snapshot.source_type:
+            reasons.append(
+                f"ATTESTATION_SOURCE_TYPE_MISMATCH: Attestation source_type '{linked_att.source_type}' does not match snapshot source_type '{snapshot.source_type}'."
+            )
+        if (
+            linked_att.source_origin
+            and snapshot.source_origin
+            and linked_att.source_origin.strip() != snapshot.source_origin.strip()
+        ):
+            reasons.append(
+                f"ATTESTATION_SOURCE_ORIGIN_MISMATCH: Attestation source_origin '{linked_att.source_origin}' does not match snapshot source_origin '{snapshot.source_origin}'."
+            )
         if linked_att.raw_artifact_sha256 != assertion.raw_artifact_sha256:
             reasons.append(
                 f"Attestation raw_artifact_sha256 '{linked_att.raw_artifact_sha256}' does not match assertion raw SHA '{assertion.raw_artifact_sha256}'."
@@ -396,6 +420,14 @@ def validate_source_qualification_assertion(
             reasons.append(
                 f"Attestation verification_method '{linked_att.verification_method}' is not an accepted method: {sorted(ACCEPTED_VERIFICATION_METHODS)}."
             )
+        if expected_component_role == "SPREAD_DATASET":
+            allowed_methods = QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE.get(snapshot.source_type, set())
+            if linked_att.verification_method not in allowed_methods:
+                reasons.append(
+                    f"PROVENANCE_METHOD_SOURCE_MISMATCH: Spread source '{snapshot.source_type}' "
+                    f"cannot be verified via '{linked_att.verification_method}'. "
+                    f"Allowed verification methods: {sorted(allowed_methods)}."
+                )
         if not linked_att.verifier_identity or not str(linked_att.verifier_identity).strip():
             reasons.append("Attestation verifier_identity is empty.")
         if linked_att.venue and expected_venue and linked_att.venue.upper() != expected_venue.upper():
@@ -838,11 +870,16 @@ def validate_friction_model_for_activation(
     spread_assertion = spread_snap.qualification_assertions.filter(
         component_role="SPREAD_DATASET",
     ).order_by("-asserted_at").first()
+    expected_spread_parser = (
+        "parse_exness_official_tick_history"
+        if spread_snap.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        else "parse_mt5_tick_export"
+    )
     is_valid_assert, assert_errors, _ = validate_source_qualification_assertion(
         snapshot=spread_snap,
         assertion=spread_assertion,
         expected_component_role="SPREAD_DATASET",
-        expected_parser="parse_mt5_tick_export",
+        expected_parser=expected_spread_parser,
         model_version=model_version,
         expected_symbol=model_version.symbol,
     )

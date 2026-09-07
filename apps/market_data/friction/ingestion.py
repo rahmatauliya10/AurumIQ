@@ -746,16 +746,26 @@ def build_and_bind_friction_model_version(
                 provenance_attestation=att,
             )
         if evidence_dataset and evidence_dataset.source_snapshot and not evidence_dataset.source_snapshot.qualification_assertions.filter(component_role="SPREAD_DATASET").exists():
+            spread_v_meth = (
+                FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value
+                if evidence_dataset.source_snapshot.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+                else FrictionVerificationMethod.MT5_DIRECT_EXPORT.value
+            )
             att = _create_seam_attestation(
                 evidence_dataset.source_snapshot,
                 "SPREAD_DATASET",
-                FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+                spread_v_meth,
+            )
+            spread_parser_name = (
+                "parse_exness_official_tick_history"
+                if evidence_dataset.source_snapshot.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+                else "parse_mt5_tick_export"
             )
             create_friction_qualification_assertion(
                 source_snapshot=evidence_dataset.source_snapshot,
                 component_role="SPREAD_DATASET",
                 qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                parser_name="parse_mt5_tick_export",
+                parser_name=spread_parser_name,
                 parser_version=parser_version,
                 normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": evidence_dataset.raw_dataset_sha256}),
                 provenance_attestation=att,

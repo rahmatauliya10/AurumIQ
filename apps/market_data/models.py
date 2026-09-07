@@ -582,6 +582,7 @@ class FrictionSourceType(models.TextChoices):
     BROKER_PERSONAL_AREA_EXPORT = "BROKER_PERSONAL_AREA_EXPORT", "Broker Personal Area Export"
     ACCOUNT_CLIENT_AGREEMENT = "ACCOUNT_CLIENT_AGREEMENT", "Account Client Agreement"
     MT5_TICK_HISTORY_EXPORT = "MT5_TICK_HISTORY_EXPORT", "MT5 Tick History Export"
+    EXNESS_OFFICIAL_TICK_HISTORY = "EXNESS_OFFICIAL_TICK_HISTORY", "Exness Official Tick History"
     MT5_EXECUTION_TELEMETRY_EXPORT = "MT5_EXECUTION_TELEMETRY_EXPORT", "MT5 Execution Telemetry Export"
     USER_PROVIDED_UNVERIFIED = "USER_PROVIDED_UNVERIFIED", "User Provided Unverified"
 
@@ -611,6 +612,7 @@ QUALIFIED_FINANCING_SOURCE_TYPES = {
 
 QUALIFIED_SPREAD_SOURCE_TYPES = {
     FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value,
+    FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
 }
 
 QUALIFIED_SLIPPAGE_SOURCE_TYPES = {
@@ -685,6 +687,15 @@ class FrictionVerificationMethod(models.TextChoices):
 
 
 ACCEPTED_VERIFICATION_METHODS = {m.value for m in FrictionVerificationMethod}
+
+QUALIFIED_SPREAD_VERIFICATION_METHODS_BY_SOURCE = {
+    FrictionSourceType.MT5_TICK_HISTORY_EXPORT.value: {
+        FrictionVerificationMethod.MT5_DIRECT_EXPORT.value,
+    },
+    FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value: {
+        FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
+    },
+}
 
 
 class FrictionAttestationStatus(models.TextChoices):
