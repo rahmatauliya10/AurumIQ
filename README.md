@@ -114,8 +114,12 @@ Whenever phase implementation status changes:
 
 ## 5. Technical Stack & Governance
 
-- **Backend Framework:** Django 5.2 LTS (Python 3.13)
-- **Task Queue & Cache:** Celery 5.x + Redis (5 dedicated priority queues)
+- **Backend Framework:** Django 5.2 LTS
+- **Python:**
+  - `>= 3.12` supported by `pyproject.toml`
+  - `3.12` local/developer pin via `.python-version`
+  - `3.13` validated by GitHub CI
+- **Task Queue & Cache:** Celery 5.x + Redis
 - **Database:** PostgreSQL 16 (JSONB, append-only immutable audit logs)
 - **Mathematical Engine:** Pure Python (`numpy`, `scipy`, `pandas` — zero Django/ORM dependencies in `engine/`)
 - **Documentation Roadmap:** [`docs/phases/README.md`](./docs/phases/README.md)
