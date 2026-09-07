@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from apps.market_data.friction.artifact_parsers import (
     compare_asserted_vs_derived,
@@ -241,6 +241,7 @@ def _resolve_source_provenance(
                     raw_bytes,
                     expected_symbol=expected_symbol,
                     expected_account_tier=norm_tier,
+                    expected_broker_symbol=expected_broker_symbol,
                 )
             elif comp_role == "FINANCING":
                 parsed_data = parse_financing_backing_artifact(
@@ -523,8 +524,10 @@ class Command(BaseCommand):
         symbol = "XAUUSD"
         canonical_symbol = "XAUUSD"
         broker_symbol = options.get("broker_symbol")
-        if not broker_symbol and account_tier == "STANDARD_CENT":
-            broker_symbol = "XAUUSDc"
+        if account_tier == "STANDARD_CENT" and (not broker_symbol or not str(broker_symbol).strip()):
+            raise CommandError(
+                "BROKER_SYMBOL_SCOPE_MISSING: Execution account tier 'STANDARD_CENT' requires explicit --broker-symbol (e.g. --broker-symbol XAUUSDc)."
+            )
         account_currency = get_account_currency_for_tier(account_tier)
 
         legal_file = options["legal_entity_file"]

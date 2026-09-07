@@ -153,8 +153,11 @@ def verify_authoritative_backing_artifact(
 
     from apps.market_data.friction.artifact_parsers import normalize_account_tier
     norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
-    if norm_tier == "STANDARD_CENT" and expected_broker_symbol is None:
-        expected_broker_symbol = "XAUUSDc"
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        errors.append(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
+        return False, raw_bytes, computed_sha, errors
 
     # Component-specific authoritative parser validation (Format-only %PDF or <html> CANNOT qualify)
     if component_role:

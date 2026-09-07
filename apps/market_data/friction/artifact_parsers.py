@@ -104,22 +104,26 @@ def _matches_expected_symbol(
     c = str(candidate).replace("/", "").strip().upper()
     e = str(expected_symbol).replace("/", "").strip().upper()
     norm_tier = normalize_account_tier(expected_account_tier)
+
+    # 1. STANDARD_CENT tier: Strict exact broker symbol match requiring explicit expected_broker_symbol
+    if norm_tier == "STANDARD_CENT":
+        if not expected_broker_symbol or not str(expected_broker_symbol).strip():
+            raise ValueError(
+                "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+            )
+        target_broker = str(expected_broker_symbol).replace("/", "").strip().upper()
+        # Hostile lookalikes (GOLDc, GOLD, XAUUSD, XAUUSDm, EURUSDc, BTCUSDc, USOILc) are strictly rejected.
+        if c in ("XAUUSD", "XAUUSDM", "GOLD", "GOLDC", "EURUSDC", "BTCUSDC", "USOILC"):
+            if target_broker != c:
+                return False
+        return c == target_broker
+
+    # 2. Explicit broker symbol provided for other tiers
     target_broker = (
         str(expected_broker_symbol).replace("/", "").strip().upper()
         if expected_broker_symbol
-        else ("XAUUSDC" if norm_tier == "STANDARD_CENT" else None)
+        else None
     )
-
-    # 1. STANDARD_CENT tier: Strict exact broker symbol match (default 'XAUUSDC')
-    # Hostile lookalikes (GOLDc, GOLD, XAUUSD, XAUUSDm, EURUSDc, BTCUSDc) are strictly rejected.
-    if norm_tier == "STANDARD_CENT":
-        if c in ("XAUUSD", "XAUUSDM", "GOLD", "GOLDC", "EURUSDC", "BTCUSDC"):
-            return False
-        if target_broker:
-            return c == target_broker
-        return c == "XAUUSDC"
-
-    # 2. Explicit broker symbol provided for other tiers
     if target_broker:
         return c == target_broker
 
@@ -397,7 +401,12 @@ def parse_contract_spec_backing_artifact(
 
     text = raw_content.decode("utf-8", errors="ignore").strip()
     norm_tier = normalize_account_tier(expected_account_tier)
-    target_broker_sym = expected_broker_symbol or ("XAUUSDc" if norm_tier == "STANDARD_CENT" else None)
+    if norm_tier == "STANDARD_CENT":
+        if not expected_broker_symbol or not str(expected_broker_symbol).strip():
+            raise ValueError(
+                "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+            )
+    target_broker_sym = str(expected_broker_symbol).strip() if expected_broker_symbol else None
 
     required_geometry_keys = {
         "digits": ["digits"],
@@ -516,8 +525,6 @@ def parse_contract_spec_backing_artifact(
 
                 derived = {
                     "symbol": expected_symbol,
-                    "broker_symbol": target_broker_sym or expected_symbol,
-                    "account_tier": norm_tier or "STANDARD",
                     "digits": int(extracted["digits"]),
                     "point_size": Decimal(str(extracted["point_size"])),
                     "trade_tick_size": Decimal(str(extracted["trade_tick_size"])),
@@ -529,6 +536,17 @@ def parse_contract_spec_backing_artifact(
                     "parser_name": parser_name,
                     "parser_version": parser_version,
                 }
+                if spec_tier:
+                    derived["account_tier"] = normalize_account_tier(spec_tier)
+                observed_broker_sym = None
+                if isinstance(spec, dict) and (spec.get("symbol") or spec.get("broker_symbol")):
+                    observed_broker_sym = str(spec.get("symbol") or spec.get("broker_symbol"))
+                elif "symbol" in data and data["symbol"]:
+                    observed_broker_sym = str(data["symbol"])
+                elif "broker_symbol" in data and data["broker_symbol"]:
+                    observed_broker_sym = str(data["broker_symbol"])
+                if observed_broker_sym:
+                    derived["broker_symbol"] = observed_broker_sym
                 derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
                 return derived
         except json.JSONDecodeError:
@@ -633,10 +651,13 @@ def parse_contract_spec_backing_artifact(
                 "volume_min": Decimal(extracted_kv["volume_min"]),
                 "volume_max": Decimal(extracted_kv["volume_max"]),
                 "volume_step": Decimal(extracted_kv["volume_step"]),
-                "account_tier": norm_tier or "STANDARD",
                 "parser_name": parser_name,
                 "parser_version": parser_version,
             }
+            if tier_val:
+                derived["account_tier"] = normalize_account_tier(tier_val)
+            if "SYMBOL" in kv and kv["SYMBOL"]:
+                derived["broker_symbol"] = str(kv["SYMBOL"])
             derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
             return derived
 
@@ -686,6 +707,8 @@ def parse_contract_spec_backing_artifact(
         "parser_name": parser_name,
         "parser_version": parser_version,
     }
+    if sym_tag:
+        derived["broker_symbol"] = sym_tag.group(1).strip()
     derived["normalized_evidence_hash"] = compute_normalized_evidence_hash(derived)
     return derived
 
@@ -717,7 +740,12 @@ def parse_commission_backing_artifact(
 
     text = raw_content.decode("utf-8", errors="ignore").strip()
     norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
-    target_broker_sym = expected_broker_symbol or ("XAUUSDc" if norm_tier == "STANDARD_CENT" else None)
+    if norm_tier == "STANDARD_CENT":
+        if not expected_broker_symbol or not str(expected_broker_symbol).strip():
+            raise ValueError(
+                "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+            )
+    target_broker_sym = str(expected_broker_symbol).strip() if expected_broker_symbol else None
 
     # Try JSON
     if text.startswith("{"):
@@ -929,7 +957,12 @@ def parse_financing_backing_artifact(
         raise ValueError("FINANCING_PARSER_ERROR: Backing artifact is empty or insufficient.")
 
     norm_tier = normalize_account_tier(expected_account_tier)
-    target_broker_sym = expected_broker_symbol or ("XAUUSDc" if norm_tier == "STANDARD_CENT" else None)
+    if norm_tier == "STANDARD_CENT":
+        if not expected_broker_symbol or not str(expected_broker_symbol).strip():
+            raise ValueError(
+                "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+            )
+    target_broker_sym = str(expected_broker_symbol).strip() if expected_broker_symbol else None
     text = raw_content.decode("utf-8", errors="ignore").strip()
 
     # Try JSON

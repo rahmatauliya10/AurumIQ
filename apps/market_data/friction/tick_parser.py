@@ -112,6 +112,10 @@ def parse_mt5_tick_export(
 
     from apps.market_data.friction.artifact_parsers import _matches_expected_symbol, normalize_account_tier
     norm_tier = normalize_account_tier(expected_account_tier)
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        raise ValueError(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
 
     for row_idx, row in enumerate(reader, start=2):
         if not row or all(c.strip() == "" for c in row):

@@ -109,8 +109,11 @@ def validate_source_qualification_assertion(
 
     from apps.market_data.friction.artifact_parsers import normalize_account_tier
     norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
-    if norm_tier == "STANDARD_CENT" and expected_broker_symbol is None:
-        expected_broker_symbol = "XAUUSDc"
+    if norm_tier == "STANDARD_CENT" and (not expected_broker_symbol or not str(expected_broker_symbol).strip()):
+        reasons.append(
+            "BROKER_SYMBOL_SCOPE_MISSING: STANDARD_CENT execution scope requires explicit expected_broker_symbol."
+        )
+        return False, reasons, None
 
     # 1. Snapshot integrity
     if assertion.source_snapshot_id != snapshot.pk:
