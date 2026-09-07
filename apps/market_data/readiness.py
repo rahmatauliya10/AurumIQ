@@ -17,6 +17,8 @@ from django.utils import timezone as dj_timezone
 
 from apps.instruments.models import Instrument, MarketListing, ListingRole, ListingStatus
 from apps.market_data.models import MarketCandle, CandleQualityFlag, VolumeEvidenceType
+from apps.market_data.friction.resolution import resolve_friction_model_activation
+from apps.market_data.friction.validation import validate_friction_model_for_activation
 from apps.instruments.models import ProviderHealthSnapshot
 from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity
 from engine.core.types import CandleData, VolumeEvidenceType as CoreVolumeEvidenceType, MacroEvent
@@ -476,6 +478,9 @@ class XauUsdDataReadinessReport:
     actual_global_start: Optional[str] = None
     actual_global_end: Optional[str] = None
     actual_observed_span_days: float = 0.0
+    empirical_friction_evidence_fingerprint: Optional[str] = None
+    friction_model_version_id: Optional[str] = None
+    friction_manifest_details: Dict[str, Any] = field(default_factory=dict)
 
     def to_manifest_dict(
         self,
@@ -554,11 +559,17 @@ class XauUsdDataReadinessReport:
                 "market_after_signal_quote_evidence": self.quote_count > 0,
             },
             "empirical_friction_evidence": {
-                "entry_fee_bps": None,
-                "exit_fee_bps": None,
-                "synthetic_spread_bps": None,
-                "entry_slippage_bps": None,
-                "exit_slippage_bps": None,
+                "base_spread_bps": self.friction_manifest_details.get("base_spread_bps"),
+                "stress_spread_bps": self.friction_manifest_details.get("stress_spread_bps"),
+                "base_slippage_bps": self.friction_manifest_details.get("base_slippage_bps"),
+                "stress_slippage_bps": self.friction_manifest_details.get("stress_slippage_bps"),
+                "native_commission_usd_per_lot_per_side": self.friction_manifest_details.get("native_commission_usd_per_lot_per_side"),
+                "commission_formula": self.friction_manifest_details.get("commission_formula"),
+                "model_version_id": self.friction_model_version_id or self.friction_manifest_details.get("model_version_id"),
+                "venue": self.friction_manifest_details.get("venue"),
+                "legal_entity_code": self.friction_manifest_details.get("legal_entity_code"),
+                "account_tier": self.friction_manifest_details.get("account_tier"),
+                "empirical_friction_evidence_fingerprint": self.empirical_friction_evidence_fingerprint,
                 "status": self.friction_status,
             },
             "hard_data_readiness_gate": {
@@ -720,6 +731,10 @@ class XauUsdDataReadinessEvaluator:
         expected_coverage_start: Optional[datetime] = None,
         expected_coverage_end: Optional[datetime] = None,
         expected_coverage_start_by_timeframe: Optional[Dict[str, datetime]] = None,
+        as_of: Optional[datetime] = None,
+        execution_venue: Optional[str] = None,
+        execution_account_tier: Optional[str] = None,
+        execution_legal_entity_code: Optional[str] = None,
     ) -> XauUsdDataReadinessReport:
         """Execute full deterministic audit across persisted database records or provided candles."""
         reasons: List[str] = []
@@ -1147,7 +1162,82 @@ class XauUsdDataReadinessEvaluator:
 
         health_count = ProviderHealthSnapshot.objects.filter(listing__instrument=instrument).count()
         quote_count = override_quote_count if override_quote_count is not None else 0
-        friction_status = override_friction_status or "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+
+        # Empirical Friction Evidence Evaluation (Directives 12, 15)
+        friction_report_reasons: List[str] = []
+        friction_fingerprint: Optional[str] = None
+        friction_model_id: Optional[str] = None
+        friction_manifest_details: Dict[str, Any] = {}
+
+        if override_friction_status is not None:
+            friction_status = override_friction_status
+            if friction_status == "EMPIRICAL_FRICTION_CONFIGURED":
+                friction_manifest_details = {
+                    "status": "EMPIRICAL_FRICTION_CONFIGURED",
+                    "override": True,
+                }
+        else:
+            from django.conf import settings
+
+            eval_as_of = as_of or datetime.now(timezone.utc)
+            target_venue = (execution_venue or getattr(settings, "XAUUSD_EXECUTION_VENUE", "EXNESS")).upper()
+            target_account_tier = (execution_account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")).upper()
+            target_legal_entity_code = execution_legal_entity_code or getattr(settings, "XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", None)
+            target_symbol = "XAUUSD"
+
+            if not target_account_tier or not target_legal_entity_code:
+                friction_status = "LEGAL_ENTITY_EVIDENCE_MISSING" if not target_legal_entity_code else "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+                friction_report_reasons.append(
+                    "Auxiliary evidence incomplete: Target execution account tier or legal entity code is not configured or established (FAIL CLOSED per Pre-Phase-8 Governance)."
+                )
+            else:
+                resolved = resolve_friction_model_activation(
+                    as_of=eval_as_of,
+                    venue=target_venue,
+                    symbol=target_symbol,
+                    account_tier=target_account_tier,
+                    legal_entity_code=target_legal_entity_code,
+                )
+                if not resolved:
+                    friction_status = "EMPIRICAL_FRICTION_NOT_CONFIGURED"
+                    friction_report_reasons.append(
+                        f"Auxiliary evidence incomplete: No active FrictionModelActivation found or resolved point-in-time for target scope "
+                        f"'{target_venue}:{target_symbol}:{target_account_tier}:{target_legal_entity_code}'."
+                    )
+                else:
+                    model_ver, activation = resolved
+                    friction_model_id = model_ver.model_version_id
+                    friction_fingerprint = model_ver.empirical_friction_evidence_fingerprint
+
+                    # Central canonical evidence completeness validation
+                    val_res = validate_friction_model_for_activation(
+                        model_version=model_ver,
+                        target_venue=target_venue,
+                        target_symbol=target_symbol,
+                        target_account_tier=target_account_tier,
+                        target_legal_entity_code=target_legal_entity_code,
+                    )
+                    friction_status = val_res.status
+                    if not val_res.is_valid:
+                        for r in val_res.reasons:
+                            friction_report_reasons.append(f"Auxiliary evidence invalid: {r}")
+                    else:
+                        friction_manifest_details = {
+                            "status": "EMPIRICAL_FRICTION_CONFIGURED",
+                            "model_version_id": model_ver.model_version_id,
+                            "venue": model_ver.venue,
+                            "legal_entity_code": model_ver.legal_entity_code,
+                            "account_tier": model_ver.account_tier,
+                            "base_spread_bps": str(model_ver.base_spread_bps),
+                            "stress_spread_bps": str(model_ver.stress_spread_bps),
+                            "base_slippage_bps": str(model_ver.base_slippage_bps),
+                            "stress_slippage_bps": str(model_ver.stress_slippage_bps),
+                            "native_commission_usd_per_lot_per_side": str(model_ver.native_commission_usd_per_lot_per_side),
+                            "commission_formula": model_ver.commission_formula,
+                            "swap_long_points": str(model_ver.swap_long_points),
+                            "swap_short_points": str(model_ver.swap_short_points),
+                            "empirical_friction_evidence_fingerprint": friction_fingerprint,
+                        }
 
         # 5. Dataset Fingerprint Calculations
         if total_candles > 0 and earliest_dt and latest_dt:
@@ -1292,7 +1382,10 @@ class XauUsdDataReadinessEvaluator:
             elif friction_status != "EMPIRICAL_FRICTION_CONFIGURED":
                 decision = "CANDLES_READY_EMPIRICAL_FRICTION_MISSING"
                 passed = False
-                reasons.append("Auxiliary evidence incomplete: Empirical friction parameters are NOT_CONFIGURED (requires contract fees, quote spread distribution, and slippage telemetry).")
+                if friction_report_reasons:
+                    reasons.extend(friction_report_reasons)
+                else:
+                    reasons.append("Auxiliary evidence incomplete: Empirical friction parameters are NOT_CONFIGURED (requires contract fees, quote spread distribution, and slippage telemetry).")
             elif quote_count == 0:
                 decision = "CANDLES_READY_QUOTE_EVIDENCE_MISSING"
                 passed = False
@@ -1342,4 +1435,7 @@ class XauUsdDataReadinessEvaluator:
             actual_global_start=actual_global_start,
             actual_global_end=actual_global_end,
             actual_observed_span_days=actual_observed_span_days,
+            empirical_friction_evidence_fingerprint=friction_fingerprint,
+            friction_model_version_id=friction_model_id,
+            friction_manifest_details=friction_manifest_details,
         )

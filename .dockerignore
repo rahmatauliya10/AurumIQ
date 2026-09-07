@@ -16,3 +16,5 @@ htmlcov/
 *.log
 docker/
 .system_generated
+*.sqlite3
+db.sqlite3

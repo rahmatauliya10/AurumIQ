@@ -1,0 +1,66 @@
+{
+  "manifest_schema_version": "3.1.0",
+  "venue": "EXNESS",
+  "account_tier": "STANDARD",
+  "symbol": "XAUUSD",
+  "audit_timestamp": "2026-09-05T11:10:26Z",
+  "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
+  "hard_readiness_gate": {
+    "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
+    "passed": false,
+    "is_production_authorized": false,
+    "phase3b_production_weight": 0.0,
+    "published_decision": "WAIT"
+  },
+  "evidence_inventory": {
+    "legal_entity_scope": {
+      "status": "LEGAL_ENTITY_EVIDENCE_MISSING",
+      "legal_entity_code": null,
+      "regulator": null,
+      "license_number": null
+    },
+    "contract_geometry": {
+      "status": "CONTRACT_SPEC_EVIDENCE_MISSING",
+      "digits": null,
+      "point_size": null,
+      "trade_tick_size": null,
+      "trade_tick_value": null,
+      "contract_size": null,
+      "volume_min": null,
+      "volume_max": null,
+      "volume_step": null
+    },
+    "commission_policy": {
+      "status": "COMMISSION_EVIDENCE_MISSING",
+      "account_tier": "STANDARD",
+      "native_commission_usd_per_lot_per_side": null,
+      "commission_formula": null
+    },
+    "financing_policy": {
+      "status": "FINANCING_EVIDENCE_MISSING",
+      "swap_long_points": null,
+      "swap_short_points": null,
+      "rollover_schedule": null,
+      "triple_swap_weekday": null,
+      "actual_account_swap_free_status": null
+    },
+    "bid_ask_spread_distribution": {
+      "status": "SPREAD_EMPIRICAL_EVIDENCE_MISSING",
+      "source_file": null,
+      "sample_count": 0
+    },
+    "execution_slippage_telemetry": {
+      "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+      "source_file": null,
+      "sample_count": 0
+    }
+  },
+  "blocking_reasons": [
+    "Legal entity evidence snapshot missing (--legal-entity-file is None).",
+    "Contract specification evidence snapshot missing (--contract-spec-file is None).",
+    "Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).",
+    "Financing/swap specification evidence snapshot missing (--swap-spec-file is None).",
+    "MT5 tick export dataset missing (--tick-file is None).",
+    "Execution slippage telemetry missing (--slippage-file is None)."
+  ]
+}
