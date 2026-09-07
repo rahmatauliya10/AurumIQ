@@ -125,8 +125,10 @@ def _verify_provenance_attestation_file(
     if att.get("symbol") and str(att["symbol"]).upper() != expected_symbol.upper():
         return False, None, f"Provenance attestation symbol '{att['symbol']}' mismatch (expected '{expected_symbol}')."
 
-    if att.get("account_tier") and str(att["account_tier"]).upper() != expected_account_tier.upper():
-        return False, None, f"Provenance attestation account tier '{att['account_tier']}' mismatch (expected '{expected_account_tier}')."
+    if att.get("account_tier"):
+        from apps.market_data.friction.artifact_parsers import normalize_account_tier
+        if normalize_account_tier(att["account_tier"]) != normalize_account_tier(expected_account_tier):
+            return False, None, f"Provenance attestation account tier '{att['account_tier']}' mismatch (expected '{expected_account_tier}')."
 
     # Directives 1, 3: External JSON attestation files are strictly DECLARED
     att["attestation_status"] = FrictionAttestationStatus.DECLARED.value
@@ -148,6 +150,7 @@ def _resolve_source_provenance(
     expected_symbol: str = "XAUUSD",
     expected_account_tier: str = "STANDARD",
     expected_venue: str = "EXNESS",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Tuple[str, str, str, bytes, str, Optional[str], Dict[str, Any], Optional[Dict[str, Any]]]:
     """Separate ORIGINAL_AUTHORITATIVE_SOURCE from NORMALIZED_PARSED_METADATA with strict provenance binding.
 
@@ -159,6 +162,11 @@ def _resolve_source_provenance(
     PARSER VALID + RAW SHA VALID + PROVENANCE ATTESTATION VALID = QUALIFIED.
     Without a verified provenance attestation, local artifacts fail closed to USER_PROVIDED_UNVERIFIED.
     """
+    from apps.market_data.friction.artifact_parsers import normalize_account_tier
+    norm_tier = normalize_account_tier(expected_account_tier) or "STANDARD"
+    if norm_tier == "STANDARD_CENT" and expected_broker_symbol is None:
+        expected_broker_symbol = "XAUUSDc"
+
     provenance = data.get("provenance") or data.get("backing_artifact") or {}
     declared_backing_sha = (
         provenance.get("raw_backing_sha256")
@@ -201,7 +209,8 @@ def _resolve_source_provenance(
             expected_source_type=declared_source_type,
             component_role=comp_role,
             expected_symbol=expected_symbol,
-            expected_account_tier=expected_account_tier,
+            expected_account_tier=norm_tier,
+            expected_broker_symbol=expected_broker_symbol,
         )
         if not is_verified:
             return (
@@ -221,11 +230,25 @@ def _resolve_source_provenance(
             if comp_role == "LEGAL_ENTITY":
                 parsed_data = parse_legal_entity_backing_artifact(raw_bytes)
             elif comp_role == "CONTRACT_SPEC":
-                parsed_data = parse_contract_spec_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+                parsed_data = parse_contract_spec_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
             elif comp_role == "COMMISSION":
-                parsed_data = parse_commission_backing_artifact(raw_bytes, expected_symbol=expected_symbol, expected_account_tier=expected_account_tier)
+                parsed_data = parse_commission_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_account_tier=norm_tier,
+                )
             elif comp_role == "FINANCING":
-                parsed_data = parse_financing_backing_artifact(raw_bytes, expected_symbol=expected_symbol)
+                parsed_data = parse_financing_backing_artifact(
+                    raw_bytes,
+                    expected_symbol=expected_symbol,
+                    expected_broker_symbol=expected_broker_symbol,
+                    expected_account_tier=norm_tier,
+                )
         except ValueError as ve:
             return (
                 FrictionSourceType.USER_PROVIDED_UNVERIFIED.value,
@@ -339,8 +362,14 @@ class Command(BaseCommand):
             "--account-tier",
             type=str,
             default="STANDARD",
-            choices=["STANDARD", "RAW_SPREAD"],
-            help="Execution account tier (default: STANDARD).",
+            choices=["STANDARD", "STANDARD_CENT", "RAW_SPREAD"],
+            help="Execution account tier (choices: STANDARD, STANDARD_CENT, RAW_SPREAD; default: STANDARD).",
+        )
+        parser.add_argument(
+            "--broker-symbol",
+            type=str,
+            default=None,
+            help="Execution broker symbol (e.g. XAUUSDc for STANDARD_CENT; default: derived or canonical).",
         )
         parser.add_argument(
             "--legal-entity-file",
@@ -488,8 +517,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         venue = options["venue"].upper()
-        account_tier = options["account_tier"].upper()
+        from apps.market_data.friction.artifact_parsers import normalize_account_tier
+        from apps.market_data.friction.commission import get_account_currency_for_tier
+        account_tier = normalize_account_tier(options["account_tier"]) or options["account_tier"].upper()
         symbol = "XAUUSD"
+        canonical_symbol = "XAUUSD"
+        broker_symbol = options.get("broker_symbol")
+        if not broker_symbol and account_tier == "STANDARD_CENT":
+            broker_symbol = "XAUUSDc"
+        account_currency = get_account_currency_for_tier(account_tier)
+
         legal_file = options["legal_entity_file"]
         legal_backing_file = options.get("legal_entity_backing_file")
         contract_file = options["contract_spec_file"]
@@ -539,7 +576,7 @@ class Command(BaseCommand):
                     "license_number": data.get("license_number", ""),
                 }
                 resolved_legal_source_type, legal_origin, legal_method, legal_raw_bytes, legal_raw_sha, legal_err, legal_parsed, legal_att_data = _resolve_source_provenance(
-                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, legal_provenance_file, "Legal Entity", symbol, account_tier, venue
+                    data, legal_source_type, QUALIFIED_LEGAL_ENTITY_SOURCE_TYPES, legal_file, legal_backing_file, legal_provenance_file, "Legal Entity", symbol, account_tier, venue, expected_broker_symbol=broker_symbol
                 )
                 if legal_err:
                     legal_entity_status = "EMPIRICAL_FRICTION_INVALID"
@@ -631,7 +668,7 @@ class Command(BaseCommand):
                     "volume_step": Decimal(str(data["volume_step"])),
                 }
                 resolved_contract_source_type, contract_origin, contract_method, contract_raw_bytes, contract_raw_sha, contract_err, contract_parsed, contract_att_data = _resolve_source_provenance(
-                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, contract_provenance_file, "Contract Specification", symbol, account_tier, venue
+                    data, contract_source_type, QUALIFIED_CONTRACT_SOURCE_TYPES, contract_file, contract_backing_file, contract_provenance_file, "Contract Specification", symbol, account_tier, venue, expected_broker_symbol=broker_symbol
                 )
                 if contract_err:
                     contract_status = "EMPIRICAL_FRICTION_INVALID"
@@ -714,7 +751,7 @@ class Command(BaseCommand):
                     "commission_formula": str(data.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
                 }
                 resolved_fee_source_type, fee_origin, fee_method, fee_raw_bytes, fee_raw_sha, fee_err, fee_parsed, fee_att_data = _resolve_source_provenance(
-                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, fee_provenance_file, "Commission Fee Schedule", symbol, account_tier, venue
+                    data, fee_source_type, QUALIFIED_COMMISSION_SOURCE_TYPES, fee_file, fee_backing_file, fee_provenance_file, "Commission Fee Schedule", symbol, account_tier, venue, expected_broker_symbol=broker_symbol
                 )
                 if fee_err:
                     commission_status = "EMPIRICAL_FRICTION_INVALID"
@@ -803,7 +840,7 @@ class Command(BaseCommand):
                     "actual_account_swap_free_status": parse_optional_evidence_bool(data.get("actual_account_swap_free_status")),
                 }
                 resolved_swap_source_type, swap_origin, swap_method, swap_raw_bytes, swap_raw_sha, swap_err, swap_parsed, swap_att_data = _resolve_source_provenance(
-                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, swap_provenance_file, "Financing Swap Spec", symbol, account_tier, venue
+                    data, swap_source_type, QUALIFIED_FINANCING_SOURCE_TYPES, swap_file, swap_backing_file, swap_provenance_file, "Financing Swap Spec", symbol, account_tier, venue, expected_broker_symbol=broker_symbol
                 )
                 if swap_err:
                     financing_status = "EMPIRICAL_FRICTION_INVALID"
@@ -888,7 +925,12 @@ class Command(BaseCommand):
                     tick_bytes = f.read()
                 try:
                     # PARSED + SCHEMA_VALID
-                    ticks_data, summary_meta = parse_mt5_tick_export(tick_bytes, expected_symbol=symbol)
+                    ticks_data, summary_meta = parse_mt5_tick_export(
+                        tick_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
                     spread_ticks = ticks_data
 
                     # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
@@ -995,6 +1037,7 @@ class Command(BaseCommand):
                         expected_venue=venue,
                         expected_symbol=symbol,
                         expected_account_tier=account_tier,
+                        expected_broker_symbol=broker_symbol,
                     )
                     telemetry_records = telemetry_data
 
@@ -1154,10 +1197,13 @@ class Command(BaseCommand):
 
         # 8. Generate Machine-Readable Manifest
         manifest = {
-            "manifest_schema_version": "3.1.0",
+            "manifest_schema_version": "3.2.0",
             "venue": venue,
             "account_tier": account_tier,
             "symbol": symbol,
+            "canonical_symbol": canonical_symbol,
+            "broker_symbol": broker_symbol,
+            "account_currency": account_currency,
             "audit_timestamp": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "status": overall_status,
             "hard_readiness_gate": {
@@ -1176,6 +1222,7 @@ class Command(BaseCommand):
                 },
                 "contract_geometry": {
                     "status": contract_status,
+                    "broker_symbol": broker_symbol,
                     "digits": contract_geometry["digits"] if contract_geometry else None,
                     "point_size": str(contract_geometry["point_size"]) if contract_geometry else None,
                     "trade_tick_size": str(contract_geometry["trade_tick_size"]) if contract_geometry else None,
@@ -1188,6 +1235,7 @@ class Command(BaseCommand):
                 "commission_policy": {
                     "status": commission_status,
                     "account_tier": account_tier,
+                    "account_currency": account_currency,
                     "native_commission_usd_per_lot_per_side": str(commission_policy["native_commission_usd_per_lot_per_side"]) if commission_policy else None,
                     "commission_formula": commission_policy["commission_formula"] if commission_policy else None,
                 },
@@ -1224,7 +1272,9 @@ class Command(BaseCommand):
 > **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal  
 > **Target Venue:** `{venue}`  
 > **Account Tier:** `{account_tier}`  
-> **Symbol:** `{symbol}`  
+> **Canonical Market Symbol:** `{canonical_symbol}` (Twelve Data analytical feed)  
+> **Execution Broker Symbol:** `{broker_symbol}` (Exness Standard Cent execution feed)  
+> **Account Balance Currency:** `{account_currency}`  
 > **Audit Timestamp:** `{now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}`  
 > **Overall Friction Decision:** `{overall_status}`  
 > **Hard Readiness Gate:** `{gate_decision}`  

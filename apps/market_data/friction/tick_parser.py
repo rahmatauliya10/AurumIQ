@@ -30,6 +30,8 @@ def parse_mt5_tick_export(
     raw_content: bytes,
     expected_symbol: str = "XAUUSD",
     server_tz: Optional[timezone] = None,
+    expected_broker_symbol: Optional[str] = None,
+    expected_account_tier: str = "STANDARD",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Parse raw MT5 tick export bytes into normalized tick records and dataset metadata.
     
@@ -38,6 +40,9 @@ def parse_mt5_tick_export(
     Raises:
         ValueError if schema is unsupported, rows are malformed, or validation fails.
     """
+    if not isinstance(raw_content, (bytes, bytearray)):
+        raise TypeError(f"TICK_PARSER_ERROR: Expected raw artifact bytes, got {type(raw_content).__name__}.")
+
     if not raw_content or len(raw_content.strip()) == 0:
         raise ValueError("Tick export payload is empty.")
 
@@ -105,6 +110,9 @@ def parse_mt5_tick_export(
     now_utc = datetime.now(timezone.utc)
     prev_ts: Optional[datetime] = None
 
+    from apps.market_data.friction.artifact_parsers import _matches_expected_symbol, normalize_account_tier
+    norm_tier = normalize_account_tier(expected_account_tier)
+
     for row_idx, row in enumerate(reader, start=2):
         if not row or all(c.strip() == "" for c in row):
             continue
@@ -115,9 +123,11 @@ def parse_mt5_tick_export(
         # Check symbol if present
         if col_symbol is not None and col_symbol < len(row):
             sym = row[col_symbol].strip().upper()
-            if sym and sym != expected_symbol.upper():
+            if sym and not _matches_expected_symbol(
+                sym, expected_symbol, expected_broker_symbol=expected_broker_symbol, expected_account_tier=norm_tier
+            ):
                 raise ValueError(
-                    f"Row {row_idx}: Symbol mismatch. Expected '{expected_symbol}', observed '{sym}'."
+                    f"Row {row_idx}: Symbol mismatch. Expected '{expected_symbol}' (or broker symbol '{expected_broker_symbol}'), observed '{sym}'."
                 )
 
         # Parse timestamp string

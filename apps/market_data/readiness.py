@@ -737,6 +737,10 @@ class XauUsdDataReadinessEvaluator:
         execution_legal_entity_code: Optional[str] = None,
     ) -> XauUsdDataReadinessReport:
         """Execute full deterministic audit across persisted database records or provided candles."""
+        if execution_account_tier is not None:
+            from apps.market_data.friction.artifact_parsers import validate_account_tier
+            validate_account_tier(execution_account_tier)
+
         reasons: List[str] = []
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1181,7 +1185,9 @@ class XauUsdDataReadinessEvaluator:
 
             eval_as_of = as_of or datetime.now(timezone.utc)
             target_venue = (execution_venue or getattr(settings, "XAUUSD_EXECUTION_VENUE", "EXNESS")).upper()
-            target_account_tier = (execution_account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")).upper()
+            from apps.market_data.friction.artifact_parsers import validate_account_tier
+            raw_tier = execution_account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")
+            target_account_tier = validate_account_tier(raw_tier)
             target_legal_entity_code = execution_legal_entity_code or getattr(settings, "XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", None)
             target_symbol = "XAUUSD"
 

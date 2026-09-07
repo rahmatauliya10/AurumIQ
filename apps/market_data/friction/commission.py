@@ -90,3 +90,55 @@ def calculate_round_trip_cost_bps(
         raise ValueError("Slippage bps cannot be negative.")
     
     return base_spread_bps + entry_fee_bps + exit_fee_bps + entry_slippage_bps + exit_slippage_bps
+
+
+# -----------------------------------------------------------------------------
+# Account Currency Semantics (Directive: STANDARD_CENT USC support)
+# -----------------------------------------------------------------------------
+
+ACCOUNT_CURRENCY_USD = "USD"
+ACCOUNT_CURRENCY_USC = "USC"
+CENT_RATIO_USC_PER_USD = Decimal("100")
+
+
+def get_account_currency_for_tier(account_tier: str) -> str:
+    """Derive expected account balance currency from execution account tier.
+    
+    Explicitly distinguishes:
+    - STANDARD / RAW_SPREAD -> USD
+    - STANDARD_CENT         -> USC (United States Cents)
+    """
+    clean_tier = str(account_tier or "").strip().upper()
+    if clean_tier in ("STANDARD_CENT", "CENT"):
+        return ACCOUNT_CURRENCY_USC
+    return ACCOUNT_CURRENCY_USD
+
+
+def convert_currency(
+    amount: Decimal,
+    from_currency: str,
+    to_currency: str,
+) -> Decimal:
+    """Convert monetary amount between market quote currency (USD) and account balance currency (USC/USD).
+    
+    Guarantees:
+    - USD to USC: amount * 100
+    - USC to USD: amount / 100
+    - Identity: amount if from_currency == to_currency
+    - Fails closed with ValueError on any unrecognized currency conversion.
+    """
+    from_c = str(from_currency).strip().upper()
+    to_c = str(to_currency).strip().upper()
+
+    if from_c == to_c:
+        return amount
+
+    if from_c == ACCOUNT_CURRENCY_USD and to_c == ACCOUNT_CURRENCY_USC:
+        return (amount * CENT_RATIO_USC_PER_USD).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    if from_c == ACCOUNT_CURRENCY_USC and to_c == ACCOUNT_CURRENCY_USD:
+        return (amount / CENT_RATIO_USC_PER_USD).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+    raise ValueError(
+        f"CURRENCY_CONVERSION_ERROR: Unsupported monetary conversion from '{from_currency}' to '{to_currency}'."
+    )
