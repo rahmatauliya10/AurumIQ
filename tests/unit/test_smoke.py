@@ -22,7 +22,7 @@ def test_health_check_endpoint():
     client = Client()
     response = client.get(reverse("health_check"))
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "xaut-signal-intelligence"}
+    assert response.json() == {"status": "ok", "service": "aurumiq"}
 
 
 @pytest.mark.unit

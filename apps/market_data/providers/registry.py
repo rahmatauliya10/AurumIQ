@@ -1,12 +1,7 @@
 """Central Registry for Multi-Exchange Providers and Fallback Management."""
-from typing import Optional, Dict
+from typing import Dict
 import structlog
 from .base import MarketDataProvider
-from .binance import BinanceProvider
-from .okx import OKXProvider
-from .gold_reference import GoldReferenceProvider
-from .usdt_usd import UsdtUsdRateProvider
-from .xauusd_spot import XauUsdSpotProvider
 from .xauusd_secondary import SecondaryXauUsdSpotProvider
 from .twelve_data import TwelveDataProvider
 
@@ -44,21 +39,9 @@ class ProviderRegistry:
         return list(self._providers.values())
 
 
-import os
-
-
-def get_configured_gold_reference_url() -> Optional[str]:
-    """Resolve canonical gold reference URL from Django settings or environment."""
-    try:
-        from django.conf import settings
-        return getattr(settings, "GOLD_REFERENCE_URL", os.environ.get("GOLD_REFERENCE_URL"))
-    except Exception:
-        return os.environ.get("GOLD_REFERENCE_URL")
-
-
 # Global registry singleton with current active XAUUSD default providers.
 # Legacy providers (BinanceProvider, OKXProvider, GoldReferenceProvider, UsdtUsdRateProvider)
-# are preserved for historical compatibility and must be registered explicitly in test scope.
+# are preserved for historical compatibility and must be registered explicitly in test/audit scope.
 registry = ProviderRegistry()
 registry.register(TwelveDataProvider())
 registry.register(SecondaryXauUsdSpotProvider())

@@ -6,7 +6,7 @@ from django.http import JsonResponse
 
 def health_check(request):
     """Basic health check endpoint for container probes."""
-    return JsonResponse({"status": "ok", "service": "xaut-signal-intelligence"})
+    return JsonResponse({"status": "ok", "service": "aurumiq"})
 
 
 from apps.live_monitor.views import LivenessHealthView, ReadinessHealthView

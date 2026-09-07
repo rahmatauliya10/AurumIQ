@@ -100,11 +100,56 @@ def test_check_provider_health_task_probes_only_active_providers():
 
 
 @pytest.mark.unit
+def test_active_registry_module_does_not_expose_legacy_providers_or_dead_helpers():
+    """Verify active registry module is clean and does not import legacy providers or dead helpers."""
+    import apps.market_data.providers.registry as reg_mod
+    for dead_attr in [
+        "BinanceProvider",
+        "OKXProvider",
+        "GoldReferenceProvider",
+        "UsdtUsdRateProvider",
+        "XauUsdSpotProvider",
+        "get_configured_gold_reference_url",
+    ]:
+        assert not hasattr(reg_mod, dead_attr), f"Active registry still exposes {dead_attr}"
+
+
+@pytest.mark.unit
 @pytest.mark.django_db
-def test_explicit_historical_xaut_invocation():
-    """Verify historical XAUT invocation remains supported when explicitly requested."""
+def test_explicit_historical_xaut_fails_closed_without_legacy_provider_registration():
+    """Verify explicit XAUT request fails closed deterministically when legacy provider is not registered."""
+    from django.core.management import call_command
+    call_command("seed_instruments")
+
+    # Ensure legacy providers are NOT registered
+    assert registry.has("binance") is False
+    assert registry.has("usdt_usd") is False
+
+    # Explicit XAUT ingestion must fail closed deterministically, not raise an uncaught KeyError
     res = ingest_primary_candles(instrument_symbol="XAUT/USDT")
-    assert res["status"] in ("error", "success", "hard_fail")
-    if res["status"] == "error":
-        assert "XAUT/USDT" in res.get("message", "")
+    assert res["status"] == "error"
+    assert res["reason"] == "LEGACY_PROVIDER_NOT_REGISTERED"
+    assert "not registered in active registry" in res["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_explicit_historical_xaut_resolves_with_explicit_provider_registration():
+    """Verify explicit XAUT request succeeds when legacy providers are explicitly registered in test harness."""
+    from django.core.management import call_command
+    call_command("seed_instruments")
+
+    binance = BinanceProvider()
+    usdt_usd = UsdtUsdRateProvider()
+    registry.register(binance)
+    registry.register(usdt_usd)
+
+    try:
+        with patch.object(binance, "fetch_candles", return_value=[]):
+            res = ingest_primary_candles(instrument_symbol="XAUT/USDT")
+            assert res["status"] == "success"
+            assert res["provider"] == "binance"
+    finally:
+        registry.unregister("binance")
+        registry.unregister("usdt_usd")
 
