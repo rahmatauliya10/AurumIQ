@@ -1463,7 +1463,7 @@ class Command(BaseCommand):
             and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-            and spread_status in ("EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE", "QUALIFIED")
+            and spread_status == "QUALIFIED"
             and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
         )
 
@@ -1620,24 +1620,43 @@ class Command(BaseCommand):
                 f"legal agreements have not yet been ingested into the governed production environment, "
                 f"the platform strictly enforces **FAIL-CLOSED** semantics:"
             )
-            spread_finding = (
-                f"Directive 6: Verified via official Exness tick archive governed URL capture "
-                f"($N = {len(spread_ticks) if spread_ticks else (spread_dataset.sample_count if spread_dataset else 0):,}$, "
-                f"$\\ge 5$ distinct dates, 4 sessions satisfied)."
-            )
-            raw_sha = getattr(spread_snapshot, "raw_payload_bytes_sha256", "b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749")
-            sample_cnt = len(spread_ticks) if spread_ticks else (spread_dataset.sample_count if spread_dataset else 6493208)
-            dates_cnt = summary_meta.get("distinct_trading_days", 26) if summary_meta else (spread_dataset.distinct_trading_days if spread_dataset else 26)
-            s_start = (
-                summary_meta.get("sample_start").isoformat()
-                if summary_meta and hasattr(summary_meta.get("sample_start"), "isoformat")
-                else (spread_dataset.sample_start.isoformat() if spread_dataset else "2026-08-02T22:01:30.645000+00:00")
-            )
-            s_end = (
-                summary_meta.get("sample_end").isoformat()
-                if summary_meta and hasattr(summary_meta.get("sample_end"), "isoformat")
-                else (spread_dataset.sample_end.isoformat() if spread_dataset else "2026-08-31T23:59:59.806000+00:00")
-            )
+            # Fail closed: strictly extract persisted and derived evidence with ZERO hardcoded campaign fallbacks
+            if not spread_snapshot:
+                raise ValueError("Fail-closed: spread_status is QUALIFIED but spread_snapshot is None")
+
+            raw_sha = getattr(spread_snapshot, "raw_payload_bytes_sha256", None)
+            if not raw_sha:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing raw_payload_bytes_sha256 on snapshot")
+
+            s_type = getattr(spread_snapshot, "source_type", None)
+            if not s_type:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing source_type on snapshot")
+
+            v_method = getattr(spread_att_obj, "verification_method", None)
+            if not v_method and spread_snapshot:
+                att = spread_snapshot.provenance_attestations.filter(component_role="SPREAD_DATASET").first()
+                v_method = getattr(att, "verification_method", None) if att else None
+            if not v_method:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing verification_method on attestation")
+
+            sample_cnt = len(spread_ticks) if spread_ticks else (spread_dataset.sample_count if spread_dataset else None)
+            if not sample_cnt or sample_cnt <= 0:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-positive sample_count")
+
+            dates_cnt = (summary_meta.get("distinct_trading_days") if summary_meta else None) or (spread_dataset.distinct_trading_days if spread_dataset else None)
+            if not dates_cnt or dates_cnt <= 0:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-positive distinct_trading_days")
+
+            raw_s_start = (summary_meta.get("sample_start") if summary_meta else None) or (spread_dataset.sample_start if spread_dataset else None)
+            if not raw_s_start or not hasattr(raw_s_start, "isoformat"):
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_start")
+            s_start = raw_s_start.isoformat()
+
+            raw_s_end = (summary_meta.get("sample_end") if summary_meta else None) or (spread_dataset.sample_end if spread_dataset else None)
+            if not raw_s_end or not hasattr(raw_s_end, "isoformat"):
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_end")
+            s_end = raw_s_end.isoformat()
+
             sess_counts = (
                 (spread_dataset.session_counts if spread_dataset and spread_dataset.session_counts else None)
                 or (summary_meta.get("session_counts") if summary_meta and summary_meta.get("session_counts") else None)
@@ -1655,8 +1674,24 @@ class Command(BaseCommand):
                         sess_counts["NEW_YORK"] += 1
                     else:
                         sess_counts["ROLLOVER"] += 1
-            v_method = getattr(spread_att_obj, "verification_method", "BROKER_OFFICIAL_URL_CAPTURE")
-            s_type = getattr(spread_snapshot, "source_type", "EXNESS_OFFICIAL_TICK_HISTORY")
+
+            for req_sess in ("ASIAN", "LONDON", "NEW_YORK", "ROLLOVER"):
+                if req_sess not in sess_counts:
+                    raise ValueError(f"Fail-closed: QUALIFIED spread evidence missing session count for {req_sess}")
+
+            if not spread_stats:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing spread distribution statistics")
+            for req_stat in ("stat_min", "stat_p50", "stat_p75", "stat_p90", "stat_p95", "stat_p99", "stat_max"):
+                if req_stat not in spread_stats:
+                    raise ValueError(f"Fail-closed: QUALIFIED spread evidence missing distribution statistic {req_stat}")
+
+            effective_broker_symbol = broker_symbol or getattr(spread_snapshot, "symbol", None) or "UNKNOWN"
+
+            spread_finding = (
+                f"Directive 6: Verified via official Exness tick archive governed URL capture "
+                f"($N = {sample_cnt:,}$, "
+                f"$\\ge 5$ distinct dates, 4 sessions satisfied)."
+            )
 
             spread_detail_section = f"""### Spread Evidence Qualification Record
 
@@ -1665,7 +1700,7 @@ class Command(BaseCommand):
 | **SPREAD EVIDENCE** | `QUALIFIED` |
 | **SOURCE TYPE** | `{s_type}` |
 | **VERIFICATION METHOD** | `{v_method}` |
-| **BROKER SYMBOL** | `{broker_symbol or 'XAUUSDc'}` |
+| **BROKER SYMBOL** | `{effective_broker_symbol}` |
 | **RAW SHA256** | `{raw_sha}` |
 | **SAMPLE COUNT** | `{sample_cnt}` |
 | **DISTINCT TRADING DATES** | `{dates_cnt}` |
@@ -1673,19 +1708,19 @@ class Command(BaseCommand):
 | **SAMPLE END** | `{s_end}` |
 
 #### Session Counts
-- **ASIAN:** `{sess_counts.get('ASIAN', 0)}`
-- **LONDON:** `{sess_counts.get('LONDON', 0)}`
-- **NEW_YORK:** `{sess_counts.get('NEW_YORK', 0)}`
-- **ROLLOVER:** `{sess_counts.get('ROLLOVER', 0)}`
+- **ASIAN:** `{sess_counts['ASIAN']}`
+- **LONDON:** `{sess_counts['LONDON']}`
+- **NEW_YORK:** `{sess_counts['NEW_YORK']}`
+- **ROLLOVER:** `{sess_counts['ROLLOVER']}`
 
 #### Spread Distribution (bps)
-- **MIN:** `{f"{spread_stats['stat_min']:.6f}" if spread_stats else "0.544000"}`
-- **P50:** `{f"{spread_stats['stat_p50']:.6f}" if spread_stats else "0.586100"}`
-- **P75:** `{f"{spread_stats['stat_p75']:.6f}" if spread_stats else "0.593400"}`
-- **P90:** `{f"{spread_stats['stat_p90']:.6f}" if spread_stats else "0.599700"}`
-- **P95:** `{f"{spread_stats['stat_p95']:.6f}" if spread_stats else "0.607800"}`
-- **P99:** `{f"{spread_stats['stat_p99']:.6f}" if spread_stats else "0.737400"}`
-- **MAX:** `{f"{spread_stats['stat_max']:.6f}" if spread_stats else "1.621100"}`
+- **MIN:** `{spread_stats['stat_min']:.6f}`
+- **P50:** `{spread_stats['stat_p50']:.6f}`
+- **P75:** `{spread_stats['stat_p75']:.6f}`
+- **P90:** `{spread_stats['stat_p90']:.6f}`
+- **P95:** `{spread_stats['stat_p95']:.6f}`
+- **P99:** `{spread_stats['stat_p99']:.6f}`
+- **MAX:** `{spread_stats['stat_max']:.6f}`
 """
             next_steps_text = """1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
 2. Provide authoritative MT5 contract specification snapshot.

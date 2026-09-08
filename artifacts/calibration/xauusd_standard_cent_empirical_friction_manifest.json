@@ -6,7 +6,7 @@
   "canonical_symbol": "XAUUSD",
   "broker_symbol": "XAUUSDc",
   "account_currency": null,
-  "audit_timestamp": "2026-09-08T08:03:12Z",
+  "audit_timestamp": "2026-09-08T09:42:01Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",

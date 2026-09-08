@@ -228,17 +228,20 @@ def validate_source_qualification_assertion(
                     expected_broker_symbol=expected_broker_symbol,
                     expected_account_tier=norm_tier,
                 )
-            norm_rows = [
-                f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
-                for t in ticks_data
-            ]
-            raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+            hasher = hashlib.sha256()
+            for idx, t in enumerate(ticks_data):
+                if idx > 0:
+                    hasher.update(b"\n")
+                row = f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
+                hasher.update(row.encode("utf-8"))
+            raw_ds_sha = hasher.hexdigest()
             parsed_data = {
                 "raw_dataset_sha256": raw_ds_sha,
                 "sample_count": len(ticks_data),
                 "symbol": summary["symbol"],
             }
             recomputed_norm_hash = compute_normalized_evidence_hash({"raw_dataset_sha256": raw_ds_sha})
+            del ticks_data
 
         elif expected_component_role == "SLIPPAGE_DATASET":
             telemetry_records, summary = parse_mt5_execution_telemetry(

@@ -6,7 +6,7 @@
 > **Canonical Market Symbol:** `XAUUSD`
 > **Execution Broker Symbol:** `XAUUSDc`
 > **Account Currency:** `UNKNOWN`
-> **Audit Timestamp:** `2026-09-08 08:03:12 UTC`
+> **Audit Timestamp:** `2026-09-08 09:42:01 UTC`
 > **Overall Friction Decision:** `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
 > **Hard Readiness Gate:** `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
 > **Production Authority:** `FALSE / 0.0 / WAIT`

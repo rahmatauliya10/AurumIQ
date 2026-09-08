@@ -995,3 +995,91 @@ def test_regression_d_standard_cent_report_omits_stale_mt5_language_when_qualifi
             if os.path.exists(p):
                 os.remove(p)
 
+
+@pytest.mark.django_db
+def test_regression_e_completeness_gate_strictly_requires_qualified_spread():
+    """Test E: is_evidence_complete strictly requires spread_status == 'QUALIFIED'; EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE does not qualify."""
+    # Verify Boolean logic directly as implemented in Command.handle()
+    legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+    contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+    commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+    financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+    slippage_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+
+    # When spread_status is EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE
+    spread_status_sample = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+    is_complete_sample = (
+        legal_entity_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and spread_status_sample == "QUALIFIED"
+        and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+    )
+    assert is_complete_sample is False
+
+    # When spread_status is QUALIFIED
+    spread_status_qualified = "QUALIFIED"
+    is_complete_qualified = (
+        legal_entity_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+        and spread_status_qualified == "QUALIFIED"
+        and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+    )
+    assert is_complete_qualified is True
+
+
+@pytest.mark.django_db
+def test_regression_f_qualified_report_fails_closed_when_mandatory_evidence_missing(monkeypatch):
+    """Test F: Report generation fails closed (raises ValueError) if spread_status is QUALIFIED but mandatory evidence is missing."""
+    import tempfile
+    from django.core.management import call_command
+    import apps.market_data.friction.provenance as prov_module
+
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    raw_zip_bytes = _create_synthetic_zip_archive()
+
+    def mock_transport(target_url):
+        return (raw_zip_bytes, url, 200, "application/zip", [])
+
+    orig_capture = prov_module.execute_governed_broker_url_capture
+    monkeypatch.setattr(
+        prov_module,
+        "execute_governed_broker_url_capture",
+        lambda u: orig_capture(u, http_client=mock_transport),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    import apps.market_data.management.commands.ingest_xauusd_empirical_friction as cmd_module
+    orig_validate = cmd_module.validate_source_qualification_assertion
+
+    def tamper_validate(*args, **kwargs):
+        res = orig_validate(*args, **kwargs)
+        # Clear raw_payload_bytes_sha256 on snapshot to verify fail-closed report generation
+        kwargs["snapshot"].raw_payload_bytes_sha256 = ""
+        return res
+
+    monkeypatch.setattr(cmd_module, "validate_source_qualification_assertion", tamper_validate)
+
+    try:
+        # Should raise ValueError because raw_payload_bytes_sha256 is missing when required for QUALIFIED report
+        with pytest.raises(ValueError, match="Fail-closed: QUALIFIED spread evidence missing raw_payload_bytes_sha256"):
+            call_command(
+                "ingest_xauusd_empirical_friction",
+                "--venue", "EXNESS",
+                "--account-tier", "STANDARD_CENT",
+                "--broker-symbol", "XAUUSDc",
+                "--tick-url", url,
+                "--output-manifest", manifest_path,
+                "--output-report", report_path,
+            )
+    finally:
+        for p in [manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+

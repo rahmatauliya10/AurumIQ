@@ -474,12 +474,13 @@ def ingest_friction_evidence_dataset(
         else:
             session_counts["ROLLOVER"] += 1
 
-    # Serialize normalized ticks to get deterministic dataset sha256
-    norm_rows = [
-        f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
-        for t in ticks_data
-    ]
-    raw_ds_sha = hashlib.sha256("\n".join(norm_rows).encode("utf-8")).hexdigest()
+    hasher = hashlib.sha256()
+    for idx, t in enumerate(ticks_data):
+        if idx > 0:
+            hasher.update(b"\n")
+        row = f"{t['timestamp'].astimezone(timezone.utc).isoformat()}|{t['bid']}|{t['ask']}|{t.get('spread_bps', '')}"
+        hasher.update(row.encode("utf-8"))
+    raw_ds_sha = hasher.hexdigest()
     dataset_id = hashlib.sha256(f"{source_snapshot.snapshot_id}:{raw_ds_sha}".encode()).hexdigest()
 
     existing = FrictionEvidenceDataset.objects.filter(dataset_id=dataset_id).first()
