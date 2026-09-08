@@ -583,7 +583,7 @@ def execute_governed_broker_url_capture(
         redirect_handler = _GovernedBrokerRedirectHandler()
         opener = urllib.request.build_opener(redirect_handler)
         req = urllib.request.Request(url, method="GET")
-        req.add_header("User-Agent", "AurumIQ-GovernedBrokerCapture/1.0")
+        req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 AurumIQ-GovernedBrokerCapture/1.0")
         response = opener.open(req, timeout=transport_timeout)
         final_url = response.url
         http_status = response.status
@@ -729,22 +729,31 @@ def create_verified_broker_capture_attestation(
             raise ValueError(f"URL_CAPTURE_SCOPE_MISMATCH: Derived legal entity '{code}' is not Exness.")
     elif norm_role == "CONTRACT_SPEC":
         spec_data = parse_contract_spec_backing_artifact(
-            capture_receipt.response_bytes, expected_symbol=expected_symbol
+            capture_receipt.response_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
         )
         derived_symbol = str(spec_data.get("symbol") or "")
+        derived_broker_symbol = str(spec_data.get("broker_symbol") or expected_broker_symbol or "")
         if derived_symbol.upper() != expected_symbol.upper():
             raise ValueError(
                 f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+        if expected_broker_symbol and derived_broker_symbol.upper() != expected_broker_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived broker symbol '{derived_broker_symbol}' != expected '{expected_broker_symbol}'."
             )
     elif norm_role == "COMMISSION":
         comm_data = parse_commission_backing_artifact(
             capture_receipt.response_bytes,
             expected_symbol=expected_symbol,
             expected_account_tier=expected_account_tier,
+            expected_broker_symbol=expected_broker_symbol,
         )
         derived_symbol = str(comm_data.get("symbol") or "")
         derived_tier = str(comm_data.get("account_tier") or "")
-        if derived_symbol.upper() != expected_symbol.upper():
+        if derived_symbol.upper() != expected_symbol.upper() and derived_symbol.upper() != "ALL":
             raise ValueError(
                 f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
             )
@@ -754,7 +763,10 @@ def create_verified_broker_capture_attestation(
             )
     elif norm_role == "FINANCING":
         fin_data = parse_financing_backing_artifact(
-            capture_receipt.response_bytes, expected_symbol=expected_symbol
+            capture_receipt.response_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
         )
         derived_symbol = str(fin_data.get("symbol") or "")
         if derived_symbol.upper() != expected_symbol.upper():

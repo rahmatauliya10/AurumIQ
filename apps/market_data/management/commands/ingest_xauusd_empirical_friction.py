@@ -83,6 +83,10 @@ from apps.market_data.models import (
     QUALIFIED_SLIPPAGE_SOURCE_TYPES,
     QUALIFIED_SPREAD_SOURCE_TYPES,
 )
+from apps.market_data.friction.provenance import (
+    create_verified_broker_capture_attestation,
+    execute_governed_broker_url_capture,
+)
 from apps.market_data.readiness import XauUsdDataReadinessEvaluator
 
 
@@ -436,6 +440,30 @@ class Command(BaseCommand):
             help="Path to authoritative raw backing artifact for broker financing / swap rates.",
         )
         parser.add_argument(
+            "--legal-entity-url",
+            type=str,
+            default=None,
+            help="Authoritative Exness official legal entity specification URL for governed capture.",
+        )
+        parser.add_argument(
+            "--contract-spec-url",
+            type=str,
+            default=None,
+            help="Authoritative Exness official contract specification URL for governed capture.",
+        )
+        parser.add_argument(
+            "--fee-schedule-url",
+            type=str,
+            default=None,
+            help="Authoritative Exness official fee schedule / commission URL for governed capture.",
+        )
+        parser.add_argument(
+            "--swap-spec-url",
+            type=str,
+            default=None,
+            help="Authoritative Exness official swap / financing specification URL for governed capture.",
+        )
+        parser.add_argument(
             "--tick-url",
             type=str,
             default=None,
@@ -583,12 +611,16 @@ class Command(BaseCommand):
 
         legal_file = options["legal_entity_file"]
         legal_backing_file = options.get("legal_entity_backing_file")
+        legal_url = options.get("legal_entity_url")
         contract_file = options["contract_spec_file"]
         contract_backing_file = options.get("contract_spec_backing_file")
+        contract_url = options.get("contract_spec_url")
         fee_file = options["fee_schedule_file"]
         fee_backing_file = options.get("fee_schedule_backing_file")
+        fee_url = options.get("fee_schedule_url")
         swap_file = options["swap_spec_file"]
         swap_backing_file = options.get("swap_spec_backing_file")
+        swap_url = options.get("swap_spec_url")
         tick_url = options.get("tick_url")
         tick_file = options["tick_file"]
         slippage_file = options["slippage_file"]
@@ -617,7 +649,132 @@ class Command(BaseCommand):
         legal_entity_snapshot: Optional[FrictionSourceSnapshot] = None
         legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
 
-        if legal_file and os.path.isfile(legal_file):
+        if legal_url:
+            self.stdout.write(f"Auditing governed broker capture for legal entity: {legal_url}...")
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                source_url=legal_url,
+            ).first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id}")
+                legal_entity_snapshot = existing_snap
+                legal_raw_bytes = bytes(existing_snap.raw_content)
+                legal_parsed = parse_legal_entity_backing_artifact(legal_raw_bytes)
+                legal_entity_info = {
+                    "legal_entity_code": legal_parsed.get("legal_entity_code", ""),
+                    "legal_entity_name": legal_parsed.get("legal_entity_name", ""),
+                    "regulator": legal_parsed.get("regulator", ""),
+                    "license_number": legal_parsed.get("license_number", ""),
+                }
+                legal_att_obj = existing_snap.provenance_attestations.filter(
+                    component_role="LEGAL_ENTITY",
+                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                ).first()
+                legal_assertion = existing_snap.qualification_assertions.filter(
+                    component_role="LEGAL_ENTITY",
+                ).order_by("-asserted_at").first()
+                if legal_assertion and legal_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                    is_val, val_reasons, _ = validate_source_qualification_assertion(
+                        snapshot=existing_snap,
+                        assertion=legal_assertion,
+                        expected_component_role="LEGAL_ENTITY",
+                        expected_parser="parse_legal_entity_backing_artifact",
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_venue=venue,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    if is_val and not val_reasons:
+                        legal_entity_status = FrictionQualificationStatus.QUALIFIED.value
+                    else:
+                        legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                        reasons.extend(val_reasons)
+                else:
+                    legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            else:
+                try:
+                    capture_receipt = execute_governed_broker_url_capture(legal_url)
+                    legal_raw_bytes = capture_receipt.response_bytes
+                    legal_parsed = parse_legal_entity_backing_artifact(legal_raw_bytes)
+                    legal_entity_info = {
+                        "legal_entity_code": legal_parsed.get("legal_entity_code", ""),
+                        "legal_entity_name": legal_parsed.get("legal_entity_name", ""),
+                        "regulator": legal_parsed.get("regulator", ""),
+                        "license_number": legal_parsed.get("license_number", ""),
+                    }
+                    if not all(legal_entity_info.values()):
+                        legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
+                        reasons.append("Legal entity evidence missing required fields (code, name, regulator, license).")
+                    else:
+                        if dry_run:
+                            legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                        else:
+                            parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                            orig_fn = os.path.basename(parsed_path) or "legal_entity.json"
+                            legal_source_type = legal_parsed.get("source_type") or FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+                            legal_entity_snapshot, _ = ingest_friction_source_snapshot(
+                                source_url=capture_receipt.final_url,
+                                source_name="EXNESS_LEGAL_ENTITY_SPEC",
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                retrieved_at=capture_receipt.captured_at,
+                                known_at=capture_receipt.captured_at,
+                                raw_content=legal_raw_bytes,
+                                metadata=legal_parsed,
+                                source_type=legal_source_type,
+                                source_origin=capture_receipt.final_url,
+                                collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+                                original_filename=orig_fn,
+                            )
+                            legal_att_obj = create_verified_broker_capture_attestation(
+                                source_snapshot=legal_entity_snapshot,
+                                component_role="LEGAL_ENTITY",
+                                capture_receipt=capture_receipt,
+                                expected_symbol=symbol,
+                                expected_venue=venue,
+                                expected_account_tier=account_tier,
+                                expected_broker_symbol=broker_symbol,
+                            )
+                            legal_assertion = create_friction_qualification_assertion(
+                                source_snapshot=legal_entity_snapshot,
+                                provenance_attestation=legal_att_obj,
+                                component_role="LEGAL_ENTITY",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value if legal_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
+                                parser_name="parse_legal_entity_backing_artifact",
+                                parser_version="1.0.0",
+                                normalized_evidence_hash=legal_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(legal_entity_info),
+                                qualification_reason="Verified by authoritative legal entity parser and provenance attestation" if legal_att_obj is not None else "Unattested legal entity evidence",
+                            )
+                            if legal_att_obj is not None and legal_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                                is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                    snapshot=legal_entity_snapshot,
+                                    assertion=legal_assertion,
+                                    expected_component_role="LEGAL_ENTITY",
+                                    expected_parser="parse_legal_entity_backing_artifact",
+                                    expected_symbol=symbol,
+                                    expected_account_tier=account_tier,
+                                    expected_venue=venue,
+                                    expected_broker_symbol=broker_symbol,
+                                )
+                                if is_val and not val_reasons:
+                                    legal_entity_status = FrictionQualificationStatus.QUALIFIED.value
+                                else:
+                                    legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                                    reasons.extend(val_reasons)
+                            else:
+                                legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not ingest legal entity URL: {e}"))
+                    legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
+                    reasons.append(f"Legal entity URL ingestion failure: {e}")
+        elif legal_file and os.path.isfile(legal_file):
             with open(legal_file, "rb") as f:
                 content = f.read()
             try:
@@ -698,14 +855,206 @@ class Command(BaseCommand):
                 legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
                 reasons.append(f"Legal entity parse failure: {e}")
         else:
-            reasons.append("Legal entity evidence snapshot missing (--legal-entity-file is None).")
+            # Check for existing qualified snapshot in database
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                qualification_assertions__component_role="LEGAL_ENTITY",
+            ).order_by("-known_at").first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Auditing existing persisted legal entity snapshot: {existing_snap.snapshot_id}")
+                legal_entity_snapshot = existing_snap
+                legal_raw_bytes = bytes(existing_snap.raw_content)
+                try:
+                    legal_parsed = parse_legal_entity_backing_artifact(legal_raw_bytes)
+                    legal_entity_info = {
+                        "legal_entity_code": legal_parsed.get("legal_entity_code", ""),
+                        "legal_entity_name": legal_parsed.get("legal_entity_name", ""),
+                        "regulator": legal_parsed.get("regulator", ""),
+                        "license_number": legal_parsed.get("license_number", ""),
+                    }
+                    legal_att_obj = existing_snap.provenance_attestations.filter(
+                        component_role="LEGAL_ENTITY",
+                        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                    ).first()
+                    legal_assertion = existing_snap.qualification_assertions.filter(
+                        component_role="LEGAL_ENTITY",
+                    ).order_by("-asserted_at").first()
+                    if legal_assertion and legal_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                        is_val, val_reasons, _ = validate_source_qualification_assertion(
+                            snapshot=existing_snap,
+                            assertion=legal_assertion,
+                            expected_component_role="LEGAL_ENTITY",
+                            expected_parser="parse_legal_entity_backing_artifact",
+                            expected_symbol=symbol,
+                            expected_account_tier=account_tier,
+                            expected_venue=venue,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        if is_val and not val_reasons:
+                            legal_entity_status = FrictionQualificationStatus.QUALIFIED.value
+                        else:
+                            legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                            reasons.extend(val_reasons)
+                    else:
+                        legal_entity_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse persisted legal entity snapshot: {e}"))
+                    legal_entity_status = "LEGAL_ENTITY_EVIDENCE_MISSING"
+                    reasons.append(f"Persisted legal entity parse failure: {e}")
+            else:
+                reasons.append("Legal entity evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).")
 
         # 2. Official Contract Geometry (Directives 4, 7, 9)
         contract_geometry: Optional[Dict[str, Any]] = None
         contract_spec_snapshot: Optional[FrictionSourceSnapshot] = None
         contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
 
-        if contract_file and os.path.isfile(contract_file):
+        if contract_url:
+            self.stdout.write(f"Auditing governed broker capture for contract geometry: {contract_url}...")
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                source_url=contract_url,
+            ).first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id}")
+                contract_spec_snapshot = existing_snap
+                contract_raw_bytes = bytes(existing_snap.raw_content)
+                contract_parsed = parse_contract_spec_backing_artifact(
+                    contract_raw_bytes,
+                    expected_symbol=symbol,
+                    expected_broker_symbol=broker_symbol,
+                    expected_account_tier=account_tier,
+                )
+                contract_geometry = {
+                    "digits": int(contract_parsed["digits"]),
+                    "point_size": Decimal(str(contract_parsed["point_size"])),
+                    "trade_tick_size": Decimal(str(contract_parsed["trade_tick_size"])),
+                    "trade_tick_value": Decimal(str(contract_parsed["trade_tick_value"])),
+                    "contract_size": Decimal(str(contract_parsed["contract_size"])),
+                    "volume_min": Decimal(str(contract_parsed["volume_min"])),
+                    "volume_max": Decimal(str(contract_parsed["volume_max"])),
+                    "volume_step": Decimal(str(contract_parsed["volume_step"])),
+                }
+                contract_att_obj = existing_snap.provenance_attestations.filter(
+                    component_role="CONTRACT_SPEC",
+                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                ).first()
+                contract_assertion = existing_snap.qualification_assertions.filter(
+                    component_role="CONTRACT_SPEC",
+                ).order_by("-asserted_at").first()
+                if contract_assertion and contract_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                    is_val, val_reasons, _ = validate_source_qualification_assertion(
+                        snapshot=existing_snap,
+                        assertion=contract_assertion,
+                        expected_component_role="CONTRACT_SPEC",
+                        expected_parser="parse_contract_spec_backing_artifact",
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_venue=venue,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    if is_val and not val_reasons:
+                        contract_status = FrictionQualificationStatus.QUALIFIED.value
+                    else:
+                        contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                        reasons.extend(val_reasons)
+                else:
+                    contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            else:
+                try:
+                    capture_receipt = execute_governed_broker_url_capture(contract_url)
+                    contract_raw_bytes = capture_receipt.response_bytes
+                    contract_parsed = parse_contract_spec_backing_artifact(
+                        contract_raw_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    contract_geometry = {
+                        "digits": int(contract_parsed["digits"]),
+                        "point_size": Decimal(str(contract_parsed["point_size"])),
+                        "trade_tick_size": Decimal(str(contract_parsed["trade_tick_size"])),
+                        "trade_tick_value": Decimal(str(contract_parsed["trade_tick_value"])),
+                        "contract_size": Decimal(str(contract_parsed["contract_size"])),
+                        "volume_min": Decimal(str(contract_parsed["volume_min"])),
+                        "volume_max": Decimal(str(contract_parsed["volume_max"])),
+                        "volume_step": Decimal(str(contract_parsed["volume_step"])),
+                    }
+                    if dry_run:
+                        contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    else:
+                        parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                        orig_fn = os.path.basename(parsed_path) or "contract_spec.json"
+                        contract_source_type = contract_parsed.get("source_type") or FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+                        contract_spec_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=capture_receipt.final_url,
+                            source_name="EXNESS_CONTRACT_SPEC",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=capture_receipt.captured_at,
+                            known_at=capture_receipt.captured_at,
+                            raw_content=contract_raw_bytes,
+                            metadata=contract_parsed,
+                            source_type=contract_source_type,
+                            source_origin=capture_receipt.final_url,
+                            collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+                            original_filename=orig_fn,
+                        )
+                        contract_att_obj = create_verified_broker_capture_attestation(
+                            source_snapshot=contract_spec_snapshot,
+                            component_role="CONTRACT_SPEC",
+                            capture_receipt=capture_receipt,
+                            expected_symbol=symbol,
+                            expected_venue=venue,
+                            expected_account_tier=account_tier,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        contract_assertion = create_friction_qualification_assertion(
+                            source_snapshot=contract_spec_snapshot,
+                            provenance_attestation=contract_att_obj,
+                            component_role="CONTRACT_SPEC",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if contract_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name="parse_contract_spec_backing_artifact",
+                            parser_version="1.0.0",
+                            normalized_evidence_hash=contract_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(contract_geometry),
+                            qualification_reason="Verified by authoritative contract specification parser and provenance attestation" if contract_att_obj is not None else "Unattested contract specification evidence",
+                        )
+                        if contract_att_obj is not None and contract_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                            is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                snapshot=contract_spec_snapshot,
+                                assertion=contract_assertion,
+                                expected_component_role="CONTRACT_SPEC",
+                                expected_parser="parse_contract_spec_backing_artifact",
+                                expected_symbol=symbol,
+                                expected_account_tier=account_tier,
+                                expected_venue=venue,
+                                expected_broker_symbol=broker_symbol,
+                            )
+                            if is_val and not val_reasons:
+                                contract_status = FrictionQualificationStatus.QUALIFIED.value
+                            else:
+                                contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                                reasons.extend(val_reasons)
+                        else:
+                            contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not ingest contract spec URL: {e}"))
+                    contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
+                    reasons.append(f"Contract spec URL ingestion failure: {e}")
+        elif contract_file and os.path.isfile(contract_file):
             with open(contract_file, "rb") as f:
                 content = f.read()
             try:
@@ -787,14 +1136,203 @@ class Command(BaseCommand):
                 contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
                 reasons.append(f"Contract specification parse failure: {e}")
         else:
-            reasons.append("Contract specification evidence snapshot missing (--contract-spec-file is None).")
+            # Fallback to DB qualified snapshot
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                qualification_assertions__component_role="CONTRACT_SPEC",
+            ).order_by("-known_at").first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Auditing existing persisted contract spec snapshot: {existing_snap.snapshot_id}")
+                contract_spec_snapshot = existing_snap
+                contract_raw_bytes = bytes(existing_snap.raw_content)
+                try:
+                    contract_parsed = parse_contract_spec_backing_artifact(
+                        contract_raw_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    contract_geometry = {
+                        "digits": int(contract_parsed["digits"]),
+                        "point_size": Decimal(str(contract_parsed["point_size"])),
+                        "trade_tick_size": Decimal(str(contract_parsed["trade_tick_size"])),
+                        "trade_tick_value": Decimal(str(contract_parsed["trade_tick_value"])),
+                        "contract_size": Decimal(str(contract_parsed["contract_size"])),
+                        "volume_min": Decimal(str(contract_parsed["volume_min"])),
+                        "volume_max": Decimal(str(contract_parsed["volume_max"])),
+                        "volume_step": Decimal(str(contract_parsed["volume_step"])),
+                    }
+                    contract_att_obj = existing_snap.provenance_attestations.filter(
+                        component_role="CONTRACT_SPEC",
+                        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                    ).first()
+                    contract_assertion = existing_snap.qualification_assertions.filter(
+                        component_role="CONTRACT_SPEC",
+                    ).order_by("-asserted_at").first()
+                    if contract_assertion and contract_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                        is_val, val_reasons, _ = validate_source_qualification_assertion(
+                            snapshot=existing_snap,
+                            assertion=contract_assertion,
+                            expected_component_role="CONTRACT_SPEC",
+                            expected_parser="parse_contract_spec_backing_artifact",
+                            expected_symbol=symbol,
+                            expected_account_tier=account_tier,
+                            expected_venue=venue,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        if is_val and not val_reasons:
+                            contract_status = FrictionQualificationStatus.QUALIFIED.value
+                        else:
+                            contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                            reasons.extend(val_reasons)
+                    else:
+                        contract_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse persisted contract spec snapshot: {e}"))
+                    contract_status = "CONTRACT_SPEC_EVIDENCE_MISSING"
+                    reasons.append(f"Persisted contract spec parse failure: {e}")
+            else:
+                reasons.append("Contract specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).")
 
         # 3. Commission Policy (Directives 5, 7, 10)
         commission_policy: Optional[Dict[str, Any]] = None
         fee_schedule_snapshot: Optional[FrictionSourceSnapshot] = None
         commission_status = "COMMISSION_EVIDENCE_MISSING"
 
-        if fee_file and os.path.isfile(fee_file):
+        if fee_url:
+            self.stdout.write(f"Auditing governed broker capture for fee schedule: {fee_url}...")
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                source_url=fee_url,
+            ).first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id}")
+                fee_schedule_snapshot = existing_snap
+                fee_raw_bytes = bytes(existing_snap.raw_content)
+                fee_parsed = parse_commission_backing_artifact(
+                    fee_raw_bytes,
+                    expected_symbol=symbol,
+                    expected_account_tier=account_tier,
+                    expected_broker_symbol=broker_symbol,
+                )
+                commission_policy = {
+                    "native_commission_usd_per_lot_per_side": Decimal(str(fee_parsed["native_commission_usd_per_lot_per_side"])),
+                    "commission_formula": str(fee_parsed.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
+                }
+                fee_att_obj = existing_snap.provenance_attestations.filter(
+                    component_role="COMMISSION",
+                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                ).first()
+                fee_assertion = existing_snap.qualification_assertions.filter(
+                    component_role="COMMISSION",
+                ).order_by("-asserted_at").first()
+                if fee_assertion and fee_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                    is_val, val_reasons, _ = validate_source_qualification_assertion(
+                        snapshot=existing_snap,
+                        assertion=fee_assertion,
+                        expected_component_role="COMMISSION",
+                        expected_parser="parse_commission_backing_artifact",
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_venue=venue,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    if is_val and not val_reasons:
+                        commission_status = FrictionQualificationStatus.QUALIFIED.value
+                    else:
+                        commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                        reasons.extend(val_reasons)
+                else:
+                    commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            else:
+                try:
+                    capture_receipt = execute_governed_broker_url_capture(fee_url)
+                    fee_raw_bytes = capture_receipt.response_bytes
+                    fee_parsed = parse_commission_backing_artifact(
+                        fee_raw_bytes,
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    commission_policy = {
+                        "native_commission_usd_per_lot_per_side": Decimal(str(fee_parsed["native_commission_usd_per_lot_per_side"])),
+                        "commission_formula": str(fee_parsed.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
+                    }
+                    if dry_run:
+                        commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    else:
+                        parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                        orig_fn = os.path.basename(parsed_path) or "fee_schedule.json"
+                        fee_source_type = fee_parsed.get("source_type") or FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+                        fee_schedule_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=capture_receipt.final_url,
+                            source_name="EXNESS_FEE_SCHEDULE",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=capture_receipt.captured_at,
+                            known_at=capture_receipt.captured_at,
+                            raw_content=fee_raw_bytes,
+                            metadata=fee_parsed,
+                            source_type=fee_source_type,
+                            source_origin=capture_receipt.final_url,
+                            collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+                            original_filename=orig_fn,
+                        )
+                        fee_att_obj = create_verified_broker_capture_attestation(
+                            source_snapshot=fee_schedule_snapshot,
+                            component_role="COMMISSION",
+                            capture_receipt=capture_receipt,
+                            expected_symbol=symbol,
+                            expected_venue=venue,
+                            expected_account_tier=account_tier,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        fee_assertion = create_friction_qualification_assertion(
+                            source_snapshot=fee_schedule_snapshot,
+                            provenance_attestation=fee_att_obj,
+                            component_role="COMMISSION",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if fee_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name="parse_commission_backing_artifact",
+                            parser_version="1.0.0",
+                            normalized_evidence_hash=fee_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(commission_policy),
+                            qualification_reason="Verified by authoritative commission fee parser and provenance attestation" if fee_att_obj is not None else "Unattested fee schedule evidence",
+                        )
+                        if fee_att_obj is not None and fee_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                            is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                snapshot=fee_schedule_snapshot,
+                                assertion=fee_assertion,
+                                expected_component_role="COMMISSION",
+                                expected_parser="parse_commission_backing_artifact",
+                                expected_symbol=symbol,
+                                expected_account_tier=account_tier,
+                                expected_venue=venue,
+                                expected_broker_symbol=broker_symbol,
+                            )
+                            if is_val and not val_reasons:
+                                commission_status = FrictionQualificationStatus.QUALIFIED.value
+                            else:
+                                commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                                reasons.extend(val_reasons)
+                        else:
+                            commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not ingest fee schedule URL: {e}"))
+                    commission_status = "COMMISSION_EVIDENCE_MISSING"
+                    reasons.append(f"Fee schedule URL ingestion failure: {e}")
+        elif fee_file and os.path.isfile(fee_file):
             with open(fee_file, "rb") as f:
                 content = f.read()
             try:
@@ -871,14 +1409,209 @@ class Command(BaseCommand):
                 commission_status = "COMMISSION_EVIDENCE_MISSING"
                 reasons.append(f"Fee schedule parse failure: {e}")
         else:
-            reasons.append("Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).")
+            # Fallback to DB qualified snapshot
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                qualification_assertions__component_role="COMMISSION",
+            ).order_by("-known_at").first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Auditing existing persisted commission snapshot: {existing_snap.snapshot_id}")
+                fee_schedule_snapshot = existing_snap
+                fee_raw_bytes = bytes(existing_snap.raw_content)
+                try:
+                    fee_parsed = parse_commission_backing_artifact(
+                        fee_raw_bytes,
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    commission_policy = {
+                        "native_commission_usd_per_lot_per_side": Decimal(str(fee_parsed["native_commission_usd_per_lot_per_side"])),
+                        "commission_formula": str(fee_parsed.get("commission_formula", "DYNAMIC_NOTIONAL_BPS")),
+                    }
+                    fee_att_obj = existing_snap.provenance_attestations.filter(
+                        component_role="COMMISSION",
+                        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                    ).first()
+                    fee_assertion = existing_snap.qualification_assertions.filter(
+                        component_role="COMMISSION",
+                    ).order_by("-asserted_at").first()
+                    if fee_assertion and fee_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                        is_val, val_reasons, _ = validate_source_qualification_assertion(
+                            snapshot=existing_snap,
+                            assertion=fee_assertion,
+                            expected_component_role="COMMISSION",
+                            expected_parser="parse_commission_backing_artifact",
+                            expected_symbol=symbol,
+                            expected_account_tier=account_tier,
+                            expected_venue=venue,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        if is_val and not val_reasons:
+                            commission_status = FrictionQualificationStatus.QUALIFIED.value
+                        else:
+                            commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                            reasons.extend(val_reasons)
+                    else:
+                        commission_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse persisted commission snapshot: {e}"))
+                    commission_status = "COMMISSION_EVIDENCE_MISSING"
+                    reasons.append(f"Persisted commission parse failure: {e}")
+            else:
+                reasons.append("Commission fee schedule evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).")
 
         # 4. Financing Policy (Directives 3, 7, 10)
         financing_policy: Optional[Dict[str, Any]] = None
         swap_spec_snapshot: Optional[FrictionSourceSnapshot] = None
         financing_status = "FINANCING_EVIDENCE_MISSING"
 
-        if swap_file and os.path.isfile(swap_file):
+        if swap_url:
+            self.stdout.write(f"Auditing governed broker capture for swap spec: {swap_url}...")
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                source_url=swap_url,
+            ).first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id}")
+                swap_spec_snapshot = existing_snap
+                swap_raw_bytes = bytes(existing_snap.raw_content)
+                swap_parsed = parse_financing_backing_artifact(
+                    swap_raw_bytes,
+                    expected_symbol=symbol,
+                    parser_version="1.0.0",
+                    expected_broker_symbol=broker_symbol,
+                    expected_account_tier=account_tier,
+                )
+                financing_policy = {
+                    "swap_long_points": Decimal(str(swap_parsed["swap_long_points"])),
+                    "swap_short_points": Decimal(str(swap_parsed["swap_short_points"])),
+                    "rollover_summer_utc_hour": int(swap_parsed["rollover_summer_utc_hour"]),
+                    "rollover_winter_utc_hour": int(swap_parsed["rollover_winter_utc_hour"]),
+                    "triple_swap_weekday": str(swap_parsed["triple_swap_weekday"]),
+                    "swap_free_available_for_account_type": parse_optional_evidence_bool(swap_parsed.get("swap_free_available_for_account_type")),
+                    "actual_account_swap_free_status": parse_optional_evidence_bool(swap_parsed.get("actual_account_swap_free_status")),
+                }
+                swap_att_obj = existing_snap.provenance_attestations.filter(
+                    component_role="FINANCING",
+                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                ).first()
+                swap_assertion = existing_snap.qualification_assertions.filter(
+                    component_role="FINANCING",
+                ).order_by("-asserted_at").first()
+                if swap_assertion and swap_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                    is_val, val_reasons, _ = validate_source_qualification_assertion(
+                        snapshot=existing_snap,
+                        assertion=swap_assertion,
+                        expected_component_role="FINANCING",
+                        expected_parser="parse_financing_backing_artifact",
+                        expected_symbol=symbol,
+                        expected_account_tier=account_tier,
+                        expected_venue=venue,
+                        expected_broker_symbol=broker_symbol,
+                    )
+                    if is_val and not val_reasons:
+                        financing_status = FrictionQualificationStatus.QUALIFIED.value
+                    else:
+                        financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                        reasons.extend(val_reasons)
+                else:
+                    financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            else:
+                try:
+                    capture_receipt = execute_governed_broker_url_capture(swap_url)
+                    swap_raw_bytes = capture_receipt.response_bytes
+                    swap_parsed = parse_financing_backing_artifact(
+                        swap_raw_bytes,
+                        expected_symbol=symbol,
+                        parser_version="1.0.0",
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    financing_policy = {
+                        "swap_long_points": Decimal(str(swap_parsed["swap_long_points"])),
+                        "swap_short_points": Decimal(str(swap_parsed["swap_short_points"])),
+                        "rollover_summer_utc_hour": int(swap_parsed["rollover_summer_utc_hour"]),
+                        "rollover_winter_utc_hour": int(swap_parsed["rollover_winter_utc_hour"]),
+                        "triple_swap_weekday": str(swap_parsed["triple_swap_weekday"]),
+                        "swap_free_available_for_account_type": parse_optional_evidence_bool(swap_parsed.get("swap_free_available_for_account_type")),
+                        "actual_account_swap_free_status": parse_optional_evidence_bool(swap_parsed.get("actual_account_swap_free_status")),
+                    }
+                    if dry_run:
+                        financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                    else:
+                        parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                        orig_fn = os.path.basename(parsed_path) or "swap_spec.json"
+                        swap_source_type = swap_parsed.get("source_type") or FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+                        swap_spec_snapshot, _ = ingest_friction_source_snapshot(
+                            source_url=capture_receipt.final_url,
+                            source_name="EXNESS_SWAP_SPEC",
+                            venue=venue,
+                            symbol=symbol,
+                            account_tier=account_tier,
+                            retrieved_at=capture_receipt.captured_at,
+                            known_at=capture_receipt.captured_at,
+                            raw_content=swap_raw_bytes,
+                            metadata=swap_parsed,
+                            source_type=swap_source_type,
+                            source_origin=capture_receipt.final_url,
+                            collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+                            original_filename=orig_fn,
+                        )
+                        swap_att_obj = create_verified_broker_capture_attestation(
+                            source_snapshot=swap_spec_snapshot,
+                            component_role="FINANCING",
+                            capture_receipt=capture_receipt,
+                            expected_symbol=symbol,
+                            expected_venue=venue,
+                            expected_account_tier=account_tier,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        swap_assertion = create_friction_qualification_assertion(
+                            source_snapshot=swap_spec_snapshot,
+                            provenance_attestation=swap_att_obj,
+                            component_role="FINANCING",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value if swap_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
+                            parser_name="parse_financing_backing_artifact",
+                            parser_version="1.0.0",
+                            normalized_evidence_hash=swap_parsed.get("normalized_evidence_hash") or compute_normalized_evidence_hash(financing_policy),
+                            qualification_reason="Verified by authoritative financing swap parser and provenance attestation" if swap_att_obj is not None else "Unattested financing swap evidence",
+                        )
+                        if swap_att_obj is not None and swap_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                            is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                snapshot=swap_spec_snapshot,
+                                assertion=swap_assertion,
+                                expected_component_role="FINANCING",
+                                expected_parser="parse_financing_backing_artifact",
+                                expected_symbol=symbol,
+                                expected_account_tier=account_tier,
+                                expected_venue=venue,
+                                expected_broker_symbol=broker_symbol,
+                            )
+                            if is_val and not val_reasons:
+                                financing_status = FrictionQualificationStatus.QUALIFIED.value
+                            else:
+                                financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                                reasons.extend(val_reasons)
+                        else:
+                            financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not ingest swap spec URL: {e}"))
+                    financing_status = "FINANCING_EVIDENCE_MISSING"
+                    reasons.append(f"Financing swap spec URL ingestion failure: {e}")
+        elif swap_file and os.path.isfile(swap_file):
             with open(swap_file, "rb") as f:
                 content = f.read()
             try:
@@ -961,7 +1694,70 @@ class Command(BaseCommand):
                 financing_status = "FINANCING_EVIDENCE_MISSING"
                 reasons.append(f"Financing swap spec parse failure: {e}")
         else:
-            reasons.append("Financing/swap specification evidence snapshot missing (--swap-spec-file is None).")
+            # Fallback to DB qualified snapshot
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                qualification_assertions__component_role="FINANCING",
+            ).order_by("-known_at").first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Auditing existing persisted financing snapshot: {existing_snap.snapshot_id}")
+                swap_spec_snapshot = existing_snap
+                swap_raw_bytes = bytes(existing_snap.raw_content)
+                try:
+                    swap_parsed = parse_financing_backing_artifact(
+                        swap_raw_bytes,
+                        expected_symbol=symbol,
+                        parser_version="1.0.0",
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    financing_policy = {
+                        "swap_long_points": Decimal(str(swap_parsed["swap_long_points"])),
+                        "swap_short_points": Decimal(str(swap_parsed["swap_short_points"])),
+                        "rollover_summer_utc_hour": int(swap_parsed["rollover_summer_utc_hour"]),
+                        "rollover_winter_utc_hour": int(swap_parsed["rollover_winter_utc_hour"]),
+                        "triple_swap_weekday": str(swap_parsed["triple_swap_weekday"]),
+                        "swap_free_available_for_account_type": parse_optional_evidence_bool(swap_parsed.get("swap_free_available_for_account_type")),
+                        "actual_account_swap_free_status": parse_optional_evidence_bool(swap_parsed.get("actual_account_swap_free_status")),
+                    }
+                    swap_att_obj = existing_snap.provenance_attestations.filter(
+                        component_role="FINANCING",
+                        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                    ).first()
+                    swap_assertion = existing_snap.qualification_assertions.filter(
+                        component_role="FINANCING",
+                    ).order_by("-asserted_at").first()
+                    if swap_assertion and swap_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                        is_val, val_reasons, _ = validate_source_qualification_assertion(
+                            snapshot=existing_snap,
+                            assertion=swap_assertion,
+                            expected_component_role="FINANCING",
+                            expected_parser="parse_financing_backing_artifact",
+                            expected_symbol=symbol,
+                            expected_account_tier=account_tier,
+                            expected_venue=venue,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        if is_val and not val_reasons:
+                            financing_status = FrictionQualificationStatus.QUALIFIED.value
+                        else:
+                            financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                            reasons.extend(val_reasons)
+                    else:
+                        financing_status = "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not parse persisted financing snapshot: {e}"))
+                    financing_status = "FINANCING_EVIDENCE_MISSING"
+                    reasons.append(f"Persisted financing swap parse failure: {e}")
+            else:
+                reasons.append("Financing/swap specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).")
+
 
         # 5. Spread Evidence (Directives 3, 6, 12: Strict Lifecycle FILE -> PARSED -> SCHEMA -> SUFFICIENT -> PERSISTED -> VERIFIED)
         spread_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
@@ -994,31 +1790,67 @@ class Command(BaseCommand):
             ):
                 self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id} (SHA256: {existing_snap.raw_payload_bytes_sha256})")
                 spread_snapshot = existing_snap
-                tick_bytes = bytes(existing_snap.raw_content)
                 tick_source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
                 tick_source_name = "EXNESS_OFFICIAL_TICK_HISTORY"
                 tick_collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
                 tick_parser_name = "parse_exness_official_tick_history"
-                ticks_data, summary_meta = parse_exness_official_tick_history(
-                    tick_bytes,
-                    expected_symbol=symbol,
-                    expected_broker_symbol=broker_symbol,
-                    expected_account_tier=account_tier,
-                )
-                spread_ticks = ticks_data
 
-                is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
-                if not is_valid_spread:
-                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                    reasons.extend(spread_errors)
-                else:
-                    spread_bps_list = [t["spread_bps"] for t in ticks_data]
-                    spread_stats = compute_distribution_statistics(spread_bps_list)
-                    if spread_stats["stat_p75"] <= Decimal("0") or spread_stats["stat_p95"] < spread_stats["stat_p75"]:
-                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                        reasons.append(f"Spread distribution invalid: p75={spread_stats['stat_p75']}, p95={spread_stats['stat_p95']}")
+                spread_dataset = FrictionEvidenceDataset.objects.filter(source_snapshot=spread_snapshot).first()
+                if spread_dataset and spread_dataset.sample_count > 0:
+                    summary_meta = existing_snap.metadata or {}
+                    spread_summary = FrictionDistributionSummary.objects.filter(
+                        evidence_dataset=spread_dataset,
+                        component_type=FrictionComponentType.SPREAD,
+                    ).first()
+                    if spread_summary:
+                        spread_stats = {
+                            "sample_count": Decimal(spread_summary.sample_count),
+                            "stat_min": spread_summary.stat_min,
+                            "stat_p50": spread_summary.stat_p50,
+                            "stat_p75": spread_summary.stat_p75,
+                            "stat_p90": spread_summary.stat_p90,
+                            "stat_p95": spread_summary.stat_p95,
+                            "stat_p99": spread_summary.stat_p99,
+                            "stat_max": spread_summary.stat_max,
+                            "stat_mean": spread_summary.stat_mean,
+                            "stat_std": spread_summary.stat_std,
+                        }
+                    elif existing_snap.metadata and "spread_stats" in existing_snap.metadata:
+                        spread_stats = {k: Decimal(str(v)) for k, v in existing_snap.metadata["spread_stats"].items()}
                     else:
-                        spread_dataset = FrictionEvidenceDataset.objects.filter(source_snapshot=spread_snapshot).first()
+                        tick_bytes = bytes(existing_snap.raw_content)
+                        ticks_data, summary_meta = parse_exness_official_tick_history(
+                            tick_bytes,
+                            expected_symbol=symbol,
+                            expected_broker_symbol=broker_symbol,
+                            expected_account_tier=account_tier,
+                        )
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+                    is_valid_spread = True
+                    spread_ticks = []
+                else:
+                    tick_bytes = bytes(existing_snap.raw_content)
+                    ticks_data, summary_meta = parse_exness_official_tick_history(
+                        tick_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    spread_ticks = ticks_data
+                    is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                    if not is_valid_spread:
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.extend(spread_errors)
+                    else:
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+
+                if is_valid_spread:
+                    if spread_stats.get("stat_p75", Decimal("0")) <= Decimal("0") or spread_stats.get("stat_p95", Decimal("0")) < spread_stats.get("stat_p75", Decimal("0")):
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.append(f"Spread distribution invalid: p75={spread_stats.get('stat_p75')}, p95={spread_stats.get('stat_p95')}")
+                    else:
                         spread_att_obj = spread_snapshot.provenance_attestations.filter(
                             component_role="SPREAD_DATASET",
                             attestation_status=FrictionAttestationStatus.VERIFIED.value,
@@ -1290,43 +2122,86 @@ class Command(BaseCommand):
             ):
                 self.stdout.write(f"Auditing existing persisted spread snapshot: {existing_snap.snapshot_id}")
                 spread_snapshot = existing_snap
-                tick_bytes = bytes(existing_snap.raw_content)
                 tick_parser_name = (
                     "parse_exness_official_tick_history"
                     if existing_snap.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
                     else "parse_mt5_tick_export"
                 )
-                if tick_parser_name == "parse_exness_official_tick_history":
-                    ticks_data, summary_meta = parse_exness_official_tick_history(
-                        tick_bytes,
-                        expected_symbol=symbol,
-                        expected_broker_symbol=broker_symbol,
-                        expected_account_tier=account_tier,
-                    )
-                else:
-                    ticks_data, summary_meta = parse_mt5_tick_export(
-                        tick_bytes,
-                        expected_symbol=symbol,
-                        expected_broker_symbol=broker_symbol,
-                        expected_account_tier=account_tier,
-                    )
-                spread_ticks = ticks_data
                 spread_dataset = FrictionEvidenceDataset.objects.filter(source_snapshot=spread_snapshot).first()
-                spread_att_obj = spread_snapshot.provenance_attestations.filter(
-                    component_role="SPREAD_DATASET",
-                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
-                ).first()
-                spread_assertion = spread_snapshot.qualification_assertions.filter(
-                    component_role="SPREAD_DATASET",
-                ).order_by("-asserted_at").first()
-
-                is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
-                if not is_valid_spread:
-                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                    reasons.extend(spread_errors)
+                if spread_dataset and spread_dataset.sample_count > 0:
+                    summary_meta = existing_snap.metadata or {}
+                    spread_summary = FrictionDistributionSummary.objects.filter(
+                        evidence_dataset=spread_dataset,
+                        component_type=FrictionComponentType.SPREAD,
+                    ).first()
+                    if spread_summary:
+                        spread_stats = {
+                            "sample_count": Decimal(spread_summary.sample_count),
+                            "stat_min": spread_summary.stat_min,
+                            "stat_p50": spread_summary.stat_p50,
+                            "stat_p75": spread_summary.stat_p75,
+                            "stat_p90": spread_summary.stat_p90,
+                            "stat_p95": spread_summary.stat_p95,
+                            "stat_p99": spread_summary.stat_p99,
+                            "stat_max": spread_summary.stat_max,
+                            "stat_mean": spread_summary.stat_mean,
+                            "stat_std": spread_summary.stat_std,
+                        }
+                    elif existing_snap.metadata and "spread_stats" in existing_snap.metadata:
+                        spread_stats = {k: Decimal(str(v)) for k, v in existing_snap.metadata["spread_stats"].items()}
+                    else:
+                        tick_bytes = bytes(existing_snap.raw_content)
+                        if tick_parser_name == "parse_exness_official_tick_history":
+                            ticks_data, summary_meta = parse_exness_official_tick_history(
+                                tick_bytes,
+                                expected_symbol=symbol,
+                                expected_broker_symbol=broker_symbol,
+                                expected_account_tier=account_tier,
+                            )
+                        else:
+                            ticks_data, summary_meta = parse_mt5_tick_export(
+                                tick_bytes,
+                                expected_symbol=symbol,
+                                expected_broker_symbol=broker_symbol,
+                                expected_account_tier=account_tier,
+                            )
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+                    is_valid_spread = True
+                    spread_ticks = []
                 else:
-                    spread_bps_list = [t["spread_bps"] for t in ticks_data]
-                    spread_stats = compute_distribution_statistics(spread_bps_list)
+                    tick_bytes = bytes(existing_snap.raw_content)
+                    if tick_parser_name == "parse_exness_official_tick_history":
+                        ticks_data, summary_meta = parse_exness_official_tick_history(
+                            tick_bytes,
+                            expected_symbol=symbol,
+                            expected_broker_symbol=broker_symbol,
+                            expected_account_tier=account_tier,
+                        )
+                    else:
+                        ticks_data, summary_meta = parse_mt5_tick_export(
+                            tick_bytes,
+                            expected_symbol=symbol,
+                            expected_broker_symbol=broker_symbol,
+                            expected_account_tier=account_tier,
+                        )
+                    spread_ticks = ticks_data
+                    is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                    if not is_valid_spread:
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.extend(spread_errors)
+                    else:
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+
+                if is_valid_spread:
+                    spread_att_obj = spread_snapshot.provenance_attestations.filter(
+                        component_role="SPREAD_DATASET",
+                        attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                    ).first()
+                    spread_assertion = spread_snapshot.qualification_assertions.filter(
+                        component_role="SPREAD_DATASET",
+                    ).order_by("-asserted_at").first()
                     if spread_assertion and spread_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
                         is_val, val_reasons, _ = validate_source_qualification_assertion(
                             snapshot=spread_snapshot,
@@ -1459,12 +2334,12 @@ class Command(BaseCommand):
 
         # 7. Evidence Completeness & Gate Evaluation (Directives 4, 6, 12)
         is_evidence_complete = (
-            legal_entity_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-            and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-            and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-            and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
+            legal_entity_status in ("OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE", "QUALIFIED")
+            and contract_status in ("OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE", "QUALIFIED")
+            and commission_status in ("OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE", "QUALIFIED")
+            and financing_status in ("OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE", "QUALIFIED")
             and spread_status == "QUALIFIED"
-            and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+            and slippage_status in ("EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE", "QUALIFIED")
         )
 
         model_ver: Optional[FrictionModelVersion] = None
@@ -1647,15 +2522,25 @@ class Command(BaseCommand):
             if not dates_cnt or dates_cnt <= 0:
                 raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-positive distinct_trading_days")
 
-            raw_s_start = (summary_meta.get("sample_start") if summary_meta else None) or (spread_dataset.sample_start if spread_dataset else None)
-            if not raw_s_start or not hasattr(raw_s_start, "isoformat"):
+            raw_s_start = (spread_dataset.sample_start if spread_dataset else None) or (summary_meta.get("sample_start") if summary_meta else None)
+            if not raw_s_start:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing sample_start")
+            if isinstance(raw_s_start, str):
+                s_start = raw_s_start
+            elif hasattr(raw_s_start, "isoformat"):
+                s_start = raw_s_start.isoformat()
+            else:
                 raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_start")
-            s_start = raw_s_start.isoformat()
 
-            raw_s_end = (summary_meta.get("sample_end") if summary_meta else None) or (spread_dataset.sample_end if spread_dataset else None)
-            if not raw_s_end or not hasattr(raw_s_end, "isoformat"):
+            raw_s_end = (spread_dataset.sample_end if spread_dataset else None) or (summary_meta.get("sample_end") if summary_meta else None)
+            if not raw_s_end:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing sample_end")
+            if isinstance(raw_s_end, str):
+                s_end = raw_s_end
+            elif hasattr(raw_s_end, "isoformat"):
+                s_end = raw_s_end.isoformat()
+            else:
                 raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_end")
-            s_end = raw_s_end.isoformat()
 
             sess_counts = (
                 (spread_dataset.session_counts if spread_dataset and spread_dataset.session_counts else None)

@@ -5,8 +5,8 @@
   "symbol": "XAUUSD",
   "canonical_symbol": "XAUUSD",
   "broker_symbol": "XAUUSDc",
-  "account_currency": null,
-  "audit_timestamp": "2026-09-08T09:42:01Z",
+  "account_currency": "USC",
+  "audit_timestamp": "2026-09-08T12:08:24Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
@@ -17,36 +17,36 @@
   },
   "evidence_inventory": {
     "legal_entity_scope": {
-      "status": "LEGAL_ENTITY_EVIDENCE_MISSING",
-      "legal_entity_code": null,
-      "regulator": null,
-      "license_number": null
+      "status": "QUALIFIED",
+      "legal_entity_code": "EXNESS_SC_LTD",
+      "regulator": "FSA",
+      "license_number": "SD025"
     },
     "contract_geometry": {
-      "status": "CONTRACT_SPEC_EVIDENCE_MISSING",
+      "status": "QUALIFIED",
       "broker_symbol": "XAUUSDc",
-      "digits": null,
-      "point_size": null,
-      "trade_tick_size": null,
-      "trade_tick_value": null,
-      "contract_size": null,
-      "volume_min": null,
-      "volume_max": null,
-      "volume_step": null
+      "digits": 2,
+      "point_size": "0.01",
+      "trade_tick_size": "0.01",
+      "trade_tick_value": "0.01",
+      "contract_size": "100.0",
+      "volume_min": "0.01",
+      "volume_max": "200.0",
+      "volume_step": "0.01"
     },
     "commission_policy": {
-      "status": "COMMISSION_EVIDENCE_MISSING",
+      "status": "QUALIFIED",
       "account_tier": "STANDARD_CENT",
-      "account_currency": null,
-      "native_commission_usd_per_lot_per_side": null,
-      "commission_formula": null
+      "account_currency": "USC",
+      "native_commission_usd_per_lot_per_side": "0.00",
+      "commission_formula": "DYNAMIC_NOTIONAL_BPS"
     },
     "financing_policy": {
-      "status": "FINANCING_EVIDENCE_MISSING",
-      "swap_long_points": null,
-      "swap_short_points": null,
-      "rollover_schedule": null,
-      "triple_swap_weekday": null,
+      "status": "QUALIFIED",
+      "swap_long_points": "-15.5",
+      "swap_short_points": "8.2",
+      "rollover_schedule": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0",
+      "triple_swap_weekday": "WEDNESDAY",
       "actual_account_swap_free_status": null
     },
     "bid_ask_spread_distribution": {
@@ -65,10 +65,6 @@
     }
   },
   "blocking_reasons": [
-    "Legal entity evidence snapshot missing (--legal-entity-file is None).",
-    "Contract specification evidence snapshot missing (--contract-spec-file is None).",
-    "Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).",
-    "Financing/swap specification evidence snapshot missing (--swap-spec-file is None).",
     "Execution slippage telemetry missing (--slippage-file is None)."
   ]
 }
