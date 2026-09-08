@@ -37,11 +37,12 @@ PERMITTED_BROKER_DOMAINS: Set[str] = {
     "get.exness.help",
     "my.exness.com",
     "trade.exness.com",
+    "ticks.ex2archive.com",
 }
 
-MAX_BROKER_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_BROKER_RESPONSE_BYTES = 100 * 1024 * 1024  # 100 MB
 MAX_BROKER_REDIRECTS = 5
-BROKER_CAPTURE_TIMEOUT_SECONDS = 30
+BROKER_CAPTURE_TIMEOUT_SECONDS = 120
 BROKER_COLLECTOR_VERSION = "1.0.0"
 MT5_COLLECTOR_VERSION = "1.0.0"
 
@@ -640,6 +641,7 @@ def create_verified_broker_capture_attestation(
     expected_venue: str = "EXNESS",
     expected_account_tier: str = "STANDARD",
     verifier_identity: str = "AURUMIQ_OFFICIAL_BROKER_URL_CAPTURE_WORKFLOW",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Any:
     """Create VERIFIED broker URL capture attestation from governed capture receipt.
 
@@ -739,6 +741,26 @@ def create_verified_broker_capture_attestation(
             raise ValueError(
                 f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
             )
+    elif norm_role == "SPREAD_DATASET":
+        from apps.market_data.friction.tick_parser import parse_exness_official_tick_history
+        ticks_data, summary = parse_exness_official_tick_history(
+            capture_receipt.response_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
+        )
+        derived_symbol = str(summary.get("symbol") or expected_symbol)
+        derived_broker_symbol = str(summary.get("broker_symbol") or expected_broker_symbol or "")
+        derived_tier = str(expected_account_tier)
+        derived_venue = str(summary.get("venue") or "EXNESS")
+        if derived_symbol.upper() != expected_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+        if expected_broker_symbol and derived_broker_symbol.upper() != expected_broker_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived broker symbol '{derived_broker_symbol}' != expected '{expected_broker_symbol}'."
+            )
     else:
         raise ValueError(
             f"URL_CAPTURE_ERROR: Unsupported component role '{component_role}' for official broker URL capture."
@@ -759,7 +781,19 @@ def create_verified_broker_capture_attestation(
 
     captured_at = capture_receipt.captured_at
     captured_iso = captured_at.isoformat()
-    source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+
+    if norm_role == "SPREAD_DATASET":
+        source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
+    else:
+        source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+        collection_method = "GOVERNED_BROKER_URL_CAPTURE"
+
+    if source_snapshot.source_type not in (source_type, FrictionSourceType.USER_PROVIDED_UNVERIFIED.value):
+        raise ValueError(
+            f"URL_CAPTURE_ERROR: Snapshot source_type '{source_snapshot.source_type}' mismatch with "
+            f"expected '{source_type}' for role '{norm_role}'."
+        )
 
     # Build provenance metadata with all capture context fields
     capture_metadata = {
@@ -812,7 +846,7 @@ def create_verified_broker_capture_attestation(
         component_role=norm_role,
         source_origin=capture_receipt.final_url,
         source_type=source_type,
-        collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+        collection_methodology=collection_method,
         captured_at=captured_at,
         reviewed_at=datetime.now(timezone.utc),
         verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
