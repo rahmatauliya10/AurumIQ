@@ -305,7 +305,34 @@ def parse_exness_official_tick_history(
         ValueError if schema is unsupported, venue is wrong, timestamps are naive/future/non-chronological,
         or quotes are invalid/crossed.
     """
-    lines = _decode_tick_payload(raw_content, error_prefix="EXNESS_TICK_PARSER_ERROR")
+    csv_bytes = raw_content
+    if raw_content.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_content)) as zf:
+                infolist = zf.infolist()
+                if not infolist:
+                    raise ValueError("EXNESS_TICK_PARSER_ERROR: ZIP archive is empty.")
+                csv_members = [m for m in infolist if not m.is_dir() and m.filename.lower().endswith(".csv")]
+                if len(csv_members) != 1:
+                    raise ValueError(
+                        f"EXNESS_TICK_PARSER_ERROR: Expected exactly one CSV member in archive, found {len(csv_members)}: {[m.filename for m in csv_members]}."
+                    )
+                target_member = csv_members[0]
+                if ".." in target_member.filename or target_member.filename.startswith(("/", "\\")):
+                    raise ValueError(
+                        f"EXNESS_TICK_PARSER_ERROR: Path traversal detected in archive member '{target_member.filename}'."
+                    )
+                MAX_DECOMPRESSED_TICK_BYTES = 500 * 1024 * 1024
+                if target_member.file_size > MAX_DECOMPRESSED_TICK_BYTES:
+                    raise ValueError(
+                        f"EXNESS_TICK_PARSER_ERROR: Decompressed CSV size {target_member.file_size} exceeds safety limit {MAX_DECOMPRESSED_TICK_BYTES} bytes."
+                    )
+                csv_bytes = zf.read(target_member)
+        except zipfile.BadZipFile as bz:
+            raise ValueError(f"EXNESS_TICK_PARSER_ERROR: Corrupt ZIP archive: {bz}")
+
+    lines = _decode_tick_payload(csv_bytes, error_prefix="EXNESS_TICK_PARSER_ERROR")
     reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=",")
     raw_header = next(reader)
     header = [col.strip().lower().replace('"', '').replace("'", "") for col in raw_header]

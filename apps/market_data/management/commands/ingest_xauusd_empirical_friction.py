@@ -13,6 +13,7 @@ from decimal import Decimal
 import hashlib
 import json
 import os
+import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 from django.core.management.base import BaseCommand, CommandError
 
@@ -432,6 +433,12 @@ class Command(BaseCommand):
             help="Path to authoritative raw backing artifact for broker financing / swap rates.",
         )
         parser.add_argument(
+            "--tick-url",
+            type=str,
+            default=None,
+            help="Authoritative Exness official tick archive download URL for governed capture.",
+        )
+        parser.add_argument(
             "--tick-file",
             type=str,
             default=None,
@@ -579,6 +586,7 @@ class Command(BaseCommand):
         fee_backing_file = options.get("fee_schedule_backing_file")
         swap_file = options["swap_spec_file"]
         swap_backing_file = options.get("swap_spec_backing_file")
+        tick_url = options.get("tick_url")
         tick_file = options["tick_file"]
         slippage_file = options["slippage_file"]
         dry_run = options["dry_run"]
@@ -957,7 +965,93 @@ class Command(BaseCommand):
         spread_dataset: Optional[FrictionEvidenceDataset] = None
         spread_ticks: Optional[List[Dict[str, Any]]] = None
 
-        if tick_file:
+        if tick_url:
+            self.stdout.write(f"Executing governed broker URL capture for tick history: {tick_url}...")
+            from apps.market_data.friction.provenance import (
+                execute_governed_broker_url_capture,
+                create_verified_broker_capture_attestation,
+            )
+            try:
+                capture_receipt = execute_governed_broker_url_capture(tick_url)
+                tick_bytes = capture_receipt.response_bytes
+                tick_source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+                tick_source_name = "EXNESS_OFFICIAL_TICK_HISTORY"
+                tick_collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
+                tick_parser_name = "parse_exness_official_tick_history"
+                ticks_data, summary_meta = parse_exness_official_tick_history(
+                    tick_bytes,
+                    expected_symbol=symbol,
+                    expected_broker_symbol=broker_symbol,
+                    expected_account_tier=account_tier,
+                )
+                spread_ticks = ticks_data
+
+                # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
+                is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                if not is_valid_spread:
+                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                    reasons.extend(spread_errors)
+                else:
+                    spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                    spread_stats = compute_distribution_statistics(spread_bps_list)
+                    if spread_stats["stat_p75"] <= Decimal("0") or spread_stats["stat_p95"] < spread_stats["stat_p75"]:
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.append(f"Spread distribution invalid: p75={spread_stats['stat_p75']}, p95={spread_stats['stat_p95']}")
+                    else:
+                        if dry_run:
+                            spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                        else:
+                            parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                            orig_fn = os.path.basename(parsed_path) or "official_ticks.zip"
+                            snap, _ = ingest_friction_source_snapshot(
+                                source_url=capture_receipt.final_url,
+                                source_name=tick_source_name,
+                                venue=venue,
+                                symbol=symbol,
+                                account_tier=account_tier,
+                                retrieved_at=capture_receipt.captured_at,
+                                known_at=capture_receipt.captured_at,
+                                raw_content=tick_bytes,
+                                metadata=summary_meta,
+                                source_type=tick_source_type,
+                                source_origin=capture_receipt.final_url,
+                                collection_methodology=tick_collection_method,
+                                original_filename=orig_fn,
+                            )
+                            spread_dataset, _ = ingest_friction_evidence_dataset(
+                                source_snapshot=snap,
+                                venue=venue,
+                                account_tier=account_tier,
+                                symbol=symbol,
+                                sample_start=summary_meta["sample_start"],
+                                sample_end=summary_meta["sample_end"],
+                                ticks_data=ticks_data,
+                            )
+                            spread_att_obj = create_verified_broker_capture_attestation(
+                                source_snapshot=snap,
+                                component_role="SPREAD_DATASET",
+                                capture_receipt=capture_receipt,
+                                expected_symbol=symbol,
+                                expected_venue=venue,
+                                expected_account_tier=account_tier,
+                                expected_broker_symbol=broker_symbol,
+                            )
+                            create_friction_qualification_assertion(
+                                source_snapshot=snap,
+                                provenance_attestation=spread_att_obj,
+                                component_role="SPREAD_DATASET",
+                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                parser_name=tick_parser_name,
+                                parser_version="1.0.0",
+                                normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
+                                qualification_reason="Verified by official Exness tick archive governed URL capture and provenance attestation",
+                            )
+                            spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not execute governed tick capture: {e}"))
+                spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                reasons.append(f"Governed tick capture failure: {e}")
+        elif tick_file:
             if not os.path.isfile(tick_file):
                 spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
                 reasons.append(f"Tick file does not exist: {tick_file}")
@@ -1075,7 +1169,7 @@ class Command(BaseCommand):
                     spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
                     reasons.append(f"Tick export parse failure: {e}")
         else:
-            reasons.append("MT5 tick export dataset missing (--tick-file is None).")
+            reasons.append("Tick history dataset missing (neither --tick-url nor --tick-file provided).")
 
         # 6. Slippage Telemetry (Directives 3, 7, 8, 11, 12: Strict Lifecycle)
         slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"

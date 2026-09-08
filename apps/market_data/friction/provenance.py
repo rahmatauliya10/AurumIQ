@@ -37,11 +37,14 @@ PERMITTED_BROKER_DOMAINS: Set[str] = {
     "get.exness.help",
     "my.exness.com",
     "trade.exness.com",
+    "ticks.ex2archive.com",
 }
 
-MAX_BROKER_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_BROKER_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB for normal broker documents
 MAX_BROKER_REDIRECTS = 5
 BROKER_CAPTURE_TIMEOUT_SECONDS = 30
+MAX_TICK_ARCHIVE_RESPONSE_BYTES = 100 * 1024 * 1024  # 100 MB for official tick archives
+TICK_ARCHIVE_CAPTURE_TIMEOUT_SECONDS = 120
 BROKER_COLLECTOR_VERSION = "1.0.0"
 MT5_COLLECTOR_VERSION = "1.0.0"
 
@@ -558,6 +561,15 @@ def execute_governed_broker_url_capture(
 
     captured_at = datetime.now(timezone.utc)
 
+    initial_parsed = urllib.parse.urlparse(url)
+    initial_hostname = (initial_parsed.hostname or "").lower()
+    if initial_hostname == "ticks.ex2archive.com":
+        transport_timeout = TICK_ARCHIVE_CAPTURE_TIMEOUT_SECONDS
+        transport_max_bytes = MAX_TICK_ARCHIVE_RESPONSE_BYTES
+    else:
+        transport_timeout = BROKER_CAPTURE_TIMEOUT_SECONDS
+        transport_max_bytes = MAX_BROKER_RESPONSE_BYTES
+
     if http_client is not None:
         # Test path: mock transport returns structured result
         result = http_client(url)
@@ -572,19 +584,28 @@ def execute_governed_broker_url_capture(
         opener = urllib.request.build_opener(redirect_handler)
         req = urllib.request.Request(url, method="GET")
         req.add_header("User-Agent", "AurumIQ-GovernedBrokerCapture/1.0")
-        response = opener.open(req, timeout=BROKER_CAPTURE_TIMEOUT_SECONDS)
+        response = opener.open(req, timeout=transport_timeout)
         final_url = response.url
         http_status = response.status
         content_type = response.headers.get("Content-Type", "")
-        response_bytes = response.read(MAX_BROKER_RESPONSE_BYTES + 1)
+        response_bytes = response.read(transport_max_bytes + 1)
         redirect_chain = list(redirect_handler.redirect_chain)
 
     # 2. Post-transport validation (always runs — exercises validation logic in tests too)
+    # Determine effective maximum response bytes based on validated final hostname
+    final_parsed = urllib.parse.urlparse(final_url)
+    final_hostname = (final_parsed.hostname or "").lower()
+    effective_max_bytes = (
+        MAX_TICK_ARCHIVE_RESPONSE_BYTES
+        if final_hostname == "ticks.ex2archive.com"
+        else MAX_BROKER_RESPONSE_BYTES
+    )
+
     # Response size bound
-    if len(response_bytes) > MAX_BROKER_RESPONSE_BYTES:
+    if len(response_bytes) > effective_max_bytes:
         raise ValueError(
             f"BROKER_CAPTURE_ERROR: Response size ({len(response_bytes)} bytes) exceeds maximum "
-            f"permitted size ({MAX_BROKER_RESPONSE_BYTES} bytes)."
+            f"permitted size ({effective_max_bytes} bytes)."
         )
 
     # Redirect count bound
@@ -640,6 +661,7 @@ def create_verified_broker_capture_attestation(
     expected_venue: str = "EXNESS",
     expected_account_tier: str = "STANDARD",
     verifier_identity: str = "AURUMIQ_OFFICIAL_BROKER_URL_CAPTURE_WORKFLOW",
+    expected_broker_symbol: Optional[str] = None,
 ) -> Any:
     """Create VERIFIED broker URL capture attestation from governed capture receipt.
 
@@ -739,6 +761,26 @@ def create_verified_broker_capture_attestation(
             raise ValueError(
                 f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
             )
+    elif norm_role == "SPREAD_DATASET":
+        from apps.market_data.friction.tick_parser import parse_exness_official_tick_history
+        ticks_data, summary = parse_exness_official_tick_history(
+            capture_receipt.response_bytes,
+            expected_symbol=expected_symbol,
+            expected_broker_symbol=expected_broker_symbol,
+            expected_account_tier=expected_account_tier,
+        )
+        derived_symbol = str(summary.get("symbol") or expected_symbol)
+        derived_broker_symbol = str(summary.get("broker_symbol") or expected_broker_symbol or "")
+        derived_tier = str(expected_account_tier)
+        derived_venue = str(summary.get("venue") or "EXNESS")
+        if derived_symbol.upper() != expected_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived symbol '{derived_symbol}' != expected '{expected_symbol}'."
+            )
+        if expected_broker_symbol and derived_broker_symbol.upper() != expected_broker_symbol.upper():
+            raise ValueError(
+                f"URL_CAPTURE_SCOPE_MISMATCH: Derived broker symbol '{derived_broker_symbol}' != expected '{expected_broker_symbol}'."
+            )
     else:
         raise ValueError(
             f"URL_CAPTURE_ERROR: Unsupported component role '{component_role}' for official broker URL capture."
@@ -759,7 +801,19 @@ def create_verified_broker_capture_attestation(
 
     captured_at = capture_receipt.captured_at
     captured_iso = captured_at.isoformat()
-    source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+
+    if norm_role == "SPREAD_DATASET":
+        source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
+    else:
+        source_type = FrictionSourceType.OFFICIAL_BROKER_DOCUMENT.value
+        collection_method = "GOVERNED_BROKER_URL_CAPTURE"
+
+    if source_snapshot.source_type not in (source_type, FrictionSourceType.USER_PROVIDED_UNVERIFIED.value):
+        raise ValueError(
+            f"URL_CAPTURE_ERROR: Snapshot source_type '{source_snapshot.source_type}' mismatch with "
+            f"expected '{source_type}' for role '{norm_role}'."
+        )
 
     # Build provenance metadata with all capture context fields
     capture_metadata = {
@@ -812,7 +866,7 @@ def create_verified_broker_capture_attestation(
         component_role=norm_role,
         source_origin=capture_receipt.final_url,
         source_type=source_type,
-        collection_methodology="GOVERNED_BROKER_URL_CAPTURE",
+        collection_methodology=collection_method,
         captured_at=captured_at,
         reviewed_at=datetime.now(timezone.utc),
         verification_method=FrictionVerificationMethod.BROKER_OFFICIAL_URL_CAPTURE.value,
