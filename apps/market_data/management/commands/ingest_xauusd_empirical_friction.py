@@ -36,6 +36,9 @@ from apps.market_data.friction.distribution import (
     validate_slippage_telemetry_sufficiency,
     validate_spread_dataset_sufficiency,
 )
+from apps.market_data.friction.validation import (
+    validate_source_qualification_assertion,
+)
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.ingestion import (
     build_and_bind_friction_model_version,
@@ -962,8 +965,13 @@ class Command(BaseCommand):
 
         # 5. Spread Evidence (Directives 3, 6, 12: Strict Lifecycle FILE -> PARSED -> SCHEMA -> SUFFICIENT -> PERSISTED -> VERIFIED)
         spread_status = "SPREAD_EMPIRICAL_EVIDENCE_MISSING"
+        spread_snapshot: Optional[FrictionSourceSnapshot] = None
         spread_dataset: Optional[FrictionEvidenceDataset] = None
+        spread_att_obj: Optional[FrictionSourceProvenanceAttestation] = None
+        spread_assertion: Optional[FrictionSourceQualificationAssertion] = None
         spread_ticks: Optional[List[Dict[str, Any]]] = None
+        spread_stats: Optional[Dict[str, Any]] = None
+        summary_meta: Optional[Dict[str, Any]] = None
 
         if tick_url:
             self.stdout.write(f"Executing governed broker URL capture for tick history: {tick_url}...")
@@ -971,9 +979,22 @@ class Command(BaseCommand):
                 execute_governed_broker_url_capture,
                 create_verified_broker_capture_attestation,
             )
-            try:
-                capture_receipt = execute_governed_broker_url_capture(tick_url)
-                tick_bytes = capture_receipt.response_bytes
+            # Check if an existing governed snapshot with matching raw content already exists in DB
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                source_url=tick_url,
+                source_type=FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
+            ).first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Reusing existing governed snapshot: {existing_snap.snapshot_id} (SHA256: {existing_snap.raw_payload_bytes_sha256})")
+                spread_snapshot = existing_snap
+                tick_bytes = bytes(existing_snap.raw_content)
                 tick_source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
                 tick_source_name = "EXNESS_OFFICIAL_TICK_HISTORY"
                 tick_collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
@@ -986,7 +1007,6 @@ class Command(BaseCommand):
                 )
                 spread_ticks = ticks_data
 
-                # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
                 is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
                 if not is_valid_spread:
                     spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
@@ -998,59 +1018,128 @@ class Command(BaseCommand):
                         spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
                         reasons.append(f"Spread distribution invalid: p75={spread_stats['stat_p75']}, p95={spread_stats['stat_p95']}")
                     else:
-                        if dry_run:
-                            spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
-                        else:
-                            parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
-                            orig_fn = os.path.basename(parsed_path) or "official_ticks.zip"
-                            snap, _ = ingest_friction_source_snapshot(
-                                source_url=capture_receipt.final_url,
-                                source_name=tick_source_name,
-                                venue=venue,
-                                symbol=symbol,
-                                account_tier=account_tier,
-                                retrieved_at=capture_receipt.captured_at,
-                                known_at=capture_receipt.captured_at,
-                                raw_content=tick_bytes,
-                                metadata=summary_meta,
-                                source_type=tick_source_type,
-                                source_origin=capture_receipt.final_url,
-                                collection_methodology=tick_collection_method,
-                                original_filename=orig_fn,
-                            )
-                            spread_dataset, _ = ingest_friction_evidence_dataset(
-                                source_snapshot=snap,
-                                venue=venue,
-                                account_tier=account_tier,
-                                symbol=symbol,
-                                sample_start=summary_meta["sample_start"],
-                                sample_end=summary_meta["sample_end"],
-                                ticks_data=ticks_data,
-                            )
-                            spread_att_obj = create_verified_broker_capture_attestation(
-                                source_snapshot=snap,
-                                component_role="SPREAD_DATASET",
-                                capture_receipt=capture_receipt,
+                        spread_dataset = FrictionEvidenceDataset.objects.filter(source_snapshot=spread_snapshot).first()
+                        spread_att_obj = spread_snapshot.provenance_attestations.filter(
+                            component_role="SPREAD_DATASET",
+                            attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                        ).first()
+                        spread_assertion = spread_snapshot.qualification_assertions.filter(
+                            component_role="SPREAD_DATASET",
+                        ).order_by("-asserted_at").first()
+
+                        if spread_assertion and spread_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                            is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                snapshot=spread_snapshot,
+                                assertion=spread_assertion,
+                                expected_component_role="SPREAD_DATASET",
+                                expected_parser=tick_parser_name,
                                 expected_symbol=symbol,
-                                expected_venue=venue,
                                 expected_account_tier=account_tier,
+                                expected_venue=venue,
                                 expected_broker_symbol=broker_symbol,
                             )
-                            create_friction_qualification_assertion(
-                                source_snapshot=snap,
-                                provenance_attestation=spread_att_obj,
-                                component_role="SPREAD_DATASET",
-                                qualification_status=FrictionQualificationStatus.QUALIFIED.value,
-                                parser_name=tick_parser_name,
-                                parser_version="1.0.0",
-                                normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
-                                qualification_reason="Verified by official Exness tick archive governed URL capture and provenance attestation",
-                            )
+                            if is_val and not val_reasons:
+                                spread_status = FrictionQualificationStatus.QUALIFIED.value
+                            else:
+                                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                                reasons.extend(val_reasons)
+                        else:
                             spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
-            except Exception as e:
-                self.stdout.write(self.style.WARNING(f"Could not execute governed tick capture: {e}"))
-                spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
-                reasons.append(f"Governed tick capture failure: {e}")
+            else:
+                try:
+                    capture_receipt = execute_governed_broker_url_capture(tick_url)
+                    tick_bytes = capture_receipt.response_bytes
+                    tick_source_type = FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+                    tick_source_name = "EXNESS_OFFICIAL_TICK_HISTORY"
+                    tick_collection_method = "EXNESS_OFFICIAL_TICK_ARCHIVE"
+                    tick_parser_name = "parse_exness_official_tick_history"
+                    ticks_data, summary_meta = parse_exness_official_tick_history(
+                        tick_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                    spread_ticks = ticks_data
+
+                    # SAMPLE_SUFFICIENT (N >= 1000, 5 distinct days, ASIAN/LONDON/NY >= 100, ROLLOVER >= 30)
+                    is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                    if not is_valid_spread:
+                        spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                        reasons.extend(spread_errors)
+                    else:
+                        spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                        spread_stats = compute_distribution_statistics(spread_bps_list)
+                        if spread_stats["stat_p75"] <= Decimal("0") or spread_stats["stat_p95"] < spread_stats["stat_p75"]:
+                            spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                            reasons.append(f"Spread distribution invalid: p75={spread_stats['stat_p75']}, p95={spread_stats['stat_p95']}")
+                        else:
+                            if dry_run:
+                                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                            else:
+                                parsed_path = urllib.parse.urlparse(capture_receipt.final_url).path
+                                orig_fn = os.path.basename(parsed_path) or "official_ticks.zip"
+                                spread_snapshot, _ = ingest_friction_source_snapshot(
+                                    source_url=capture_receipt.final_url,
+                                    source_name=tick_source_name,
+                                    venue=venue,
+                                    symbol=symbol,
+                                    account_tier=account_tier,
+                                    retrieved_at=capture_receipt.captured_at,
+                                    known_at=capture_receipt.captured_at,
+                                    raw_content=tick_bytes,
+                                    metadata=summary_meta,
+                                    source_type=tick_source_type,
+                                    source_origin=capture_receipt.final_url,
+                                    collection_methodology=tick_collection_method,
+                                    original_filename=orig_fn,
+                                )
+                                spread_dataset, _ = ingest_friction_evidence_dataset(
+                                    source_snapshot=spread_snapshot,
+                                    venue=venue,
+                                    account_tier=account_tier,
+                                    symbol=symbol,
+                                    sample_start=summary_meta["sample_start"],
+                                    sample_end=summary_meta["sample_end"],
+                                    ticks_data=ticks_data,
+                                )
+                                spread_att_obj = create_verified_broker_capture_attestation(
+                                    source_snapshot=spread_snapshot,
+                                    component_role="SPREAD_DATASET",
+                                    capture_receipt=capture_receipt,
+                                    expected_symbol=symbol,
+                                    expected_venue=venue,
+                                    expected_account_tier=account_tier,
+                                    expected_broker_symbol=broker_symbol,
+                                )
+                                spread_assertion = create_friction_qualification_assertion(
+                                    source_snapshot=spread_snapshot,
+                                    provenance_attestation=spread_att_obj,
+                                    component_role="SPREAD_DATASET",
+                                    qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                                    parser_name=tick_parser_name,
+                                    parser_version="1.0.0",
+                                    normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
+                                    qualification_reason="Verified by official Exness tick archive governed URL capture and provenance attestation",
+                                )
+                                is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                    snapshot=spread_snapshot,
+                                    assertion=spread_assertion,
+                                    expected_component_role="SPREAD_DATASET",
+                                    expected_parser=tick_parser_name,
+                                    expected_symbol=symbol,
+                                    expected_account_tier=account_tier,
+                                    expected_venue=venue,
+                                    expected_broker_symbol=broker_symbol,
+                                )
+                                if is_val and not val_reasons:
+                                    spread_status = FrictionQualificationStatus.QUALIFIED.value
+                                else:
+                                    spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                                    reasons.extend(val_reasons)
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f"Could not execute governed tick capture: {e}"))
+                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                    reasons.append(f"Governed tick capture failure: {e}")
         elif tick_file:
             if not os.path.isfile(tick_file):
                 spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
@@ -1061,8 +1150,9 @@ class Command(BaseCommand):
                     tick_bytes = f.read()
                 try:
                     # PARSED + SCHEMA_VALID
-                    first_line = tick_bytes[:256].decode("utf-8", errors="ignore").splitlines()[0] if tick_bytes else ""
-                    is_exness_official = "exness" in first_line.lower() and "bid" in first_line.lower() and "ask" in first_line.lower()
+                    is_zip = (tick_file and tick_file.lower().endswith(".zip")) or (tick_bytes[:4] == b"PK\x03\x04")
+                    first_line = tick_bytes[:256].decode("utf-8", errors="ignore").splitlines()[0] if (tick_bytes and not is_zip) else ""
+                    is_exness_official = is_zip or ("exness" in first_line.lower() and "bid" in first_line.lower() and "ask" in first_line.lower())
                     if is_exness_official:
                         ticks_data, summary_meta = parse_exness_official_tick_history(
                             tick_bytes,
@@ -1102,7 +1192,7 @@ class Command(BaseCommand):
                             if dry_run:
                                 spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                             else:
-                                snap, _ = ingest_friction_source_snapshot(
+                                spread_snapshot, _ = ingest_friction_source_snapshot(
                                     source_url=f"file://{os.path.abspath(tick_file)}",
                                     source_name=tick_source_name,
                                     venue=venue,
@@ -1118,7 +1208,7 @@ class Command(BaseCommand):
                                     original_filename=os.path.basename(tick_file),
                                 )
                                 spread_dataset, _ = ingest_friction_evidence_dataset(
-                                    source_snapshot=snap,
+                                    source_snapshot=spread_snapshot,
                                     venue=venue,
                                     account_tier=account_tier,
                                     symbol=symbol,
@@ -1138,7 +1228,7 @@ class Command(BaseCommand):
                                     )
                                     if is_att_valid and att_dict:
                                         spread_att_obj = create_friction_provenance_attestation(
-                                            source_snapshot=snap,
+                                            source_snapshot=spread_snapshot,
                                             component_role="SPREAD_DATASET",
                                             verification_method=att_dict["verification_method"],
                                             verifier_identity=att_dict["verifier_identity"],
@@ -1153,8 +1243,8 @@ class Command(BaseCommand):
                                             account_tier=account_tier,
                                             provenance_metadata=att_dict.get("provenance_metadata") or {},
                                         )
-                                create_friction_qualification_assertion(
-                                    source_snapshot=snap,
+                                spread_assertion = create_friction_qualification_assertion(
+                                    source_snapshot=spread_snapshot,
                                     provenance_attestation=spread_att_obj,
                                     component_role="SPREAD_DATASET",
                                     qualification_status=FrictionQualificationStatus.QUALIFIED.value if spread_att_obj is not None else FrictionQualificationStatus.UNVERIFIED.value,
@@ -1163,13 +1253,100 @@ class Command(BaseCommand):
                                     normalized_evidence_hash=compute_normalized_evidence_hash({"raw_dataset_sha256": spread_dataset.raw_dataset_sha256}),
                                     qualification_reason=f"Verified by authoritative {tick_source_name} parser and provenance attestation" if spread_att_obj is not None else f"Unattested {tick_source_name}",
                                 )
-                                spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                                if spread_att_obj is not None and spread_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                                    is_val, val_reasons, _ = validate_source_qualification_assertion(
+                                        snapshot=spread_snapshot,
+                                        assertion=spread_assertion,
+                                        expected_component_role="SPREAD_DATASET",
+                                        expected_parser=tick_parser_name,
+                                        expected_symbol=symbol,
+                                        expected_account_tier=account_tier,
+                                        expected_venue=venue,
+                                        expected_broker_symbol=broker_symbol,
+                                    )
+                                    if is_val and not val_reasons:
+                                        spread_status = FrictionQualificationStatus.QUALIFIED.value
+                                    else:
+                                        spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                                        reasons.extend(val_reasons)
+                                else:
+                                    spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
                 except Exception as e:
                     self.stdout.write(self.style.WARNING(f"Could not parse tick file: {e}"))
                     spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
                     reasons.append(f"Tick export parse failure: {e}")
-        else:
-            reasons.append("Tick history dataset missing (neither --tick-url nor --tick-file provided).")
+        elif not tick_url and not tick_file:
+            # Check for existing qualified snapshot in database
+            existing_snap = FrictionSourceSnapshot.objects.filter(
+                venue=venue,
+                symbol=symbol,
+                account_tier=account_tier,
+                qualification_assertions__component_role="SPREAD_DATASET",
+            ).order_by("-known_at").first()
+            if (
+                existing_snap
+                and existing_snap.raw_content
+                and hashlib.sha256(existing_snap.raw_content).hexdigest() == existing_snap.raw_payload_bytes_sha256
+            ):
+                self.stdout.write(f"Auditing existing persisted spread snapshot: {existing_snap.snapshot_id}")
+                spread_snapshot = existing_snap
+                tick_bytes = bytes(existing_snap.raw_content)
+                tick_parser_name = (
+                    "parse_exness_official_tick_history"
+                    if existing_snap.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+                    else "parse_mt5_tick_export"
+                )
+                if tick_parser_name == "parse_exness_official_tick_history":
+                    ticks_data, summary_meta = parse_exness_official_tick_history(
+                        tick_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                else:
+                    ticks_data, summary_meta = parse_mt5_tick_export(
+                        tick_bytes,
+                        expected_symbol=symbol,
+                        expected_broker_symbol=broker_symbol,
+                        expected_account_tier=account_tier,
+                    )
+                spread_ticks = ticks_data
+                spread_dataset = FrictionEvidenceDataset.objects.filter(source_snapshot=spread_snapshot).first()
+                spread_att_obj = spread_snapshot.provenance_attestations.filter(
+                    component_role="SPREAD_DATASET",
+                    attestation_status=FrictionAttestationStatus.VERIFIED.value,
+                ).first()
+                spread_assertion = spread_snapshot.qualification_assertions.filter(
+                    component_role="SPREAD_DATASET",
+                ).order_by("-asserted_at").first()
+
+                is_valid_spread, spread_errors = validate_spread_dataset_sufficiency(ticks_data)
+                if not is_valid_spread:
+                    spread_status = "SPREAD_EMPIRICAL_EVIDENCE_INVALID"
+                    reasons.extend(spread_errors)
+                else:
+                    spread_bps_list = [t["spread_bps"] for t in ticks_data]
+                    spread_stats = compute_distribution_statistics(spread_bps_list)
+                    if spread_assertion and spread_assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value:
+                        is_val, val_reasons, _ = validate_source_qualification_assertion(
+                            snapshot=spread_snapshot,
+                            assertion=spread_assertion,
+                            expected_component_role="SPREAD_DATASET",
+                            expected_parser=tick_parser_name,
+                            expected_symbol=symbol,
+                            expected_account_tier=account_tier,
+                            expected_venue=venue,
+                            expected_broker_symbol=broker_symbol,
+                        )
+                        if is_val and not val_reasons:
+                            spread_status = FrictionQualificationStatus.QUALIFIED.value
+                        else:
+                            spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+                            reasons.extend(val_reasons)
+                    else:
+                        spread_status = "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+            else:
+                reasons.append("Tick history dataset missing (neither --tick-url nor --tick-file provided).")
 
         # 6. Slippage Telemetry (Directives 3, 7, 8, 11, 12: Strict Lifecycle)
         slippage_status = "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING"
@@ -1286,7 +1463,7 @@ class Command(BaseCommand):
             and contract_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and commission_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
             and financing_status == "OFFICIAL_CONTRACT_EVIDENCE_AVAILABLE"
-            and spread_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+            and spread_status == "QUALIFIED"
             and slippage_status == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
         )
 
@@ -1403,8 +1580,12 @@ class Command(BaseCommand):
                 },
                 "bid_ask_spread_distribution": {
                     "status": spread_status,
-                    "source_file": tick_file,
-                    "sample_count": len(spread_ticks) if spread_ticks else 0,
+                    "source_file": tick_file or getattr(spread_snapshot, "source_url", None),
+                    "sample_count": len(spread_ticks) if spread_ticks else (spread_dataset.sample_count if spread_dataset else 0),
+                    "source_type": getattr(spread_snapshot, "source_type", None),
+                    "verification_method": getattr(spread_att_obj, "verification_method", None) or (spread_snapshot.provenance_attestations.filter(component_role="SPREAD_DATASET").first().verification_method if spread_snapshot and spread_snapshot.provenance_attestations.filter(component_role="SPREAD_DATASET").exists() else None),
+                    "raw_response_sha256": getattr(spread_snapshot, "raw_payload_bytes_sha256", None),
+                    "broker_symbol": broker_symbol or (getattr(spread_snapshot, "symbol", None)),
                 },
                 "execution_slippage_telemetry": {
                     "status": slippage_status,
@@ -1421,34 +1602,173 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Saved manifest: {manifest_path}"))
 
         # 9. Generate Markdown Audit Report
+        if spread_status == "QUALIFIED":
+            exec_summary_text = (
+                f"In accordance with Pre-Phase-8 Empirical Friction Calibration Hardening Governance (Directives 1-18), "
+                f"execution frictions for `{symbol}` under target venue `{venue}` have been evaluated strictly against "
+                f"genuine, persisted evidence with **ZERO silent defaults**.\n\n"
+                f"The architecture closes all evidence-completeness loopholes:\n"
+                f"- Removes all silent fallback defaults for contract geometry, commissions, and swap points.\n"
+                f"- Enforces genuine source snapshots for legal entity, contract spec, commission schedules, and financing policies.\n"
+                f"- Integrates production parsers for official Exness tick archives and MT5 execution telemetry.\n"
+                f"- Enforces **MANDATORY execution slippage telemetry** (`SLIPPAGE_IS_MANDATORY = TRUE`).\n"
+                f"- Prohibits incomplete models from receiving `ACTIVE` activation (downgraded to `DRAFT`).\n"
+                f"- Enforces point-in-time activation resolution with scope validation.\n\n"
+                f"Empirical bid/ask spread evidence has been **QUALIFIED** via official Exness tick archive "
+                f"governed URL capture with verified provenance. Because genuine execution telemetry fills, "
+                f"contract geometry specifications, commission schedules, financing policies, and account-specific "
+                f"legal agreements have not yet been ingested into the governed production environment, "
+                f"the platform strictly enforces **FAIL-CLOSED** semantics:"
+            )
+            # Fail closed: strictly extract persisted and derived evidence with ZERO hardcoded campaign fallbacks
+            if not spread_snapshot:
+                raise ValueError("Fail-closed: spread_status is QUALIFIED but spread_snapshot is None")
+
+            raw_sha = getattr(spread_snapshot, "raw_payload_bytes_sha256", None)
+            if not raw_sha:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing raw_payload_bytes_sha256 on snapshot")
+
+            s_type = getattr(spread_snapshot, "source_type", None)
+            if not s_type:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing source_type on snapshot")
+
+            v_method = getattr(spread_att_obj, "verification_method", None)
+            if not v_method and spread_snapshot:
+                att = spread_snapshot.provenance_attestations.filter(component_role="SPREAD_DATASET").first()
+                v_method = getattr(att, "verification_method", None) if att else None
+            if not v_method:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing verification_method on attestation")
+
+            sample_cnt = len(spread_ticks) if spread_ticks else (spread_dataset.sample_count if spread_dataset else None)
+            if not sample_cnt or sample_cnt <= 0:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-positive sample_count")
+
+            dates_cnt = (summary_meta.get("distinct_trading_days") if summary_meta else None) or (spread_dataset.distinct_trading_days if spread_dataset else None)
+            if not dates_cnt or dates_cnt <= 0:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-positive distinct_trading_days")
+
+            raw_s_start = (summary_meta.get("sample_start") if summary_meta else None) or (spread_dataset.sample_start if spread_dataset else None)
+            if not raw_s_start or not hasattr(raw_s_start, "isoformat"):
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_start")
+            s_start = raw_s_start.isoformat()
+
+            raw_s_end = (summary_meta.get("sample_end") if summary_meta else None) or (spread_dataset.sample_end if spread_dataset else None)
+            if not raw_s_end or not hasattr(raw_s_end, "isoformat"):
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing or non-datetime sample_end")
+            s_end = raw_s_end.isoformat()
+
+            sess_counts = (
+                (spread_dataset.session_counts if spread_dataset and spread_dataset.session_counts else None)
+                or (summary_meta.get("session_counts") if summary_meta and summary_meta.get("session_counts") else None)
+                or {}
+            )
+            if not sess_counts and spread_ticks:
+                sess_counts = {"ASIAN": 0, "LONDON": 0, "NEW_YORK": 0, "ROLLOVER": 0}
+                for t in spread_ticks:
+                    hr = t["timestamp"].astimezone(timezone.utc).hour
+                    if 0 <= hr < 8:
+                        sess_counts["ASIAN"] += 1
+                    elif 8 <= hr < 13:
+                        sess_counts["LONDON"] += 1
+                    elif 13 <= hr < 21:
+                        sess_counts["NEW_YORK"] += 1
+                    else:
+                        sess_counts["ROLLOVER"] += 1
+
+            for req_sess in ("ASIAN", "LONDON", "NEW_YORK", "ROLLOVER"):
+                if req_sess not in sess_counts:
+                    raise ValueError(f"Fail-closed: QUALIFIED spread evidence missing session count for {req_sess}")
+
+            if not spread_stats:
+                raise ValueError("Fail-closed: QUALIFIED spread evidence missing spread distribution statistics")
+            for req_stat in ("stat_min", "stat_p50", "stat_p75", "stat_p90", "stat_p95", "stat_p99", "stat_max"):
+                if req_stat not in spread_stats:
+                    raise ValueError(f"Fail-closed: QUALIFIED spread evidence missing distribution statistic {req_stat}")
+
+            effective_broker_symbol = broker_symbol or getattr(spread_snapshot, "symbol", None) or "UNKNOWN"
+
+            spread_finding = (
+                f"Directive 6: Verified via official Exness tick archive governed URL capture "
+                f"($N = {sample_cnt:,}$, "
+                f"$\\ge 5$ distinct dates, 4 sessions satisfied)."
+            )
+
+            spread_detail_section = f"""### Spread Evidence Qualification Record
+
+| Metric | Evidence Truth Value |
+| :--- | :--- |
+| **SPREAD EVIDENCE** | `QUALIFIED` |
+| **SOURCE TYPE** | `{s_type}` |
+| **VERIFICATION METHOD** | `{v_method}` |
+| **BROKER SYMBOL** | `{effective_broker_symbol}` |
+| **RAW SHA256** | `{raw_sha}` |
+| **SAMPLE COUNT** | `{sample_cnt}` |
+| **DISTINCT TRADING DATES** | `{dates_cnt}` |
+| **SAMPLE START** | `{s_start}` |
+| **SAMPLE END** | `{s_end}` |
+
+#### Session Counts
+- **ASIAN:** `{sess_counts['ASIAN']}`
+- **LONDON:** `{sess_counts['LONDON']}`
+- **NEW_YORK:** `{sess_counts['NEW_YORK']}`
+- **ROLLOVER:** `{sess_counts['ROLLOVER']}`
+
+#### Spread Distribution (bps)
+- **MIN:** `{spread_stats['stat_min']:.6f}`
+- **P50:** `{spread_stats['stat_p50']:.6f}`
+- **P75:** `{spread_stats['stat_p75']:.6f}`
+- **P90:** `{spread_stats['stat_p90']:.6f}`
+- **P95:** `{spread_stats['stat_p95']:.6f}`
+- **P99:** `{spread_stats['stat_p99']:.6f}`
+- **MAX:** `{spread_stats['stat_max']:.6f}`
+"""
+            next_steps_text = """1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
+2. Provide authoritative MT5 contract specification snapshot.
+3. Provide authoritative MT5 fee schedule snapshot.
+4. Provide authoritative MT5 financing swap schedule snapshot.
+5. Provide authentic Exness MT5 execution telemetry fills ($N \\ge 30$)."""
+        else:
+            exec_summary_text = (
+                f"In accordance with Pre-Phase-8 Empirical Friction Calibration Hardening Governance (Directives 1-18), "
+                f"execution frictions for `{symbol}` under target venue `{venue}` have been evaluated strictly against "
+                f"genuine, persisted evidence with **ZERO silent defaults**.\n\n"
+                f"The architecture closes all evidence-completeness loopholes:\n"
+                f"- Removes all silent fallback defaults for contract geometry, commissions, and swap points.\n"
+                f"- Enforces genuine source snapshots for legal entity, contract spec, commission schedules, and financing policies.\n"
+                f"- Integrates production parsers for MT5 tick exports and MT5 execution telemetry.\n"
+                f"- Enforces **MANDATORY execution slippage telemetry** (`SLIPPAGE_IS_MANDATORY = TRUE`).\n"
+                f"- Prohibits incomplete models from receiving `ACTIVE` activation (downgraded to `DRAFT`).\n"
+                f"- Enforces point-in-time activation resolution with scope validation.\n\n"
+                f"Because genuine MT5 tick history exports, telemetry fills, and account-specific legal agreements "
+                f"have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:"
+            )
+            spread_finding = "Directive 6: Requires verified MT5 tick export ($N \\ge 1000$, $\\ge 5$ distinct dates, 4 sessions)."
+            spread_detail_section = ""
+            next_steps_text = """1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
+2. Provide authoritative MT5 contract specification snapshot.
+3. Provide authoritative MT5 fee schedule snapshot.
+4. Provide authoritative MT5 financing swap schedule snapshot.
+5. Provide authentic Exness MT5 tick history export covering $\\ge 5$ distinct trading days and all 4 sessions.
+6. Provide authentic Exness MT5 execution telemetry fills ($N \\ge 30$)."""
+
         report_md = f"""# AURUMIQ — XAUUSD EMPIRICAL FRICTION EVIDENCE AUDIT REPORT
 
-> **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal  
-> **Execution Venue:** `{venue}`  
-> **Execution Account Tier:** `{account_tier}`  
-> **Canonical Market Symbol:** `XAUUSD`  
-> **Execution Broker Symbol:** `{broker_symbol or 'UNKNOWN'}`  
-> **Account Currency:** `{account_currency or 'UNKNOWN'}`  
-> **Audit Timestamp:** `{now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}`  
-> **Overall Friction Decision:** `{overall_status}`  
-> **Hard Readiness Gate:** `{gate_decision}`  
-> **Production Authority:** `FALSE / 0.0 / WAIT`  
+> **Protocol Version:** Pre-Phase-8 Empirical Friction Hardening Seal
+> **Execution Venue:** `{venue}`
+> **Execution Account Tier:** `{account_tier}`
+> **Canonical Market Symbol:** `XAUUSD`
+> **Execution Broker Symbol:** `{broker_symbol or 'UNKNOWN'}`
+> **Account Currency:** `{account_currency or 'UNKNOWN'}`
+> **Audit Timestamp:** `{now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}`
+> **Overall Friction Decision:** `{overall_status}`
+> **Hard Readiness Gate:** `{gate_decision}`
+> **Production Authority:** `FALSE / 0.0 / WAIT`
 
 ---
 
 ## 1. Executive Summary
 
-In accordance with Pre-Phase-8 Empirical Friction Calibration Hardening Governance (Directives 1-18), execution frictions for `{symbol}` under target venue `{venue}` have been evaluated strictly against genuine, persisted evidence with **ZERO silent defaults**.
-
-The architecture closes all evidence-completeness loopholes:
-- Removes all silent fallback defaults for contract geometry, commissions, and swap points.
-- Enforces genuine source snapshots for legal entity, contract spec, commission schedules, and financing policies.
-- Integrates production parsers for MT5 tick exports and MT5 execution telemetry.
-- Enforces **MANDATORY execution slippage telemetry** (`SLIPPAGE_IS_MANDATORY = TRUE`).
-- Prohibits incomplete models from receiving `ACTIVE` activation (downgraded to `DRAFT`).
-- Enforces point-in-time activation resolution with scope validation.
-
-Because genuine MT5 tick history exports, telemetry fills, and account-specific legal agreements have not yet been ingested into the governed production environment, the platform strictly enforces **FAIL-CLOSED** semantics:
+{exec_summary_text}
 
 ```text
 STATUS:   EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED
@@ -1467,9 +1787,10 @@ DECISION: WAIT
 | **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `{contract_status}` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
 | **Commission Policy** | `commission_usd_per_lot_per_side` | `{commission_status}` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
 | **Financing Policy** | Swap points, rollover schedule | `{financing_status}` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
-| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `{spread_status}` | Directive 6: Requires verified MT5 tick export ($N \\ge 1000$, $\\ge 5$ distinct dates, 4 sessions). |
+| **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `{spread_status}` | {spread_finding} |
 | **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `{slippage_status}` | Directives 7 & 8: Directional slippage telemetry is MANDATORY ($N \\ge 30$). |
 
+{spread_detail_section}
 ---
 
 ## 3. Prior Evidence Invariance Verification
@@ -1485,12 +1806,7 @@ Prior frozen evidence remains 100% bit-for-bit invariant:
 ## 4. Next Steps for Unblocking
 
 To advance from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` to `CANDLES_READY_QUOTE_EVIDENCE_MISSING`:
-1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
-2. Provide authoritative MT5 contract specification snapshot.
-3. Provide authoritative MT5 fee schedule snapshot.
-4. Provide authoritative MT5 financing swap schedule snapshot.
-5. Provide authentic Exness MT5 tick history export covering $\\ge 5$ distinct trading days and all 4 sessions.
-6. Provide authentic Exness MT5 execution telemetry fills ($N \\ge 30$).
+{next_steps_text}
 """
 
         os.makedirs(os.path.dirname(report_path), exist_ok=True)

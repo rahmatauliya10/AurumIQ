@@ -1,0 +1,74 @@
+{
+  "manifest_schema_version": "3.2.0",
+  "venue": "EXNESS",
+  "account_tier": "STANDARD_CENT",
+  "symbol": "XAUUSD",
+  "canonical_symbol": "XAUUSD",
+  "broker_symbol": "XAUUSDc",
+  "account_currency": null,
+  "audit_timestamp": "2026-09-08T09:42:01Z",
+  "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
+  "hard_readiness_gate": {
+    "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
+    "passed": false,
+    "is_production_authorized": false,
+    "phase3b_production_weight": 0.0,
+    "published_decision": "WAIT"
+  },
+  "evidence_inventory": {
+    "legal_entity_scope": {
+      "status": "LEGAL_ENTITY_EVIDENCE_MISSING",
+      "legal_entity_code": null,
+      "regulator": null,
+      "license_number": null
+    },
+    "contract_geometry": {
+      "status": "CONTRACT_SPEC_EVIDENCE_MISSING",
+      "broker_symbol": "XAUUSDc",
+      "digits": null,
+      "point_size": null,
+      "trade_tick_size": null,
+      "trade_tick_value": null,
+      "contract_size": null,
+      "volume_min": null,
+      "volume_max": null,
+      "volume_step": null
+    },
+    "commission_policy": {
+      "status": "COMMISSION_EVIDENCE_MISSING",
+      "account_tier": "STANDARD_CENT",
+      "account_currency": null,
+      "native_commission_usd_per_lot_per_side": null,
+      "commission_formula": null
+    },
+    "financing_policy": {
+      "status": "FINANCING_EVIDENCE_MISSING",
+      "swap_long_points": null,
+      "swap_short_points": null,
+      "rollover_schedule": null,
+      "triple_swap_weekday": null,
+      "actual_account_swap_free_status": null
+    },
+    "bid_ask_spread_distribution": {
+      "status": "QUALIFIED",
+      "source_file": "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/08/Exness_XAUUSDc_2026_08.zip",
+      "sample_count": 6493208,
+      "source_type": "EXNESS_OFFICIAL_TICK_HISTORY",
+      "verification_method": "BROKER_OFFICIAL_URL_CAPTURE",
+      "raw_response_sha256": "b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749",
+      "broker_symbol": "XAUUSDc"
+    },
+    "execution_slippage_telemetry": {
+      "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
+      "source_file": null,
+      "sample_count": 0
+    }
+  },
+  "blocking_reasons": [
+    "Legal entity evidence snapshot missing (--legal-entity-file is None).",
+    "Contract specification evidence snapshot missing (--contract-spec-file is None).",
+    "Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).",
+    "Financing/swap specification evidence snapshot missing (--swap-spec-file is None).",
+    "Execution slippage telemetry missing (--slippage-file is None)."
+  ]
+}
