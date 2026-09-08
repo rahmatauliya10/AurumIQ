@@ -776,3 +776,222 @@ def test_governed_broker_url_capture_host_aware_limits_untrusted_host():
     with pytest.raises(ValueError, match="is not in permitted broker domains"):
         execute_governed_broker_url_capture(url, http_client=lambda u: (b"", u, 200, "application/zip", []))
 
+
+# =============================================================================
+# 6. Spread Evidence Artifact Truth Regression Tests (Stage D2B Remediation)
+# =============================================================================
+
+@pytest.mark.django_db
+def test_regression_a_governed_spread_qualification_emits_qualified_manifest(monkeypatch):
+    """Test A: Governed official Exness capture with verified attestation & qualified assertion emits spread_status=QUALIFIED in manifest."""
+    import json
+    import tempfile
+    from django.core.management import call_command
+    import apps.market_data.friction.provenance as prov_module
+
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    raw_zip_bytes = _create_synthetic_zip_archive()
+    expected_sha = hashlib.sha256(raw_zip_bytes).hexdigest()
+
+    def mock_transport(target_url):
+        return (raw_zip_bytes, url, 200, "application/zip", [])
+
+    orig_capture = prov_module.execute_governed_broker_url_capture
+    monkeypatch.setattr(
+        prov_module,
+        "execute_governed_broker_url_capture",
+        lambda u: orig_capture(u, http_client=mock_transport),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--venue", "EXNESS",
+            "--account-tier", "STANDARD_CENT",
+            "--broker-symbol", "XAUUSDc",
+            "--tick-url", url,
+            "--output-manifest", manifest_path,
+            "--output-report", report_path,
+        )
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        spread_entry = manifest["evidence_inventory"]["bid_ask_spread_distribution"]
+        assert spread_entry["status"] == "QUALIFIED"
+        assert spread_entry["source_type"] == "EXNESS_OFFICIAL_TICK_HISTORY"
+        assert spread_entry["verification_method"] == "BROKER_OFFICIAL_URL_CAPTURE"
+        assert spread_entry["broker_symbol"] == "XAUUSDc"
+        assert spread_entry["raw_response_sha256"] == expected_sha
+        assert spread_entry["sample_count"] > 0
+    finally:
+        for p in [manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_regression_b_sample_sufficient_without_qualification_emits_sample_available():
+    """Test B: When sample is sufficient but unverified/unqualified, emitted spread status is EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE."""
+    import json
+    import tempfile
+    from django.core.management import call_command
+
+    raw_zip_bytes = _create_synthetic_zip_archive()
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tf_z, \
+         tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, \
+         tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        tf_z.write(raw_zip_bytes)
+        tf_z.flush()
+        zip_path = tf_z.name
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--venue", "EXNESS",
+            "--account-tier", "STANDARD_CENT",
+            "--broker-symbol", "XAUUSDc",
+            "--tick-file", zip_path,
+            "--output-manifest", manifest_path,
+            "--output-report", report_path,
+        )
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        spread_entry = manifest["evidence_inventory"]["bid_ask_spread_distribution"]
+        assert spread_entry["status"] == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+        assert spread_entry["status"] != "QUALIFIED"
+        assert spread_entry["sample_count"] > 0
+    finally:
+        for p in [zip_path, manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_regression_c_qualification_validator_failure_fails_closed_to_not_qualified(monkeypatch):
+    """Test C: If assertion is marked QUALIFIED but validator fails, command fails closed and does NOT emit QUALIFIED."""
+    import json
+    import tempfile
+    from django.core.management import call_command
+    import apps.market_data.friction.provenance as prov_module
+    import apps.market_data.management.commands.ingest_xauusd_empirical_friction as cmd_module
+
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    raw_zip_bytes = _create_synthetic_zip_archive()
+
+    def mock_transport(target_url):
+        return (raw_zip_bytes, url, 200, "application/zip", [])
+
+    orig_capture = prov_module.execute_governed_broker_url_capture
+    monkeypatch.setattr(
+        prov_module,
+        "execute_governed_broker_url_capture",
+        lambda u: orig_capture(u, http_client=mock_transport),
+    )
+
+    # Force validator to fail
+    monkeypatch.setattr(
+        cmd_module,
+        "validate_source_qualification_assertion",
+        lambda **kwargs: (False, ["Simulated qualification validation failure: tampered integrity"], {}),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--venue", "EXNESS",
+            "--account-tier", "STANDARD_CENT",
+            "--broker-symbol", "XAUUSDc",
+            "--tick-url", url,
+            "--output-manifest", manifest_path,
+            "--output-report", report_path,
+        )
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        spread_entry = manifest["evidence_inventory"]["bid_ask_spread_distribution"]
+        # Must NOT be QUALIFIED
+        assert spread_entry["status"] != "QUALIFIED"
+        assert spread_entry["status"] == "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE"
+        assert any("Simulated qualification validation failure" in r for r in manifest["blocking_reasons"])
+    finally:
+        for p in [manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@pytest.mark.django_db
+def test_regression_d_standard_cent_report_omits_stale_mt5_language_when_qualified(monkeypatch):
+    """Test D: Standard Cent report omits stale MT5 language and lists spread as qualified when official Exness capture passes."""
+    import tempfile
+    from django.core.management import call_command
+    import apps.market_data.friction.provenance as prov_module
+
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    raw_zip_bytes = _create_synthetic_zip_archive()
+
+    def mock_transport(target_url):
+        return (raw_zip_bytes, url, 200, "application/zip", [])
+
+    orig_capture = prov_module.execute_governed_broker_url_capture
+    monkeypatch.setattr(
+        prov_module,
+        "execute_governed_broker_url_capture",
+        lambda u: orig_capture(u, http_client=mock_transport),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    try:
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--venue", "EXNESS",
+            "--account-tier", "STANDARD_CENT",
+            "--broker-symbol", "XAUUSDc",
+            "--tick-url", url,
+            "--output-manifest", manifest_path,
+            "--output-report", report_path,
+        )
+        with open(report_path, "r", encoding="utf-8") as f:
+            report_content = f.read()
+
+        # Proves stale MT5 claims are removed
+        assert "Because genuine MT5 tick history exports" not in report_content
+        assert "Provide authentic Exness MT5 tick history export" not in report_content
+
+        # Proves truthful spread qualification is recorded
+        assert "Spread Evidence Qualification Record" in report_content
+        assert "EXNESS_OFFICIAL_TICK_HISTORY" in report_content
+        assert "BROKER_OFFICIAL_URL_CAPTURE" in report_content
+        assert "**SPREAD EVIDENCE** | `QUALIFIED`" in report_content
+
+        # Proves Next Steps does NOT claim spread or MT5 tick export is missing
+        assert "## 4. Next Steps for Unblocking" in report_content
+        next_steps_section = report_content.split("## 4. Next Steps for Unblocking")[-1]
+        assert "Bid-Ask Spread" not in next_steps_section
+        assert "MT5 tick export" not in next_steps_section
+        assert "tick history" not in next_steps_section
+
+        # Proves the 5 remaining missing categories ARE listed
+        assert "legal_entity_code" in next_steps_section
+        assert "contract specification snapshot" in next_steps_section
+        assert "fee schedule snapshot" in next_steps_section
+        assert "financing swap schedule snapshot" in next_steps_section
+        assert "execution telemetry fills" in next_steps_section
+    finally:
+        for p in [manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+

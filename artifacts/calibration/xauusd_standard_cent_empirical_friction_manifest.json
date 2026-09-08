@@ -6,7 +6,7 @@
   "canonical_symbol": "XAUUSD",
   "broker_symbol": "XAUUSDc",
   "account_currency": null,
-  "audit_timestamp": "2026-09-08T06:36:07Z",
+  "audit_timestamp": "2026-09-08T08:03:12Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
@@ -50,9 +50,13 @@
       "actual_account_swap_free_status": null
     },
     "bid_ask_spread_distribution": {
-      "status": "EMPIRICAL_SAMPLE_EVIDENCE_AVAILABLE",
-      "source_file": null,
-      "sample_count": 6493208
+      "status": "QUALIFIED",
+      "source_file": "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/08/Exness_XAUUSDc_2026_08.zip",
+      "sample_count": 6493208,
+      "source_type": "EXNESS_OFFICIAL_TICK_HISTORY",
+      "verification_method": "BROKER_OFFICIAL_URL_CAPTURE",
+      "raw_response_sha256": "b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749",
+      "broker_symbol": "XAUUSDc"
     },
     "execution_slippage_telemetry": {
       "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
