@@ -624,3 +624,155 @@ def test_management_command_governed_tick_url_capture(monkeypatch):
             if os.path.exists(p):
                 os.remove(p)
 
+
+@pytest.mark.django_db
+def test_management_command_governed_tick_url_capture_production_persistence(monkeypatch):
+    """Test ingest_xauusd_empirical_friction non-dry-run CLI creates genuine snapshots, attestations, and qualified assertions."""
+    import tempfile
+    from django.core.management import call_command
+    import apps.market_data.friction.provenance as prov_module
+    from apps.market_data.models import (
+        FrictionSourceSnapshot,
+        FrictionEvidenceDataset,
+        FrictionSourceProvenanceAttestation,
+        FrictionSourceQualificationAssertion,
+        FrictionSourceType,
+        FrictionQualificationStatus,
+    )
+    from apps.market_data.friction.validation import validate_source_qualification_assertion
+
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    raw_zip_bytes = _create_synthetic_zip_archive()
+    expected_sha = hashlib.sha256(raw_zip_bytes).hexdigest()
+
+    def mock_transport(target_url):
+        return (raw_zip_bytes, url, 200, "application/zip", [])
+
+    orig_capture = prov_module.execute_governed_broker_url_capture
+    monkeypatch.setattr(
+        prov_module,
+        "execute_governed_broker_url_capture",
+        lambda u: orig_capture(u, http_client=mock_transport),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf_m, tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf_r:
+        manifest_path = tf_m.name
+        report_path = tf_r.name
+
+    try:
+        # Run command WITHOUT --dry-run
+        call_command(
+            "ingest_xauusd_empirical_friction",
+            "--venue", "EXNESS",
+            "--account-tier", "STANDARD_CENT",
+            "--broker-symbol", "XAUUSDc",
+            "--tick-url", url,
+            "--output-manifest", manifest_path,
+            "--output-report", report_path,
+        )
+        assert os.path.exists(manifest_path)
+        assert os.path.exists(report_path)
+
+        # 1. FrictionSourceSnapshot assertion
+        snapshot = FrictionSourceSnapshot.objects.get(
+            venue="EXNESS",
+            symbol="XAUUSD",
+            account_tier="STANDARD_CENT",
+            source_type=FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
+        )
+        assert snapshot.account_tier == "STANDARD_CENT"
+        assert snapshot.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        assert snapshot.source_origin == url
+        assert snapshot.raw_payload_bytes_sha256 == expected_sha
+
+        # 2. FrictionEvidenceDataset assertion
+        dataset = FrictionEvidenceDataset.objects.get(source_snapshot=snapshot)
+        assert dataset.venue == "EXNESS"
+        assert dataset.account_tier == "STANDARD_CENT"
+        assert dataset.symbol == "XAUUSD"
+
+        # 3. FrictionSourceProvenanceAttestation assertion
+        attestation = FrictionSourceProvenanceAttestation.objects.get(source_snapshot=snapshot)
+        assert attestation.component_role == "SPREAD_DATASET"
+        assert attestation.attestation_status == "VERIFIED"
+        assert attestation.verification_method == "BROKER_OFFICIAL_URL_CAPTURE"
+        assert attestation.source_type == FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value
+        assert attestation.source_origin == url
+        assert attestation.raw_artifact_sha256 == expected_sha
+
+        # 4. FrictionSourceQualificationAssertion assertion
+        assertion = FrictionSourceQualificationAssertion.objects.get(source_snapshot=snapshot)
+        assert assertion.component_role == "SPREAD_DATASET"
+        assert assertion.qualification_status == FrictionQualificationStatus.QUALIFIED.value
+        assert assertion.parser_name == "parse_exness_official_tick_history"
+        assert assertion.provenance_attestation == attestation
+
+        # 5. Qualification assertion validation
+        is_valid, reasons, parsed_data = validate_source_qualification_assertion(
+            snapshot=snapshot,
+            assertion=assertion,
+            expected_component_role="SPREAD_DATASET",
+            expected_parser="parse_exness_official_tick_history",
+            expected_symbol="XAUUSD",
+            expected_account_tier="STANDARD_CENT",
+            expected_venue="EXNESS",
+            expected_broker_symbol="XAUUSDc",
+        )
+        assert is_valid is True, f"Qualification assertion invalid: {reasons}"
+        assert reasons == []
+    finally:
+        for p in [manifest_path, report_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# =============================================================================
+# 5. Host-Aware Capture Limits Tests
+# =============================================================================
+
+def test_governed_broker_url_capture_host_aware_limits_normal_broker():
+    """Normal broker document hosts enforce normal MAX_BROKER_RESPONSE_BYTES (10 MB)."""
+    url = "https://www.exness.com/legal/client-agreement.pdf"
+    oversized_bytes = b"X" * (11 * 1024 * 1024)  # 11 MB > 10 MB limit
+
+    def mock_transport(target_url):
+        return (oversized_bytes, url, 200, "application/pdf", [])
+
+    with pytest.raises(ValueError, match="exceeds maximum permitted size"):
+        execute_governed_broker_url_capture(url, http_client=mock_transport)
+
+    # Valid size (1 MB) passes
+    valid_bytes = b"X" * (1024 * 1024)
+    def mock_transport_valid(target_url):
+        return (valid_bytes, url, 200, "application/pdf", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_transport_valid)
+    assert len(receipt.response_bytes) == 1024 * 1024
+
+
+def test_governed_broker_url_capture_host_aware_limits_tick_archive():
+    """Official tick archive host ticks.ex2archive.com permits up to MAX_TICK_ARCHIVE_RESPONSE_BYTES (100 MB)."""
+    url = "https://ticks.ex2archive.com/ticks/XAUUSDc/2026/09/Exness_XAUUSDc_2026_09.zip"
+    large_bytes = b"P" * (15 * 1024 * 1024)  # 15 MB > 10 MB normal limit, but < 100 MB tick limit
+
+    def mock_transport(target_url):
+        return (large_bytes, url, 200, "application/zip", [])
+
+    receipt = execute_governed_broker_url_capture(url, http_client=mock_transport)
+    assert len(receipt.response_bytes) == 15 * 1024 * 1024
+
+    # Exceeding 100 MB tick limit fails
+    oversized_tick_bytes = b"P" * (101 * 1024 * 1024)  # 101 MB > 100 MB limit
+    def mock_transport_oversized(target_url):
+        return (oversized_tick_bytes, url, 200, "application/zip", [])
+
+    with pytest.raises(ValueError, match="exceeds maximum permitted size"):
+        execute_governed_broker_url_capture(url, http_client=mock_transport_oversized)
+
+
+def test_governed_broker_url_capture_host_aware_limits_untrusted_host():
+    """Untrusted hosts fail closed before transport."""
+    url = "https://evil.com/ticks.zip"
+    with pytest.raises(ValueError, match="is not in permitted broker domains"):
+        execute_governed_broker_url_capture(url, http_client=lambda u: (b"", u, 200, "application/zip", []))
+

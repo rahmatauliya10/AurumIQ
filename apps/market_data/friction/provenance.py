@@ -40,9 +40,11 @@ PERMITTED_BROKER_DOMAINS: Set[str] = {
     "ticks.ex2archive.com",
 }
 
-MAX_BROKER_RESPONSE_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_BROKER_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB for normal broker documents
 MAX_BROKER_REDIRECTS = 5
-BROKER_CAPTURE_TIMEOUT_SECONDS = 120
+BROKER_CAPTURE_TIMEOUT_SECONDS = 30
+MAX_TICK_ARCHIVE_RESPONSE_BYTES = 100 * 1024 * 1024  # 100 MB for official tick archives
+TICK_ARCHIVE_CAPTURE_TIMEOUT_SECONDS = 120
 BROKER_COLLECTOR_VERSION = "1.0.0"
 MT5_COLLECTOR_VERSION = "1.0.0"
 
@@ -559,6 +561,15 @@ def execute_governed_broker_url_capture(
 
     captured_at = datetime.now(timezone.utc)
 
+    initial_parsed = urllib.parse.urlparse(url)
+    initial_hostname = (initial_parsed.hostname or "").lower()
+    if initial_hostname == "ticks.ex2archive.com":
+        transport_timeout = TICK_ARCHIVE_CAPTURE_TIMEOUT_SECONDS
+        transport_max_bytes = MAX_TICK_ARCHIVE_RESPONSE_BYTES
+    else:
+        transport_timeout = BROKER_CAPTURE_TIMEOUT_SECONDS
+        transport_max_bytes = MAX_BROKER_RESPONSE_BYTES
+
     if http_client is not None:
         # Test path: mock transport returns structured result
         result = http_client(url)
@@ -573,19 +584,28 @@ def execute_governed_broker_url_capture(
         opener = urllib.request.build_opener(redirect_handler)
         req = urllib.request.Request(url, method="GET")
         req.add_header("User-Agent", "AurumIQ-GovernedBrokerCapture/1.0")
-        response = opener.open(req, timeout=BROKER_CAPTURE_TIMEOUT_SECONDS)
+        response = opener.open(req, timeout=transport_timeout)
         final_url = response.url
         http_status = response.status
         content_type = response.headers.get("Content-Type", "")
-        response_bytes = response.read(MAX_BROKER_RESPONSE_BYTES + 1)
+        response_bytes = response.read(transport_max_bytes + 1)
         redirect_chain = list(redirect_handler.redirect_chain)
 
     # 2. Post-transport validation (always runs — exercises validation logic in tests too)
+    # Determine effective maximum response bytes based on validated final hostname
+    final_parsed = urllib.parse.urlparse(final_url)
+    final_hostname = (final_parsed.hostname or "").lower()
+    effective_max_bytes = (
+        MAX_TICK_ARCHIVE_RESPONSE_BYTES
+        if final_hostname == "ticks.ex2archive.com"
+        else MAX_BROKER_RESPONSE_BYTES
+    )
+
     # Response size bound
-    if len(response_bytes) > MAX_BROKER_RESPONSE_BYTES:
+    if len(response_bytes) > effective_max_bytes:
         raise ValueError(
             f"BROKER_CAPTURE_ERROR: Response size ({len(response_bytes)} bytes) exceeds maximum "
-            f"permitted size ({MAX_BROKER_RESPONSE_BYTES} bytes)."
+            f"permitted size ({effective_max_bytes} bytes)."
         )
 
     # Redirect count bound
