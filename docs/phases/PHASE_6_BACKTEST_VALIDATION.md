@@ -98,6 +98,7 @@ Phase 6 is the unified empirical governance and validation laboratory for spot X
 2. **Exact Dependency Purging:** Samples whose outcome dependency interval $[ \text{signal\_ts}, \text{dependency\_end\_ts} ]$ crosses partition boundaries are purged from earlier segments to prevent forward label leakage.
 3. **Post-Boundary Embargo:** A protective buffer after each test partition is excluded to prevent serial correlation leakage into subsequent folds.
 4. **Strict OOS Isolation:** Candidate selection and parameter evaluation APIs structurally accept only Train and Validation inputs. OOS evaluation is strictly downstream of frozen model selection.
+5. **Evaluation Scope & Parameter Selection Truth:** The walk-forward engine executes fixed-spec chronological evaluation (`FIXED_SPEC_CHRONOLOGICAL_WALKFORWARD_EVALUATION`) across folds. A pure train/val parameter selection primitive (`select_parameters_on_train_val`) is implemented for research calibration workflows; automatic per-fold parameter recalibration is NOT integrated into the default walk-forward execution loop and is NOT claimed.
 
 ---
 
@@ -117,13 +118,14 @@ Every backtest report calculates comprehensive, normalized risk-adjusted statist
 
 1. **Isolated Paired Fold Analysis:** Quantifies the exact marginal out-of-sample contribution of each individual engine subsystem by comparing the full baseline model against ablated variants:
    - **BASELINE:** Full deterministic XAUUSD Phase 4 + Phase 5 pipeline (immutable).
-   - **ABLATION VARIANTS:** Disable/remove one approved component at a time in isolated research runs:
-     - Without Market Regime Filter
-     - Without Phase 3A Session Expectancy
-     - Without Phase 3A Swing Duration Maturity
-     - Without Phase 3A Macro Blackout Gate
-     - Without Multi-Timeframe Trend Confirmation
-     - With Phase 3B Experimental Spectral Factors (Evaluated against promotion gate)
+   - **IMPLEMENTED ABLATION VARIANTS (`XauUsdAblationType`):** Disable/remove one approved component at a time in isolated research runs:
+     - `NO_REGIME_FILTER`: Without Market Regime Filter
+     - `NO_STRUCTURE_COMPONENT`: Without 15m Structure BOS component
+     - `NO_MTF_TREND`: Without Multi-Timeframe Trend Confirmation (4H & 1D)
+     - `NO_PHASE3A_SESSION`: Without Phase 3A Session Expectancy
+     - `NO_PHASE3A_SWING_MATURITY`: Without Phase 3A Swing Duration Maturity
+     - `NO_MACRO_BLACKOUT`: Without Phase 3A Macro Blackout Gate (Unsafe research variant)
+   - **Scope Truth (`READY_FOR_IMPLEMENTED_VARIANTS`):** Active implemented variants are strictly limited to the 7 variants above. Explicit full Phase 4, Phase 5, or Phase 3B ablation variants do not exist in `XauUsdAblationType`. Phase 3B experimental spectral features remain strictly research-only (`production_weight = 0.0`, status `PENDING_DATA`).
 2. **Ablation Invariants:**
    - Running an ablation trial must NEVER alter or mutate the primary candidate signal dataset.
    - Component ablation is executed via pure research workflows without auto-promoting parameters.

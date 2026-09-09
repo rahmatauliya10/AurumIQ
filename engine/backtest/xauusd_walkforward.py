@@ -262,31 +262,33 @@ class XauUsdWalkForwardEngine:
                 t for t in all_trades
                 if f_spec.train_start <= t.signal_timestamp < f_spec.train_end
             ]
-            train_purged = PurgeEngine.filter_partition(
+            train_purge_result = PurgeEngine.filter_partition(
                 trades=train_trades_raw,
                 partition_start=f_spec.train_start,
                 partition_end=f_spec.train_end,
                 purge_overlapping=wf_config.purge_overlapping,
             )
+            train_purged = train_purge_result.eligible_trades
             train_metrics = XauUsdMetricsCalculator.calculate(
                 signals=[s for s in all_signals if f_spec.train_start <= s.timestamp < f_spec.train_end],
                 trades=train_purged,
             )
 
             # 2. Validation Partition Evaluation
-            val_purged: List[XauUsdSimulatedTrade] = []
+            val_purged: Tuple[XauUsdSimulatedTrade, ...] = ()
             val_metrics = None
             if f_spec.val_start and f_spec.val_end:
                 val_trades_raw = [
                     t for t in all_trades
                     if f_spec.val_start <= t.signal_timestamp < f_spec.val_end
                 ]
-                val_purged = PurgeEngine.filter_partition(
+                val_purge_result = PurgeEngine.filter_partition(
                     trades=val_trades_raw,
                     partition_start=f_spec.val_start,
                     partition_end=f_spec.val_end,
                     purge_overlapping=wf_config.purge_overlapping,
                 )
+                val_purged = val_purge_result.eligible_trades
                 val_metrics = XauUsdMetricsCalculator.calculate(
                     signals=[s for s in all_signals if f_spec.val_start <= s.timestamp < f_spec.val_end],
                     trades=val_purged,
@@ -297,12 +299,13 @@ class XauUsdWalkForwardEngine:
                 t for t in all_trades
                 if f_spec.oos_start <= t.signal_timestamp < f_spec.oos_end
             ]
-            oos_purged = PurgeEngine.filter_partition(
+            oos_purge_result = PurgeEngine.filter_partition(
                 trades=oos_trades_raw,
                 partition_start=f_spec.oos_start,
                 partition_end=f_spec.oos_end,
                 purge_overlapping=wf_config.purge_overlapping,
             )
+            oos_purged = oos_purge_result.eligible_trades
             oos_metrics = XauUsdMetricsCalculator.calculate(
                 signals=[s for s in all_signals if f_spec.oos_start <= s.timestamp < f_spec.oos_end],
                 trades=oos_purged,
