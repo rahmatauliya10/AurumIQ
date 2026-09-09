@@ -49,7 +49,7 @@ AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative ma
    - Slippage telemetry for calibration resolves strictly from authentic broker execution fill telemetry, eliminating circular dependency on Phase 8 paper observation.
 5. **Intrabar Replay Segregation:** 1m and 5m streams are strictly isolated for causal fill simulation, execution latency, and intrabar barrier collision resolution during backtesting and forward paper observation.
 6. **TradingView Policy (R18 & A18):** TradingView is permitted exclusively for external visual reference or rendering via Lightweight Charts. The calculation engine contains zero scraping dependencies or network calls to TradingView.
-7. **Production Publication Authority Invariant:** Even with Phase 4, Phase 5, Phase 6, Phase 7, and calibration architecture (PR #20, PR #21) merged, Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Live execution authority is blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
+7. **Production Publication Authority Invariant:** Even with Phase 4, Phase 5, Phase 6 structural seal (PR #29), Phase 7, and calibration architecture / Stage D3 governance (PR #20, PR #21, PR #25, PR #26, PR #28) merged, Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Live execution authority is blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
 8. **Position Sizing Boundary:** Position sizing is strictly out of scope for all completed phases.
 
 ---
@@ -67,9 +67,9 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
 | **Phase 3B** | Experimental Spectral Cycles (ACF, FFT, Wavelet, Hilbert) | ✅ `VERIFIED / FROZEN` | 🧪 `IMPLEMENTED / RESEARCH ONLY (PRODUCTION WEIGHT = 0.0)` |
 | **Phase 4** | Dual-Side Direction/Timing Scores, State Machine, Fingerprinting | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (SEALED PHASE 4 BASELINE)` |
 | **Phase 5** | Side-Aware Risk Planning, Execution Model, Intrabar Resolver | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
-| **Phase 6** | PIT Backtesting, Walk-Forward Validation & Component Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #14 @ dab3b6f)` |
+| **Phase 6** | PIT Backtesting, Walk-Forward Validation & Component Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETE & STRUCTURALLY SEALED (PR #14 @ dab3b6f; PR #29 @ 74985e2; FREEZE: HOLD)` |
 | **Phase 7** | Dashboard UI, LiveMonitor, Multi-Timeframe Charts, Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
-| **Calibration** | Empirical Friction & Readiness Governance | ⚪ `N/A` | 🟡 `ARCHITECTURE SEALED (PR #20 @ 92b0bd6, PR #21 @ fcbe1a9; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
+| **Calibration** | Empirical Friction & Readiness Governance | ⚪ `N/A` | 🟡 `SEALED D3 GOVERNANCE (PR #20, PR #21, PR #25, PR #26, PR #28; STANDARD_CENT SPREAD QUALIFIED; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
 | **Phase 8** | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (BLOCKED BY CALIBRATION GATE)` |
 | **Phase 9** | ML Meta-Filter, Side-Aware Labels, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (DEPENDS ON PHASE 8 STABILITY)` |
 
@@ -84,12 +84,17 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
 - **Phase 3B Contracts:** Experimental spectral cycle engine (ACF, FFT, Wavelet, Hilbert) with hard-locked `production_weight = 0.0`.
 - **Phase 4 Contracts:** `XAU-P4-01` (`BUY_WINDOW` $\rightarrow$ `BUY`), `XAU-P4-02` (`SELL_WINDOW` $\rightarrow$ `SELL`), `XAU-P4-03` (`CONFLICT` $\rightarrow$ `WAIT`), `XAU-P4-04` (`SYSTEM_SAFETY_HOLD` $\rightarrow$ `WAIT`). Baseline SHA: `b619a140391e5e308241246e105b9767a1b0716d`.
 - **Phase 5 Contracts:** `XAU-P5-01` (LONG side-aware risk planning), `XAU-P5-02` (SHORT side-aware risk planning), `XAU-P5-03` (side-aware market bid/ask causal execution). Hostile matrix `H1`–`H74` fully verified. Merge SHA: `9011764958d31c5e96860488da7c54568def1352`.
-- **Phase 6 Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation). Merge SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f` (PR #14).
+- **Phase 6 Contracts:** `XAU-P6-01` (LONG point-in-time backtest replay), `XAU-P6-02` (SHORT point-in-time backtest replay), `XAU-P6-03` (combined side-aware parity / reporting & ablation). Historical Implementation Merge SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f` (PR #14); Current Structural Seal Merge SHA: `74985e2982d3e488ba655262a03533263ed1cea2` (PR #29; `PHASE6_ENGINE_IMPLEMENTATION = COMPLETE`, `PHASE6_STRUCTURAL_READINESS = SEALED`, walk-forward fixed-spec evaluation, ablation implemented variants only, empirical calibration `NOT_FROZEN`, `PHASE6_FREEZE = HOLD`).
 - **Phase 7 Contracts:** `XAU-P7-01` (BUY / WAIT / SELL presentation and dual-side alerting). Merge SHA: `57f6de1405d0df8548182a166d245f1a3173363d` (PR #15).
 - **Calibration Governance & Scope Contracts:**
   - `XAU-CAL-01`: Macro blackout event evidence qualification and revision-safe ingestion (PR #19 @ `06425ba`).
   - `XAU-CAL-02`: Six-category empirical friction qualification architecture without silent defaults (PR #20 @ `92b0bd6`).
   - `XAU-CAL-03`: Isolated Exness Standard Cent execution profile scope with fail-closed symbol binding and zero cross-profile contamination (PR #21 @ `fcbe1a9`).
+
+**Standard Cent Evidence Milestones:**
+- Governed official Exness tick archive capture path: PR #25 (Merge `0b00c4c83f546838d67845285da9a86e5ca00529`).
+- Real Standard Cent XAUUSDc spread capture + qualification: PR #26 (Merge `18f8ddf75094655eebfd7b8b6e11b666e4ce9fdf`; Spread QUALIFIED / SEALED, $N = 6493208$ / 6,493,208, SHA `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`).
+- Stage D3 source authenticity / documentary evidence governance hardening: PR #28 (Merge `d5716a10aafc1c01b1394f2570a6551199b2951b`; retained sealed PR #26 spread evidence; Legal Entity, Contract Geometry, Commission, Financing, and Slippage [real execution fill telemetry] remain MISSING).
 
 ### B. Planned Future XAUUSD Contracts
 - **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit — blocked until empirical friction evidence is qualified).
@@ -130,7 +135,16 @@ Whenever phase implementation status changes:
 
 > [!IMPORTANT]
 > **GOVERNANCE & PRODUCTION AUTHORITY NOTICE:**
-> Phases 5, 6, and 7, as well as the empirical friction calibration architecture (PR #20) and isolated execution profiles (PR #21), are completed and merged into `main`. However, live production BUY/SELL authority remains **NOT AUTHORIZED** (`is_production_authorized = False`; published user decision held at `WAIT`). Automated order execution is strictly forbidden.
+> Phases 5, 6 (structurally sealed in PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`), and 7, as well as the empirical friction calibration architecture and Stage D3 governance (PR #20, PR #21, PR #25, PR #26, PR #28), are completed and merged into `main`. However, live production BUY/SELL authority remains **NOT AUTHORIZED** (`is_production_authorized = False`; published user decision held at `WAIT`). Automated order execution is strictly forbidden.
+>
+> Current Standard Cent calibration evidence state (`artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json`):
+> - Venue: `EXNESS`, Account Tier: `STANDARD_CENT`, Symbol: `XAUUSDc`, Currency: `UNKNOWN / null`
+> - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; captured & qualified in PR #26, retained in PR #28)
+> - `LEGAL_ENTITY`: `MISSING`
+> - `CONTRACT_GEOMETRY`: `MISSING`
+> - `COMMISSION`: `MISSING`
+> - `FINANCING`: `MISSING`
+> - `SLIPPAGE`: `MISSING` (real execution fill telemetry missing; tick history is not slippage)
 >
 > Current blocking readiness gate:
 > ```text
@@ -140,4 +154,4 @@ Whenever phase implementation status changes:
 > production_weight = 0.0
 > decision = WAIT
 > ```
-> Genuine empirical friction evidence (Legal Entity, Contract Specification, Fee Schedule, Financing Swap, Bid/Ask Tick Distribution, Execution Slippage Telemetry) must be ingested and qualified before Phase 8 Live Paper Observation may be authorized.
+> Genuine empirical friction evidence (Legal Entity, Contract Specification, Fee Schedule, Financing Swap, Bid/Ask Tick Distribution, Execution Slippage Telemetry) must be ingested and qualified before Phase 8 Live Paper Observation may be authorized. Phase 8 and Phase 9 remain on HOLD.

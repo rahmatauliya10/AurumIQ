@@ -55,9 +55,9 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **Phase 3B** | IMPLEMENTED / RESEARCH ONLY | Production weight hard locked to 0.0 |
 | **Phase 4** | COMPLETED & VERIFIED | Sealed dual-side candidate architecture (Baseline: `b619a140391e5e308241246e105b9767a1b0716d`) |
 | **Phase 5** | COMPLETED & VERIFIED | Merged via PR #12 \| Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` \| Reviewed Head: `da20e956e25fa8ed353c37fbbaa9adebc7890749` |
-| **Phase 6** | COMPLETED & VERIFIED | Merged via PR #14 (Historical Merge SHA: `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) |
+| **Phase 6** | COMPLETE & STRUCTURALLY SEALED | Historical Implementation: PR #14 (`dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) \| Structural Seal: PR #29 (`74985e2982d3e488ba655262a03533263ed1cea2`) \| Freeze: HOLD |
 | **Phase 7** | COMPLETED & VERIFIED | Merged via PR #15 (Historical Merge SHA: `57f6de1405d0df8548182a166d245f1a3173363d`, Reviewed Head: `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`) |
-| **Calibration Architecture** | SEALED / MERGED | Merged via PR #20 (`92b0bd61763d9a5b22484d3d58e19da3ea4e2d5c`) and PR #21 (`fcbe1a934d9ac125426ec6c64c77f078e0bb7df5`). Gate: `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` |
+| **Calibration Architecture & Stage D3 Governance** | SEALED / MERGED | Architecture: PR #20 (`92b0bd6`), PR #21 (`fcbe1a9`) \| Tick Capture: PR #25 (`0b00c4c`) \| Spread Qualification: PR #26 (`18f8ddf`) \| Stage D3 Governance: PR #28 (`d5716a1`) \| Standard Cent Spread: QUALIFIED / SEALED \| Gate: `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` |
 | **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation strictly blocked until empirical friction calibration evidence is qualified |
 | **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter strictly blocked until Phase 8 forward observation and baseline stability are proven |
 
@@ -68,7 +68,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 - XAUT is NOT an active signal target.
 - No historical XAUT numerical defaults may silently govern XAUUSD.
 
-## 0.6 Execution Profile & Empirical Calibration Governance (PR #20 & PR #21)
+## 0.6 Execution Profile & Empirical Calibration Governance (PR #20, PR #21, PR #25, PR #26, PR #28)
 1. **Analytical vs Execution Boundary:**
    - Canonical market data derives exclusively from the primary analytical provider (Twelve Data) for spot `XAUUSD`.
    - Broker execution evidence (Exness) is partitioned into execution profiles and never mutates analytical candles.
@@ -89,9 +89,18 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
    - `READINESS_GATE = CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
    - `passed = False`, `is_production_authorized = False`, `production_weight = 0.0`, `decision = WAIT`.
    - Zero real execution authority is granted. Live order placement is forbidden.
+   - `PHASE8 = HOLD`, `PHASE9 = HOLD`.
 5. **Artifact Scope Isolation & Slippage Telemetry Source:**
-   - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the `STANDARD` account tier evidence scope. `STANDARD_CENT` artifacts are strictly isolated under separate filenames and cannot cross-contaminate.
-   - Slippage telemetry resolves strictly from authentic broker execution fill telemetry ($N \ge 30$), eliminating circular dependency on Phase 8 paper observation.
+   - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the historical `STANDARD` account tier evidence scope.
+   - Authoritative Standard Cent manifest `artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json` represents current `STANDARD_CENT` truth:
+     - Venue: `EXNESS`, Account Tier: `STANDARD_CENT`, Symbol: `XAUUSDc`, Currency: `UNKNOWN / null`
+     - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$ / 6,493,208, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; captured & qualified via governed Exness tick capture in PR #25 & PR #26, retained in PR #28)
+     - `LEGAL_ENTITY`: `MISSING`
+     - `CONTRACT_GEOMETRY`: `MISSING`
+     - `COMMISSION`: `MISSING`
+     - `FINANCING`: `MISSING`
+     - `SLIPPAGE`: `MISSING` (real execution fill telemetry missing; tick history is not slippage)
+   - Slippage telemetry resolves strictly from authentic broker real execution fill telemetry ($N \ge 30$), eliminating circular dependency on Phase 8 paper observation.
 
 ---
 
@@ -669,15 +678,15 @@ Evaluate multi-year spot XAUUSD data across three reporting dimensions:
 - **Engine Reuse Parity:** Directly invokes pure-Python `XauUsdSignalEngine` and `XauUsdRiskPlanner`.
 - **Causal Execution Replay:** Enforces $t_{\text{fill}} \ge t_{\text{signal}} + \text{latency}$ ($\text{timestamp} \ge \text{earliest\_exec\_ts}$) using Phase 5 `SideAwareEntryExecutionModel`.
 - **Intrabar Collision Resolution:** Reuses Phase 5 `SideAwareIntrabarResolver` (1m/5m chronological sequence with conservative fallback).
-- **Walk-Forward Validation:** Chronological fold splitting with dependency purging and post-boundary embargo buffer.
+- **Walk-Forward Validation:** Chronological fold splitting with dependency purging and post-boundary embargo buffer (`FIXED_SPEC_CHRONOLOGICAL_WALKFORWARD_EVALUATION`; automatic per-fold parameter recalibration is not implemented and not claimed).
 - **Normalized R Metrics:** Expectancy per trade $\mathbb{E}[R]$, profit factor, and normalized peak-to-trough drawdown in $R$ (strictly zero position sizing or compounding).
-- **Component Ablation:** Paired fold analysis disabling individual factors against the sealed immutable baseline.
-- **Calibration Evidence:** Promotion criteria and stability thresholds remain `NOT_CONFIGURED / NOT_FROZEN` until empirically estimated and frozen.
+- **Component Ablation:** Paired fold analysis disabling individual factors against the sealed immutable baseline (`READY_FOR_IMPLEMENTED_VARIANTS_ONLY`).
+- **Calibration Evidence:** Promotion criteria and stability thresholds remain `NOT_CONFIGURED / NOT_FROZEN` until empirically estimated and frozen (`PHASE6_ENGINE_IMPLEMENTATION = COMPLETE`, `PHASE6_STRUCTURAL_READINESS = SEALED`, `PHASE6_EMPIRICAL_CALIBRATION = NOT_FROZEN`, `PHASE6_FREEZE = HOLD`).
 
 ## 23.2 Required XAUUSD Phase 6 Contracts
 - `XAU-P6-01`: LONG PIT replay
 - `XAU-P6-02`: SHORT PIT replay
-- `XAU-P6-03`: Combined side-aware parity / reporting & ablation
+- `XAU-P6-03`: Combined side-aware parity / reporting & ablation (Historical Implementation Merge: PR #14 @ `dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`; Current Structural Seal Merge: PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`)
 
 *Phase 6 produces evidence; it does not place orders.*
 
