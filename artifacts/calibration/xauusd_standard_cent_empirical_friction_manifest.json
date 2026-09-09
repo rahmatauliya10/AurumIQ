@@ -6,7 +6,7 @@
   "canonical_symbol": "XAUUSD",
   "broker_symbol": "XAUUSDc",
   "account_currency": null,
-  "audit_timestamp": "2026-09-08T09:42:01Z",
+  "audit_timestamp": "2026-09-09T02:40:55Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
@@ -65,10 +65,10 @@
     }
   },
   "blocking_reasons": [
-    "Legal entity evidence snapshot missing (--legal-entity-file is None).",
-    "Contract specification evidence snapshot missing (--contract-spec-file is None).",
-    "Commission fee schedule evidence snapshot missing (--fee-schedule-file is None).",
-    "Financing/swap specification evidence snapshot missing (--swap-spec-file is None).",
+    "Legal entity evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
+    "Contract specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
+    "Commission fee schedule evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
+    "Financing/swap specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
     "Execution slippage telemetry missing (--slippage-file is None)."
   ]
 }

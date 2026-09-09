@@ -441,6 +441,16 @@ def validate_source_qualification_assertion(
             reasons.append(
                 f"Attestation symbol '{linked_att.symbol}' does not match expected symbol '{expected_symbol}'."
             )
+        if expected_component_role == "LEGAL_ENTITY" and norm_tier == "STANDARD_CENT":
+            account_bound_legal_sources = {
+                FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+                FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+            }
+            if snapshot.source_type not in account_bound_legal_sources:
+                reasons.append(
+                    f"ACCOUNT_BINDING_REQUIRED: STANDARD_CENT execution scope requires account-bound legal entity evidence "
+                    f"({sorted(account_bound_legal_sources)}). Generic source type '{snapshot.source_type}' cannot qualify."
+                )
         if linked_att.account_tier and expected_account_tier and linked_att.account_tier.upper() != expected_account_tier.upper():
             reasons.append(
                 f"Attestation account_tier '{linked_att.account_tier}' does not match expected account tier '{expected_account_tier}'."
@@ -559,6 +569,21 @@ def validate_friction_model_for_activation(
             reasons=[f"Legal entity source provenance '{legal_snap.source_type}' is unverified; hard readiness requires qualified legal entity provenance."],
             details=details,
         )
+    if model_version.account_tier == "STANDARD_CENT":
+        account_bound_legal_sources = {
+            FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
+            FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
+        }
+        if legal_snap.source_type not in account_bound_legal_sources:
+            return FrictionValidationResult(
+                is_valid=False,
+                status="LEGAL_ENTITY_EVIDENCE_MISSING",
+                reasons=[
+                    f"ACCOUNT_BINDING_REQUIRED: STANDARD_CENT execution scope requires account-bound legal entity evidence "
+                    f"({sorted(account_bound_legal_sources)}). Generic source type '{legal_snap.source_type}' cannot qualify."
+                ],
+                details=details,
+            )
     if (
         not legal_snap.raw_content
         or hashlib.sha256(legal_snap.raw_content).hexdigest() != legal_snap.raw_payload_bytes_sha256

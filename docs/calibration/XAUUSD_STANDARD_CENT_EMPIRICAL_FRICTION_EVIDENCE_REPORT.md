@@ -6,7 +6,7 @@
 > **Canonical Market Symbol:** `XAUUSD`
 > **Execution Broker Symbol:** `XAUUSDc`
 > **Account Currency:** `UNKNOWN`
-> **Audit Timestamp:** `2026-09-08 09:42:01 UTC`
+> **Audit Timestamp:** `2026-09-09 02:40:55 UTC`
 > **Overall Friction Decision:** `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
 > **Hard Readiness Gate:** `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
 > **Production Authority:** `FALSE / 0.0 / WAIT`
@@ -41,9 +41,9 @@ DECISION: WAIT
 | Component | Target Metric | Status Classification | Governance Rule & Finding |
 | :--- | :--- | :---: | :--- |
 | **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `LEGAL_ENTITY_EVIDENCE_MISSING` | Directive 10: Sourced strictly from verified account snapshot. |
-| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `CONTRACT_SPEC_EVIDENCE_MISSING` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
-| **Commission Policy** | `commission_usd_per_lot_per_side` | `COMMISSION_EVIDENCE_MISSING` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
-| **Financing Policy** | Swap points, rollover schedule | `FINANCING_EVIDENCE_MISSING` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
+| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `CONTRACT_SPEC_EVIDENCE_MISSING` | Directive 4: Requires verified broker/account contract specification. Zero silent defaults. |
+| **Commission Policy** | `commission_usd_per_lot_per_side` | `COMMISSION_EVIDENCE_MISSING` | Directive 5: Requires verified broker/account fee schedule snapshot. Zero silent defaults. |
+| **Financing Policy** | Swap points, rollover schedule | `FINANCING_EVIDENCE_MISSING` | Directive 3: Requires verified broker/account financing swap snapshot. Zero silent defaults. |
 | **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `QUALIFIED` | Directive 6: Verified via official Exness tick archive governed URL capture ($N = 6,493,208$, $\ge 5$ distinct dates, 4 sessions satisfied). |
 | **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING` | Directives 7 & 8: Directional slippage telemetry is MANDATORY ($N \ge 30$). |
 
@@ -92,7 +92,7 @@ Prior frozen evidence remains 100% bit-for-bit invariant:
 
 To advance from `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` to `CANDLES_READY_QUOTE_EVIDENCE_MISSING`:
 1. Provide authoritative Exness account agreement snapshot resolving `legal_entity_code`.
-2. Provide authoritative MT5 contract specification snapshot.
-3. Provide authoritative MT5 fee schedule snapshot.
-4. Provide authoritative MT5 financing swap schedule snapshot.
-5. Provide authentic Exness MT5 execution telemetry fills ($N \ge 30$).
+2. Provide authoritative broker/account contract specification snapshot (e.g. verified MT5 export or official broker document).
+3. Provide authoritative broker/account fee schedule snapshot / commission evidence (e.g. verified fee schedule or MT5 export).
+4. Provide authoritative broker/account financing swap schedule snapshot (e.g. verified swap schedule or MT5 export).
+5. Provide authentic Exness execution telemetry fills ($N \ge 30$).
