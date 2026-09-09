@@ -1,0 +1,150 @@
+{
+  "schema": "aurumiq.phase6.empirical_freeze.v1",
+  "freeze_id": "XAUUSDc-EXNESS-STANDARD-CENT-20260909",
+  "freeze_status": "READY_FOR_REPO_INTEGRATION_NOT_YET_PRODUCTION_QUALIFIED",
+  "instrument": {
+    "symbol": "XAUUSDc",
+    "account_tier": "Standard Cent",
+    "account_currency": "USC",
+    "server": "Exness-MT5Real25"
+  },
+  "contract_geometry": {
+    "status": "SEALED",
+    "classification": "DIRECT",
+    "digits": 3,
+    "point": 0.001,
+    "tick_size": 0.001,
+    "tick_value": 0.1,
+    "tick_value_currency": "USC",
+    "tick_value_profit": 0.1,
+    "tick_value_loss": 0.1,
+    "contract_size": 1.0,
+    "contract_size_unit": "XAU_per_lot",
+    "volume_min_lot": 0.01,
+    "volume_max_lot": 200.0,
+    "volume_step_lot": 0.01
+  },
+  "published_and_terminal_cost_context": {
+    "commission_status": "RESEARCH_SUFFICIENT",
+    "commission_published_usd_per_lot_per_side": 0.0,
+    "commission_terminal_observed_usc": 0.0,
+    "spread_status": "SEALED_SUPPORTING_PLUS_EMPIRICAL",
+    "published_average_spread_pips": 26.0,
+    "empirical_reference_spread_points": 260.0,
+    "empirical_reference_spread_pips": 26.0,
+    "empirical_spread_sample_n": 54,
+    "financing_status": "PARTIAL",
+    "terminal_swap_type": "points",
+    "terminal_swap_long_points": -698.5,
+    "terminal_swap_short_points": 0.0,
+    "triple_swap_day": "Wednesday",
+    "note": "Historical/published swap evidence differs by capture time; preserve both snapshots with capture provenance instead of overwriting."
+  },
+  "execution_empirics": {
+    "sample_period_server_time": {
+      "start": "2026.08.27 16:03:21.861",
+      "end": "2026.09.03 08:03:22.657"
+    },
+    "all_xauusdc_deals_n": 54,
+    "broker_tick_reference_coverage_n": 54,
+    "broker_tick_reference_coverage_pct": 100.0,
+    "reference_method": "LAST_BROKER_TICK_AT_OR_BEFORE_DEAL_TIMESTAMP",
+    "market_mobile_entries": {
+      "n": 27,
+      "buy_n": 19,
+      "sell_n": 8,
+      "volume_lot_distribution": {
+        "0.01": 1,
+        "0.1": 15,
+        "0.2": 11
+      },
+      "execution_gap_vs_reference_quote_points": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p95": 0.0,
+        "max_adverse": 0.0,
+        "max_favorable": 0.0
+      },
+      "reference_tick_lag_ms": {
+        "mean": 415.8888888888889,
+        "median": 256.0,
+        "p95": 1010.9,
+        "max": 1339.0
+      }
+    },
+    "true_requested_price_slippage": {
+      "status": "UNOBSERVABLE",
+      "reason": "For the 27 market/mobile entries, historical order records do not preserve a requested/order open price usable as the pre-trade benchmark. The quote comparison is therefore an execution-gap proxy, not true requested-price slippage."
+    },
+    "order_price_displacement_observations": {
+      "status": "MEASURED_BUT_NOT_NORMAL_MARKET_SLIPPAGE",
+      "order_price_available_n": 26,
+      "stop_out_n": 24,
+      "stop_loss_n": 2,
+      "stop_out_max_adverse_points": 356.0,
+      "stop_out_max_favorable_points": -76.0,
+      "note": "Do not calibrate normal entry slippage from SL/SO liquidation/triggered exits."
+    }
+  },
+  "governance": {
+    "legal_entity": {
+      "research_status": "SOLID",
+      "governed_qualification": "HOLD",
+      "reason": "Production provenance/origin-authentication path remains unresolved per frozen D3B-1 truth."
+    },
+    "phase8_gate": {
+      "status": "BLOCKED",
+      "remaining_known_blockers": [
+        "LEGAL_ENTITY governed qualification HOLD",
+        "FINANCING remains PARTIAL",
+        "Phase 6 freeze must be integrated into the repository's native evidence/provenance schema and pass its production verifier"
+      ]
+    }
+  },
+  "evidence_hashes": {
+    "AurumIQ_XAUUSDc_execution_evidence_20260909_165151.csv": {
+      "sha256": "b88db403f0bc368d43599f86ffe691f3f6c68185cbb6cb467ddfc9103ed4881c",
+      "bytes": 13849
+    },
+    "AurumIQ_XAUUSDc_quote_execution_audit_20260909_165827.csv": {
+      "sha256": "659404b4bfaa75719907e71ae88919a7833693478d5b188b65f00ab852329ccf",
+      "bytes": 13967
+    },
+    "WhatsApp Image 2026-09-09 at 18.12.55(1).jpeg": {
+      "sha256": "4b571ee0ed30d7941d1f5bc0bba92f623d4bde3999fadfd0d93bf8f8fca250b5",
+      "bytes": 82407
+    },
+    "WhatsApp Image 2026-09-09 at 18.12.56 (1)(1).jpeg": {
+      "sha256": "307728e50c47929123e521f537de776471ecd0bc1d371476de533030f2110b41",
+      "bytes": 69395
+    },
+    "WhatsApp Image 2026-09-09 at 18.12.56(1).jpeg": {
+      "sha256": "b50f388e60e874332fe02d1c67a3b52a5762644204cbd91b4b78b99795ad933b",
+      "bytes": 70322
+    },
+    "WhatsApp Image 2026-09-09 at 18.17.51(1).jpeg": {
+      "sha256": "7ef3544197dd2d310ba9ba7d75f83e5c262454aa3995631b90b1000f80fdeebd",
+      "bytes": 73013
+    },
+    "WhatsApp Image 2026-09-09 at 23.34.30.jpeg": {
+      "sha256": "57447c465a3e1b333aaf368bd4103b707be106de2f6b6f14ddd6d874aa55fa00",
+      "bytes": 89520
+    },
+    "WhatsApp Image 2026-09-09 at 23.52.11.jpeg": {
+      "sha256": "b7eaa6c72540d8f79afa4e54749f26a9509c42fef71c1a95e310e9ea52f70635",
+      "bytes": 89215
+    },
+    "WhatsApp Image 2026-09-09 at 23.59.12.jpeg": {
+      "sha256": "4f71584e096097a0f67da140c0cc83a1b548ea66e8281c76d042c66f4a61815a",
+      "bytes": 106565
+    }
+  },
+  "interpretation_rules": [
+    "DIRECT means directly observed in terminal/specification or raw broker-derived metadata.",
+    "EMPIRICAL means calculated from preserved historical deal/tick records.",
+    "DERIVED means mathematically derived from direct parameters.",
+    "UNOBSERVABLE must not be silently replaced by zero, a proxy, or an assumed default.",
+    "execution_gap_vs_reference_quote must never be renamed to true slippage unless requested/pre-trade price provenance is available.",
+    "SL and Stop Out displacement must remain separate from normal market-entry calibration."
+  ]
+}

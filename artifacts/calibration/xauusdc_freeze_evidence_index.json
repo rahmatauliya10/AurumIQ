@@ -1,0 +1,104 @@
+{
+  "schema": "aurumiq.phase6.evidence_index.v1",
+  "freeze_id": "XAUUSDc-EXNESS-STANDARD-CENT-20260909",
+  "symbol": "XAUUSDc",
+  "account_tier": "STANDARD_CENT",
+  "venue": "EXNESS",
+  "evidence_storage_policy": "LOCAL_ONLY_PROTECTED_DATA",
+  "public_safety_classification": "PUBLIC_REPOSITORY_SAFE",
+  "privacy_statement": "Raw deal IDs, order IDs, position IDs, and mobile terminal account screenshots are protected from public repository tracking under Directive 10 and maintained strictly in local/offline storage. Full cryptographic provenance is bound below via SHA-256 hashes.",
+  "evidence_files": [
+    {
+      "filename": "AurumIQ_XAUUSDc_execution_evidence_20260909_165151.csv",
+      "sha256": "b88db403f0bc368d43599f86ffe691f3f6c68185cbb6cb467ddfc9103ed4881c",
+      "bytes": 13849,
+      "evidence_class": "EXECUTION_DEALS_TELEMETRY",
+      "capture_provenance_category": "BROKER_TERMINAL_EXPORT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/AurumIQ_XAUUSDc_execution_evidence_20260909_165151.csv",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "record_count": 54
+    },
+    {
+      "filename": "AurumIQ_XAUUSDc_quote_execution_audit_20260909_165827.csv",
+      "sha256": "659404b4bfaa75719907e71ae88919a7833693478d5b188b65f00ab852329ccf",
+      "bytes": 13967,
+      "evidence_class": "QUOTE_EXECUTION_AUDIT_TELEMETRY",
+      "capture_provenance_category": "TICK_QUOTE_MATCH_AUDIT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/AurumIQ_XAUUSDc_quote_execution_audit_20260909_165827.csv",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "record_count": 54
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 18.12.55(1).jpeg",
+      "sha256": "4b571ee0ed30d7941d1f5bc0bba92f623d4bde3999fadfd0d93bf8f8fca250b5",
+      "bytes": 82407,
+      "evidence_class": "TERMINAL_SPECIFICATION_SCREENSHOT",
+      "capture_provenance_category": "MOBILE_TERMINAL_SCREENSHOT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 18.12.55(1).jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 18.12.56 (1)(1).jpeg",
+      "sha256": "307728e50c47929123e521f537de776471ecd0bc1d371476de533030f2110b41",
+      "bytes": 69395,
+      "evidence_class": "TERMINAL_SPECIFICATION_SCREENSHOT",
+      "capture_provenance_category": "MOBILE_TERMINAL_SCREENSHOT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 18.12.56 (1)(1).jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 18.12.56(1).jpeg",
+      "sha256": "b50f388e60e874332fe02d1c67a3b52a5762644204cbd91b4b78b99795ad933b",
+      "bytes": 70322,
+      "evidence_class": "TERMINAL_SPECIFICATION_SCREENSHOT",
+      "capture_provenance_category": "MOBILE_TERMINAL_SCREENSHOT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 18.12.56(1).jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 18.17.51(1).jpeg",
+      "sha256": "7ef3544197dd2d310ba9ba7d75f83e5c262454aa3995631b90b1000f80fdeebd",
+      "bytes": 73013,
+      "evidence_class": "TERMINAL_SWAP_SPECIFICATION_SCREENSHOT",
+      "capture_provenance_category": "MOBILE_TERMINAL_SCREENSHOT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 18.17.51(1).jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 23.34.30.jpeg",
+      "sha256": "57447c465a3e1b333aaf368bd4103b707be106de2f6b6f14ddd6d874aa55fa00",
+      "bytes": 89520,
+      "evidence_class": "MT5_SYMBOL_METADATA_OUTPUT_SCREENSHOT",
+      "capture_provenance_category": "MT5_DESKTOP_MQL5_RUNTIME_OUTPUT",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 23.34.30.jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "description": "Direct MT5/MQL5 runtime output showing: SYMBOL = XAUUSDc, POINT = 0.001, TICK_SIZE = 0.001, TICK_VALUE = 0.1, TICK_VALUE_PROFIT = 0.1, TICK_VALUE_LOSS = 0.1, CONTRACT_SIZE = 1.0"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 23.52.11.jpeg",
+      "sha256": "b7eaa6c72540d8f79afa4e54749f26a9509c42fef71c1a95e310e9ea52f70635",
+      "bytes": 89215,
+      "evidence_class": "MT5_EXECUTION_EVIDENCE_EXPORT_LOG_SCREENSHOT",
+      "capture_provenance_category": "MT5_DESKTOP_EXPERTS_LOG",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 23.52.11.jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "description": "Experts log output for Export_XAUUSDc_Execution_Evidence, showing: TOTAL HISTORY DEALS = 60, EXPORTED DEALS = 54, WITH ORDER PRICE = 26, WITHOUT ORDER PRICE = 28"
+    },
+    {
+      "filename": "WhatsApp Image 2026-09-09 at 23.59.12.jpeg",
+      "sha256": "4f71584e096097a0f67da140c0cc83a1b548ea66e8281c76d042c66f4a61815a",
+      "bytes": 106565,
+      "evidence_class": "MT5_QUOTE_EXECUTION_AUDIT_LOG_SCREENSHOT",
+      "capture_provenance_category": "MT5_DESKTOP_EXPERTS_LOG",
+      "local_path": "artifacts/calibration/xauusdc_freeze_evidence/WhatsApp Image 2026-09-09 at 23.59.12.jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "description": "Experts log output for AurumIQ QUOTE / EXECUTION AUDIT, showing: EXPORTED DEALS = 54, QUOTE FOUND = 54, QUOTE MISSING = 0, LOOKBACK MS = 3000"
+    }
+  ],
+  "checksum_summary": {
+    "file_count": 9,
+    "total_bytes": 608253,
+    "csv_file_count": 2,
+    "screenshot_file_count": 7
+  }
+}

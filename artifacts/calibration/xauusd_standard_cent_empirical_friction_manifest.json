@@ -5,9 +5,11 @@
   "symbol": "XAUUSD",
   "canonical_symbol": "XAUUSD",
   "broker_symbol": "XAUUSDc",
-  "account_currency": null,
+  "account_currency": "USC",
   "audit_timestamp": "2026-09-09T02:40:55Z",
   "status": "EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED",
+  "phase6_freeze_reference": "artifacts/calibration/phase6_xauusdc_empirical_freeze.json",
+  "phase6_evidence_index": "artifacts/calibration/xauusdc_freeze_evidence_index.json",
   "hard_readiness_gate": {
     "decision": "CANDLES_READY_EMPIRICAL_FRICTION_MISSING",
     "passed": false,
@@ -17,37 +19,45 @@
   },
   "evidence_inventory": {
     "legal_entity_scope": {
-      "status": "LEGAL_ENTITY_EVIDENCE_MISSING",
+      "status": "HOLD",
       "legal_entity_code": null,
       "regulator": null,
-      "license_number": null
+      "license_number": null,
+      "reason": "Production provenance/origin-authentication path remains unresolved per frozen D3B-1 truth."
     },
     "contract_geometry": {
-      "status": "CONTRACT_SPEC_EVIDENCE_MISSING",
+      "status": "SEALED",
+      "classification": "DIRECT",
       "broker_symbol": "XAUUSDc",
-      "digits": null,
-      "point_size": null,
-      "trade_tick_size": null,
-      "trade_tick_value": null,
-      "contract_size": null,
-      "volume_min": null,
-      "volume_max": null,
-      "volume_step": null
+      "digits": 3,
+      "point_size": 0.001,
+      "trade_tick_size": 0.001,
+      "trade_tick_value": 0.1,
+      "trade_tick_value_currency": "USC",
+      "trade_tick_value_profit": 0.1,
+      "trade_tick_value_loss": 0.1,
+      "contract_size": 1.0,
+      "contract_size_unit": "XAU_per_lot",
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01
     },
     "commission_policy": {
-      "status": "COMMISSION_EVIDENCE_MISSING",
+      "status": "RESEARCH_SUFFICIENT_PENDING_PROVENANCE",
       "account_tier": "STANDARD_CENT",
-      "account_currency": null,
-      "native_commission_usd_per_lot_per_side": null,
-      "commission_formula": null
+      "account_currency": "USC",
+      "native_commission_usd_per_lot_per_side": 0.0,
+      "terminal_observed_commission_usc": 0.0,
+      "commission_formula": "ZERO_FLAT_SPREAD_ONLY"
     },
     "financing_policy": {
-      "status": "FINANCING_EVIDENCE_MISSING",
-      "swap_long_points": null,
-      "swap_short_points": null,
-      "rollover_schedule": null,
-      "triple_swap_weekday": null,
-      "actual_account_swap_free_status": null
+      "status": "PARTIAL",
+      "terminal_swap_type": "points",
+      "swap_long_points": -698.5,
+      "swap_short_points": 0.0,
+      "triple_swap_weekday": "Wednesday",
+      "actual_account_swap_free_status": null,
+      "note": "Historical/published swap evidence differs by capture time; preserve both snapshots with capture provenance instead of overwriting."
     },
     "bid_ask_spread_distribution": {
       "status": "QUALIFIED",
@@ -59,16 +69,37 @@
       "broker_symbol": "XAUUSDc"
     },
     "execution_slippage_telemetry": {
-      "status": "SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING",
-      "source_file": null,
-      "sample_count": 0
+      "status": "EMPIRICAL_TELEMETRY_RECORDED_TRUE_SLIPPAGE_UNOBSERVABLE",
+      "freeze_reference": "artifacts/calibration/phase6_xauusdc_empirical_freeze.json",
+      "evidence_index_reference": "artifacts/calibration/xauusdc_freeze_evidence_index.json",
+      "history_deals_count": 54,
+      "broker_tick_reference_coverage": "54/54",
+      "market_mobile_entries_count": 27,
+      "buy_entries_count": 19,
+      "sell_entries_count": 8,
+      "execution_gap_vs_reference_quote_mean_points": 0.0,
+      "execution_gap_vs_reference_quote_median_points": 0.0,
+      "execution_gap_vs_reference_quote_p95_points": 0.0,
+      "execution_gap_vs_reference_quote_max_adverse_points": 0.0,
+      "reference_tick_lag_median_ms": 256.0,
+      "reference_tick_lag_p95_ms": 1010.9,
+      "reference_tick_lag_max_ms": 1339.0,
+      "true_requested_price_slippage": "UNOBSERVABLE",
+      "true_requested_price_slippage_reason": "For the 27 market/mobile entries, historical order records do not preserve a requested/order open price usable as the pre-trade benchmark. The quote comparison is therefore an execution-gap proxy, not true requested-price slippage.",
+      "forced_exit_displacement_observations": {
+        "status": "MEASURED_BUT_NOT_NORMAL_MARKET_SLIPPAGE",
+        "stop_out_count": 24,
+        "stop_loss_count": 3,
+        "stop_out_max_adverse_points": 356.0,
+        "stop_out_max_favorable_points": -76.0,
+        "quarantine_rule": "Do not calibrate normal entry slippage from SL/SO liquidation/triggered exits."
+      }
     }
   },
   "blocking_reasons": [
-    "Legal entity evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
-    "Contract specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
-    "Commission fee schedule evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
-    "Financing/swap specification evidence snapshot missing (neither URL, file, nor qualified DB snapshot found).",
-    "Execution slippage telemetry missing (--slippage-file is None)."
+    "Legal entity evidence snapshot missing / HOLD (neither URL, file, nor qualified DB snapshot authenticated for production provenance).",
+    "Financing policy remains PARTIAL (published vs terminal swap differential pending resolution).",
+    "Phase 6 repository-native provenance qualification pending production verifier authorization.",
+    "Full raw trading telemetry evidence verification is restricted to local-only environments due to public repository privacy policy."
   ]
 }

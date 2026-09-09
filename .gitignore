@@ -63,3 +63,7 @@ celerybeat.pid
 *.swo
 .DS_Store
 Thumbs.db
+
+# Calibration raw trading telemetry & screenshots (protected local evidence)
+artifacts/calibration/xauusdc_freeze_evidence/
+
