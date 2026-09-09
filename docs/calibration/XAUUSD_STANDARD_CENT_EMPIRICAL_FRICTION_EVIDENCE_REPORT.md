@@ -5,8 +5,8 @@
 > **Execution Account Tier:** `STANDARD_CENT`
 > **Canonical Market Symbol:** `XAUUSD`
 > **Execution Broker Symbol:** `XAUUSDc`
-> **Account Currency:** `USC`
-> **Audit Timestamp:** `2026-09-08 12:08:24 UTC`
+> **Account Currency:** `UNKNOWN`
+> **Audit Timestamp:** `2026-09-09 01:40:22 UTC`
 > **Overall Friction Decision:** `EMPIRICAL_FRICTION_EVIDENCE_STILL_BLOCKED`
 > **Hard Readiness Gate:** `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`
 > **Production Authority:** `FALSE / 0.0 / WAIT`
@@ -40,10 +40,10 @@ DECISION: WAIT
 
 | Component | Target Metric | Status Classification | Governance Rule & Finding |
 | :--- | :--- | :---: | :--- |
-| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `QUALIFIED` | Directive 10: Sourced strictly from verified account snapshot. |
-| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `QUALIFIED` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
-| **Commission Policy** | `commission_usd_per_lot_per_side` | `QUALIFIED` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
-| **Financing Policy** | Swap points, rollover schedule | `QUALIFIED` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
+| **Legal Entity Scope** | `legal_entity_code`, `regulator`, `license` | `LEGAL_ENTITY_EVIDENCE_MISSING` | Directive 10: Sourced strictly from verified account snapshot. |
+| **Contract Geometry** | `point_size`, `tick_size`, `contract_size` | `CONTRACT_SPEC_EVIDENCE_MISSING` | Directive 4: Requires verified MT5 contract spec export. Zero silent defaults. |
+| **Commission Policy** | `commission_usd_per_lot_per_side` | `COMMISSION_EVIDENCE_MISSING` | Directive 5: Requires verified fee schedule snapshot. Zero silent defaults. |
+| **Financing Policy** | Swap points, rollover schedule | `FINANCING_EVIDENCE_MISSING` | Directive 3: Requires verified swap snapshot. Zero silent defaults. |
 | **Spread Distribution** | `base_spread_bps`, `stress_spread_bps` | `QUALIFIED` | Directive 6: Verified via official Exness tick archive governed URL capture ($N = 6,493,208$, $\ge 5$ distinct dates, 4 sessions satisfied). |
 | **Slippage Telemetry** | `base_slippage_bps`, `stress_slippage_bps` | `SLIPPAGE_EMPIRICAL_EVIDENCE_MISSING` | Directives 7 & 8: Directional slippage telemetry is MANDATORY ($N \ge 30$). |
 
