@@ -49,7 +49,7 @@ AurumIQ is an institutional-grade, point-in-time multi-timeframe quantitative ma
    - Slippage telemetry for calibration resolves strictly from authentic broker execution fill telemetry, eliminating circular dependency on Phase 8 paper observation.
 5. **Intrabar Replay Segregation:** 1m and 5m streams are strictly isolated for causal fill simulation, execution latency, and intrabar barrier collision resolution during backtesting and forward paper observation.
 6. **TradingView Policy (R18 & A18):** TradingView is permitted exclusively for external visual reference or rendering via Lightweight Charts. The calculation engine contains zero scraping dependencies or network calls to TradingView.
-7. **Production Publication Authority Invariant:** Even with Phase 4, Phase 5, Phase 6 structural seal (PR #29), Phase 7, and calibration architecture / Stage D3 governance (PR #20, PR #21, PR #28) merged, Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Live execution authority is blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
+7. **Production Publication Authority Invariant:** Even with Phase 4, Phase 5, Phase 6 structural seal (PR #29), Phase 7, and calibration architecture / Stage D3 governance (PR #20, PR #21, PR #25, PR #26, PR #28) merged, Layer B published user decision remains strictly `WAIT` (`is_production_authorized = False`). Live execution authority is blocked by hard readiness gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
 8. **Position Sizing Boundary:** Position sizing is strictly out of scope for all completed phases.
 
 ---
@@ -69,7 +69,7 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
 | **Phase 5** | Side-Aware Risk Planning, Execution Model, Intrabar Resolver | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
 | **Phase 6** | PIT Backtesting, Walk-Forward Validation & Component Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETE & STRUCTURALLY SEALED (PR #14 @ dab3b6f; PR #29 @ 74985e2; FREEZE: HOLD)` |
 | **Phase 7** | Dashboard UI, LiveMonitor, Multi-Timeframe Charts, Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
-| **Calibration** | Empirical Friction & Readiness Governance | ⚪ `N/A` | 🟡 `SEALED D3 GOVERNANCE (PR #20, PR #21, PR #28; STANDARD_CENT SPREAD QUALIFIED; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
+| **Calibration** | Empirical Friction & Readiness Governance | ⚪ `N/A` | 🟡 `SEALED D3 GOVERNANCE (PR #20, PR #21, PR #25, PR #26, PR #28; STANDARD_CENT SPREAD QUALIFIED; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
 | **Phase 8** | Live Paper Observation, 3-Tier Parity Auditing (BUY/SELL/Combined) | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (BLOCKED BY CALIBRATION GATE)` |
 | **Phase 9** | ML Meta-Filter, Side-Aware Labels, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (DEPENDS ON PHASE 8 STABILITY)` |
 
@@ -90,7 +90,11 @@ To maintain complete audit integrity, AurumIQ maintains a clear separation betwe
   - `XAU-CAL-01`: Macro blackout event evidence qualification and revision-safe ingestion (PR #19 @ `06425ba`).
   - `XAU-CAL-02`: Six-category empirical friction qualification architecture without silent defaults (PR #20 @ `92b0bd6`).
   - `XAU-CAL-03`: Isolated Exness Standard Cent execution profile scope with fail-closed symbol binding and zero cross-profile contamination (PR #21 @ `fcbe1a9`).
-  - `XAU-CAL-04`: Exness Standard Cent Stage D3 empirical friction governance and evidence capture (PR #28; Spread QUALIFIED $N = 6493208$ / 6,493,208, SHA `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; Legal Entity, Contract Geometry, Commission, Financing, and Slippage [real execution fill telemetry] remain MISSING).
+
+**Standard Cent Evidence Milestones:**
+- Governed official Exness tick archive capture path: PR #25 (Merge `0b00c4c83f546838d67845285da9a86e5ca00529`).
+- Real Standard Cent XAUUSDc spread capture + qualification: PR #26 (Merge `18f8ddf75094655eebfd7b8b6e11b666e4ce9fdf`; Spread QUALIFIED / SEALED, $N = 6493208$ / 6,493,208, SHA `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`).
+- Stage D3 source authenticity / documentary evidence governance hardening: PR #28 (Merge `d5716a10aafc1c01b1394f2570a6551199b2951b`; retained sealed PR #26 spread evidence; Legal Entity, Contract Geometry, Commission, Financing, and Slippage [real execution fill telemetry] remain MISSING).
 
 ### B. Planned Future XAUUSD Contracts
 - **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit — blocked until empirical friction evidence is qualified).
@@ -131,11 +135,11 @@ Whenever phase implementation status changes:
 
 > [!IMPORTANT]
 > **GOVERNANCE & PRODUCTION AUTHORITY NOTICE:**
-> Phases 5, 6 (structurally sealed in PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`), and 7, as well as the empirical friction calibration architecture and Stage D3 governance (PR #20, PR #21, PR #28), are completed and merged into `main`. However, live production BUY/SELL authority remains **NOT AUTHORIZED** (`is_production_authorized = False`; published user decision held at `WAIT`). Automated order execution is strictly forbidden.
+> Phases 5, 6 (structurally sealed in PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`), and 7, as well as the empirical friction calibration architecture and Stage D3 governance (PR #20, PR #21, PR #25, PR #26, PR #28), are completed and merged into `main`. However, live production BUY/SELL authority remains **NOT AUTHORIZED** (`is_production_authorized = False`; published user decision held at `WAIT`). Automated order execution is strictly forbidden.
 >
 > Current Standard Cent calibration evidence state (`artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json`):
 > - Venue: `EXNESS`, Account Tier: `STANDARD_CENT`, Symbol: `XAUUSDc`, Currency: `UNKNOWN / null`
-> - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`)
+> - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; captured & qualified in PR #26, retained in PR #28)
 > - `LEGAL_ENTITY`: `MISSING`
 > - `CONTRACT_GEOMETRY`: `MISSING`
 > - `COMMISSION`: `MISSING`

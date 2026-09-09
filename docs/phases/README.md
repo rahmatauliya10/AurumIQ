@@ -23,7 +23,7 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 | [**PHASE 5: Risk Engine**](./PHASE_5_RISK_ENGINE_EXECUTION.md) | Risk Planning, Side-Aware Stops/Targets, Intrabar Replay | ✅ `VERIFIED / FROZEN` (Long) | ✅ `COMPLETED & VERIFIED (MERGED PR #12 @ 9011764)` |
 | [**PHASE 6: Backtest Validation & Ablation**](./PHASE_6_BACKTEST_VALIDATION.md) | PIT Backtesting, Walk-Forward Validation & Ablation | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETE & STRUCTURALLY SEALED (PR #14 @ dab3b6f; PR #29 @ 74985e2; FREEZE: HOLD)` |
 | [**PHASE 7: LiveMonitor & Alerts**](./PHASE_7_DASHBOARD_LIVEMONITOR_ALERTS.md) | Dashboard UI, LiveMonitor, Informational Alerts | ✅ `VERIFIED / FROZEN` | ✅ `COMPLETED & VERIFIED (MERGED PR #15 @ 57f6de1)` |
-| [**Calibration Architecture**](../calibration/XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) | Empirical Friction Calibration & Execution Scopes | ⚪ `N/A` | 🟡 `SEALED D3 GOVERNANCE (PR #20, PR #21, PR #28; STANDARD_CENT SPREAD QUALIFIED; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
+| [**Calibration Architecture**](../calibration/XAUUSD_EMPIRICAL_FRICTION_EVIDENCE_REPORT.md) | Empirical Friction Calibration & Execution Scopes | ⚪ `N/A` | 🟡 `SEALED D3 GOVERNANCE (PR #20, PR #21, PR #25, PR #26, PR #28; STANDARD_CENT SPREAD QUALIFIED; GATE: CANDLES_READY_EMPIRICAL_FRICTION_MISSING)` |
 | [**PHASE 8: Live Paper Observation**](./PHASE_8_LIVE_PAPER_OBSERVATION.md) | Live Paper Observation, 3-Tier Parity Auditing | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (BLOCKED BY CALIBRATION GATE)` |
 | [**PHASE 9: ML Meta-Filter**](./PHASE_9_ML_META_FILTER.md) | ML Meta-Filter, Probability Calibration | ⚪ `N/A` | 📋 `HOLD — TARGET SPECIFICATION (DEPENDS ON PHASE 8 STABILITY)` |
 
@@ -71,7 +71,11 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
   - `XAU-CAL-01`: Macro blackout event evidence qualification and revision-safe ingestion (PR #19 @ `06425ba`).
   - `XAU-CAL-02`: Six-category empirical friction qualification architecture without silent defaults (PR #20 @ `92b0bd6`).
   - `XAU-CAL-03`: Isolated Exness Standard Cent execution profile scope with fail-closed symbol binding and zero cross-profile contamination (PR #21 @ `fcbe1a9`).
-  - `XAU-CAL-04`: Exness Standard Cent Stage D3 empirical friction governance and evidence capture (PR #28; Spread QUALIFIED $N = 6493208$ / 6,493,208, SHA `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; Legal Entity, Contract Geometry, Commission, Financing, and Slippage [real execution fill telemetry] remain MISSING).
+
+**Standard Cent Evidence Milestones:**
+- Governed official Exness tick archive capture path: PR #25 (Merge `0b00c4c83f546838d67845285da9a86e5ca00529`).
+- Real Standard Cent XAUUSDc spread capture + qualification: PR #26 (Merge `18f8ddf75094655eebfd7b8b6e11b666e4ce9fdf`; Spread QUALIFIED / SEALED, $N = 6493208$ / 6,493,208, SHA `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`).
+- Stage D3 source authenticity / documentary evidence governance hardening: PR #28 (Merge `d5716a10aafc1c01b1394f2570a6551199b2951b`; retained sealed PR #26 spread evidence; Legal Entity, Contract Geometry, Commission, Financing, and Slippage [real execution fill telemetry] remain MISSING).
 
 ### B. Planned Future XAUUSD Contracts
 - **Phase 8 Planned Contracts:** `XAU-P8-01` (forward paper execution tracking and 14-day operational stability audit — blocked until empirical friction evidence is qualified).
@@ -81,11 +85,11 @@ To preserve audit integrity, this index records both the **Historical XAUT Basel
 
 > [!IMPORTANT]
 > **GOVERNANCE & PRODUCTION AUTHORITY NOTICE:**
-> Implementation of Phases 5, 6 (structurally sealed in PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`), and 7, as well as the calibration qualification architecture and Stage D3 governance (PR #20, PR #21, PR #28), does NOT grant live production authority. Published decision remains strictly `WAIT` (`is_production_authorized = False`, `production_weight = 0.0`), with gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
+> Implementation of Phases 5, 6 (structurally sealed in PR #29 @ `74985e2982d3e488ba655262a03533263ed1cea2`), and 7, as well as the calibration qualification architecture and Stage D3 governance (PR #20, PR #21, PR #25, PR #26, PR #28), does NOT grant live production authority. Published decision remains strictly `WAIT` (`is_production_authorized = False`, `production_weight = 0.0`), with gate `CANDLES_READY_EMPIRICAL_FRICTION_MISSING`.
 >
 > Current Standard Cent calibration evidence state (`artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json`):
 > - Venue: `EXNESS`, Account Tier: `STANDARD_CENT`, Symbol: `XAUUSDc`, Currency: `UNKNOWN / null`
-> - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`)
+> - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; captured & qualified in PR #26, retained in PR #28)
 > - `LEGAL_ENTITY`: `MISSING`
 > - `CONTRACT_GEOMETRY`: `MISSING`
 > - `COMMISSION`: `MISSING`

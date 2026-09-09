@@ -57,7 +57,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 | **Phase 5** | COMPLETED & VERIFIED | Merged via PR #12 \| Main Merge SHA: `9011764958d31c5e96860488da7c54568def1352` \| Reviewed Head: `da20e956e25fa8ed353c37fbbaa9adebc7890749` |
 | **Phase 6** | COMPLETE & STRUCTURALLY SEALED | Historical Implementation: PR #14 (`dab3b6f8999bcef537bf4d8450f774ce36eb8e0f`) \| Structural Seal: PR #29 (`74985e2982d3e488ba655262a03533263ed1cea2`) \| Freeze: HOLD |
 | **Phase 7** | COMPLETED & VERIFIED | Merged via PR #15 (Historical Merge SHA: `57f6de1405d0df8548182a166d245f1a3173363d`, Reviewed Head: `13cd68cab29d1c70b268f4b2504dc9b8d97f5057`) |
-| **Calibration Architecture & Stage D3 Governance** | SEALED / MERGED | Architecture: PR #20 (`92b0bd6`), PR #21 (`fcbe1a9`) \| Stage D3 Governance: PR #28 \| Standard Cent Spread: QUALIFIED / SEALED \| Gate: `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` |
+| **Calibration Architecture & Stage D3 Governance** | SEALED / MERGED | Architecture: PR #20 (`92b0bd6`), PR #21 (`fcbe1a9`) \| Tick Capture: PR #25 (`0b00c4c`) \| Spread Qualification: PR #26 (`18f8ddf`) \| Stage D3 Governance: PR #28 (`d5716a1`) \| Standard Cent Spread: QUALIFIED / SEALED \| Gate: `CANDLES_READY_EMPIRICAL_FRICTION_MISSING` |
 | **Phase 8** | HOLD — TARGET SPECIFICATION | Live paper observation strictly blocked until empirical friction calibration evidence is qualified |
 | **Phase 9** | HOLD — TARGET SPECIFICATION | ML meta-filter strictly blocked until Phase 8 forward observation and baseline stability are proven |
 
@@ -68,7 +68,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
 - XAUT is NOT an active signal target.
 - No historical XAUT numerical defaults may silently govern XAUUSD.
 
-## 0.6 Execution Profile & Empirical Calibration Governance (PR #20, PR #21, PR #28)
+## 0.6 Execution Profile & Empirical Calibration Governance (PR #20, PR #21, PR #25, PR #26, PR #28)
 1. **Analytical vs Execution Boundary:**
    - Canonical market data derives exclusively from the primary analytical provider (Twelve Data) for spot `XAUUSD`.
    - Broker execution evidence (Exness) is partitioned into execution profiles and never mutates analytical candles.
@@ -94,7 +94,7 @@ Do not blindly replace every XAUT string with XAUUSD. Use three classifications:
    - Canonical manifest `artifacts/calibration/xauusd_empirical_friction_manifest.json` represents the historical `STANDARD` account tier evidence scope.
    - Authoritative Standard Cent manifest `artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json` represents current `STANDARD_CENT` truth:
      - Venue: `EXNESS`, Account Tier: `STANDARD_CENT`, Symbol: `XAUUSDc`, Currency: `UNKNOWN / null`
-     - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$ / 6,493,208, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`)
+     - `SPREAD`: `QUALIFIED / SEALED` ($N = 6493208$ / 6,493,208, SHA: `b2dbfaf9297075944c1163c3c1ff53db3abfa5f78d5edcf9c6d1b47b1784c749`; captured & qualified via governed Exness tick capture in PR #25 & PR #26, retained in PR #28)
      - `LEGAL_ENTITY`: `MISSING`
      - `CONTRACT_GEOMETRY`: `MISSING`
      - `COMMISSION`: `MISSING`
