@@ -1,0 +1,44 @@
+{
+  "schema": "aurumiq.governance.legal_entity_review_receipt.v1",
+  "receipt_id": "RECEIPT-LEGAL-2a487c98-27a7-46ba-a5ce-3798d163403e",
+  "reviewed_at": "2026-09-10T10:56:06.966137+00:00",
+  "workflow_version": "1.0.0",
+  "verification_authority": "AURUMIQ_GOVERNED_PROVENANCE_AUTHORITY",
+  "verification_method": "COMPOSITE_GOVERNED_REVIEW",
+  "verifier_identity": "AURUMIQ_LEGAL_ENTITY_REVIEW_WORKFLOW_V1",
+  "verification_proof_version": "1.0.0",
+  "target_scope": {
+    "venue": "EXNESS",
+    "symbol": "XAUUSD",
+    "account_tier": "STANDARD_CENT",
+    "account_currency": "USC"
+  },
+  "legal_entity": {
+    "legal_entity_name": "Exness (SC) Ltd",
+    "legal_entity_code": "EXNESS_SC_LTD",
+    "regulator": "FSA",
+    "license_number": "SD025"
+  },
+  "governed_components": {
+    "component_1": {
+      "evidence_role": "CONTRACTING_ENTITY_EVIDENCE",
+      "source_type": "ACCOUNT_CLIENT_AGREEMENT",
+      "filename": "exness_sc_client_agreement.pdf",
+      "sha256": "ae02ca31a9e2ba1d8ef81cc973caa169e901aa6d802b4f9949a05e3cb1217ddc",
+      "bytes": 1539705
+    },
+    "component_2": {
+      "evidence_role": "ACCOUNT_SCOPE_BINDING_EVIDENCE",
+      "source_type": "BROKER_PERSONAL_AREA_EXPORT",
+      "filename": "exness_standard_cent_personal_area.jpeg",
+      "sha256": "2c8e93a081d86cc631c76d7fa7a552a11cdc769a50b75175042285af874e80e7",
+      "bytes": 113225
+    }
+  },
+  "critical_policies": {
+    "server_binding_policy": "EXECUTION_INFRASTRUCTURE_ONLY_NOT_LEGAL_ENTITY_KEY",
+    "origin_claim": "AUTHENTICATED_AURUMIQ_REVIEW_ONLY",
+    "broker_cryptographic_origin": "NOT_CLAIMED"
+  },
+  "verification_proof": "237bfe0176bf8e273991bd213b1070ae83f42faee6aa71879ffc9037395d10aa"
+}

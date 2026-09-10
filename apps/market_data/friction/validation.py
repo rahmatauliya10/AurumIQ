@@ -593,9 +593,10 @@ def validate_friction_model_for_activation(
 
         # Canonical auto-discovery (Stage D5C.1C):
         # If neither receipt_data nor receipt_file_path is explicitly supplied,
-        # default to the canonical production review receipt path.
+        # default to the canonical production review receipt path only when
+        # attestation is also not explicitly supplied.
         receipt_path = composite_receipt_file_path
-        if composite_review_receipt is None and receipt_path is None:
+        if composite_review_receipt is None and receipt_path is None and composite_legal_entity_attestation is None:
             receipt_path = DEFAULT_REVIEW_RECEIPT_PATH
 
         # Verify composite conjunction (both Component A and Component B required)
