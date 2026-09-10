@@ -284,7 +284,7 @@ def verify_governed_composite_legal_entity(
                 pass
             else:
                 reasons.append(f"Receipt file not found: {receipt_file_path}")
-    elif not receipt_data and not receipt_file_path:
+    elif not receipt_data and not receipt_file_path and not attestation_data:
         default_rp = Path(DEFAULT_REVIEW_RECEIPT_PATH)
         if default_rp.exists():
             try:

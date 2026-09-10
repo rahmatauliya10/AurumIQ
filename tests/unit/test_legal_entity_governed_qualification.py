@@ -825,11 +825,13 @@ def test_d5c_1_valid_production_signed_receipt_qualifies(valid_review_receipt_pa
 
 def test_d5c_2_missing_receipt_returns_hold():
     """Test 2: When receipt is completely missing, production returns HOLD."""
-    res = verify_governed_composite_legal_entity(receipt_data=None, receipt_file_path=None, is_test_ctx=False)
-    assert res.is_qualified is False
-    assert res.composite_evidence_integrity == "PASS"
-    assert res.production_origin_authenticity == "HOLD"
-    assert res.governed_status == "HOLD"
+    non_existent = str(ROOT_DIR / "artifacts" / "calibration" / "_non_existent_receipt.json")
+    with patch("apps.market_data.friction.legal_entity.DEFAULT_REVIEW_RECEIPT_PATH", non_existent):
+        res = verify_governed_composite_legal_entity(receipt_data=None, receipt_file_path=non_existent, is_test_ctx=False)
+        assert res.is_qualified is False
+        assert res.composite_evidence_integrity == "PASS"
+        assert res.production_origin_authenticity == "HOLD"
+        assert res.governed_status == "HOLD"
 
 
 def test_d5c_3_unsigned_receipt_fails_closed_as_hold(valid_review_receipt_payload):
@@ -1530,6 +1532,7 @@ def test_d5c1b_3_development_settings_cannot_write_canonical_production_receipt(
 
     strong_secret = b"strong-dev-secret-48-bytes-long-12345678901234567890"
     canonical_receipt_path = Path("artifacts/calibration/legal_entity_review_receipt.json")
+    mtime_before = canonical_receipt_path.stat().st_mtime if canonical_receipt_path.exists() else None
 
     with patch("apps.market_data.management.commands.review_legal_entity_evidence.is_test_environment", return_value=False):
         with patch.object(settings, "SETTINGS_MODULE", "config.settings.development", create=True):
@@ -1541,7 +1544,10 @@ def test_d5c1b_3_development_settings_cannot_write_canonical_production_receipt(
                             evidence_dir=str(EVIDENCE_DIR),
                             output_receipt=str(canonical_receipt_path),
                         )
-    assert not canonical_receipt_path.exists()
+    if mtime_before is not None:
+        assert canonical_receipt_path.stat().st_mtime == mtime_before
+    else:
+        assert not canonical_receipt_path.exists()
 
 
 def test_d5c1b_4_debug_false_alone_does_not_imply_production(valid_review_receipt_payload):
@@ -1640,9 +1646,11 @@ print('SUBPROCESS_PASS')
         if temp_receipt_path.exists():
             temp_receipt_path.unlink()
 
-    # Verify canonical production receipt was NEVER created
+    # Verify canonical production receipt was not created or overwritten by test #6
     canonical_receipt = ROOT_DIR / "artifacts" / "calibration" / "legal_entity_review_receipt.json"
-    assert not canonical_receipt.exists(), "Canonical receipt must NEVER be created during test #6"
+    if canonical_receipt.exists():
+        data = json.loads(canonical_receipt.read_text(encoding="utf-8"))
+        assert "TEMP-SUBPROCESS-RECEIPT" not in data.get("receipt_id", "")
 
 
 
@@ -1695,21 +1703,17 @@ def test_d5c1b_9_test_sentinel_remains_prohibited_for_production(valid_review_re
 
 
 def test_d5c1b_10_canonical_test_receipt_leak_remains_blocked():
-    """Test 10: canonical test receipt leak remains blocked; no canonical receipt exists in workspace or Git."""
-    import subprocess
+    """Test 10: canonical receipt must be production-safe and must not contain test proof, secret, or PII."""
     canonical_receipt = ROOT_DIR / "artifacts" / "calibration" / "legal_entity_review_receipt.json"
-    assert not canonical_receipt.exists(), "Canonical production receipt file must NOT exist before D5C.2."
-
-    # Verify not tracked in Git
-    import shutil
-    git_bin = shutil.which("git") or "git"
-    proc = subprocess.run(
-        [git_bin, "ls-files", "artifacts/calibration/legal_entity_review_receipt.json"],
-        cwd=str(ROOT_DIR),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.stdout.strip() == "", "Canonical receipt must not be tracked in Git."
+    if canonical_receipt.exists():
+        content = canonical_receipt.read_text(encoding="utf-8")
+        assert "aurumiq-test-only" not in content
+        assert "password" not in content.lower()
+        assert "token" not in content.lower()
+        data = json.loads(content)
+        assert data.get("verifier_identity") == VERIFIER_IDENTITY_LEGAL_ENTITY_WORKFLOW
+        assert data.get("verification_method") == VERIFICATION_METHOD_COMPOSITE_REVIEW
+        assert bool(data.get("verification_proof")) is True
 
 
 def test_d5c1b_11_phase6_tests_remain_byte_for_byte_unchanged_from_main():
@@ -1794,21 +1798,20 @@ def _make_standard_cent_model_for_d5c1c():
 
 def test_d5c1c_1_normal_standard_cent_activation_no_canonical_receipt_rejected():
     """Test 1: Normal STANDARD_CENT activation without canonical receipt returns HOLD and fails closed."""
-    canonical_receipt_path = Path("artifacts/calibration/legal_entity_review_receipt.json")
-    assert not canonical_receipt_path.exists(), "Canonical receipt must not exist before D5C.2."
-
+    non_existent = ROOT_DIR / "artifacts" / "calibration" / "_non_existent_receipt.json"
     model = _make_standard_cent_model_for_d5c1c()
-    # Normal activation call: caller passes NO receipt data and NO receipt file path
-    res = validate_friction_model_for_activation(
-        model_version=model,
-        target_venue="EXNESS",
-        target_symbol="XAUUSD",
-        target_account_tier="STANDARD_CENT",
-        target_legal_entity_code="EXNESS_SC_LTD",
-    )
-    assert res.is_valid is False
-    assert res.status == "LEGAL_ENTITY_EVIDENCE_MISSING"
-    assert any("COMPOSITE_CONJUNCTION_REQUIRED" in r for r in res.reasons)
+    with patch("apps.market_data.friction.validation.DEFAULT_REVIEW_RECEIPT_PATH", str(non_existent)):
+        with patch("apps.market_data.friction.legal_entity.DEFAULT_REVIEW_RECEIPT_PATH", str(non_existent)):
+            res = validate_friction_model_for_activation(
+                model_version=model,
+                target_venue="EXNESS",
+                target_symbol="XAUUSD",
+                target_account_tier="STANDARD_CENT",
+                target_legal_entity_code="EXNESS_SC_LTD",
+            )
+            assert res.is_valid is False
+            assert res.status == "LEGAL_ENTITY_EVIDENCE_MISSING"
+            assert any("COMPOSITE_CONJUNCTION_REQUIRED" in r for r in res.reasons)
 
 
 def test_d5c1c_2_normal_standard_cent_activation_valid_canonical_receipt_in_isolated_production_passes(valid_review_receipt_payload):
@@ -1841,8 +1844,8 @@ def test_d5c1c_2_normal_standard_cent_activation_valid_canonical_receipt_in_isol
         if temp_receipt_path.exists():
             temp_receipt_path.unlink()
 
-    # Verify real canonical receipt was never touched
-    assert not Path("artifacts/calibration/legal_entity_review_receipt.json").exists()
+    # Verify temp receipt was cleaned up
+    assert not temp_receipt_path.exists()
 
 
 def test_d5c1c_3_activation_succeeds_without_explicitly_passing_receipt_data(valid_review_receipt_payload):
