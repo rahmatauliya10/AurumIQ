@@ -19,11 +19,15 @@
   },
   "evidence_inventory": {
     "legal_entity_scope": {
-      "status": "HOLD",
-      "legal_entity_code": null,
-      "regulator": null,
-      "license_number": null,
-      "reason": "Production provenance/origin-authentication path remains unresolved per frozen D3B-1 truth."
+      "status": "QUALIFIED",
+      "legal_entity_name": "Exness (SC) Ltd",
+      "legal_entity_code": "EXNESS_SC_LTD",
+      "regulator": "FSA",
+      "license_number": "SD025",
+      "verification_method": "COMPOSITE_GOVERNED_REVIEW",
+      "verifier_identity": "AURUMIQ_LEGAL_ENTITY_REVIEW_WORKFLOW_V1",
+      "receipt_reference": "artifacts/calibration/legal_entity_review_receipt.json",
+      "production_origin_authenticity": "PASS"
     },
     "contract_geometry": {
       "status": "SEALED",
@@ -51,13 +55,22 @@
       "commission_formula": "ZERO_FLAT_SPREAD_ONLY"
     },
     "financing_policy": {
-      "status": "PARTIAL",
+      "status": "QUALIFIED",
+      "symbol_financing_policy": "QUALIFIED",
       "terminal_swap_type": "points",
       "swap_long_points": -698.5,
       "swap_short_points": 0.0,
+      "rollover_summer_utc_hour": 21,
+      "rollover_winter_utc_hour": 22,
       "triple_swap_weekday": "Wednesday",
       "actual_account_swap_free_status": null,
-      "note": "Historical/published swap evidence differs by capture time; preserve both snapshots with capture provenance instead of overwriting."
+      "account_swap_free_handling": "UNKNOWN_CONSERVATIVE_BASELINE",
+      "policy_reference": "artifacts/calibration/xauusdc_financing_policy.json",
+      "evidence_class": "TERMINAL_SWAP_SPECIFICATION_SCREENSHOT",
+      "evidence_capture_timestamp": "2026-09-09T18:17:51+07:00",
+      "evidence_sha256": "7ef3544197dd2d310ba9ba7d75f83e5c262454aa3995631b90b1000f80fdeebd",
+      "evidence_bytes": 73013,
+      "note": "Terminal runtime symbol metadata sealed as authoritative execution schedule. Account swap-free status remains UNKNOWN / NOT_APPLIED (conservative baseline)."
     },
     "bid_ask_spread_distribution": {
       "status": "QUALIFIED",
@@ -97,8 +110,6 @@
     }
   },
   "blocking_reasons": [
-    "Legal entity evidence snapshot missing / HOLD (neither URL, file, nor qualified DB snapshot authenticated for production provenance).",
-    "Financing policy remains PARTIAL (published vs terminal swap differential pending resolution).",
     "Phase 6 repository-native provenance qualification pending production verifier authorization.",
     "Full raw trading telemetry evidence verification is restricted to local-only environments due to public repository privacy policy."
   ]
