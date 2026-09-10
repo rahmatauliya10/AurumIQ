@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
+import os
 import urllib.parse
 import urllib.request
 
@@ -69,6 +70,10 @@ TRUSTED_VERIFIER_REGISTRY: Dict[str, Set[str]] = {
     "MANUAL_REVIEWED_OFFICIAL_DOCUMENT": {
         "TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
     },
+    "COMPOSITE_GOVERNED_REVIEW": {
+        "AURUMIQ_LEGAL_ENTITY_REVIEW_WORKFLOW_V1",
+        "TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+    },
 }
 
 
@@ -81,10 +86,29 @@ def is_test_environment() -> bool:
     """
     if getattr(settings, "IS_TESTING", False) is True:
         return True
-    mod = getattr(settings, "SETTINGS_MODULE", "")
+    mod = getattr(settings, "SETTINGS_MODULE", "") or os.environ.get("DJANGO_SETTINGS_MODULE", "")
     if mod == "config.settings.testing":
         return True
     return False
+
+
+def is_production_environment() -> bool:
+    """Strict production runtime environment check (Stage D5C.1B).
+
+    Production origin authenticity qualification requires ALL of the following:
+    1. NOT is_test_environment()
+    2. Active Django settings module is strictly 'config.settings.production'
+    3. settings.DEBUG is False
+    Presence of PROVENANCE_SIGNING_SECRET alone NEVER implies production.
+    """
+    if is_test_environment():
+        return False
+    if getattr(settings, "DEBUG", True) is not False:
+        return False
+    mod = getattr(settings, "SETTINGS_MODULE", "") or os.environ.get("DJANGO_SETTINGS_MODULE", "")
+    if mod != "config.settings.production":
+        return False
+    return True
 
 
 def get_governed_signing_secret() -> bytes:
