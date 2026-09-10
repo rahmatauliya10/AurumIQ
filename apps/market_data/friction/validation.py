@@ -58,6 +58,7 @@ from apps.market_data.friction.tick_parser import (
 from apps.market_data.friction.slippage_parser import parse_mt5_execution_telemetry
 from apps.market_data.friction.fingerprint import compute_empirical_friction_fingerprint
 from apps.market_data.friction.provenance import verify_attestation_authenticity
+from apps.market_data.friction.legal_entity import DEFAULT_REVIEW_RECEIPT_PATH
 
 TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
     "LEGAL_ENTITY": {"parse_legal_entity_backing_artifact"},
@@ -505,6 +506,8 @@ def validate_friction_model_for_activation(
     slippage_cost_policy_version: str = "ADVERSE_ONLY_P75_P95_V1",
     composite_legal_entity_attestation: Optional[Dict[str, Any]] = None,
     composite_proof_override: Optional[str] = None,
+    composite_review_receipt: Optional[Dict[str, Any]] = None,
+    composite_receipt_file_path: Optional[str] = None,
 ) -> FrictionValidationResult:
     """Canonical validator for empirical friction models.
     
@@ -572,7 +575,10 @@ def validate_friction_model_for_activation(
             details=details,
         )
     if model_version.account_tier == "STANDARD_CENT":
-        from apps.market_data.friction.legal_entity import verify_governed_composite_legal_entity
+        from apps.market_data.friction.legal_entity import (
+            DEFAULT_REVIEW_RECEIPT_PATH,
+            verify_governed_composite_legal_entity,
+        )
         from pathlib import Path
         import json
 
@@ -585,9 +591,18 @@ def validate_friction_model_for_activation(
                 except Exception:
                     att_data = None
 
+        # Canonical auto-discovery (Stage D5C.1C):
+        # If neither receipt_data nor receipt_file_path is explicitly supplied,
+        # default to the canonical production review receipt path.
+        receipt_path = composite_receipt_file_path
+        if composite_review_receipt is None and receipt_path is None:
+            receipt_path = DEFAULT_REVIEW_RECEIPT_PATH
+
         # Verify composite conjunction (both Component A and Component B required)
         comp_res = verify_governed_composite_legal_entity(
             attestation_data=att_data,
+            receipt_data=composite_review_receipt,
+            receipt_file_path=receipt_path,
             local_evidence_dir="artifacts/calibration/legal_entity_evidence",
             simulated_server=getattr(model_version, "server", None),
             proof_override=composite_proof_override,

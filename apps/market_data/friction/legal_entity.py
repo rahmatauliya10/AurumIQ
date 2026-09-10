@@ -23,12 +23,15 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+import uuid
 
 from apps.market_data.friction.provenance import (
     GOVERNED_PROVENANCE_AUTHORITY,
     CURRENT_PROOF_VERSION,
     get_governed_signing_secret,
+    is_production_environment,
     is_test_environment,
+    is_trusted_verifier,
 )
 from apps.market_data.models import (
     FrictionAttestationStatus,
@@ -40,6 +43,15 @@ logger = logging.getLogger(__name__)
 
 COMPOSITE_LEGAL_ENTITY_SCHEMA = "aurumiq.governance.legal_entity_composite_attestation.v1"
 LEGAL_ENTITY_EVIDENCE_INDEX_SCHEMA = "aurumiq.governance.legal_entity_evidence_index.v1"
+LEGAL_ENTITY_REVIEW_RECEIPT_SCHEMA = "aurumiq.governance.legal_entity_review_receipt.v1"
+
+# Governed Review Workflow Constants (Stage D5C)
+VERIFICATION_METHOD_COMPOSITE_REVIEW = "COMPOSITE_GOVERNED_REVIEW"
+VERIFIER_IDENTITY_LEGAL_ENTITY_WORKFLOW = "AURUMIQ_LEGAL_ENTITY_REVIEW_WORKFLOW_V1"
+REVIEW_WORKFLOW_VERSION = "1.0.0"
+ORIGIN_CLAIM_AUTHENTICATED_REVIEW_ONLY = "AUTHENTICATED_AURUMIQ_REVIEW_ONLY"
+BROKER_CRYPTOGRAPHIC_ORIGIN_NOT_CLAIMED = "NOT_CLAIMED"
+DEFAULT_REVIEW_RECEIPT_PATH = "artifacts/calibration/legal_entity_review_receipt.json"
 
 # Authoritative Immutable Component 1 (Client Agreement)
 EXPECTED_CLIENT_AGREEMENT_SHA256 = "ae02ca31a9e2ba1d8ef81cc973caa169e901aa6d802b4f9949a05e3cb1217ddc"
@@ -148,24 +160,101 @@ def compute_composite_verification_proof(
     return hmac.new(secret, canonical_payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def compute_canonical_review_receipt_payload(
+    schema: str = LEGAL_ENTITY_REVIEW_RECEIPT_SCHEMA,
+    verification_authority: str = GOVERNED_PROVENANCE_AUTHORITY,
+    verification_proof_version: str = CURRENT_PROOF_VERSION,
+    workflow_version: str = REVIEW_WORKFLOW_VERSION,
+    receipt_id: str = "",
+    reviewed_at_iso: str = "",
+    verification_method: str = VERIFICATION_METHOD_COMPOSITE_REVIEW,
+    verifier_identity: str = VERIFIER_IDENTITY_LEGAL_ENTITY_WORKFLOW,
+    legal_entity_name: str = QUALIFIED_LEGAL_ENTITY_NAME,
+    legal_entity_code: str = QUALIFIED_LEGAL_ENTITY_CODE,
+    regulator: str = QUALIFIED_REGULATOR,
+    license_number: str = QUALIFIED_LICENSE_NUMBER,
+    account_tier: str = QUALIFIED_ACCOUNT_TIER,
+    account_currency: str = QUALIFIED_ACCOUNT_CURRENCY,
+    comp1_role: str = EXPECTED_CLIENT_AGREEMENT_ROLE,
+    comp1_source_type: str = EXPECTED_CLIENT_AGREEMENT_SOURCE_TYPE,
+    comp1_sha256: str = EXPECTED_CLIENT_AGREEMENT_SHA256,
+    comp1_bytes: int = EXPECTED_CLIENT_AGREEMENT_BYTES,
+    comp2_role: str = EXPECTED_PERSONAL_AREA_ROLE,
+    comp2_source_type: str = EXPECTED_PERSONAL_AREA_SOURCE_TYPE,
+    comp2_sha256: str = EXPECTED_PERSONAL_AREA_SHA256,
+    comp2_bytes: int = EXPECTED_PERSONAL_AREA_BYTES,
+    server_binding_policy: str = SERVER_BINDING_POLICY,
+    origin_claim: str = ORIGIN_CLAIM_AUTHENTICATED_REVIEW_ONLY,
+    broker_cryptographic_origin: str = BROKER_CRYPTOGRAPHIC_ORIGIN_NOT_CLAIMED,
+) -> str:
+    """Deterministic canonical key-value payload for cryptographic signing of review receipt.
+
+    Frozen, deterministic 25-field positional order.
+    """
+    parts = [
+        f"schema={schema.strip()}",
+        f"authority={verification_authority.strip()}",
+        f"proof_ver={verification_proof_version.strip()}",
+        f"workflow_ver={workflow_version.strip()}",
+        f"receipt_id={receipt_id.strip()}",
+        f"reviewed_at={reviewed_at_iso.strip()}",
+        f"method={verification_method.strip().upper()}",
+        f"verifier={verifier_identity.strip()}",
+        f"entity_name={legal_entity_name.strip()}",
+        f"entity_code={legal_entity_code.strip().upper()}",
+        f"regulator={regulator.strip().upper()}",
+        f"license={license_number.strip()}",
+        f"tier={account_tier.strip().upper()}",
+        f"currency={account_currency.strip().upper()}",
+        f"comp1_role={comp1_role.strip().upper()}",
+        f"comp1_source={comp1_source_type.strip().upper()}",
+        f"comp1_sha={comp1_sha256.strip().lower()}",
+        f"comp1_bytes={comp1_bytes}",
+        f"comp2_role={comp2_role.strip().upper()}",
+        f"comp2_source={comp2_source_type.strip().upper()}",
+        f"comp2_sha={comp2_sha256.strip().lower()}",
+        f"comp2_bytes={comp2_bytes}",
+        f"server_policy={server_binding_policy.strip().upper()}",
+        f"origin_claim={origin_claim.strip().upper()}",
+        f"broker_crypto_origin={broker_cryptographic_origin.strip().upper()}",
+    ]
+    return "|".join(parts)
+
+
+def compute_review_receipt_proof(
+    canonical_payload: str,
+    signing_secret: Optional[bytes] = None,
+) -> str:
+    """Generate purpose-bound HMAC-SHA256 cryptographic proof over canonical review receipt payload.
+
+    Uses dedicated application-controlled provenance secret via get_governed_signing_secret().
+    Never silently reuses generic Django SECRET_KEY.
+    """
+    secret = signing_secret or get_governed_signing_secret()
+    return hmac.new(secret, canonical_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def verify_governed_composite_legal_entity(
     attestation_data: Optional[Dict[str, Any]] = None,
     attestation_file_path: Optional[str] = None,
+    receipt_data: Optional[Dict[str, Any]] = None,
+    receipt_file_path: Optional[str] = None,
     local_evidence_dir: Optional[str] = None,
     simulated_server: Optional[str] = None,
     proof_override: Optional[str] = None,
     is_test_ctx: Optional[bool] = None,
 ) -> GovernedCompositeVerificationResult:
-    """Independently verify governed composite legal entity attestation.
+    """Independently verify governed composite legal entity attestation and review receipt.
 
     Enforces two distinct verification layers:
     1. COMPOSITE_EVIDENCE_INTEGRITY: Validates component conjunction, immutable SHA-256 hashes,
        byte lengths, entity identity, scope, server independence, anti-self-attestation, and privacy.
     2. PRODUCTION_ORIGIN_AUTHENTICITY: Validates whether cryptographic authenticity was established
-       by an authorized production workflow (or isolated test seam in test context).
+       by an authorized production workflow (AURUMIQ_LEGAL_ENTITY_REVIEW_WORKFLOW_V1 via COMPOSITE_GOVERNED_REVIEW
+       or isolated test seam in test context).
 
     Fails closed to (COMPOSITE_EVIDENCE_INTEGRITY=PASS, PRODUCTION_ORIGIN_AUTHENTICITY=HOLD,
-    LEGAL_ENTITY_GOVERNED=HOLD) if production authenticity collector is not deployed.
+    LEGAL_ENTITY_GOVERNED=HOLD) if production review receipt or signing secret is absent.
     """
     reasons: List[str] = []
     details: Dict[str, Any] = {
@@ -180,6 +269,28 @@ def verify_governed_composite_legal_entity(
 
     if is_test_ctx is None:
         is_test_ctx = is_test_environment()
+
+    # Load review receipt data if file path provided or default exists
+    if receipt_file_path and not receipt_data:
+        rp = Path(receipt_file_path)
+        if rp.exists():
+            try:
+                receipt_data = json.loads(rp.read_text(encoding="utf-8"))
+            except Exception as exc:
+                reasons.append(f"Invalid JSON in receipt file: {exc}")
+        else:
+            canonical_name = Path(DEFAULT_REVIEW_RECEIPT_PATH).name
+            if rp.name == canonical_name or str(rp).replace("\\", "/").endswith(DEFAULT_REVIEW_RECEIPT_PATH):
+                pass
+            else:
+                reasons.append(f"Receipt file not found: {receipt_file_path}")
+    elif not receipt_data and not receipt_file_path:
+        default_rp = Path(DEFAULT_REVIEW_RECEIPT_PATH)
+        if default_rp.exists():
+            try:
+                receipt_data = json.loads(default_rp.read_text(encoding="utf-8"))
+            except Exception:
+                receipt_data = None
 
     # Load attestation data if file path provided
     if attestation_file_path and not attestation_data:
@@ -204,6 +315,23 @@ def verify_governed_composite_legal_entity(
                 reasons=[f"Invalid JSON in attestation file: {exc}"],
                 details=details,
             )
+
+    if not attestation_data:
+        if receipt_data and isinstance(receipt_data, dict):
+            attestation_data = {
+                "schema": COMPOSITE_LEGAL_ENTITY_SCHEMA,
+                "target_scope": receipt_data.get("target_scope", {}),
+                "legal_entity": receipt_data.get("legal_entity", {}),
+                "governed_components": receipt_data.get("governed_components", {}),
+                "critical_policies": receipt_data.get("critical_policies", {}),
+            }
+        elif attestation_file_path is None:
+            def_att_path = Path("artifacts/calibration/legal_entity_governed_attestation.json")
+            if def_att_path.exists():
+                try:
+                    attestation_data = json.loads(def_att_path.read_text(encoding="utf-8"))
+                except Exception:
+                    attestation_data = None
 
     if not attestation_data:
         return GovernedCompositeVerificationResult(
@@ -358,16 +486,61 @@ def verify_governed_composite_legal_entity(
             else:
                 reasons.append(f"Local file missing: {EXPECTED_PERSONAL_AREA_FILENAME}")
 
+    # Validate receipt components, entity, and scope as part of evidence integrity if receipt provided
+    if receipt_data and isinstance(receipt_data, dict):
+        r_scope = receipt_data.get("target_scope", {})
+        r_entity = receipt_data.get("legal_entity", {})
+        r_name = str(r_entity.get("legal_entity_name") or "").strip()
+        r_code = str(r_entity.get("legal_entity_code") or "").strip().upper()
+        r_reg = str(r_entity.get("regulator") or "").strip().upper()
+        r_lic = str(r_entity.get("license_number") or "").strip()
+        r_tier = str(r_scope.get("account_tier") or "").strip().upper()
+        r_curr = str(r_scope.get("account_currency") or "").strip().upper()
+
+        if r_name != QUALIFIED_LEGAL_ENTITY_NAME:
+            reasons.append(f"Receipt legal entity name '{r_name}' != expected '{QUALIFIED_LEGAL_ENTITY_NAME}'.")
+        if r_code != QUALIFIED_LEGAL_ENTITY_CODE:
+            reasons.append(f"Receipt legal entity code '{r_code}' != expected '{QUALIFIED_LEGAL_ENTITY_CODE}'.")
+        if r_reg != QUALIFIED_REGULATOR:
+            reasons.append(f"Receipt regulator '{r_reg}' != expected '{QUALIFIED_REGULATOR}'.")
+        if r_lic != QUALIFIED_LICENSE_NUMBER:
+            reasons.append(f"Receipt license number '{r_lic}' != expected '{QUALIFIED_LICENSE_NUMBER}'.")
+        if r_tier != QUALIFIED_ACCOUNT_TIER:
+            reasons.append(f"Receipt account tier '{r_tier}' != expected '{QUALIFIED_ACCOUNT_TIER}'.")
+        if r_curr != QUALIFIED_ACCOUNT_CURRENCY:
+            reasons.append(f"Receipt account currency '{r_curr}' != expected '{QUALIFIED_ACCOUNT_CURRENCY}'.")
+
+        r_comps = receipt_data.get("governed_components", {})
+        r_c1 = r_comps.get("component_1", {}) if isinstance(r_comps, dict) else {}
+        r_c2 = r_comps.get("component_2", {}) if isinstance(r_comps, dict) else {}
+        if str(r_c1.get("evidence_role") or "").strip().upper() != EXPECTED_CLIENT_AGREEMENT_ROLE:
+            reasons.append("Receipt component 1 evidence role mismatch.")
+        if str(r_c1.get("source_type") or "").strip().upper() != EXPECTED_CLIENT_AGREEMENT_SOURCE_TYPE:
+            reasons.append("Receipt component 1 source type mismatch.")
+        if str(r_c1.get("sha256") or "").strip().lower() != EXPECTED_CLIENT_AGREEMENT_SHA256:
+            reasons.append("Receipt component 1 SHA-256 mismatch.")
+        if r_c1.get("bytes") != EXPECTED_CLIENT_AGREEMENT_BYTES:
+            reasons.append("Receipt component 1 bytes mismatch.")
+
+        if str(r_c2.get("evidence_role") or "").strip().upper() != EXPECTED_PERSONAL_AREA_ROLE:
+            reasons.append("Receipt component 2 evidence role mismatch.")
+        if str(r_c2.get("source_type") or "").strip().upper() != EXPECTED_PERSONAL_AREA_SOURCE_TYPE:
+            reasons.append("Receipt component 2 source type mismatch.")
+        if str(r_c2.get("sha256") or "").strip().lower() != EXPECTED_PERSONAL_AREA_SHA256:
+            reasons.append("Receipt component 2 SHA-256 mismatch.")
+        if r_c2.get("bytes") != EXPECTED_PERSONAL_AREA_BYTES:
+            reasons.append("Receipt component 2 bytes mismatch.")
+
+        r_policies = receipt_data.get("critical_policies", {})
+        r_server_policy = str(r_policies.get("server_binding_policy") or "").strip().upper()
+        if r_server_policy != SERVER_BINDING_POLICY:
+            reasons.append(f"Receipt server binding policy '{r_server_policy}' != expected '{SERVER_BINDING_POLICY}'.")
+
     # Evaluate Layer 1: COMPOSITE_EVIDENCE_INTEGRITY
     evidence_integrity_pass = len(reasons) == 0
     composite_evidence_integrity = "PASS" if evidence_integrity_pass else "FAIL"
 
     # Evaluate Layer 2: PRODUCTION_ORIGIN_AUTHENTICITY
-    provenance_block = attestation_data.get("provenance_and_authenticity", {})
-    verifier_id = str(provenance_block.get("verifier_identity") or "").strip()
-    auth_available = provenance_block.get("production_authenticity_available", False)
-    proof = proof_override or provenance_block.get("verification_proof")
-
     production_origin_authenticity = "HOLD"
     governed_status = "HOLD"
     is_qualified = False
@@ -375,52 +548,200 @@ def verify_governed_composite_legal_entity(
     if not evidence_integrity_pass:
         production_origin_authenticity = "FAIL"
         governed_status = "FAIL"
-    elif not is_test_ctx:
-        # Production Execution Context:
-        # Fails closed because no live authenticated portal collector / review workflow is deployed.
-        production_origin_authenticity = "HOLD"
-        governed_status = "HOLD"
-        is_qualified = False
-        details["production_hold_reason"] = (
-            "PRODUCTION_AUTHENTICITY_UNAVAILABLE: No authenticated application review workflow "
-            "or portal collector is deployed in production. Hard governance strictly requires HOLD."
+        return GovernedCompositeVerificationResult(
+            is_qualified=False,
+            governed_status="FAIL",
+            composite_evidence_integrity="FAIL",
+            production_origin_authenticity="FAIL",
+            reasons=reasons,
+            details=details,
         )
-    else:
-        # Test Execution Context:
-        # Exercises isolated test seam with purpose-bound secret
-        if proof:
-            canonical_payload = compute_canonical_composite_payload(
-                legal_entity_name=name,
-                legal_entity_code=code,
-                regulator=reg,
-                license_number=lic,
-                account_tier=tier,
-                account_currency=curr,
-                comp1_sha256=comp1.get("sha256", "") if comp1 else "",
-                comp1_bytes=comp1.get("bytes", 0) if comp1 else 0,
-                comp2_sha256=comp2.get("sha256", "") if comp2 else "",
-                comp2_bytes=comp2.get("bytes", 0) if comp2 else 0,
-                verifier_identity=verifier_id or "TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
-            )
-            try:
-                expected_proof = compute_composite_verification_proof(canonical_payload)
-                if hmac.compare_digest(proof.strip().lower(), expected_proof.strip().lower()):
-                    production_origin_authenticity = "PASS"
-                    governed_status = "QUALIFIED"
-                    is_qualified = True
-                else:
-                    production_origin_authenticity = "FAIL"
-                    governed_status = "FAIL"
-                    reasons.append("Cryptographic verification proof mismatch for composite attestation.")
-            except Exception as exc:
-                production_origin_authenticity = "FAIL"
-                governed_status = "FAIL"
-                reasons.append(f"Proof verification failed: {exc}")
-        else:
-            # In test context without proof: structural integrity passed, authenticity pending proof
+
+    # Path A: Authenticated Review Receipt Workflow
+    if receipt_data and isinstance(receipt_data, dict):
+        details["receipt_evaluated"] = True
+        r_schema = str(receipt_data.get("schema") or "").strip()
+        r_receipt_id = str(receipt_data.get("receipt_id") or "").strip()
+        r_reviewed_at = str(receipt_data.get("reviewed_at") or "").strip()
+        r_workflow_ver = str(receipt_data.get("workflow_version") or "").strip()
+        r_authority = str(receipt_data.get("verification_authority") or "").strip()
+        r_method = str(receipt_data.get("verification_method") or "").strip().upper()
+        r_verifier = str(receipt_data.get("verifier_identity") or "").strip()
+        r_proof_ver = str(receipt_data.get("verification_proof_version") or "").strip()
+        r_proof = proof_override or receipt_data.get("verification_proof")
+
+        # 1. Receipt schema
+        if r_schema != LEGAL_ENTITY_REVIEW_RECEIPT_SCHEMA:
+            reasons.append(f"Receipt schema '{r_schema}' != expected '{LEGAL_ENTITY_REVIEW_RECEIPT_SCHEMA}'.")
+
+        # 2. Method
+        if r_method != VERIFICATION_METHOD_COMPOSITE_REVIEW:
+            reasons.append(f"Receipt verification method '{r_method}' != expected '{VERIFICATION_METHOD_COMPOSITE_REVIEW}'.")
+
+        # 3. Verifier trusted registry check
+        is_trusted, trust_err = is_trusted_verifier(r_method, r_verifier)
+        if not is_trusted:
+            reasons.append(f"Receipt verifier untrusted: {trust_err}")
+
+        # 4. Mandatory receipt metadata
+        if not r_receipt_id:
+            reasons.append("Receipt missing receipt_id.")
+        if not r_reviewed_at:
+            reasons.append("Receipt missing reviewed_at.")
+        if r_workflow_ver != REVIEW_WORKFLOW_VERSION:
+            reasons.append(f"Receipt workflow version '{r_workflow_ver}' != expected '{REVIEW_WORKFLOW_VERSION}'.")
+        if r_authority != GOVERNED_PROVENANCE_AUTHORITY:
+            reasons.append(f"Receipt verification authority '{r_authority}' != expected '{GOVERNED_PROVENANCE_AUTHORITY}'.")
+        if r_proof_ver != CURRENT_PROOF_VERSION:
+            reasons.append(f"Receipt proof version '{r_proof_ver}' != expected '{CURRENT_PROOF_VERSION}'.")
+
+        # 5. Policies & Claims
+        r_policies = receipt_data.get("critical_policies", {})
+        r_server_policy = str(r_policies.get("server_binding_policy") or "").strip().upper()
+        r_origin_claim = str(r_policies.get("origin_claim") or "").strip().upper()
+        r_broker_crypto = str(r_policies.get("broker_cryptographic_origin") or "").strip().upper()
+
+        if r_origin_claim != ORIGIN_CLAIM_AUTHENTICATED_REVIEW_ONLY:
+            reasons.append(f"Receipt origin claim '{r_origin_claim}' != expected '{ORIGIN_CLAIM_AUTHENTICATED_REVIEW_ONLY}'.")
+        if r_broker_crypto != BROKER_CRYPTOGRAPHIC_ORIGIN_NOT_CLAIMED:
+            reasons.append(f"Receipt broker cryptographic origin '{r_broker_crypto}' != expected '{BROKER_CRYPTOGRAPHIC_ORIGIN_NOT_CLAIMED}'.")
+
+        # 8. Cryptographic Proof Verification
+        if not r_proof:
             production_origin_authenticity = "HOLD"
             governed_status = "HOLD"
             is_qualified = False
+            details["production_hold_reason"] = "Receipt verification_proof is missing or null. Status remains HOLD."
+        else:
+            canonical_payload = compute_canonical_review_receipt_payload(
+                schema=r_schema,
+                verification_authority=r_authority,
+                verification_proof_version=r_proof_ver,
+                workflow_version=r_workflow_ver,
+                receipt_id=r_receipt_id,
+                reviewed_at_iso=r_reviewed_at,
+                verification_method=r_method,
+                verifier_identity=r_verifier,
+                legal_entity_name=r_name,
+                legal_entity_code=r_code,
+                regulator=r_reg,
+                license_number=r_lic,
+                account_tier=r_tier,
+                account_currency=r_curr,
+                comp1_role=str(r_c1.get("evidence_role") or ""),
+                comp1_source_type=str(r_c1.get("source_type") or ""),
+                comp1_sha256=str(r_c1.get("sha256") or ""),
+                comp1_bytes=r_c1.get("bytes", 0),
+                comp2_role=str(r_c2.get("evidence_role") or ""),
+                comp2_source_type=str(r_c2.get("source_type") or ""),
+                comp2_sha256=str(r_c2.get("sha256") or ""),
+                comp2_bytes=r_c2.get("bytes", 0),
+                server_binding_policy=r_server_policy,
+                origin_claim=r_origin_claim,
+                broker_cryptographic_origin=r_broker_crypto,
+            )
+            test_sentinel = b"aurumiq-test-only-provenance-key-NOT-FOR-PRODUCTION"
+            try:
+                secret = get_governed_signing_secret()
+                if not is_test_ctx and secret == test_sentinel:
+                    production_origin_authenticity = "HOLD"
+                    governed_status = "HOLD"
+                    is_qualified = False
+                    details["production_hold_reason"] = (
+                        "Test sentinel provenance key cannot qualify production origin authenticity. "
+                        "A genuine PROVENANCE_SIGNING_SECRET is required."
+                    )
+                    reasons.append("Test sentinel key prohibited for production origin authenticity.")
+                else:
+                    expected_proof = compute_review_receipt_proof(canonical_payload, signing_secret=secret)
+                    if hmac.compare_digest(str(r_proof).strip().lower(), expected_proof.strip().lower()):
+                        details["cryptographic_receipt_valid"] = True
+                        if len(reasons) == 0:
+                            if not is_production_environment():
+                                production_origin_authenticity = "HOLD"
+                                governed_status = "HOLD"
+                                is_qualified = False
+                                details["production_hold_reason"] = (
+                                    "NON_PRODUCTION_CONTEXT: Valid cryptographic review receipt cannot grant "
+                                    "production authenticity outside strict production settings "
+                                    "(config.settings.production with DEBUG=False)."
+                                )
+                                reasons.append("NON_PRODUCTION_CONTEXT: Valid cryptographic receipt verified, but runtime is non-production.")
+                            else:
+                                production_origin_authenticity = "PASS"
+                                governed_status = "QUALIFIED"
+                                is_qualified = True
+                        else:
+                            production_origin_authenticity = "FAIL"
+                            governed_status = "FAIL"
+                            is_qualified = False
+                    else:
+                        details["cryptographic_receipt_valid"] = False
+                        production_origin_authenticity = "FAIL"
+                        governed_status = "FAIL"
+                        is_qualified = False
+                        reasons.append("Cryptographic verification proof mismatch for legal entity review receipt.")
+            except RuntimeError as exc:
+                # Missing secret fails closed WITHOUT crashing
+                production_origin_authenticity = "HOLD"
+                governed_status = "HOLD"
+                is_qualified = False
+                details["production_hold_reason"] = f"PROVENANCE_SIGNING_SECRET unavailable in environment: {exc}"
+                reasons.append(f"Provenance signing secret unavailable: {exc}")
+            except Exception as exc:
+                production_origin_authenticity = "FAIL"
+                governed_status = "FAIL"
+                is_qualified = False
+                reasons.append(f"Proof verification failed: {exc}")
+
+    # Path B: Fallback / Legacy Attestation Verification (for test seam or when receipt is absent)
+    else:
+        provenance_block = attestation_data.get("provenance_and_authenticity", {})
+        verifier_id = str(provenance_block.get("verifier_identity") or "").strip()
+        proof = proof_override or provenance_block.get("verification_proof")
+
+        if not is_test_ctx:
+            production_origin_authenticity = "HOLD"
+            governed_status = "HOLD"
+            is_qualified = False
+            details["production_hold_reason"] = (
+                "PRODUCTION_AUTHENTICITY_UNAVAILABLE: No authenticated legal entity review receipt "
+                "or proof is deployed in production. Hard governance strictly requires HOLD."
+            )
+        else:
+            # Test Execution Context using isolated test seam
+            if proof:
+                canonical_payload = compute_canonical_composite_payload(
+                    legal_entity_name=name,
+                    legal_entity_code=code,
+                    regulator=reg,
+                    license_number=lic,
+                    account_tier=tier,
+                    account_currency=curr,
+                    comp1_sha256=comp1.get("sha256", "") if comp1 else "",
+                    comp1_bytes=comp1.get("bytes", 0) if comp1 else 0,
+                    comp2_sha256=comp2.get("sha256", "") if comp2 else "",
+                    comp2_bytes=comp2.get("bytes", 0) if comp2 else 0,
+                    verifier_identity=verifier_id or "TEST_SUITE_ISOLATED_PROVENANCE_SEAM",
+                )
+                try:
+                    expected_proof = compute_composite_verification_proof(canonical_payload)
+                    if hmac.compare_digest(proof.strip().lower(), expected_proof.strip().lower()):
+                        production_origin_authenticity = "PASS"
+                        governed_status = "QUALIFIED"
+                        is_qualified = True
+                    else:
+                        production_origin_authenticity = "FAIL"
+                        governed_status = "FAIL"
+                        reasons.append("Cryptographic verification proof mismatch for composite attestation.")
+                except Exception as exc:
+                    production_origin_authenticity = "FAIL"
+                    governed_status = "FAIL"
+                    reasons.append(f"Proof verification failed: {exc}")
+            else:
+                production_origin_authenticity = "HOLD"
+                governed_status = "HOLD"
+                is_qualified = False
 
     return GovernedCompositeVerificationResult(
         is_qualified=is_qualified,
