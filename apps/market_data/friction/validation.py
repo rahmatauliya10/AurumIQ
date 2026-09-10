@@ -503,6 +503,8 @@ def validate_friction_model_for_activation(
     target_account_tier: str = "STANDARD",
     target_legal_entity_code: Optional[str] = None,
     slippage_cost_policy_version: str = "ADVERSE_ONLY_P75_P95_V1",
+    composite_legal_entity_attestation: Optional[Dict[str, Any]] = None,
+    composite_proof_override: Optional[str] = None,
 ) -> FrictionValidationResult:
     """Canonical validator for empirical friction models.
     
@@ -570,20 +572,46 @@ def validate_friction_model_for_activation(
             details=details,
         )
     if model_version.account_tier == "STANDARD_CENT":
-        account_bound_legal_sources = {
-            FrictionSourceType.ACCOUNT_CLIENT_AGREEMENT.value,
-            FrictionSourceType.BROKER_PERSONAL_AREA_EXPORT.value,
-        }
-        if legal_snap.source_type not in account_bound_legal_sources:
+        from apps.market_data.friction.legal_entity import verify_governed_composite_legal_entity
+        from pathlib import Path
+        import json
+
+        att_data = composite_legal_entity_attestation
+        if att_data is None:
+            att_file = Path("artifacts/calibration/legal_entity_governed_attestation.json")
+            if att_file.exists():
+                try:
+                    att_data = json.loads(att_file.read_text(encoding="utf-8"))
+                except Exception:
+                    att_data = None
+
+        # Verify composite conjunction (both Component A and Component B required)
+        comp_res = verify_governed_composite_legal_entity(
+            attestation_data=att_data,
+            local_evidence_dir="artifacts/calibration/legal_entity_evidence",
+            simulated_server=getattr(model_version, "server", None),
+            proof_override=composite_proof_override,
+        )
+
+        if not comp_res.is_qualified:
+            hold_reason = (
+                comp_res.details.get("production_hold_reason")
+                or "; ".join(comp_res.reasons)
+                or "Composite legal entity qualification has not passed."
+            )
             return FrictionValidationResult(
                 is_valid=False,
                 status="LEGAL_ENTITY_EVIDENCE_MISSING",
                 reasons=[
-                    f"ACCOUNT_BINDING_REQUIRED: STANDARD_CENT execution scope requires account-bound legal entity evidence "
-                    f"({sorted(account_bound_legal_sources)}). Generic source type '{legal_snap.source_type}' cannot qualify."
+                    f"COMPOSITE_CONJUNCTION_REQUIRED: STANDARD_CENT execution scope requires governed composite legal entity "
+                    f"qualification binding both ACCOUNT_CLIENT_AGREEMENT and BROKER_PERSONAL_AREA_EXPORT. "
+                    f"Current status: COMPOSITE_EVIDENCE_INTEGRITY={comp_res.composite_evidence_integrity}, "
+                    f"PRODUCTION_ORIGIN_AUTHENTICITY={comp_res.production_origin_authenticity}, "
+                    f"GOVERNED_STATUS={comp_res.governed_status}. Reason: {hold_reason}"
                 ],
                 details=details,
             )
+
     if (
         not legal_snap.raw_content
         or hashlib.sha256(legal_snap.raw_content).hexdigest() != legal_snap.raw_payload_bytes_sha256

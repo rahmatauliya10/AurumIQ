@@ -1,0 +1,55 @@
+{
+  "schema": "aurumiq.governance.legal_entity_evidence_index.v1",
+  "venue": "EXNESS",
+  "symbol": "XAUUSDc",
+  "account_tier": "STANDARD_CENT",
+  "account_currency": "USC",
+  "evidence_storage_policy": "LOCAL_ONLY_PROTECTED_DATA",
+  "public_safety_classification": "PUBLIC_REPOSITORY_SAFE",
+  "privacy_statement": "Raw Client Agreement PDF and Personal Area account screenshot contain private contract details and account metadata. They are strictly protected from public repository tracking under project governance and stored local-only in artifacts/calibration/legal_entity_evidence/. Cryptographic integrity is guaranteed via SHA-256 hashes below.",
+  "evidence_files": [
+    {
+      "filename": "exness_sc_client_agreement.pdf",
+      "sha256": "ae02ca31a9e2ba1d8ef81cc973caa169e901aa6d802b4f9949a05e3cb1217ddc",
+      "bytes": 1539705,
+      "evidence_role": "CONTRACTING_ENTITY_EVIDENCE",
+      "source_type": "ACCOUNT_CLIENT_AGREEMENT",
+      "local_path": "artifacts/calibration/legal_entity_evidence/exness_sc_client_agreement.pdf",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "proves": {
+        "legal_entity_name": "Exness (SC) Ltd",
+        "legal_entity_code": "EXNESS_SC_LTD",
+        "regulator": "FSA",
+        "license_number": "SD025"
+      },
+      "qualification_constraint": "MUST_NOT_ALONE_QUALIFY_STANDARD_CENT"
+    },
+    {
+      "filename": "exness_standard_cent_personal_area.jpeg",
+      "sha256": "2c8e93a081d86cc631c76d7fa7a552a11cdc769a50b75175042285af874e80e7",
+      "bytes": 113225,
+      "evidence_role": "ACCOUNT_SCOPE_BINDING_EVIDENCE",
+      "source_type": "BROKER_PERSONAL_AREA_EXPORT",
+      "local_path": "artifacts/calibration/legal_entity_evidence/exness_standard_cent_personal_area.jpeg",
+      "storage_status": "LOCAL_ONLY_GITIGNORED",
+      "proves": {
+        "account_platform": "MT5",
+        "account_tier": "STANDARD_CENT",
+        "account_currency": "USC",
+        "broker_client_scope": "AUTHENTICATED_EXNESS_CLIENT"
+      },
+      "qualification_constraint": "MUST_NOT_ALONE_QUALIFY_CONTRACTING_ENTITY"
+    }
+  ],
+  "composite_governance": {
+    "qualification_rule": "COMPOSITE_CONJUNCTION_REQUIRED",
+    "description": "Standard Cent legal entity qualification strictly requires the simultaneous verification of both CONTRACTING_ENTITY_EVIDENCE and ACCOUNT_SCOPE_BINDING_EVIDENCE. Neither component alone may qualify.",
+    "server_binding_policy": "EXECUTION_INFRASTRUCTURE_ONLY_NOT_LEGAL_ENTITY_KEY",
+    "mt5_account_company_policy": "INFRASTRUCTURE_METADATA_FORBIDDEN_AS_CONTRACTING_ENTITY"
+  },
+  "checksum_summary": {
+    "file_count": 2,
+    "total_bytes": 1652930,
+    "sha256_manifest_digest": "4c45a76c8cb8f05ee49b2ba17ec3748be4fbf50bc12ca92aebef5591e0892019"
+  }
+}
