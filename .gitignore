@@ -66,4 +66,6 @@ Thumbs.db
 
 # Calibration raw trading telemetry & screenshots (protected local evidence)
 artifacts/calibration/xauusdc_freeze_evidence/
+artifacts/calibration/legal_entity_evidence/
+AurumIQ_Phase6_XAUUSDc_Freeze/
 
