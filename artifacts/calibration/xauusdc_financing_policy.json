@@ -1,0 +1,53 @@
+{
+  "schema": "aurumiq.governance.financing_policy.v1",
+  "policy_id": "POLICY-FINANCING-XAUUSDC-STANDARD-CENT-20260909",
+  "status": "QUALIFIED",
+  "instrument": {
+    "symbol": "XAUUSD",
+    "canonical_symbol": "XAUUSD",
+    "broker_symbol": "XAUUSDc",
+    "venue": "EXNESS",
+    "account_tier": "STANDARD_CENT",
+    "account_currency": "USC"
+  },
+  "symbol_swap_schedule": {
+    "status": "QUALIFIED",
+    "swap_type": "points",
+    "swap_long_points": -698.5,
+    "swap_short_points": 0.0,
+    "rollover_summer_utc_hour": 21,
+    "rollover_winter_utc_hour": 22,
+    "rollover_schedule_description": "Summer 21:00 GMT+0 / Winter 22:00 GMT+0",
+    "triple_swap_weekday": "Wednesday",
+    "triple_swap_multiplier": 3
+  },
+  "account_swap_free_policy": {
+    "actual_account_swap_free_status": null,
+    "interpretation": "UNKNOWN",
+    "calibrated_baseline_handling": "FAIL_CLOSED_CONSERVATIVE_FINANCING_APPLIED",
+    "account_override_available": false
+  },
+  "financing_cost_geometry": {
+    "contract_size": 1.0,
+    "point_size": 0.001,
+    "tick_size": 0.001,
+    "tick_value_usc_per_lot": 0.1,
+    "long_swap_charge_per_lot_usc": -69.85,
+    "long_swap_triple_charge_per_lot_usc": -209.55,
+    "short_swap_charge_per_lot_usc": 0.0,
+    "long_swap_charge_per_0_01_lot_usc": -0.6985,
+    "long_swap_triple_charge_per_0_01_lot_usc": -2.0955,
+    "short_swap_charge_per_0_01_lot_usc": 0.0
+  },
+  "evidence_provenance": {
+    "source_classification": "MT5_TERMINAL_RUNTIME_SYMBOL_METADATA",
+    "capture_provenance_category": "MOBILE_TERMINAL_SCREENSHOT",
+    "evidence_file_reference": "WhatsApp Image 2026-09-09 at 18.17.51(1).jpeg",
+    "evidence_sha256": "7ef3544197dd2d310ba9ba7d75f83e5c262454aa3995631b90b1000f80fdeebd",
+    "evidence_bytes": 73013,
+    "evidence_capture_timestamp": "2026-09-09T18:17:51+07:00",
+    "evidence_index_reference": "artifacts/calibration/xauusdc_freeze_evidence_index.json",
+    "freeze_reference": "artifacts/calibration/phase6_xauusdc_empirical_freeze.json",
+    "storage_policy": "LOCAL_ONLY_PROTECTED_DATA"
+  }
+}
