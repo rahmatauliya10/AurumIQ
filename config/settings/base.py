@@ -165,6 +165,26 @@ CELERY_TASK_QUEUES = {
 
 CELERY_TASK_DEFAULT_QUEUE = "maintenance"
 
+# Celery Beat Schedule (Phase 8 Autonomous Continuity & Market Ingestion)
+CELERY_BEAT_SCHEDULE = {
+    "phase8-continuity-watchdog": {
+        "task": "apps.live_monitor.tasks.phase8_continuity_watchdog_task",
+        "schedule": 60.0 * 5,  # Every 5 minutes
+        "options": {"queue": "maintenance"},
+    },
+    "provider-health-check": {
+        "task": "apps.market_data.tasks.check_provider_health_task",
+        "schedule": 60.0 * 2,  # Every 2 minutes
+        "options": {"queue": "maintenance"},
+    },
+    "ingest-primary-xauusd-candles": {
+        "task": "apps.market_data.tasks.ingest_primary_candles",
+        "schedule": 60.0 * 1,  # Every 1 minute
+        "args": ("XAU/USD", ["15m", "1h", "4h", "1d"]),
+        "options": {"queue": "market_data"},
+    },
+}
+
 # Redis Cache
 REDIS_URL = env("REDIS_URL")
 CACHES = {

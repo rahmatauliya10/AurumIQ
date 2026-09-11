@@ -397,6 +397,15 @@ def process_xauusd_closed_candle_task(
         task_status = "SUCCESS" if calibrated else "CALIBRATION_REQUIRED"
         calib_status_str = "CALIBRATED" if calibrated else "CALIBRATION_REQUIRED"
 
+        # Wire to Phase 8 paper observation (Section 4)
+        try:
+            process_phase8_paper_observation_task.delay(
+                signal_fingerprint=signal_record.analysis_fingerprint,
+                paper_volume_lots=None,
+            )
+        except Exception as queue_exc:
+            logger.warning("Failed to dispatch Phase 8 paper observation task", exc=str(queue_exc))
+
         return {
             "status": task_status,
             "calibration_status": calib_status_str,
@@ -418,6 +427,70 @@ def process_xauusd_closed_candle_task(
     except Exception as exc:
         logger.error("process_xauusd_closed_candle_task_failed", exc_info=True, instrument=instrument)
         raise self.retry(exc=exc, countdown=5)
+
+
+@shared_task(queue="analysis", bind=True, max_retries=3)
+def process_phase8_paper_observation_task(
+    self,
+    signal_fingerprint: str,
+    paper_volume_lots: Optional[float] = None,
+) -> dict:
+    """
+    Dedicated Phase 8 Paper Observation task (Section 4).
+    Receives immutable signal analysis_fingerprint, resolves records from DB,
+    and executes Phase 8 paper observation with zero broker execution dependency.
+    Idempotent and retry-safe.
+    """
+    from engine.paper.guards import assert_paper_execution_safety
+    assert_paper_execution_safety("task:process_phase8_paper_observation_task")
+
+    from apps.signals.models import SignalRecord
+    from apps.live_monitor.models import LiveRiskPlanRecord
+    from apps.live_monitor.paper_service import Phase8PaperService
+
+    try:
+        sig = SignalRecord.objects.filter(analysis_fingerprint=signal_fingerprint).first()
+        if not sig:
+            logger.warning("Phase 8 observation: SignalRecord not found", fingerprint=signal_fingerprint)
+            return {"status": "SKIPPED_NOT_FOUND", "fingerprint": signal_fingerprint}
+
+        risk = LiveRiskPlanRecord.objects.filter(source_signal_fingerprint=signal_fingerprint).first()
+        lots = Decimal(str(paper_volume_lots)) if paper_volume_lots is not None else None
+
+        res = Phase8PaperService.process_production_signal_observation(
+            signal_record=sig,
+            risk_record=risk,
+            paper_volume_lots=lots,
+        )
+
+        obs_rec = res[0] if isinstance(res, tuple) else res
+        op_status = res.status if hasattr(res, "status") else "PROCESSED"
+
+        return {
+            "status": "SUCCESS",
+            "operation_status": op_status,
+            "observation_id": obs_rec.observation_id,
+            "observation_fingerprint": obs_rec.observation_fingerprint,
+            "signal_fingerprint": signal_fingerprint,
+            "side": obs_rec.side,
+            "outcome": obs_rec.outcome,
+        }
+    except Exception as exc:
+        logger.error("process_phase8_paper_observation_task_failed", exc_info=True, fingerprint=signal_fingerprint)
+        raise self.retry(exc=exc, countdown=5)
+
+
+@shared_task(queue="maintenance")
+def phase8_continuity_watchdog_task() -> dict:
+    """
+    Periodic operational continuity watchdog for Phase 8 (Section 5).
+    Verifies expected eligible closed 15m decision intervals.
+    """
+    from engine.paper.guards import assert_paper_execution_safety
+    assert_paper_execution_safety("task:phase8_continuity_watchdog_task")
+
+    from apps.live_monitor.paper_service import Phase8PaperService
+    return Phase8PaperService.audit_operational_continuity()
 
 
 @shared_task(queue="maintenance")

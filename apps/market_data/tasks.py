@@ -418,7 +418,7 @@ def ingest_primary_candles(
 
                 vol_evidence = getattr(raw, "volume_evidence", "UNAVAILABLE")
 
-                MarketCandle.objects.update_or_create(
+                mc, _ = MarketCandle.objects.update_or_create(
                     instrument=instrument,
                     source=listing.provider,
                     timeframe=tf,
@@ -438,6 +438,27 @@ def ingest_primary_candles(
                     },
                 )
                 total_ingested += 1
+
+                # Wire autonomous decision pipeline trigger (Phase 7 -> Phase 8)
+                if is_xauusd and tf == "15m" and raw.is_closed:
+                    try:
+                        from apps.live_monitor.tasks import process_xauusd_closed_candle_task
+                        code_rev = _get_setting("CODE_REVISION", "4a8a993af55ad433800e0bb8868e94063d62ff89")
+                        process_xauusd_closed_candle_task.delay(
+                            instrument="XAUUSD",
+                            timeframe="15m",
+                            timestamp_open_iso=raw.timestamp_open.isoformat(),
+                            timestamp_close_iso=raw.timestamp_close.isoformat(),
+                            open_str=str(raw.open),
+                            high_str=str(raw.high),
+                            low_str=str(raw.low),
+                            close_str=str(raw.close),
+                            volume_str=str(raw.volume),
+                            code_revision=code_rev,
+                            source=listing.provider,
+                        )
+                    except Exception as pipe_exc:
+                        logger.warning("Failed to dispatch process_xauusd_closed_candle_task", exc=str(pipe_exc))
 
             # Point-in-time DataQualitySnapshot
             if is_xauusd:

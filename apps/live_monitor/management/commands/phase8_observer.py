@@ -32,7 +32,7 @@ class Command(BaseCommand):
 
         paper_volume = Decimal(str(options["paper_volume_lots"])) if options.get("paper_volume_lots") is not None else None
 
-        count, status_str = Phase8PaperService.step_observation_cycle()
+        count, status_str = Phase8PaperService.step_observation_cycle(paper_volume_lots=paper_volume)
         state = Phase8PaperService.get_or_create_operational_state()
 
         self.stdout.write(f"Observation cycle completed: {status_str} (processed: {count})")

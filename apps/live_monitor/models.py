@@ -369,6 +369,15 @@ class Phase8OperationalState(models.Model):
     outcomes_pending = models.BigIntegerField(default=0)
     outcomes_resolved = models.BigIntegerField(default=0)
 
+    # Continuity watchdog & eligible cycle tracking
+    last_expected_eligible_close = models.DateTimeField(null=True, blank=True)
+    last_processed_eligible_close = models.DateTimeField(null=True, blank=True)
+    eligible_cycles_expected = models.BigIntegerField(default=0)
+    eligible_cycles_observed = models.BigIntegerField(default=0)
+    eligible_cycles_missing = models.BigIntegerField(default=0)
+    duplicate_noop_cycles = models.BigIntegerField(default=0)
+    expected_market_closure_cycles = models.BigIntegerField(default=0)
+
     runtime_errors_count = models.BigIntegerField(default=0)
     unresolved_integrity_failures = models.BigIntegerField(default=0)
     data_freshness_status = models.CharField(max_length=32, default="UNKNOWN")
