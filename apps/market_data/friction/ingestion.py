@@ -11,7 +11,7 @@ Adheres strictly to Pre-Phase-8 Calibration Hardening Governance:
 - Generates immutable dataset and summary bindings with deterministic semantic fingerprint (Directive 11).
 """
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import logging
@@ -794,8 +794,8 @@ def build_and_bind_friction_model_version(
 
     if spread_ticks_bps and evidence_dataset:
         spread_stats = compute_distribution_statistics(spread_ticks_bps)
-        base_spread = spread_stats["stat_p75"]
-        stress_spread = spread_stats["stat_p95"]
+        base_spread = spread_stats["stat_p75"].quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        stress_spread = spread_stats["stat_p95"].quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
         spread_summary_id = hashlib.sha256(
             f"{evidence_dataset.dataset_id}:SPREAD:NORMAL:ALL:{base_spread}:{FrictionPopulationSemantics.SPREAD_BPS.value}".encode()
@@ -830,8 +830,8 @@ def build_and_bind_friction_model_version(
 
     if slip_samples and telemetry_dataset:
         slip_stats = compute_distribution_statistics(slip_samples)
-        base_slippage = slip_stats["stat_p75"]
-        stress_slippage = slip_stats["stat_p95"]
+        base_slippage = slip_stats["stat_p75"].quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        stress_slippage = slip_stats["stat_p95"].quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
         slip_summary_id = hashlib.sha256(
             f"{telemetry_dataset.dataset_id}:SLIPPAGE:NORMAL:ALL:{base_slippage}:{pop_semantics}".encode()

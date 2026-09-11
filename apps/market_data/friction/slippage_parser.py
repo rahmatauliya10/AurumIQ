@@ -288,6 +288,7 @@ def parse_mt5_execution_telemetry(
     if not records:
         raise ValueError("No valid execution telemetry rows parsed.")
 
+    has_requested_price = any(r.get("requested_price") is not None for r in records)
     summary = {
         "sample_count": len(records),
         "sample_start": min(r["decision_timestamp"] for r in records),
@@ -296,5 +297,8 @@ def parse_mt5_execution_telemetry(
         "symbol": expected_symbol.upper() if expected_symbol else records[0]["symbol"],
         "broker_symbol": records[0]["symbol"],
         "account_tier": expected_account_tier.upper() if expected_account_tier else records[0]["account_tier"],
+        "true_requested_price_slippage": "OBSERVABLE" if has_requested_price else "UNOBSERVABLE",
+        "slippage_proxy_type": "EXECUTION_GAP_VS_REFERENCE_QUOTE",
+        "forced_exit_displacement_status": "MEASURED_BUT_NOT_NORMAL_MARKET_SLIPPAGE_QUARANTINED",
     }
     return records, summary

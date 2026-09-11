@@ -684,6 +684,7 @@ class FrictionVerificationMethod(models.TextChoices):
     BROKER_OFFICIAL_URL_CAPTURE = "BROKER_OFFICIAL_URL_CAPTURE", "Broker Official URL Capture"
     ACCOUNT_PORTAL_EXPORT = "ACCOUNT_PORTAL_EXPORT", "Account Portal Export"
     MANUAL_REVIEWED_OFFICIAL_DOCUMENT = "MANUAL_REVIEWED_OFFICIAL_DOCUMENT", "Manual Reviewed Official Document"
+    COMPOSITE_GOVERNED_REVIEW = "COMPOSITE_GOVERNED_REVIEW", "Composite Governed Review"
 
 
 ACCEPTED_VERIFICATION_METHODS = {m.value for m in FrictionVerificationMethod}
@@ -1004,6 +1005,11 @@ class FrictionModelVersion(models.Model):
     actual_account_swap_free_status = models.BooleanField(null=True, blank=True)
 
     # Spread & Slippage Parameters (MANDATORY SLIPPAGE: null until proven, NO DEFAULTS)
+    # INVARIANT NOTICE: Numeric slippage fields derived from execution telemetry represent
+    # the observed execution-gap proxy vs broker reference quote (Directive 7). True requested-price
+    # slippage remains strictly UNOBSERVABLE (Phase 6 Invariant). An observed execution gap of 0.0000 bps
+    # reflects fill price matching reference quote at order execution, NOT a claim that true slippage is zero.
+    # Forced-exit displacement (stop-outs) remains strictly quarantined.
     base_spread_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
     stress_spread_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
     base_slippage_bps = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
