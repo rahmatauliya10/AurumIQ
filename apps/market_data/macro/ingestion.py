@@ -224,11 +224,13 @@ def record_schedule_provenance_assertion(
     )
     latest_prior = prior_assertions[-1] if prior_assertions else None
 
-    # Deterministic assertion ID
+    # Deterministic assertion ID (capped <= 64 chars)
     snap_part = source_snapshot.snapshot_id[:16] if source_snapshot else "none"
-    assertion_id = f"asrt_{schedule_vintage.vintage_id}_{provenance_type}_{snap_part}"
+    raw_id = f"{schedule_vintage.vintage_id}_{provenance_type}_{snap_part}"
+    hash_part = hashlib.sha256(raw_id.encode()).hexdigest()[:32]
+    assertion_id = f"asrt_{hash_part}"
     if MacroScheduleProvenanceAssertion.objects.filter(assertion_id=assertion_id).exists():
-        assertion_id = f"{assertion_id}_{len(prior_assertions)}"
+        assertion_id = f"asrt_{hashlib.sha256(f'{raw_id}_{len(prior_assertions)}'.encode()).hexdigest()[:32]}"
 
     assertion = MacroScheduleProvenanceAssertion.objects.create(
         assertion_id=assertion_id,

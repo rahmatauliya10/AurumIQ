@@ -151,7 +151,8 @@ class ChartDataAPIView(APIView):
         )
         candles = list(reversed(list(candles_qs)))
 
-        timestamps = [c.timestamp_close.isoformat() for c in candles]
+        timestamps = [c.timestamp_open.isoformat() for c in candles]
+        timestamps_close = [c.timestamp_close.isoformat() for c in candles]
         opens = [float(c.open) for c in candles]
         highs = [float(c.high) for c in candles]
         lows = [float(c.low) for c in candles]
@@ -176,6 +177,7 @@ class ChartDataAPIView(APIView):
             "display_symbol": "XAU/USD",
             "timeframe": timeframe,
             "timestamps": timestamps,
+            "timestamps_close": timestamps_close,
             "open": opens,
             "high": highs,
             "low": lows,

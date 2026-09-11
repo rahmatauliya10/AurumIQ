@@ -1,9 +1,14 @@
 """Celery asynchronous tasks for historical backtesting and validation."""
 from datetime import datetime, timezone
 from decimal import Decimal
+import hashlib
+import json
+import os
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from celery import shared_task
+from django.conf import settings
 
 from apps.backtests.models import BacktestRun
 from apps.backtests.services import persist_backtest_run, persist_xauusd_backtest_run
@@ -157,6 +162,19 @@ def run_backtest_task(
         raise exc
 
 
+def compute_calibration_artifact_fingerprint(data: Dict[str, Any]) -> str:
+    """
+    Compute deterministic SHA-256 fingerprint over artifact content excluding fingerprint fields.
+    Uses sorted keys and compact separators to guarantee key-order invariance.
+    """
+    canonical_payload = {
+        k: v for k, v in data.items()
+        if k not in ("artifact_fingerprint", "fingerprint")
+    }
+    serialized_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(serialized_bytes).hexdigest()
+
+
 def resolve_xauusd_research_profiles(
     signal_profile_id: Optional[str] = None,
     risk_profile_id: Optional[str] = None,
@@ -166,60 +184,236 @@ def resolve_xauusd_research_profiles(
 ) -> Tuple[Optional[Phase4SignalProfile], Optional[XauUsdRiskProfile]]:
     """
     Resolve immutable research profiles server-side from identifier or validated JSON-safe dictionary.
+    Enforces strict fail-closed validation, path confinement, schema, status allowlist, and fingerprint checks.
     """
+    from engine.signals.profile import (
+        Phase4CalibrationStatus,
+        Phase4FeedPolicy,
+        Phase4SignalProfile,
+        SideDirectionPolicy,
+        SideGatePolicy,
+        SideTimingPolicy,
+    )
+    from engine.risk.xauusd_policy import (
+        SideRiskPolicy,
+        XauUsdExecutionPolicy,
+        XauUsdRiskProfile,
+    )
+    from engine.core.types import Phase5CalibrationStatus
+
     sig_prof: Optional[Phase4SignalProfile] = None
     risk_prof: Optional[XauUsdRiskProfile] = None
 
     # Server-side ID resolution requires a real persisted empirical calibration artifact.
-    # When no empirical artifact exists, unknown / default IDs return None, failing closed.
-    if signal_profile_dict:
-        # Reconstruct from validated dictionary
-        from engine.signals.profile import (
-            Phase4CalibrationStatus,
-            Phase4FeedPolicy,
-            Phase4SignalProfile,
-            SideDirectionPolicy,
-            SideGatePolicy,
-            SideTimingPolicy,
-        )
-        ld = SideDirectionPolicy(**signal_profile_dict["long_direction"]) if "long_direction" in signal_profile_dict and isinstance(signal_profile_dict["long_direction"], dict) else signal_profile_dict.get("long_direction", SideDirectionPolicy())
-        sd = SideDirectionPolicy(**signal_profile_dict["short_direction"]) if "short_direction" in signal_profile_dict and isinstance(signal_profile_dict["short_direction"], dict) else signal_profile_dict.get("short_direction", SideDirectionPolicy())
-        lt = SideTimingPolicy(**signal_profile_dict["long_timing"]) if "long_timing" in signal_profile_dict and isinstance(signal_profile_dict["long_timing"], dict) else signal_profile_dict.get("long_timing", SideTimingPolicy())
-        st = SideTimingPolicy(**signal_profile_dict["short_timing"]) if "short_timing" in signal_profile_dict and isinstance(signal_profile_dict["short_timing"], dict) else signal_profile_dict.get("short_timing", SideTimingPolicy())
-        lg = SideGatePolicy(**signal_profile_dict["long_gate"]) if "long_gate" in signal_profile_dict and isinstance(signal_profile_dict["long_gate"], dict) else signal_profile_dict.get("long_gate", SideGatePolicy())
-        sg = SideGatePolicy(**signal_profile_dict["short_gate"]) if "short_gate" in signal_profile_dict and isinstance(signal_profile_dict["short_gate"], dict) else signal_profile_dict.get("short_gate", SideGatePolicy())
-        fp = Phase4FeedPolicy(**signal_profile_dict["feed_policy"]) if "feed_policy" in signal_profile_dict and isinstance(signal_profile_dict["feed_policy"], dict) else signal_profile_dict.get("feed_policy", Phase4FeedPolicy())
-        cal_status = Phase4CalibrationStatus(signal_profile_dict.get("calibration_status", "CANDIDATE_NOT_FROZEN"))
-        sig_prof = Phase4SignalProfile(
-            name=signal_profile_dict.get("name", "XAUUSD_RESEARCH"),
-            long_direction=ld,
-            short_direction=sd,
-            long_timing=lt,
-            short_timing=st,
-            long_gate=lg,
-            short_gate=sg,
-            feed_policy=fp,
-            calibration_status=cal_status,
-            details=signal_profile_dict.get("details", {}),
-        )
+    # When no empirical artifact exists, unknown / default IDs return (None, None), failing closed.
+    if calibration_artifact_id is not None:
+        if not isinstance(calibration_artifact_id, str):
+            return None, None
 
-    if risk_profile_dict:
-        from engine.risk.xauusd_policy import (
-            SideRiskPolicy,
-            XauUsdExecutionPolicy,
-            XauUsdRiskProfile,
-        )
-        lr = SideRiskPolicy(**{k: Decimal(str(v)) if isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["long_risk_policy"].items()}) if "long_risk_policy" in risk_profile_dict and isinstance(risk_profile_dict["long_risk_policy"], dict) else risk_profile_dict.get("long_risk_policy", SideRiskPolicy())
-        sr = SideRiskPolicy(**{k: Decimal(str(v)) if isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["short_risk_policy"].items()}) if "short_risk_policy" in risk_profile_dict and isinstance(risk_profile_dict["short_risk_policy"], dict) else risk_profile_dict.get("short_risk_policy", SideRiskPolicy())
-        le = XauUsdExecutionPolicy(**{k: Decimal(str(v)) if k != "latency_seconds" and isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["long_execution_policy"].items()}) if "long_execution_policy" in risk_profile_dict and isinstance(risk_profile_dict["long_execution_policy"], dict) else risk_profile_dict.get("long_execution_policy", XauUsdExecutionPolicy())
-        se = XauUsdExecutionPolicy(**{k: Decimal(str(v)) if k != "latency_seconds" and isinstance(v, (int, float, str)) else v for k, v in risk_profile_dict["short_execution_policy"].items()}) if "short_execution_policy" in risk_profile_dict and isinstance(risk_profile_dict["short_execution_policy"], dict) else risk_profile_dict.get("short_execution_policy", XauUsdExecutionPolicy())
-        risk_prof = XauUsdRiskProfile(
-            name=risk_profile_dict.get("name", "XAUUSD_RESEARCH"),
-            long_risk_policy=lr,
-            short_risk_policy=sr,
-            long_execution_policy=le,
-            short_execution_policy=se,
-        )
+        raw_id = calibration_artifact_id.strip()
+        if not raw_id:
+            return None, None
+
+        # 1. Path Security: Strictly reject absolute paths, traversal operators, and directory separators
+        if (
+            os.path.isabs(raw_id)
+            or ".." in raw_id
+            or "/" in raw_id
+            or "\\" in raw_id
+            or ":" in raw_id
+            or "\x00" in raw_id
+        ):
+            return None, None
+
+        clean_name = raw_id if raw_id.endswith(".json") else f"{raw_id}.json"
+
+        # 2. Canonical allowlisted calibration artifact directory
+        base_dir = getattr(settings, "BASE_DIR", Path("."))
+        canonical_dir = (Path(base_dir) / "artifacts" / "calibration").resolve()
+        target_path = (canonical_dir / clean_name).resolve()
+
+        # Confinement check: target_path must be directly within canonical_dir
+        if target_path.parent != canonical_dir or not target_path.is_file():
+            return None, None
+
+        # 3. Parse JSON fail-closed
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                artifact_data = json.load(f)
+        except Exception:
+            return None, None
+
+        if not isinstance(artifact_data, dict):
+            return None, None
+
+        # 4. Schema Validation
+        schema = artifact_data.get("schema")
+        if not schema or not isinstance(schema, str) or not schema.startswith("aurumiq."):
+            return None, None
+
+        # 5. Target Instrument Validation
+        instrument = artifact_data.get("instrument") or artifact_data.get("target_instrument")
+        if not instrument or not isinstance(instrument, str) or instrument.strip().upper() not in ("XAUUSD", "XAU/USD"):
+            return None, None
+
+        # 6. Profile Status Validation & Allowlist
+        sig_dict = artifact_data.get("signal_profile")
+        if not isinstance(sig_dict, dict):
+            return None, None
+
+        raw_sig_status = sig_dict.get("calibration_status") or artifact_data.get("calibration_status")
+        if not raw_sig_status or not isinstance(raw_sig_status, str):
+            return None, None
+
+        try:
+            sig_status_enum = Phase4CalibrationStatus(raw_sig_status.strip())
+        except (ValueError, TypeError):
+            return None, None
+
+        # Explicit allowlist for active Phase 8 calibrated signals:
+        # PENDING_DATA, UNCALIBRATED, PENDING_PHASE6, LEGACY_REFERENCE must NEVER resolve to an active profile.
+        allowed_sig_statuses = {
+            Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+            Phase4CalibrationStatus.REVALIDATED_RESEARCH,
+        }
+        if sig_status_enum not in allowed_sig_statuses:
+            return None, None
+
+        # Validate Risk Profile Status if present
+        risk_dict = artifact_data.get("risk_profile")
+        if isinstance(risk_dict, dict):
+            raw_risk_status = risk_dict.get("calibration_status") or artifact_data.get("calibration_status")
+            if raw_risk_status:
+                try:
+                    risk_status_enum = Phase5CalibrationStatus(str(raw_risk_status).strip())
+                    allowed_risk_statuses = {
+                        Phase5CalibrationStatus.CANDIDATE_NOT_FROZEN,
+                        Phase5CalibrationStatus.REVALIDATED_RESEARCH,
+                    }
+                    if risk_status_enum not in allowed_risk_statuses:
+                        return None, None
+                except (ValueError, TypeError):
+                    return None, None
+
+        # 7. Deterministic Artifact Fingerprint Validation (if present)
+        declared_fp = artifact_data.get("artifact_fingerprint") or artifact_data.get("fingerprint")
+        if declared_fp:
+            if not isinstance(declared_fp, str):
+                return None, None
+            computed_fp = compute_calibration_artifact_fingerprint(artifact_data)
+            if declared_fp.strip().lower() != computed_fp.lower():
+                return None, None
+
+        signal_profile_dict = sig_dict
+        risk_profile_dict = risk_dict
+
+    # Reconstruct Signal Profile
+    if signal_profile_dict and isinstance(signal_profile_dict, dict):
+        try:
+            raw_cal_status = signal_profile_dict.get("calibration_status", "CANDIDATE_NOT_FROZEN")
+            cal_status = Phase4CalibrationStatus(str(raw_cal_status).strip())
+            allowed_sig_statuses = {
+                Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+                Phase4CalibrationStatus.REVALIDATED_RESEARCH,
+            }
+            if cal_status not in allowed_sig_statuses:
+                return None, None
+
+            ld_dict = signal_profile_dict.get("long_direction", {})
+            sd_dict = signal_profile_dict.get("short_direction", {})
+            lt_dict = signal_profile_dict.get("long_timing", {})
+            st_dict = signal_profile_dict.get("short_timing", {})
+            lg_dict = signal_profile_dict.get("long_gate", {})
+            sg_dict = signal_profile_dict.get("short_gate", {})
+            fp_dict = signal_profile_dict.get("feed_policy", {})
+
+            ld = SideDirectionPolicy(**ld_dict) if isinstance(ld_dict, dict) else SideDirectionPolicy()
+            sd = SideDirectionPolicy(**sd_dict) if isinstance(sd_dict, dict) else SideDirectionPolicy()
+            lt = SideTimingPolicy(**lt_dict) if isinstance(lt_dict, dict) else SideTimingPolicy()
+            st = SideTimingPolicy(**st_dict) if isinstance(st_dict, dict) else SideTimingPolicy()
+            lg = SideGatePolicy(**lg_dict) if isinstance(lg_dict, dict) else SideGatePolicy()
+            sg = SideGatePolicy(**sg_dict) if isinstance(sg_dict, dict) else SideGatePolicy()
+            fp = Phase4FeedPolicy(**fp_dict) if isinstance(fp_dict, dict) else Phase4FeedPolicy()
+
+            # Completeness and mathematical integrity check
+            if not (
+                ld.is_configured and sd.is_configured
+                and lt.is_configured and st.is_configured
+                and lg.is_configured and sg.is_configured
+            ):
+                return None, None
+
+            sig_prof = Phase4SignalProfile(
+                name=str(signal_profile_dict.get("name", "XAUUSD_RESEARCH")),
+                long_direction=ld,
+                short_direction=sd,
+                long_timing=lt,
+                short_timing=st,
+                long_gate=lg,
+                short_gate=sg,
+                feed_policy=fp,
+                calibration_status=cal_status,
+                details=signal_profile_dict.get("details", {}),
+            )
+        except Exception:
+            return None, None
+
+    # Reconstruct Risk Profile
+    if risk_profile_dict and isinstance(risk_profile_dict, dict):
+        try:
+            def _to_dec(val: Any) -> Optional[Decimal]:
+                if val is None:
+                    return None
+                if isinstance(val, Decimal):
+                    return val
+                try:
+                    return Decimal(str(val))
+                except Exception:
+                    return None
+
+            raw_lr = risk_profile_dict.get("long_risk_policy", {})
+            raw_sr = risk_profile_dict.get("short_risk_policy", {})
+            raw_le = risk_profile_dict.get("long_execution_policy", {})
+            raw_se = risk_profile_dict.get("short_execution_policy", {})
+
+            lr = SideRiskPolicy(**{k: _to_dec(v) for k, v in raw_lr.items()}) if isinstance(raw_lr, dict) else SideRiskPolicy()
+            sr = SideRiskPolicy(**{k: _to_dec(v) for k, v in raw_sr.items()}) if isinstance(raw_sr, dict) else SideRiskPolicy()
+
+            le_kwargs = {}
+            if isinstance(raw_le, dict):
+                for k, v in raw_le.items():
+                    if k == "latency_seconds":
+                        le_kwargs[k] = float(v) if v is not None else None
+                    else:
+                        le_kwargs[k] = _to_dec(v)
+            le = XauUsdExecutionPolicy(**le_kwargs)
+
+            se_kwargs = {}
+            if isinstance(raw_se, dict):
+                for k, v in raw_se.items():
+                    if k == "latency_seconds":
+                        se_kwargs[k] = float(v) if v is not None else None
+                    else:
+                        se_kwargs[k] = _to_dec(v)
+            se = XauUsdExecutionPolicy(**se_kwargs)
+
+            # Completeness check
+            if not (lr.is_configured and sr.is_configured):
+                return None, None
+
+            raw_cal_risk = risk_profile_dict.get("calibration_status", "CANDIDATE_NOT_FROZEN")
+            cal_risk_status = Phase5CalibrationStatus(str(raw_cal_risk).strip())
+
+            risk_prof = XauUsdRiskProfile(
+                name=str(risk_profile_dict.get("name", "XAUUSD_RESEARCH")),
+                calibration_status=cal_risk_status,
+                long_risk_policy=lr,
+                short_risk_policy=sr,
+                long_execution_policy=le,
+                short_execution_policy=se,
+            )
+        except Exception:
+            return None, None
 
     return sig_prof, risk_prof
 

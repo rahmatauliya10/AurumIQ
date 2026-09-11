@@ -1,11 +1,12 @@
 """ASGI config for XAUT Signal Intelligence with native WebSocket transport."""
 import os
 from django.core.asgi import get_asgi_application
-from apps.live_monitor.middleware import SessionAuthMiddleware
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
 
 django_http_app = get_asgi_application()
+
+from apps.live_monitor.middleware import SessionAuthMiddleware
 
 
 async def raw_asgi_app(scope, receive, send):
