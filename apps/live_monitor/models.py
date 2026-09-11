@@ -242,3 +242,167 @@ class LiveRiskPlanRecord(models.Model):
         status = "VALID" if self.is_valid_risk_plan else "INVALID"
         side = f" {self.risk_side}" if self.risk_side else ""
         return f"LiveRiskPlanRecord({self.instrument}{side} @ {self.signal_timestamp.isoformat()}: {status} -> {self.effective_action})"
+
+
+class PaperObservationRecord(models.Model):
+    """
+    Immutable Phase 8 live paper observation record.
+
+    Strict Invariants:
+      1. Authoritative Signal Truth: References SignalRecord (Phase 4) and LiveRiskPlanRecord (Phase 5).
+         Does not compete with or mutate SignalRecord.
+      2. Dual-Side Support: BUY and SELL remain distinct observations.
+      3. Point-in-Time Empirical Friction: Binds friction_model_version_id and evidence fingerprint.
+      4. Position-Size Guarded PnL: gross_pnl and net_pnl are populated only if paper_volume_lots > 0.
+         Otherwise, gross_r, net_r, MFE, MAE are authoritative.
+      5. Zero Broker Execution: Pure paper observation only.
+    """
+    observation_id = models.CharField(max_length=64, primary_key=True)
+    observation_fingerprint = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="Canonical SHA-256 reproducibility fingerprint",
+    )
+    source_signal_record = models.ForeignKey(
+        "signals.SignalRecord",
+        on_delete=models.PROTECT,
+        related_name="paper_observations",
+        null=True,
+        blank=True,
+    )
+    source_risk_plan_record = models.ForeignKey(
+        LiveRiskPlanRecord,
+        on_delete=models.SET_NULL,
+        related_name="paper_observations",
+        null=True,
+        blank=True,
+    )
+    source_signal_fingerprint = models.CharField(max_length=64, db_index=True)
+    source_risk_plan_fingerprint = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    instrument = models.CharField(max_length=32, default="XAUUSD", db_index=True)
+    broker_symbol = models.CharField(max_length=32, default="XAUUSDc")
+    side = models.CharField(max_length=10, db_index=True, help_text="BUY or SELL")
+    decision_timeframe = models.CharField(max_length=10, db_index=True, help_text="15m, 1h, 4h, 1d")
+    decision_timestamp = models.DateTimeField(db_index=True)
+    decision_candle_close = models.DateTimeField()
+
+    # Friction Model Binding
+    friction_model_version_id = models.CharField(
+        max_length=64,
+        default="EXNESS_XAUUSD_STANDARD_CENT_EMPIRICAL_V1",
+        db_index=True,
+    )
+    friction_evidence_fingerprint = models.CharField(max_length=64, null=True, blank=True)
+    dataset_readiness_fingerprint = models.CharField(max_length=64, blank=True, default="")
+
+    # Paper Execution Simulation
+    paper_entry_timestamp = models.DateTimeField(null=True, blank=True)
+    paper_entry_price_basis = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    spread_friction_applied = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0"))
+    commission_friction_applied = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0"))
+    financing_friction_applied = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("0"))
+
+    paper_exit_timestamp = models.DateTimeField(null=True, blank=True)
+    paper_exit_price = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    exit_reason = models.CharField(max_length=64, null=True, blank=True)
+
+    # Outcome & Performance
+    outcome = models.CharField(max_length=32, default="UNRESOLVED", db_index=True)
+    mfe_r = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    mae_r = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    gross_r = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    net_r = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    holding_duration_seconds = models.FloatField(null=True, blank=True)
+
+    # Position-Size Dependent Monetary PnL
+    paper_volume_lots = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    pnl_currency = models.CharField(max_length=10, null=True, blank=True)
+    gross_pnl = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    net_pnl = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+
+    # Snapshot fields for self-contained replay audit
+    signal_decision = models.CharField(max_length=16, default="WAIT")
+    signal_score = models.FloatField(null=True, blank=True)
+    engine_version = models.CharField(max_length=32, default="4.0.0")
+    config_version = models.CharField(max_length=32, default="cfg-2026-v1")
+    code_revision = models.CharField(max_length=40)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "phase8_paper_observation_records"
+        ordering = ["-decision_timestamp"]
+        indexes = [
+            models.Index(fields=["instrument", "-decision_timestamp"]),
+            models.Index(fields=["side", "outcome"]),
+            models.Index(fields=["decision_timeframe", "side"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PaperObservation({self.observation_id}: {self.side} {self.decision_timeframe} @ {self.decision_timestamp.isoformat()} -> {self.outcome})"
+
+
+class Phase8OperationalState(models.Model):
+    """
+    Singleton operational state tracking the Phase 8 14-day continuity gate and metrics.
+    """
+    id = models.IntegerField(primary_key=True, default=1)
+    status = models.CharField(
+        max_length=20,
+        default="NOT_STARTED",
+        db_index=True,
+        help_text="NOT_STARTED, OBSERVING, INTERRUPTED, COMPLETE",
+    )
+    observation_window_start = models.DateTimeField(null=True, blank=True)
+    observation_day = models.IntegerField(default=0, help_text="Day index (1..14)")
+    completed_calendar_days = models.IntegerField(default=0)
+    last_successful_evaluation_timestamp = models.DateTimeField(null=True, blank=True)
+
+    total_signals_evaluated = models.BigIntegerField(default=0)
+    buy_count = models.BigIntegerField(default=0)
+    sell_count = models.BigIntegerField(default=0)
+    no_trade_count = models.BigIntegerField(default=0)
+    paper_positions_opened = models.BigIntegerField(default=0)
+    paper_positions_closed = models.BigIntegerField(default=0)
+    outcomes_pending = models.BigIntegerField(default=0)
+    outcomes_resolved = models.BigIntegerField(default=0)
+
+    runtime_errors_count = models.BigIntegerField(default=0)
+    unresolved_integrity_failures = models.BigIntegerField(default=0)
+    data_freshness_status = models.CharField(max_length=32, default="UNKNOWN")
+    live_replay_parity_status = models.CharField(max_length=20, default="PENDING")
+
+    paper_only = models.BooleanField(default=True)
+    real_order_execution = models.CharField(max_length=20, default="disabled")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "phase8_operational_state"
+
+    def __str__(self) -> str:
+        return f"Phase8OperationalState(Status: {self.status}, Day: {self.observation_day}/14, Total: {self.total_signals_evaluated})"
+
+
+class Phase8InterruptionRecord(models.Model):
+    """
+    Ledger of Phase 8 interruptions distinguishing market closures from operational failures.
+    """
+    id = models.BigAutoField(primary_key=True)
+    timestamp = models.DateTimeField(db_index=True)
+    category = models.CharField(max_length=64, db_index=True)
+    description = models.TextField(blank=True, default="")
+    is_operational_failure = models.BooleanField(default=False)
+    duration_seconds = models.FloatField(null=True, blank=True)
+    resolved = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "phase8_interruption_records"
+        ordering = ["-timestamp"]
+
+    def __str__(self) -> str:
+        tag = "FAILURE" if self.is_operational_failure else "EXPECTED"
+        return f"Phase8InterruptionRecord({self.timestamp.isoformat()} [{tag}]: {self.category})"
