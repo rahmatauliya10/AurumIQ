@@ -754,3 +754,299 @@ def test_structural_ast_scan_phase8_has_no_order_execution_dependency():
                     assert alias.name not in FORBIDDEN_EXECUTION_SYMBOLS, (
                         f"Forbidden execution import '{alias.name}' detected in {py_file}!"
                     )
+
+
+# ---------------------------------------------------------------------------
+# 20. Same SignalRecord observed twice creates one record & returns DUPLICATE_NOOP
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_same_signal_observed_twice_creates_one_record_and_duplicate_noop(xauusd_instrument, active_empirical_friction):
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_dup_test_01",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_dup1",
+    )
+
+    # First observation -> creates record, returns NEW status
+    res1 = Phase8PaperService.process_production_signal_observation(sig)
+    assert res1.status != "DUPLICATE_NOOP"
+    assert PaperObservationRecord.objects.filter(source_signal_fingerprint="sig_dup_test_01").count() == 1
+
+    # Second observation of same signal -> idempotent, returns DUPLICATE_NOOP
+    res2 = Phase8PaperService.process_production_signal_observation(sig)
+    assert res2.status == "DUPLICATE_NOOP"
+    assert PaperObservationRecord.objects.filter(source_signal_fingerprint="sig_dup_test_01").count() == 1
+
+
+# ---------------------------------------------------------------------------
+# 21. Duplicate observation does not refresh success timestamp or advance coverage
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_duplicate_does_not_refresh_success_or_advance_coverage(xauusd_instrument, active_empirical_friction):
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_dup_cov_test",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_cov",
+    )
+
+    res1 = Phase8PaperService.process_production_signal_observation(sig)
+    state = Phase8PaperService.get_or_create_operational_state()
+    assert state.total_signals_evaluated == 1
+    assert state.eligible_cycles_observed == 1
+    assert state.duplicate_noop_cycles == 0
+
+    fixed_eval_time = datetime(2026, 9, 11, 14, 1, tzinfo=timezone.utc)
+    state.last_successful_evaluation_timestamp = fixed_eval_time
+    state.save()
+
+    # Repeated calls must NOT advance coverage or refresh success timestamp
+    for _ in range(5):
+        res = Phase8PaperService.process_production_signal_observation(sig)
+        assert res.status == "DUPLICATE_NOOP"
+
+    state_after = Phase8PaperService.get_or_create_operational_state()
+    assert state_after.total_signals_evaluated == 1, "Duplicate must NOT increment total_signals_evaluated"
+    assert state_after.eligible_cycles_observed == 1, "Duplicate must NOT advance eligible_cycles_observed"
+    assert state_after.duplicate_noop_cycles == 5, "Duplicate count must reflect no-op cycles"
+    assert state_after.last_successful_evaluation_timestamp == fixed_eval_time, "Duplicate must NOT refresh evaluation timestamp"
+
+
+# ---------------------------------------------------------------------------
+# 22. 14 elapsed days with missing eligible cycles != COMPLETE
+# ---------------------------------------------------------------------------
+def test_14_elapsed_days_with_missing_eligible_cycles_cannot_be_complete():
+    start_time = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
+    tracker = Phase8ContinuityTracker(
+        window_start=start_time,
+        unresolved_failures=0,
+        eligible_cycles_expected=1000,
+        eligible_cycles_observed=990,
+        eligible_cycles_missing=10,  # 10 missed cycles
+    )
+
+    status = tracker.evaluate_gate_status(
+        current_time=start_time + timedelta(days=14, minutes=5),
+    )
+    assert status == Phase8Status.INTERRUPTED
+    assert status != Phase8Status.COMPLETE
+
+
+# ---------------------------------------------------------------------------
+# 23. 14 elapsed days with complete eligible coverage and zero failures = COMPLETE
+# ---------------------------------------------------------------------------
+def test_14_elapsed_days_with_complete_coverage_and_zero_failures_is_complete():
+    start_time = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
+    eval_time = start_time + timedelta(days=14, minutes=5)
+
+    tracker = Phase8ContinuityTracker(
+        window_start=start_time,
+        unresolved_failures=0,
+        eligible_cycles_expected=1000,
+        eligible_cycles_observed=1000,
+        eligible_cycles_missing=0,
+        last_successful_evaluation=eval_time - timedelta(minutes=5),
+        max_stale_seconds=3600.0,
+    )
+
+    status = tracker.evaluate_gate_status(current_time=eval_time)
+    assert status == Phase8Status.COMPLETE
+
+
+# ---------------------------------------------------------------------------
+# 24. Market closure interval is exempt from staleness during 14-day gate check
+# ---------------------------------------------------------------------------
+def test_market_closure_interval_is_exempt_from_staleness():
+    # Start on Friday Sep 11, 2026 at 00:00 UTC
+    start_time = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
+    # Day 15 is Saturday Sep 26, 2026 at 12:00 UTC (Market closed on Saturday)
+    saturday_eval_time = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+    assert is_expected_market_closure(saturday_eval_time) is True
+
+    # Last evaluation was Friday before close (e.g. 20:45 UTC) -> more than 15 hours ago
+    last_friday_eval = datetime(2026, 9, 25, 20, 45, tzinfo=timezone.utc)
+
+    tracker = Phase8ContinuityTracker(
+        window_start=start_time,
+        unresolved_failures=0,
+        eligible_cycles_expected=900,
+        eligible_cycles_observed=900,
+        eligible_cycles_missing=0,
+        last_successful_evaluation=last_friday_eval,
+        max_stale_seconds=3600.0,  # 1 hour policy
+    )
+
+    # Saturday is market closure: staleness check must be EXEMPT
+    status = tracker.evaluate_gate_status(current_time=saturday_eval_time)
+    assert status == Phase8Status.COMPLETE
+
+
+# ---------------------------------------------------------------------------
+# 25. Missed market-open interval triggers operational failure in watchdog
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_missed_market_open_interval_triggers_watchdog_failure(xauusd_instrument):
+    t0 = datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc)  # Tuesday (Market Open)
+    state = Phase8PaperService.get_or_create_operational_state()
+    state.observation_window_start = t0
+    state.status = Phase8Status.OBSERVING.value
+    state.eligible_cycles_missing = 0
+    state.unresolved_integrity_failures = 0
+    state.save()
+
+    # Closed 15m candle exists at 10:15 UTC
+    c1 = MarketCandle.objects.create(
+        instrument=xauusd_instrument,
+        source="TWELVE_DATA",
+        timeframe="15m",
+        timestamp_open=t0,
+        timestamp_close=t0 + timedelta(minutes=15),
+        open=Decimal("2500.00"),
+        high=Decimal("2505.00"),
+        low=Decimal("2498.00"),
+        close=Decimal("2503.00"),
+        volume=Decimal("100"),
+        is_closed=True,
+    )
+
+    # Audit at 11:00 UTC (> 30m grace after 10:15 close) with NO PaperObservationRecord
+    audit_time = t0 + timedelta(minutes=60)
+    audit_res = Phase8PaperService.audit_operational_continuity(now_utc=audit_time, grace_minutes=30)
+
+    assert audit_res["eligible_cycles_missing"] == 1
+    assert audit_res["status"] == Phase8Status.INTERRUPTED.value
+    assert audit_res["unresolved_integrity_failures"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 26. Phase 8 Celery task remains paper-only and retry-safe
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_phase8_celery_task_remains_paper_only_and_retry_safe(xauusd_instrument, active_empirical_friction):
+    from apps.live_monitor.tasks import process_phase8_paper_observation_task
+
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_celery_task_test",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_celery",
+    )
+
+    # Run task first time
+    res1 = process_phase8_paper_observation_task(signal_fingerprint="sig_celery_task_test")
+    assert res1["status"] == "SUCCESS"
+    assert res1["operation_status"] != "DUPLICATE_NOOP"
+    assert PaperObservationRecord.objects.filter(source_signal_fingerprint="sig_celery_task_test").count() == 1
+
+    # Simulate Celery retry of same task -> must NOT duplicate or error
+    res2 = process_phase8_paper_observation_task(signal_fingerprint="sig_celery_task_test")
+    assert res2["status"] == "SUCCESS"
+    assert res2["operation_status"] == "DUPLICATE_NOOP"
+    assert PaperObservationRecord.objects.filter(source_signal_fingerprint="sig_celery_task_test").count() == 1
+
+
+# ---------------------------------------------------------------------------
+# 27. Explicit paper_volume_lots flows into paper observation
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_explicit_paper_volume_lots_flows_into_paper_observation(xauusd_instrument, active_empirical_friction):
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_volume_flow_test",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_vol",
+    )
+
+    # Supply explicit volume of 0.25 lots
+    res = Phase8PaperService.process_production_signal_observation(
+        signal_record=sig,
+        paper_volume_lots=Decimal("0.25"),
+        pnl_currency="USC",
+    )
+
+    assert res.paper_volume_lots == Decimal("0.25")
+    assert res.pnl_currency == "USC"
+
+
+# ---------------------------------------------------------------------------
+# 28. Omitted lot size leaves monetary PnL null
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_omitted_lot_size_leaves_monetary_pnl_null(xauusd_instrument, active_empirical_friction):
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_pnl_null_test",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_pnl_null",
+    )
+
+    res = Phase8PaperService.process_production_signal_observation(
+        signal_record=sig,
+        paper_volume_lots=None,
+    )
+
+    assert res.paper_volume_lots is None
+    assert res.gross_pnl is None
+    assert res.net_pnl is None
+
+
+# ---------------------------------------------------------------------------
+# 29. True requested-price slippage remains UNOBSERVABLE
+# ---------------------------------------------------------------------------
+def test_true_requested_price_slippage_remains_unobservable():
+    import json
+    from pathlib import Path
+
+    manifest_path = Path("artifacts/calibration/xauusd_standard_cent_empirical_friction_manifest.json")
+    assert manifest_path.exists()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    telemetry = data["evidence_inventory"]["execution_slippage_telemetry"]
+
+    # True requested-price slippage is strictly UNOBSERVABLE
+    assert telemetry["true_requested_price_slippage"] == "UNOBSERVABLE"
+    assert telemetry["execution_gap_vs_reference_quote_mean_points"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 30. Step observation cycle forwards paper volume lots
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_step_observation_cycle_forwards_paper_volume_lots(xauusd_instrument, active_empirical_friction):
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_step_vol_test",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        code_revision="rev_step_vol",
+    )
+
+    count, status = Phase8PaperService.step_observation_cycle(paper_volume_lots=Decimal("0.50"))
+    assert count == 1
+    assert status != "DUPLICATE_NOOP"
+
+    obs = PaperObservationRecord.objects.get(source_signal_fingerprint="sig_step_vol_test")
+    assert obs.paper_volume_lots == Decimal("0.50")

@@ -3,7 +3,7 @@
 Coordinates runtime paper execution, immutable PaperObservationRecord persistence,
 and 14-day operational continuity tracking.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -30,6 +30,30 @@ from engine.paper.types import InterruptionCategory, Phase8Status
 
 
 logger = structlog.get_logger(__name__)
+
+
+class ObservationResult(tuple):
+    """
+    Tuple-compatible result of process_production_signal_observation: (record, status).
+    Provides backward compatibility for code treating return value as record directly:
+      obs, status = process(...)  # Unpackable as 2-tuple
+      obs = process(...)          # Usable directly as PaperObservationRecord
+      obs.observation_id          # Proxies to record
+      obs.status                  # "DUPLICATE_NOOP" or "OBSERVED_BUY_..."
+    """
+    def __new__(cls, record: PaperObservationRecord, status: str):
+        return super().__new__(cls, (record, status))
+
+    @property
+    def record(self) -> PaperObservationRecord:
+        return self[0]
+
+    @property
+    def status(self) -> str:
+        return self[1]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self[0], name)
 
 
 def _candle_to_core(c: MarketCandle) -> CandleData:
@@ -61,6 +85,8 @@ class Phase8PaperService:
       4. Zero Lookahead: Only consumes future candles with timestamp_close > decision_timestamp.
       5. Position-Size Guarded PnL: Monetary PnL is null/NOT_EVALUATED unless explicit lots supplied.
       6. Continuity Tracking: 14 calendar days required. EXPECTED_MARKET_CLOSURE never interrupts phase.
+      7. Idempotent Observations: created=False is treated as DUPLICATE_NOOP; never increments signals
+         evaluated or refreshes evaluation timestamps.
     """
 
     @classmethod
@@ -141,9 +167,11 @@ class Phase8PaperService:
         risk_record: Optional[LiveRiskPlanRecord] = None,
         paper_volume_lots: Optional[Decimal] = None,
         pnl_currency: str = "USC",
-    ) -> PaperObservationRecord:
+    ) -> ObservationResult:
         """
         Process a production SignalRecord into an immutable PaperObservationRecord.
+        Returns ObservationResult(record, status), where status is DUPLICATE_NOOP if
+        already observed, or OBSERVED_{side}_{outcome} if newly recorded.
         """
         assert_paper_execution_safety("process_signal")
 
@@ -177,7 +205,7 @@ class Phase8PaperService:
             pnl_currency=pnl_currency,
         )
 
-        # 4. Persist PaperObservationRecord
+        # 4. Persist PaperObservationRecord idempotently
         with transaction.atomic():
             rec, created = PaperObservationRecord.objects.get_or_create(
                 observation_fingerprint=obs_snap.observation_fingerprint,
@@ -238,40 +266,66 @@ class Phase8PaperService:
                 window_start=state.observation_window_start,
                 unresolved_failures=state.unresolved_integrity_failures,
                 current_status=Phase8Status(state.status),
+                eligible_cycles_expected=state.eligible_cycles_expected,
+                eligible_cycles_observed=state.eligible_cycles_observed,
+                eligible_cycles_missing=state.eligible_cycles_missing,
+                last_successful_evaluation=state.last_successful_evaluation_timestamp,
             )
             day_idx, comp_days, _ = tracker.calculate_day_progress(now_utc)
             state.observation_day = day_idx
             state.completed_calendar_days = comp_days
 
-            if created:
-                state.total_signals_evaluated += 1
-                if obs_snap.side == "BUY":
-                    state.buy_count += 1
-                elif obs_snap.side == "SELL":
-                    state.sell_count += 1
+            if not created:
+                # Duplicate observation must remain strictly idempotent:
+                # - does NOT increment signals evaluated
+                # - does NOT increment eligible cycles observed
+                # - does NOT refresh last_successful_evaluation_timestamp
+                # - does NOT update last_processed_eligible_close
+                state.duplicate_noop_cycles += 1
+                state.save()
+                return ObservationResult(rec, "DUPLICATE_NOOP")
 
-                if obs_snap.signal_decision in ("WAIT", "NO_TRADE"):
-                    state.no_trade_count += 1
-
-                if obs_snap.paper_entry_timestamp is not None:
-                    state.paper_positions_opened += 1
-                if obs_snap.paper_exit_timestamp is not None:
-                    state.paper_positions_closed += 1
-                    state.outcomes_resolved += 1
-                elif obs_snap.paper_entry_timestamp is not None:
-                    state.outcomes_pending += 1
-
+            # New observation: record progression
+            state.total_signals_evaluated += 1
+            state.eligible_cycles_observed += 1
+            state.eligible_cycles_expected = max(state.eligible_cycles_expected, state.eligible_cycles_observed)
             state.last_successful_evaluation_timestamp = now_utc
+            state.last_processed_eligible_close = rec.decision_candle_close
+            state.last_expected_eligible_close = rec.decision_candle_close
+
+            if obs_snap.side == "BUY":
+                state.buy_count += 1
+            elif obs_snap.side == "SELL":
+                state.sell_count += 1
+
+            if obs_snap.signal_decision in ("WAIT", "NO_TRADE"):
+                state.no_trade_count += 1
+
+            if obs_snap.paper_entry_timestamp is not None:
+                state.paper_positions_opened += 1
+            if obs_snap.paper_exit_timestamp is not None:
+                state.paper_positions_closed += 1
+                state.outcomes_resolved += 1
+            elif obs_snap.paper_entry_timestamp is not None:
+                state.outcomes_pending += 1
+
             state.data_freshness_status = "HEALTHY"
-            state.status = tracker.evaluate_gate_status(now_utc).value
+            state.status = tracker.evaluate_gate_status(
+                now_utc,
+                eligible_cycles_expected=state.eligible_cycles_expected,
+                eligible_cycles_observed=state.eligible_cycles_observed,
+                eligible_cycles_missing=state.eligible_cycles_missing,
+                last_successful_evaluation=state.last_successful_evaluation_timestamp,
+            ).value
             state.save()
 
-            return rec
+            return ObservationResult(rec, f"OBSERVED_{obs_snap.side}_{obs_snap.outcome}")
 
     @classmethod
-    def step_observation_cycle(cls) -> Tuple[int, str]:
+    def step_observation_cycle(cls, paper_volume_lots: Optional[Decimal] = None) -> Tuple[int, str]:
         """
         Execute an observation cycle against the latest closed candle and production records.
+        Forwards optional paper_volume_lots cleanly through to observation execution.
         """
         assert_paper_execution_safety("step_cycle")
         now_utc = datetime.now(timezone.utc)
@@ -341,9 +395,111 @@ class Phase8PaperService:
             source_signal_fingerprint=latest_sig.analysis_fingerprint
         ).first()
 
-        rec = cls.process_production_signal_observation(
+        res = cls.process_production_signal_observation(
             signal_record=latest_sig,
             risk_record=risk_plan,
+            paper_volume_lots=paper_volume_lots,
         )
 
-        return 1, f"OBSERVED_{rec.side}_{rec.outcome}"
+        status_str = res.status if hasattr(res, "status") else "PROCESSED"
+        if status_str == "DUPLICATE_NOOP":
+            return 0, "DUPLICATE_NOOP"
+
+        return 1, status_str
+
+    @classmethod
+    def audit_operational_continuity(
+        cls,
+        now_utc: Optional[datetime] = None,
+        grace_minutes: int = 30,
+    ) -> dict:
+        """
+        Continuity watchdog audit (Section 5).
+        Verifies expected eligible closed 15m decision intervals vs processed observations.
+        Exempts configured market closures (Friday 21:00 UTC - Sunday 21:00 UTC).
+        Flags market-open eligible intervals past the grace period without observation as MISSED_ELIGIBLE_INTERVAL.
+        """
+        assert_paper_execution_safety("watchdog_audit")
+        eval_time = now_utc or datetime.now(timezone.utc)
+        if eval_time.tzinfo is None:
+            eval_time = eval_time.replace(tzinfo=timezone.utc)
+
+        state = cls.get_or_create_operational_state()
+        if state.status == Phase8Status.NOT_STARTED.value or not state.observation_window_start:
+            return {
+                "status": state.status,
+                "audited": False,
+                "reason": "NOT_STARTED",
+            }
+
+        window_start = state.observation_window_start
+
+        # Check all closed 15m MarketCandles in the DB since window_start
+        closed_candles = list(
+            MarketCandle.objects.filter(
+                timeframe="15m",
+                is_closed=True,
+                timestamp_close__gt=window_start,
+                timestamp_close__lte=eval_time,
+            ).order_by("timestamp_close")
+        )
+
+        # Baseline observed count from DB
+        actual_obs_count = PaperObservationRecord.objects.count()
+        if actual_obs_count > state.eligible_cycles_observed:
+            state.eligible_cycles_observed = actual_obs_count
+
+        missing_count = 0
+        expected_closure_count = 0
+
+        # Check each closed candle in DB for matching paper observation
+        for candle in closed_candles:
+            c_close = candle.timestamp_close
+            if is_expected_market_closure(c_close):
+                expected_closure_count += 1
+                continue
+
+            has_obs = PaperObservationRecord.objects.filter(decision_candle_close=c_close).exists()
+            if not has_obs:
+                grace_limit = c_close + timedelta(minutes=grace_minutes)
+                if eval_time >= grace_limit:
+                    missing_count += 1
+
+        if expected_closure_count > state.expected_market_closure_cycles:
+            state.expected_market_closure_cycles = expected_closure_count
+
+        # Check if any new missing intervals detected
+        if missing_count > state.eligible_cycles_missing:
+            new_missing = missing_count - state.eligible_cycles_missing
+            state.eligible_cycles_missing = missing_count
+            cls.record_interruption(
+                category=InterruptionCategory.MISSED_ELIGIBLE_INTERVAL,
+                description=f"Watchdog detected {new_missing} eligible 15m market-open intervals without paper observation past {grace_minutes}m grace.",
+                timestamp=eval_time,
+            )
+            state.refresh_from_db()
+            state.eligible_cycles_missing = missing_count
+
+        tracker = Phase8ContinuityTracker(
+            window_start=state.observation_window_start,
+            unresolved_failures=state.unresolved_integrity_failures,
+            current_status=Phase8Status(state.status),
+            eligible_cycles_expected=state.eligible_cycles_expected,
+            eligible_cycles_observed=state.eligible_cycles_observed,
+            eligible_cycles_missing=state.eligible_cycles_missing,
+            last_successful_evaluation=state.last_successful_evaluation_timestamp,
+        )
+        gate_status = tracker.evaluate_gate_status(eval_time)
+        state.status = gate_status.value
+        state.save()
+
+        return {
+            "status": state.status,
+            "audited": True,
+            "eligible_cycles_expected": state.eligible_cycles_expected,
+            "eligible_cycles_observed": state.eligible_cycles_observed,
+            "eligible_cycles_missing": state.eligible_cycles_missing,
+            "duplicate_noop_cycles": state.duplicate_noop_cycles,
+            "expected_market_closure_cycles": state.expected_market_closure_cycles,
+            "unresolved_integrity_failures": state.unresolved_integrity_failures,
+        }
