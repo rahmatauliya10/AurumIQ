@@ -563,6 +563,9 @@ class XauUsdDataReadinessReport:
                 "stress_spread_bps": self.friction_manifest_details.get("stress_spread_bps"),
                 "base_slippage_bps": self.friction_manifest_details.get("base_slippage_bps"),
                 "stress_slippage_bps": self.friction_manifest_details.get("stress_slippage_bps"),
+                "slippage_proxy_type": self.friction_manifest_details.get("slippage_proxy_type", "EXECUTION_GAP_VS_REFERENCE_QUOTE"),
+                "true_requested_price_slippage": self.friction_manifest_details.get("true_requested_price_slippage", "UNOBSERVABLE"),
+                "forced_exit_displacement_status": self.friction_manifest_details.get("forced_exit_displacement_status", "MEASURED_BUT_NOT_NORMAL_MARKET_SLIPPAGE_QUARANTINED"),
                 "native_commission_usd_per_lot_per_side": self.friction_manifest_details.get("native_commission_usd_per_lot_per_side"),
                 "commission_formula": self.friction_manifest_details.get("commission_formula"),
                 "model_version_id": self.friction_model_version_id or self.friction_manifest_details.get("model_version_id"),
@@ -1172,6 +1175,17 @@ class XauUsdDataReadinessEvaluator:
         friction_fingerprint: Optional[str] = None
         friction_model_id: Optional[str] = None
         friction_manifest_details: Dict[str, Any] = {}
+        model_ver = None
+
+        from django.conf import settings
+        from apps.market_data.friction.artifact_parsers import validate_account_tier
+
+        eval_as_of = as_of or datetime.now(timezone.utc)
+        target_venue = (execution_venue or getattr(settings, "XAUUSD_EXECUTION_VENUE", "EXNESS")).upper()
+        raw_tier = execution_account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")
+        target_account_tier = validate_account_tier(raw_tier)
+        target_legal_entity_code = execution_legal_entity_code or getattr(settings, "XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", None)
+        target_symbol = "XAUUSD"
 
         if override_friction_status is not None:
             friction_status = override_friction_status
@@ -1181,16 +1195,6 @@ class XauUsdDataReadinessEvaluator:
                     "override": True,
                 }
         else:
-            from django.conf import settings
-
-            eval_as_of = as_of or datetime.now(timezone.utc)
-            target_venue = (execution_venue or getattr(settings, "XAUUSD_EXECUTION_VENUE", "EXNESS")).upper()
-            from apps.market_data.friction.artifact_parsers import validate_account_tier
-            raw_tier = execution_account_tier or getattr(settings, "XAUUSD_EXECUTION_ACCOUNT_TIER", "STANDARD")
-            target_account_tier = validate_account_tier(raw_tier)
-            target_legal_entity_code = execution_legal_entity_code or getattr(settings, "XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", None)
-            target_symbol = "XAUUSD"
-
             if not target_account_tier or not target_legal_entity_code:
                 friction_status = "LEGAL_ENTITY_EVIDENCE_MISSING" if not target_legal_entity_code else "EMPIRICAL_FRICTION_NOT_CONFIGURED"
                 friction_report_reasons.append(
@@ -1238,12 +1242,61 @@ class XauUsdDataReadinessEvaluator:
                             "stress_spread_bps": str(model_ver.stress_spread_bps),
                             "base_slippage_bps": str(model_ver.base_slippage_bps),
                             "stress_slippage_bps": str(model_ver.stress_slippage_bps),
+                            "slippage_proxy_type": "EXECUTION_GAP_VS_REFERENCE_QUOTE",
+                            "true_requested_price_slippage": "UNOBSERVABLE",
+                            "forced_exit_displacement_status": "MEASURED_BUT_NOT_NORMAL_MARKET_SLIPPAGE_QUARANTINED",
                             "native_commission_usd_per_lot_per_side": str(model_ver.native_commission_usd_per_lot_per_side),
                             "commission_formula": model_ver.commission_formula,
                             "swap_long_points": str(model_ver.swap_long_points),
                             "swap_short_points": str(model_ver.swap_short_points),
                             "empirical_friction_evidence_fingerprint": friction_fingerprint,
                         }
+
+        # 4B. Historical Quote Evidence Resolution (Directive 16 & Pre-Phase-8 Governance)
+        # If override_quote_count is explicitly provided, respect it.
+        # Otherwise, resolve the count from genuine, persisted, qualified historical broker bid/ask tick evidence.
+        if override_quote_count is not None:
+            quote_count = override_quote_count
+        else:
+            quote_count = 0
+            if friction_status == "EMPIRICAL_FRICTION_CONFIGURED":
+                from apps.market_data.models import (
+                    FrictionBindingRole,
+                    FrictionEvidenceDataset,
+                    FrictionQualificationStatus,
+                    FrictionSourceType,
+                    FrictionSourceQualificationAssertion,
+                )
+                QUALIFIED_HISTORICAL_QUOTE_SOURCE_TYPES = {
+                    FrictionSourceType.EXNESS_OFFICIAL_TICK_HISTORY.value,
+                }
+                candidate_dataset: Optional[FrictionEvidenceDataset] = None
+                if model_ver is not None:
+                    quote_binding = model_ver.dataset_bindings.filter(
+                        binding_role=FrictionBindingRole.PRIMARY_SPREAD_SAMPLE
+                    ).select_related("evidence_dataset", "evidence_dataset__source_snapshot").first()
+                    if quote_binding and quote_binding.evidence_dataset:
+                        ds = quote_binding.evidence_dataset
+                        if ds.venue == target_venue and ds.account_tier == target_account_tier:
+                            candidate_dataset = ds
+
+                if candidate_dataset is None and target_venue and target_account_tier:
+                    candidate_dataset = FrictionEvidenceDataset.objects.filter(
+                        venue=target_venue,
+                        symbol__in=[target_symbol, "XAUUSD", "XAUUSDc"],
+                        account_tier=target_account_tier,
+                    ).order_by("-sample_count").first()
+
+                if candidate_dataset and candidate_dataset.source_snapshot:
+                    snap = candidate_dataset.source_snapshot
+                    if snap.source_type in QUALIFIED_HISTORICAL_QUOTE_SOURCE_TYPES:
+                        is_qualified = FrictionSourceQualificationAssertion.objects.filter(
+                            source_snapshot=snap,
+                            component_role="SPREAD_DATASET",
+                            qualification_status=FrictionQualificationStatus.QUALIFIED.value,
+                        ).exists()
+                        if is_qualified and candidate_dataset.sample_count > 0:
+                            quote_count = int(candidate_dataset.sample_count)
 
         # 5. Dataset Fingerprint Calculations
         if total_candles > 0 and earliest_dt and latest_dt:

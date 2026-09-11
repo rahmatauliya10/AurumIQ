@@ -252,10 +252,11 @@ def parse_legal_entity_backing_artifact(
     if text.startswith("{"):
         try:
             data = json.loads(text)
-            name = str(data.get("legal_entity_name") or data.get("entity_name") or data.get("name") or "").strip()
-            code = str(data.get("legal_entity_code") or data.get("code") or "").strip()
-            reg = str(data.get("regulator") or data.get("regulatory_authority") or "").strip()
-            lic = str(data.get("license_number") or data.get("license") or data.get("licence_number") or "").strip()
+            le = data.get("legal_entity") if isinstance(data.get("legal_entity"), dict) else {}
+            name = str(data.get("legal_entity_name") or le.get("legal_entity_name") or data.get("entity_name") or data.get("name") or "").strip()
+            code = str(data.get("legal_entity_code") or le.get("legal_entity_code") or data.get("code") or "").strip()
+            reg = str(data.get("regulator") or le.get("regulator") or data.get("regulatory_authority") or "").strip()
+            lic = str(data.get("license_number") or le.get("license_number") or data.get("license") or data.get("licence_number") or "").strip()
             if not (reg and lic):
                 raise ValueError(
                     "LEGAL_ENTITY_PARSER_ERROR: Backing artifact lacks authentic legal entity evidence; missing regulator or license number."

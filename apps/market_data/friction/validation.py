@@ -16,7 +16,7 @@ Adheres strictly to Pre-Phase-8 Calibration Hardening Governance (Directive 5):
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -69,6 +69,12 @@ TRUSTED_PARSERS_BY_ROLE: Dict[str, Set[str]] = {
     "SLIPPAGE_DATASET": {"parse_mt5_execution_telemetry"},
 }
 SUPPORTED_PARSER_VERSIONS: Set[str] = {"1.0.0"}
+
+
+def _dec_eq(d1: Optional[Decimal], d2: Optional[Decimal], places: Decimal = Decimal("0.0001")) -> bool:
+    if d1 is None or d2 is None:
+        return d1 == d2
+    return d1.quantize(places, rounding=ROUND_HALF_UP) == d2.quantize(places, rounding=ROUND_HALF_UP)
 
 
 def validate_source_qualification_assertion(
@@ -464,6 +470,7 @@ def _get_assertion_meta(
     snapshot: Optional[FrictionSourceSnapshot],
     role: str,
     model_version: Optional[FrictionModelVersion] = None,
+    expected_broker_symbol: Optional[str] = None,
 ) -> Tuple[str, str, str, str, str]:
     if not snapshot:
         return "", "", "", "", ""
@@ -472,6 +479,10 @@ def _get_assertion_meta(
         qualification_status=FrictionQualificationStatus.QUALIFIED.value,
     ).order_by("-asserted_at").first()
     if assertion:
+        eff_broker_sym = expected_broker_symbol or getattr(model_version, "broker_symbol", None)
+        if not eff_broker_sym and model_version and model_version.account_tier == "STANDARD_CENT":
+            from apps.market_data.friction.legal_entity import QUALIFIED_BROKER_SYMBOL
+            eff_broker_sym = QUALIFIED_BROKER_SYMBOL
         is_valid, _, _ = validate_source_qualification_assertion(
             snapshot=snapshot,
             assertion=assertion,
@@ -480,6 +491,7 @@ def _get_assertion_meta(
             expected_symbol=model_version.symbol if model_version else "XAUUSD",
             expected_account_tier=model_version.account_tier if model_version else "STANDARD",
             expected_venue=model_version.venue if model_version else "EXNESS",
+            expected_broker_symbol=eff_broker_sym,
         )
         if is_valid:
             att = assertion.provenance_attestation
@@ -508,6 +520,7 @@ def validate_friction_model_for_activation(
     composite_proof_override: Optional[str] = None,
     composite_review_receipt: Optional[Dict[str, Any]] = None,
     composite_receipt_file_path: Optional[str] = None,
+    target_broker_symbol: Optional[str] = None,
 ) -> FrictionValidationResult:
     """Canonical validator for empirical friction models.
     
@@ -521,6 +534,17 @@ def validate_friction_model_for_activation(
         "account_tier": model_version.account_tier,
         "legal_entity_code": model_version.legal_entity_code,
     }
+
+    from apps.market_data.friction.artifact_parsers import normalize_account_tier
+    norm_tier = (
+        normalize_account_tier(target_account_tier)
+        or (normalize_account_tier(model_version.account_tier) if model_version else None)
+        or "STANDARD"
+    )
+    effective_broker_symbol = target_broker_symbol or getattr(model_version, "broker_symbol", None)
+    if not effective_broker_symbol and norm_tier == "STANDARD_CENT":
+        from apps.market_data.friction.legal_entity import QUALIFIED_BROKER_SYMBOL
+        effective_broker_symbol = QUALIFIED_BROKER_SYMBOL
 
     # 1. Scope Validation (Directive 2 & 5)
     if not target_legal_entity_code:
@@ -654,6 +678,7 @@ def validate_friction_model_for_activation(
         expected_component_role="LEGAL_ENTITY",
         expected_parser="parse_legal_entity_backing_artifact",
         model_version=model_version,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -727,6 +752,7 @@ def validate_friction_model_for_activation(
         expected_parser="parse_contract_spec_backing_artifact",
         model_version=model_version,
         expected_symbol=model_version.symbol,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -791,6 +817,7 @@ def validate_friction_model_for_activation(
         model_version=model_version,
         expected_symbol=model_version.symbol,
         expected_account_tier=model_version.account_tier,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -861,6 +888,7 @@ def validate_friction_model_for_activation(
         expected_parser="parse_financing_backing_artifact",
         model_version=model_version,
         expected_symbol=model_version.symbol,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -954,6 +982,7 @@ def validate_friction_model_for_activation(
         expected_parser=expected_spread_parser,
         model_version=model_version,
         expected_symbol=model_version.symbol,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -1031,8 +1060,8 @@ def validate_friction_model_for_activation(
             details=details,
         )
     if (
-        model_version.base_spread_bps != spread_sum.stat_p75
-        or model_version.stress_spread_bps != spread_sum.stat_p95
+        not _dec_eq(model_version.base_spread_bps, spread_sum.stat_p75)
+        or not _dec_eq(model_version.stress_spread_bps, spread_sum.stat_p95)
     ):
         return FrictionValidationResult(
             is_valid=False,
@@ -1099,6 +1128,7 @@ def validate_friction_model_for_activation(
         expected_symbol=model_version.symbol,
         expected_account_tier=model_version.account_tier,
         expected_venue=model_version.venue,
+        expected_broker_symbol=effective_broker_symbol,
     )
     if not is_valid_assert:
         return FrictionValidationResult(
@@ -1191,8 +1221,8 @@ def validate_friction_model_for_activation(
             details=details,
         )
     if (
-        model_version.base_slippage_bps != slip_sum.stat_p75
-        or model_version.stress_slippage_bps != slip_sum.stat_p95
+        not _dec_eq(model_version.base_slippage_bps, slip_sum.stat_p75)
+        or not _dec_eq(model_version.stress_slippage_bps, slip_sum.stat_p95)
     ):
         return FrictionValidationResult(
             is_valid=False,
@@ -1220,7 +1250,7 @@ def validate_friction_model_for_activation(
 
     source_evidence: Dict[str, Dict[str, str]] = {}
     if model_version.legal_entity_source_snapshot:
-        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.legal_entity_source_snapshot, "LEGAL_ENTITY", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1238,7 +1268,7 @@ def validate_friction_model_for_activation(
             "verification_method": v_method,
         }
     if model_version.contract_spec_source_snapshot:
-        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.contract_spec_source_snapshot, "CONTRACT_SPEC", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1256,7 +1286,7 @@ def validate_friction_model_for_activation(
             "verification_method": v_method,
         }
     if model_version.fee_schedule_source_snapshot:
-        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.fee_schedule_source_snapshot, "COMMISSION", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1274,7 +1304,7 @@ def validate_friction_model_for_activation(
             "verification_method": v_method,
         }
     if model_version.swap_spec_source_snapshot:
-        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING", model_version=model_version)
+        p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(model_version.swap_spec_source_snapshot, "FINANCING", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
         if not norm_hash:
             return FrictionValidationResult(
                 is_valid=False,
@@ -1293,7 +1323,7 @@ def validate_friction_model_for_activation(
         }
     for db in dataset_bindings:
         if db.binding_role == FrictionBindingRole.PRIMARY_SPREAD_SAMPLE and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET", model_version=model_version)
+            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SPREAD_DATASET", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
             if not norm_hash:
                 return FrictionValidationResult(
                     is_valid=False,
@@ -1311,7 +1341,7 @@ def validate_friction_model_for_activation(
                 "verification_method": v_method,
             }
         elif db.binding_role in (FrictionBindingRole.PRIMARY_TELEMETRY_SAMPLE, FrictionBindingRole.TELEMETRY_SAMPLE) and db.evidence_dataset.source_snapshot:
-            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET", model_version=model_version)
+            p_name, p_ver, norm_hash, att_id, v_method = _get_assertion_meta(db.evidence_dataset.source_snapshot, "SLIPPAGE_DATASET", model_version=model_version, expected_broker_symbol=effective_broker_symbol)
             if not norm_hash:
                 return FrictionValidationResult(
                     is_valid=False,
