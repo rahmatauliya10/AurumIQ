@@ -575,36 +575,6 @@ class XauUsdLiveDecisionPipelineService:
         else:
             provider_sync_status_val = "MISSING"
 
-        # Resolve Phase 3A Cycle Snapshot (PIT)
-        from apps.analysis.models import CycleSnapshotRecord
-        from apps.analysis.services import AnalysisPersistenceService
-
-        cycle_rec = (
-            CycleSnapshotRecord.objects.filter(
-                instrument=instrument_obj,
-                timeframe=event.timeframe,
-                timestamp__lte=candle_ts,
-                cycle_version=cycle_version,
-            )
-            .order_by("-timestamp")
-            .first()
-        )
-        cycle_3a_snapshot = (
-            AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(cycle_rec)
-            if cycle_rec
-            else None
-        )
-
-        if macro_context is None and cycle_3a_snapshot is not None:
-            macro_context = cycle_3a_snapshot.macro_event
-
-        # Resolve macro feed health
-        macro_feed_health = FeedHealthStatus.MISSING
-        is_in_blackout = False
-        if macro_context is not None:
-            macro_feed_health = FeedHealthStatus.HEALTHY if macro_context.is_feed_healthy else FeedHealthStatus.UNHEALTHY
-            is_in_blackout = bool(macro_context.is_in_blackout)
-
         # Step 5: Extract Causal Technical Features & Structure (Phase 6 Parity)
         from engine.features.engine import FeatureEngine
         from engine.regime.engine import RegimeEngine
@@ -617,6 +587,97 @@ class XauUsdLiveDecisionPipelineService:
         feats_15m = fe.extract_features(engine_candles_15m) if len(engine_candles_15m) >= 20 else None
         regime_15m = re.classify(feats_15m) if feats_15m else None
         structure_15m = se.analyze(engine_candles_15m, atr=feats_15m.atr14 if feats_15m else None) if len(engine_candles_15m) >= 5 else None
+
+        # Resolve Phase 3A Cycle Snapshot & Macro Context (PIT)
+        from apps.analysis.models import CycleSnapshotRecord
+        from apps.analysis.services import AnalysisPersistenceService
+        from apps.market_data.macro.replay import resolve_macro_events_as_of
+        from apps.market_data.models import MacroScheduleVintage
+        from engine.cycles.engine import RobustTimeCycleEngine
+        from engine.cycles.events import evaluate_macro_event_risk
+
+        cycle_rec = (
+            CycleSnapshotRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=event.timeframe,
+                timestamp=candle_ts,
+                cycle_version=cycle_version,
+            )
+            .first()
+        )
+        if cycle_rec is None:
+            cycle_rec = (
+                CycleSnapshotRecord.objects.filter(
+                    instrument=instrument_obj,
+                    timeframe=event.timeframe,
+                    timestamp__lte=candle_ts,
+                    cycle_version=cycle_version,
+                )
+                .order_by("-timestamp")
+                .first()
+            )
+
+        cycle_3a_snapshot = (
+            AnalysisPersistenceService.rehydrate_cycle_3a_snapshot(cycle_rec)
+            if cycle_rec
+            else None
+        )
+
+        # Macro schedule evidence coverage verification
+        has_macro_schedules = MacroScheduleVintage.objects.filter(known_at__lte=candle_ts).exists()
+        latest_sched = MacroScheduleVintage.objects.filter(known_at__lte=candle_ts).order_by("-scheduled_at").first()
+
+        is_coverage_healthy = False
+        if has_macro_schedules and latest_sched is not None:
+            delta_days = (candle_ts - latest_sched.scheduled_at).total_seconds() / 86400.0
+            if delta_days <= 45.0:
+                is_coverage_healthy = True
+
+        if has_macro_schedules:
+            macro_events = resolve_macro_events_as_of(candle_ts) if is_coverage_healthy else []
+
+            if macro_context is None:
+                if cycle_3a_snapshot is not None and cycle_rec and cycle_rec.timestamp == candle_ts:
+                    macro_context = cycle_3a_snapshot.macro_event
+                else:
+                    macro_context = evaluate_macro_event_risk(
+                        as_of=candle_ts,
+                        events=macro_events,
+                        is_feed_healthy=is_coverage_healthy,
+                    )
+
+            if is_coverage_healthy and (cycle_3a_snapshot is None or (cycle_rec and cycle_rec.timestamp < candle_ts)) and engine_candles_15m and len(engine_candles_15m) >= 5:
+                try:
+                    cycle_engine = RobustTimeCycleEngine.for_xauusd(timeframe=event.timeframe)
+                    cycle_3a_snapshot = cycle_engine.analyze(
+                        latest_candle=engine_candles_15m[-1],
+                        structure=structure_15m,
+                        timeframe=event.timeframe,
+                        regime=regime_15m.regime if regime_15m else None,
+                        macro_events=macro_events,
+                        instrument="XAUUSD",
+                    )
+                    AnalysisPersistenceService.save_analysis_snapshots(
+                        instrument=instrument_obj,
+                        timeframe=event.timeframe,
+                        features=feats_15m,
+                        regime=regime_15m,
+                        structure=structure_15m,
+                        cycle_3a=cycle_3a_snapshot,
+                        feature_version=feature_version,
+                    )
+                except Exception as cycle_exc:
+                    logger.warning("failed_to_compute_or_persist_cycle_3a", error=str(cycle_exc))
+        else:
+            if macro_context is None and cycle_3a_snapshot is not None:
+                macro_context = cycle_3a_snapshot.macro_event
+
+        # Resolve macro feed health
+        macro_feed_health = FeedHealthStatus.MISSING
+        is_in_blackout = False
+        if macro_context is not None:
+            macro_feed_health = FeedHealthStatus.HEALTHY if macro_context.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+            is_in_blackout = bool(macro_context.is_in_blackout)
 
         feats_1h = fe.extract_features(engine_candles_1h) if (engine_candles_1h and len(engine_candles_1h) >= 20) else None
         feats_4h = fe.extract_features(engine_candles_4h) if (engine_candles_4h and len(engine_candles_4h) >= 20) else None

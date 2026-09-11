@@ -13,6 +13,7 @@ def evaluate_macro_event_risk(
     blackout_post_minutes: Optional[int] = None,
     blackout_minutes: Optional[int] = None,
     profile: Optional[Cycle3AProfile] = None,
+    is_feed_healthy: Optional[bool] = None,
 ) -> MacroEventContext:
     """
     Evaluate macroeconomic event risk at a specific point-in-time timestamp.
@@ -40,13 +41,14 @@ def evaluate_macro_event_risk(
         as_of_utc = as_of.astimezone(timezone.utc)
 
     if not events:
+        feed_health = False if is_feed_healthy is None else is_feed_healthy
         return MacroEventContext(
             is_in_blackout=False,
             minutes_to_next_event=None,
             minutes_since_last_event=None,
             active_event_name=None,
             point_in_time_value=None,
-            is_feed_healthy=False,
+            is_feed_healthy=feed_health,
         )
 
     # Determine pre and post blackout windows independently

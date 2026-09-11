@@ -535,10 +535,10 @@ class Command(BaseCommand):
 ## 4. BLS Schedule Provenance Reconciliation (Rebuilt from Database)
 | Provenance Type | Count | Proportion | Status |
 | :--- | :---: | :---: | :---: |
-| **BLS_PREVIOUS_RELEASE_ANNOUNCEMENT** | {bls_prev_release_count} | {bls_prev_release_count / bls_schedules_total * 100:.1f}% | VALIDATED |
-| **OMB_PFEI_SCHEDULE** | {omb_pfei_count} | {omb_pfei_count / bls_schedules_total * 100:.1f}% | VALIDATED |
-| **OTHER_FIRST_PARTY** | {other_first_party_count} | {other_first_party_count / bls_schedules_total * 100:.1f}% | VALIDATED |
-| **UNKNOWN** | {unknown_prov_count} | {unknown_prov_count / bls_schedules_total * 100:.1f}% | {"NONE (0)" if unknown_prov_count == 0 else "DEFECT"} |
+| **BLS_PREVIOUS_RELEASE_ANNOUNCEMENT** | {bls_prev_release_count} | {(bls_prev_release_count / bls_schedules_total * 100) if bls_schedules_total > 0 else 0.0:.1f}% | VALIDATED |
+| **OMB_PFEI_SCHEDULE** | {omb_pfei_count} | {(omb_pfei_count / bls_schedules_total * 100) if bls_schedules_total > 0 else 0.0:.1f}% | VALIDATED |
+| **OTHER_FIRST_PARTY** | {other_first_party_count} | {(other_first_party_count / bls_schedules_total * 100) if bls_schedules_total > 0 else 0.0:.1f}% | VALIDATED |
+| **UNKNOWN** | {unknown_prov_count} | {(unknown_prov_count / bls_schedules_total * 100) if bls_schedules_total > 0 else 0.0:.1f}% | {"NONE (0)" if unknown_prov_count == 0 else "DEFECT"} |
 | **TOTAL BLS SCHEDULES** | **{bls_schedules_total}** | **100.0%** | **{"EXACT RECONCILIATION" if bls_schedules_total == reconciled_sum else "MISMATCH"}** |
 
 ### Sample Provenance Records

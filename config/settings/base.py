@@ -1,4 +1,5 @@
 """Base Django settings for XAUT Signal Intelligence."""
+from decimal import Decimal
 from pathlib import Path
 import environ
 import structlog
@@ -283,3 +284,6 @@ XAUUSD_EXECUTION_LEGAL_ENTITY_CODE = env("XAUUSD_EXECUTION_LEGAL_ENTITY_CODE", d
 # Provenance Attestation Signing Secret (Fail-Closed in Production)
 PROVENANCE_SIGNING_SECRET = env("PROVENANCE_SIGNING_SECRET", default=None)
 
+# Market Data Feed Consensus & Divergence Threshold (Decimal)
+_xauusd_div_raw = env("XAUUSD_MAX_DIVERGENCE_PCT", default=None)
+XAUUSD_MAX_DIVERGENCE_PCT = Decimal(str(_xauusd_div_raw)) if _xauusd_div_raw is not None else None

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from celery import shared_task
+from django.conf import settings
 import structlog
 
 from apps.live_monitor.adapter import PublicMarketDataAdapter
@@ -373,6 +374,7 @@ def process_xauusd_closed_candle_task(
 
         from apps.backtests.tasks import resolve_xauusd_research_profiles
         sig_prof, risk_prof = resolve_xauusd_research_profiles(
+            calibration_artifact_id=getattr(settings, "XAUUSD_CALIBRATION_ARTIFACT_ID", None),
             signal_profile_dict=signal_profile_dict,
             risk_profile_dict=risk_profile_dict,
         )

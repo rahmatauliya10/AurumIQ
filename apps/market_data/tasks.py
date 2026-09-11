@@ -36,7 +36,7 @@ def ingest_primary_candles(
     timeframes: list[str] = None,
     lookback_bars: int = 50,
     xauusd_max_divergence_pct: Optional[Decimal] = None,
-    is_secondary_critical: bool = True,
+    is_secondary_critical: Optional[bool] = None,
 ) -> dict:
     """
     Ingest primary closed candles (15m, 1h, 4h, 1d) with quote normalization
@@ -44,6 +44,10 @@ def ingest_primary_candles(
     """
     if timeframes is None:
         timeframes = ["15m", "1h", "4h", "1d"]
+
+    # Reconcile secondary feed criticality from authoritative policy/setting (default OPTIONAL)
+    if is_secondary_critical is None:
+        is_secondary_critical = _get_setting("XAUUSD_SECONDARY_CRITICAL", False)
 
     parts = instrument_symbol.split("/")
     if len(parts) != 2:
@@ -418,7 +422,7 @@ def ingest_primary_candles(
 
                 vol_evidence = getattr(raw, "volume_evidence", "UNAVAILABLE")
 
-                mc, _ = MarketCandle.objects.update_or_create(
+                mc, created = MarketCandle.objects.update_or_create(
                     instrument=instrument,
                     source=listing.provider,
                     timeframe=tf,
@@ -439,24 +443,29 @@ def ingest_primary_candles(
                 )
                 total_ingested += 1
 
-                # Wire autonomous decision pipeline trigger (Phase 7 -> Phase 8)
-                if is_xauusd and tf == "15m" and raw.is_closed:
+                # Normal Live Path: Dispatch Phase 7 ONLY for a newly created eligible closed 15m candle
+                if is_xauusd and tf == "15m" and raw.is_closed and created:
                     try:
                         from apps.live_monitor.tasks import process_xauusd_closed_candle_task
                         code_rev = _get_setting("CODE_REVISION", "4a8a993af55ad433800e0bb8868e94063d62ff89")
-                        process_xauusd_closed_candle_task.delay(
-                            instrument="XAUUSD",
-                            timeframe="15m",
-                            timestamp_open_iso=raw.timestamp_open.isoformat(),
-                            timestamp_close_iso=raw.timestamp_close.isoformat(),
-                            open_str=str(raw.open),
-                            high_str=str(raw.high),
-                            low_str=str(raw.low),
-                            close_str=str(raw.close),
-                            volume_str=str(raw.volume),
-                            code_revision=code_rev,
-                            source=listing.provider,
-                        )
+                        dispatch_payload = {
+                            "instrument": "XAUUSD",
+                            "timeframe": "15m",
+                            "timestamp_open_iso": raw.timestamp_open.isoformat(),
+                            "timestamp_close_iso": raw.timestamp_close.isoformat(),
+                            "open_str": str(raw.open),
+                            "high_str": str(raw.high),
+                            "low_str": str(raw.low),
+                            "close_str": str(raw.close),
+                            "volume_str": str(raw.volume),
+                            "code_revision": code_rev,
+                            "source": listing.provider,
+                        }
+
+                        def _make_commit_dispatcher(payload):
+                            return lambda: process_xauusd_closed_candle_task.delay(**payload)
+
+                        transaction.on_commit(_make_commit_dispatcher(dispatch_payload))
                     except Exception as pipe_exc:
                         logger.warning("Failed to dispatch process_xauusd_closed_candle_task", exc=str(pipe_exc))
 
@@ -465,6 +474,7 @@ def ingest_primary_candles(
                 anomalies_dict.update({
                     "gap_detected": gap_count > 0,
                     "secondary_fetch_error": sec_fetch_error,
+                    "secondary_provider_status": "CONFIGURED" if (sec_listing and sec_fetch_error is None) else "NOT_CONFIGURED",
                 })
                 dq_hard_fail = violations > 0 or integrity_failed or (is_secondary_critical and sec_fetch_error is not None)
                 score = Decimal("100.00") if not dq_hard_fail and gap_count == 0 else Decimal("0.00") if dq_hard_fail else Decimal("50.00")
