@@ -58,6 +58,21 @@ from engine.backtest.xauusd_types import (
     XauUsdWalkForwardResult,
 )
 from engine.backtest.xauusd_walkforward import XauUsdWalkForwardEngine
+from engine.backtest.xauusd_candidate_generator import (
+    XauUsdCandidateGenerationPolicy,
+    XauUsdCandidateGenerator,
+    load_governed_candidate_generation_policy,
+)
+from engine.backtest.xauusd_risk_candidate_generator import (
+    FOLD1_TRAIN_END_EXCLUSIVE,
+    FOLD1_TRAIN_START,
+    XauUsdJointCandidate,
+    XauUsdJointCandidateGenerator,
+    XauUsdRiskCandidateGenerationPolicy,
+    XauUsdRiskCandidateGenerator,
+    load_governed_risk_candidate_generation_policy,
+    validate_risk_geometry_timestamp,
+)
 
 __all__ = [
     "AblatedSignalEngine",
@@ -119,4 +134,12 @@ __all__ = [
     "XauUsdWalkForwardResult",
     "compute_xauusd_backtest_fingerprint",
     "compute_xauusd_dataset_identity",
+    "XauUsdCandidateGenerationPolicy",
+    "XauUsdCandidateGenerator",
+    "load_governed_candidate_generation_policy",
+    "XauUsdJointCandidate",
+    "XauUsdJointCandidateGenerator",
+    "XauUsdRiskCandidateGenerationPolicy",
+    "XauUsdRiskCandidateGenerator",
+    "load_governed_risk_candidate_generation_policy",
 ]

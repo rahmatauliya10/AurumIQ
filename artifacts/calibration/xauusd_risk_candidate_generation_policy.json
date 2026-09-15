@@ -1,0 +1,237 @@
+{
+  "schema": "aurumiq.calibration.risk_candidate_generation_policy.v1",
+  "policy_id": "XAUUSD-RISK-CANDIDATE-GENERATION-POLICY-20260915",
+  "selection_policy_fingerprint_reference": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
+  "signal_candidate_policy_fingerprint_reference": "b0893264f27be95b7e7927c6bb2cdc6dc03dbcd9be6a23a5fcbd2a2cfb8872a4",
+  "code_revision": "b2acb6b735c378c6ae8d39372012c91949052305",
+  "dataset_fingerprint_reference": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "instrument": "XAUUSD",
+  "timeframe": "15m",
+  "candidate_cap": 100,
+  "auto_increase_permitted": false,
+  "buy_sell_independence": true,
+  "historical_bounds": {
+    "calibration_window_start": "2020-04-07T00:00:00+00:00",
+    "calibration_window_end_exclusive": "2026-09-01T00:00:00+00:00",
+    "common_risk_domain_source": "FOLD_1_TRAIN_ONLY",
+    "train_start": "2020-04-07T00:00:00+00:00",
+    "train_end": "2024-02-08T19:12:00+00:00",
+    "val_start": "2024-02-08T19:12:00+00:00",
+    "val_end": "2025-05-21T09:36:00+00:00",
+    "oos_start": "2025-05-21T09:36:00+00:00",
+    "oos_end": "2025-08-22T22:04:48+00:00",
+    "selection_policy_fingerprint": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
+    "oos_exclusion_status": "STRICT_EXCLUSION_ACTIVE"
+  },
+  "historical_execution_audit": {
+    "supported_entry_simulation_policy": "NEXT_BAR_OPEN",
+    "market_after_signal_coverage": "INSUFFICIENT",
+    "market_after_signal_reason": "Causal continuous bid/ask quote evidence does not exist across 2020-04-07 to 2026-09-01; live/recent Exness quotes cannot be projected backward.",
+    "limit_zone_coverage": "INSUFFICIENT_WITHOUT_INTRABAR_QUOTES",
+    "boundary_coverage": "COMPLETE",
+    "observed_15m_candle_count": 161233,
+    "raw_grid_continuity": "NOT_100_PERCENT",
+    "missing_interval_count": 63215,
+    "missing_intervals_pct": 28.16,
+    "gap_cause_classification": "UNRESOLVED_MIX_OF_MARKET_CLOSURE_AND_PROVIDER_GAPS",
+    "gap_readiness_gate_applied": false
+  },
+  "execution_model_semantics": {
+    "entry_execution_policy": "NEXT_BAR_OPEN",
+    "modeled_additional_latency_seconds": 0.0,
+    "latency_classification": "OWNER_MODELING_ASSUMPTION_NO_EXTRA_ARTIFICIAL_DELAY",
+    "reference_tick_lag_median_ms": 256.0,
+    "reference_tick_lag_classification": "MEASURED_REFERENCE_QUOTE_LAG_NOT_BROKER_EXECUTION_LATENCY",
+    "synthetic_spread_points": 260.0,
+    "contract_point_size": 0.001,
+    "synthetic_spread_price_amount": 0.26,
+    "spread_classification": "SEALED_PHASE6_REFERENCE_FRICTION_ASSUMPTION",
+    "true_requested_price_slippage": "UNOBSERVABLE",
+    "reference_quote_gap_points": 0.0,
+    "reference_quote_gap_classification": "EMPIRICAL_MEASURED_MOBILE_ENTRY_GAP_VS_REFERENCE_QUOTE_0_POINTS",
+    "modeled_execution_gap_points": 0.0,
+    "modeled_execution_gap_classification": "OWNER_MODELING_ASSUMPTION_BASED_ON_MOBILE_REFERENCE_QUOTE_GAP"
+  },
+  "core_risk_parameters": [
+    "structure_buffer",
+    "atr_multiplier",
+    "max_stop_distance_atr",
+    "min_rr_tp1"
+  ],
+  "tp2_synthetic_fallback_policy": {
+    "tp2_atr_multiplier": null,
+    "status": "SYNTHETIC_DISABLED_FIRST_CALIBRATION",
+    "owner_decision_reason": "Do not introduce an additional synthetic TP2 degree of freedom in the first calibration.",
+    "structural_tp2_status": "ENABLED",
+    "structural_tp2_description": "Target engine continues to resolve structural TP2 from the next confirmed PIT structure zone strictly beyond TP1."
+  },
+  "train_only_causal_geometry": {
+    "source_window": "FOLD_1_TRAIN_ONLY (2020-04-07T00:00:00+00:00 <= t < 2024-02-08T19:12:00+00:00)",
+    "isolation_rule": "Strictly Fold 1 TRAIN-only PIT geometry. Excludes Fold 1 validation (>= 2024-02-08T19:12:00Z), all OOS periods (>= 2025-05-21T09:36:00Z), Phase 8 data, and future outcomes (MAE, MFE, PnL, winner/loser labels).",
+    "geometry_artifact_path": "artifacts/calibration/xauusd_risk_geometry_fold1_train.json",
+    "geometry_artifact_fingerprint": "a6b2f31f2ffc6b63ec303768e8c0c80d70b96439b6ed6e24cea9ca263e2d99c4",
+    "observation_vectors_fingerprint": "26229eb29142b2719dcc022b2e6fe0530c993eb92b2419ec1433bdd13ffcb729",
+    "observation_universe": "EVERY_ELIGIBLE_15M_TIMESTAMP",
+    "sample_counts": {
+      "long_raw_sample_count": 89820,
+      "long_valid_sample_count": 54930,
+      "short_raw_sample_count": 89820,
+      "short_valid_sample_count": 54842
+    },
+    "geometric_observations": {
+      "structure_buffer": {
+        "causal_basis": "TRAIN_PIT_CONFIRMED_ZONE_WIDTH",
+        "unit": "NATIVE_PRICE_UNITS_USD",
+        "description": "Zone width buffer derived from Fold 1 TRAIN-only PIT structure zones",
+        "long_support": {
+          "p10": 0.76,
+          "p25": 0.99,
+          "p50": 1.37,
+          "p75": 1.92,
+          "p90": 2.63
+        },
+        "short_support": {
+          "p10": 0.76,
+          "p25": 0.98,
+          "p50": 1.36,
+          "p75": 1.9,
+          "p90": 2.61
+        }
+      },
+      "atr_multiplier": {
+        "causal_basis": "TRAIN_PIT_STRUCTURE_DISTANCE_NORMALIZED_ATR14",
+        "unit": "DIMENSIONLESS_ATR14",
+        "description": "Structure-to-invalidation distance normalized by ATR14 in Fold 1 TRAIN-only PIT data",
+        "long_support": {
+          "p10": 0.28,
+          "p25": 0.64,
+          "p50": 1.26,
+          "p75": 2.28,
+          "p90": 3.84
+        },
+        "short_support": {
+          "p10": 0.29,
+          "p25": 0.65,
+          "p50": 1.26,
+          "p75": 2.22,
+          "p90": 3.65
+        }
+      },
+      "max_stop_distance_atr": {
+        "causal_basis": "TRAIN_PIT_DEEP_STRUCTURAL_DISTANCE_NORMALIZED_ATR14",
+        "unit": "DIMENSIONLESS_ATR14",
+        "description": "Deep protective structural boundary distance normalized by ATR14 in Fold 1 TRAIN-only PIT data",
+        "long_support": {
+          "p10": 0.86,
+          "p25": 1.62,
+          "p50": 3.06,
+          "p75": 5.41,
+          "p90": 8.68
+        },
+        "short_support": {
+          "p10": 0.8,
+          "p25": 1.53,
+          "p50": 2.79,
+          "p75": 4.91,
+          "p90": 8.19
+        }
+      },
+      "min_rr_tp1": {
+        "causal_basis": "TRAIN_PIT_RAW_STRUCTURAL_REWARD_RISK_RATIO",
+        "unit": "DIMENSIONLESS_REWARD_RISK_RATIO",
+        "description": "Raw structural risk-reward implied by Fold 1 TRAIN-only PIT structure and nearest opposing target",
+        "long_support": {
+          "p10": 0.1,
+          "p25": 0.29,
+          "p50": 0.85,
+          "p75": 2.36,
+          "p90": 6.07
+        },
+        "short_support": {
+          "p10": 0.11,
+          "p25": 0.31,
+          "p50": 0.91,
+          "p75": 2.55,
+          "p90": 6.56
+        }
+      }
+    }
+  },
+  "deterministic_seed_derivation": {
+    "formula": "SHA256(selection_policy_fp + ':' + signal_candidate_policy_fp + ':' + dataset_fp + ':' + code_revision)",
+    "inputs": {
+      "selection_policy_fingerprint": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
+      "signal_candidate_policy_fingerprint": "b0893264f27be95b7e7927c6bb2cdc6dc03dbcd9be6a23a5fcbd2a2cfb8872a4",
+      "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+      "code_revision": "b2acb6b735c378c6ae8d39372012c91949052305"
+    },
+    "user_adjustable_seed_permitted": false
+  },
+  "risk_candidate_generation_algorithm": {
+    "method": "EMPIRICAL_RANK_QUANTILE_MAPPING",
+    "description": "Deterministic uniform pseudo-random draw u in (0, 1) mapped piecewise linearly to TRAIN empirical geometry quantiles [p10, p90].",
+    "long_short_independence": true,
+    "rounding_precision": {
+      "structure_buffer": 2,
+      "atr_multiplier": 2,
+      "max_stop_distance_atr": 2,
+      "min_rr_tp1": 2
+    }
+  },
+  "joint_candidate_budget": {
+    "max_joint_candidates": 100,
+    "cartesian_product_permitted": false,
+    "rule": "Candidate i consists of SignalCandidate[i] + RiskCandidate[i], TOTAL_JOINT_CANDIDATES <= 100",
+    "auto_increase_permitted": false
+  },
+  "reference_candidate_0": {
+    "role": "REFERENCE_CANDIDATE_0",
+    "status": "FROZEN_EX_ANTE_NOT_YET_EMPIRICAL_BASELINE",
+    "signal_role": "NEUTRAL_EQUAL_WEIGHTS_ANCHOR",
+    "risk_role": "CENTRAL_REPRESENTATIVE_TRAIN_GEOMETRY",
+    "risk_parameters": {
+      "long": {
+        "structure_buffer": 1.37,
+        "atr_multiplier": 1.26,
+        "max_stop_distance_atr": 3.06,
+        "min_rr_tp1": 0.85,
+        "tp2_atr_multiplier": null
+      },
+      "short": {
+        "structure_buffer": 1.36,
+        "atr_multiplier": 1.26,
+        "max_stop_distance_atr": 2.79,
+        "min_rr_tp1": 0.91,
+        "tp2_atr_multiplier": null
+      }
+    },
+    "execution_policy": {
+      "latency_seconds": 0.0,
+      "synthetic_spread_points": 260.0,
+      "point_size": 0.001,
+      "modeled_execution_gap_points": 0.0,
+      "slippage_pct": 0.0
+    },
+    "empirical_baseline_qualification_requirements": [
+      "Must be evaluated on complete governed historical data (2020-04-07 to 2026-09-01)",
+      "Must use sealed Phase 6 empirical friction",
+      "Must use reproducible code revision",
+      "Must pass Phase 6 Level 1 and Level 2 validation",
+      "Resulting performance metrics materialized as EMPIRICAL_BASELINE only after evaluation"
+    ],
+    "valid_empirical_baseline_exists": false
+  },
+  "drawdown_gates": {
+    "absolute_max_drawdown_r": 18.0,
+    "max_drawdown_deterioration_pct_vs_baseline": 10.0,
+    "relative_drawdown_gate_evaluable": false,
+    "evaluation_gate_condition": "BLOCKED_UNTIL_REFERENCE_CANDIDATE_0_EMPIRICAL_BASELINE_EXISTS"
+  },
+  "production_authority_status": {
+    "is_production_authorized": false,
+    "paper_only": true,
+    "real_order_execution": "disabled"
+  },
+  "policy_fingerprint": "b992694c4f3f7b13c60cee471733d5629219e674a58455f749b4f9ab8074aa67",
+  "geometry_artifact_fingerprint_reference": "a6b2f31f2ffc6b63ec303768e8c0c80d70b96439b6ed6e24cea9ca263e2d99c4"
+}

@@ -123,6 +123,8 @@ class XauUsdOutcomeEngine:
         holding_horizon_bars_15m: Optional[int] = None,
         holding_horizon_seconds: Optional[float] = None,
         run_end_time: Optional[datetime] = None,
+        max_fill_wait_bars_15m: Optional[int] = None,
+        max_fill_wait_seconds: Optional[float] = None,
     ) -> XauUsdSimulatedTrade:
         """
         Simulate deterministic trade entry, lifecycle, barrier hits, and normalized R payoff.
@@ -186,22 +188,63 @@ class XauUsdOutcomeEngine:
             and (run_end_utc is None or _require_utc(q.timestamp) < run_end_utc)
         ]
 
-        # 1. Resolve Side-Specific Execution Model
+        # Compute explicit fill-search horizon and deadline BEFORE calling execution model
+        eff_fill_sec = max_fill_wait_seconds if max_fill_wait_seconds is not None else self.max_fill_wait_seconds
+        eff_fill_bars = max_fill_wait_bars_15m if max_fill_wait_bars_15m is not None else self.max_fill_wait_bars_15m
+
+        if eff_fill_sec is not None:
+            fill_search_seconds = float(eff_fill_sec)
+        elif eff_fill_bars is not None:
+            fill_search_seconds = float(eff_fill_bars * 900)
+        else:
+            raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is strictly required.")
+
+        fill_deadline = signal_ts + timedelta(seconds=fill_search_seconds)
+
+        # Governed rule: signal_ts <= evidence_timestamp <= fill_deadline
+        # If run_end_time is earlier than fill_deadline, effective deadline is run_end_utc (half-open [T, run_end))
+        effective_deadline = fill_deadline
+        is_run_end_binding = False
+        if run_end_utc is not None and run_end_utc <= fill_deadline:
+            effective_deadline = run_end_utc
+            is_run_end_binding = True
+
+        # Bound entry evidence strictly by governed fill horizon
+        entry_candles_15m = [
+            c for c in valid_candles_15m
+            if (
+                _require_utc(c.timestamp_open) < run_end_utc
+                if is_run_end_binding
+                else _require_utc(c.timestamp_open) <= fill_deadline
+            )
+        ]
+        entry_quotes = [
+            q for q in valid_quotes
+            if (
+                _require_utc(q.timestamp) < run_end_utc
+                if is_run_end_binding
+                else _require_utc(q.timestamp) <= fill_deadline
+            )
+        ]
+
+        # 1. Resolve Side-Specific Execution Model with bounded evidence
         entry_model = self.long_entry_execution_model if risk_side == RiskSide.LONG else self.short_entry_execution_model
 
         if execution_policy == EntryExecutionPolicy.NEXT_BAR_OPEN:
             fill_res = entry_model.simulate_next_bar_open(
                 side=risk_side,
                 signal_generated_at=signal_ts,
-                candles=valid_candles_15m,
+                candles=entry_candles_15m,
                 source_phase4_fingerprint=signal.analysis_fingerprint,
+                fill_deadline=effective_deadline if not is_run_end_binding else None,
             )
         elif execution_policy == EntryExecutionPolicy.MARKET_AFTER_SIGNAL:
             fill_res = entry_model.simulate_market_after_signal(
                 side=risk_side,
                 signal_generated_at=signal_ts,
-                quotes=valid_quotes,
+                quotes=entry_quotes,
                 source_phase4_fingerprint=signal.analysis_fingerprint,
+                fill_deadline=effective_deadline if not is_run_end_binding else None,
             )
         elif execution_policy == EntryExecutionPolicy.LIMIT_TOUCH:
             limit_p = risk_plan.entry_max if risk_side == RiskSide.LONG else risk_plan.entry_min
@@ -209,24 +252,15 @@ class XauUsdOutcomeEngine:
                 side=risk_side,
                 signal_generated_at=signal_ts,
                 limit_price=limit_p,
-                quotes=valid_quotes,
-                candles=valid_candles_15m,
+                quotes=entry_quotes,
+                candles=entry_candles_15m,
                 source_phase4_fingerprint=signal.analysis_fingerprint,
+                fill_deadline=effective_deadline if not is_run_end_binding else None,
             )
         else:
             raise ValueError(f"Unknown execution policy: {execution_policy}")
 
-        # Compute explicit fill-search horizon for NO_FILL dependency end
-        if self.max_fill_wait_seconds is not None:
-            fill_search_seconds = float(self.max_fill_wait_seconds)
-        elif self.max_fill_wait_bars_15m is not None:
-            fill_search_seconds = float(self.max_fill_wait_bars_15m * 900)
-        else:
-            raise ValueError("Explicit fill-search horizon (max_fill_wait_bars_15m or max_fill_wait_seconds) is strictly required.")
-
-        no_fill_dep_end = signal_ts + timedelta(seconds=fill_search_seconds)
-        if run_end_utc is not None and no_fill_dep_end > run_end_utc:
-            no_fill_dep_end = run_end_utc
+        no_fill_dep_end = effective_deadline
 
         evidence_fp = getattr(fill_res, "execution_fingerprint", None) or getattr(fill_res, "source_evidence_fingerprint", "")
 

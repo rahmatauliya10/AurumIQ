@@ -49,26 +49,44 @@ class SideRiskPolicy:
 class XauUsdExecutionPolicy:
     """
     Policy-specific execution parameters.
+    Supports both native broker points (Phase 6 empirical evidence)
+    and legacy synthetic percentage-based parameters.
     """
     latency_seconds: Optional[float] = None
-    synthetic_spread_pct: Optional[Decimal] = None     # Required ONLY for NEXT_BAR_OPEN
-    slippage_pct: Optional[Decimal] = None
+    synthetic_spread_pct: Optional[Decimal] = None     # Optional percent-based spread
+    slippage_pct: Optional[Decimal] = None             # Optional percent-based modeled execution gap
+    synthetic_spread_points: Optional[Decimal] = None  # Explicit absolute broker spread in points (e.g. 260.0)
+    point_size: Optional[Decimal] = Decimal("0.001")   # Governed contract point size (0.001 for XAUUSD 3-digit)
+    modeled_execution_gap_points: Optional[Decimal] = None # Explicit modeled execution gap in points (e.g. 0.0)
 
     def is_configured_for(self, policy: EntryExecutionPolicy) -> bool:
         """Policy-specific completeness check with strict fail-closed fallthrough."""
         if self.latency_seconds is None or self.latency_seconds < 0.0 or not math.isfinite(self.latency_seconds):
             return False
-        if self.slippage_pct is None or not self.slippage_pct.is_finite() or self.slippage_pct < Decimal("0"):
+
+        has_slip_pct = self.slippage_pct is not None and self.slippage_pct.is_finite() and self.slippage_pct >= Decimal("0")
+        has_gap_pts = (
+            self.modeled_execution_gap_points is not None
+            and self.modeled_execution_gap_points.is_finite()
+            and self.modeled_execution_gap_points >= Decimal("0")
+        )
+        if not (has_slip_pct or has_gap_pts):
             return False
 
         if policy == EntryExecutionPolicy.MARKET_AFTER_SIGNAL:
             return True
         elif policy == EntryExecutionPolicy.NEXT_BAR_OPEN:
-            return (
+            has_spread_pct = (
                 self.synthetic_spread_pct is not None
                 and self.synthetic_spread_pct.is_finite()
                 and self.synthetic_spread_pct >= Decimal("0")
             )
+            has_spread_pts = (
+                self.synthetic_spread_points is not None
+                and self.synthetic_spread_points.is_finite()
+                and self.synthetic_spread_points >= Decimal("0")
+            )
+            return has_spread_pct or has_spread_pts
         elif policy == EntryExecutionPolicy.LIMIT_ZONE:
             return True
         else:
