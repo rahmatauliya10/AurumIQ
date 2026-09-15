@@ -175,13 +175,13 @@ CELERY_BEAT_SCHEDULE = {
     },
     "provider-health-check": {
         "task": "apps.market_data.tasks.check_provider_health_task",
-        "schedule": 60.0 * 2,  # Every 2 minutes
+        "schedule": 1800.0,  # Every 30 minutes (conserves Twelve Data /api_usage credits)
         "options": {"queue": "maintenance"},
     },
     "ingest-primary-xauusd-candles": {
-        "task": "apps.market_data.tasks.ingest_primary_candles",
-        "schedule": 60.0 * 1,  # Every 1 minute
-        "args": ("XAU/USD", ["15m", "1h", "4h", "1d"]),
+        "task": "apps.market_data.tasks.dispatch_closed_candle_ingestion",
+        "schedule": 60.0 * 1,  # Every 1 minute state-based closed-candle dispatcher
+        "args": ("XAU/USD",),
         "options": {"queue": "market_data"},
     },
 }

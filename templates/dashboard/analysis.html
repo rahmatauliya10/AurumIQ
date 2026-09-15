@@ -2,6 +2,8 @@
 
 {% block content %}
 <div class="analysis-container">
+    <div id="data-gap-alert-container" class="data-gap-alert-container" style="display: none;"></div>
+
     <div class="chart-controls-bar card">
         <div class="tf-selector">
             <span class="control-label">TIMEFRAME:</span>
@@ -57,6 +59,7 @@
                 };
 
                 const shapes = [];
+                const annotations = [];
                 const overlays = data.overlays || {};
                 
                 // Overlay Entry Zone
@@ -102,6 +105,101 @@
                     });
                 }
 
+                // Discontinuity processing:
+                // Only PROVIDER_MARKET_CLOSURE may be visually collapsed via Plotly rangebreaks.
+                // INTRASESSION_DATA_GAP must NEVER be collapsed; it remains visible with explicit warning.
+                const rangebreaks = [];
+                const intrasessionGaps = [];
+
+                if (data.gaps && Array.isArray(data.gaps)) {
+                    data.gaps.forEach(g => {
+                        if (g.classification === "PROVIDER_MARKET_CLOSURE") {
+                            rangebreaks.push({
+                                bounds: [g.prev_close, g.next_open]
+                            });
+                        } else {
+                            intrasessionGaps.push(g);
+                        }
+                    });
+                } else if (data.timestamps && data.timestamps.length >= 2) {
+                    // Client-side fallback classifier
+                    const tfMinutesMap = { '15m': 15, '1h': 60, '4h': 240, '1d': 1440 };
+                    const expectedIntervalMinutes = tfMinutesMap[tf] || 15;
+                    const maxAllowedGapMinutes = expectedIntervalMinutes * 1.5;
+
+                    for (let i = 1; i < data.timestamps.length; i++) {
+                        const prevCloseStr = (data.timestamps_close && data.timestamps_close[i - 1])
+                            ? data.timestamps_close[i - 1]
+                            : data.timestamps[i - 1];
+                        const currOpenStr = data.timestamps[i];
+
+                        const tPrevClose = new Date(prevCloseStr);
+                        const tCurrOpen = new Date(currOpenStr);
+                        const diffMs = tCurrOpen.getTime() - tPrevClose.getTime();
+                        const gapMinutes = diffMs / 60000;
+
+                        if (gapMinutes > maxAllowedGapMinutes) {
+                            const wClose = tPrevClose.getUTCDay(); // 0=Sun, 5=Fri, 6=Sat
+                            const wOpen = tCurrOpen.getUTCDay();
+                            const isWeekend = (wClose === 5 || wClose === 6) && (wOpen === 0 || wOpen === 1);
+
+                            if (isWeekend && gapMinutes >= 1200 && gapMinutes <= 3900) {
+                                rangebreaks.push({
+                                    bounds: [prevCloseStr, currOpenStr]
+                                });
+                            } else {
+                                const missed = Math.max(0, Math.floor(gapMinutes / expectedIntervalMinutes) - 1);
+                                intrasessionGaps.push({
+                                    prev_close: prevCloseStr,
+                                    next_open: currOpenStr,
+                                    missed_intervals: missed,
+                                    classification: "INTRASESSION_DATA_GAP"
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Render intrasession data gap alerts
+                const gapAlertContainer = document.getElementById("data-gap-alert-container");
+                if (gapAlertContainer && intrasessionGaps.length > 0) {
+                    gapAlertContainer.innerHTML = intrasessionGaps.map(g => `
+                        <div class="data-gap-banner">
+                            <span class="gap-icon">⚠️</span>
+                            <span class="gap-title">DATA GAP:</span>
+                            <span class="gap-details">${g.missed_intervals} missing ${tf.toUpperCase()} interval(s) (${g.prev_close.replace('T', ' ').slice(0, 16)} to ${g.next_open.replace('T', ' ').slice(0, 16)} UTC)</span>
+                        </div>
+                    `).join('');
+                    gapAlertContainer.style.display = "block";
+
+                    // Annotate missing data regions on chart canvas
+                    intrasessionGaps.forEach(g => {
+                        shapes.push({
+                            type: 'rect',
+                            xref: 'x',
+                            yref: 'paper',
+                            x0: g.prev_close,
+                            x1: g.next_open,
+                            y0: 0,
+                            y1: 1,
+                            fillcolor: 'rgba(239, 68, 68, 0.08)',
+                            line: { color: 'rgba(239, 68, 68, 0.5)', width: 1, dash: 'dot' }
+                        });
+                        annotations.push({
+                            xref: 'x',
+                            yref: 'paper',
+                            x: g.next_open,
+                            y: 0.96,
+                            text: `⚠️ Data Gap: ${g.missed_intervals} bars missing`,
+                            showarrow: false,
+                            font: { color: '#ef4444', size: 10, family: 'JetBrains Mono, monospace' },
+                            bgcolor: 'rgba(24, 24, 27, 0.9)',
+                            bordercolor: '#ef4444',
+                            borderwidth: 1
+                        });
+                    });
+                }
+
                 const layout = {
                     dragmode: 'zoom',
                     margin: {r: 20, t: 25, b: 40, l: 60},
@@ -112,7 +210,8 @@
                         type: 'date',
                         rangeslider: {visible: false},
                         gridcolor: '#27272a',
-                        color: '#a1a1aa'
+                        color: '#a1a1aa',
+                        rangebreaks: rangebreaks
                     },
                     yaxis: {
                         autorange: true,
@@ -122,7 +221,8 @@
                     },
                     paper_bgcolor: '#121214',
                     plot_bgcolor: '#121214',
-                    shapes: shapes
+                    shapes: shapes,
+                    annotations: annotations
                 };
 
                 Plotly.newPlot('plotly-chart-container', [trace], layout, {responsive: true, displayModeBar: true});

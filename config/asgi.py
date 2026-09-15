@@ -6,6 +6,12 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
 
 django_http_app = get_asgi_application()
 
+from django.conf import settings
+from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler
+
+if settings.DEBUG:
+    django_http_app = ASGIStaticFilesHandler(django_http_app)
+
 from apps.live_monitor.middleware import SessionAuthMiddleware
 
 

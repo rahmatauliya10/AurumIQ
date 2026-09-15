@@ -1,5 +1,5 @@
 """Read-only and research REST API endpoints for the AurumIQ Dashboard (Phase 7)."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List
 import structlog
@@ -123,6 +123,51 @@ class SystemHealthAPIView(APIView):
         )
 
 
+def classify_candle_gap(prev_close: datetime, next_open: datetime, timeframe: str) -> str:
+    """
+    Deterministic classification of discontinuities between adjacent closed candles.
+
+    Allowed classifications:
+    - PROVIDER_MARKET_CLOSURE: Standard weekend market closure or provider maintenance window.
+    - INTRASESSION_DATA_GAP: Missing data during active market trading hours.
+    - PROVIDER_ALIGNMENT_TRANSITION: Shift due to daylight transition regime change.
+    - UNRESOLVED: Unknown anomaly.
+    """
+    diff = next_open - prev_close
+    if diff.total_seconds() <= 0:
+        return "NORMAL"
+
+    if diff > timedelta(days=14):
+        return "UNRESOLVED"
+
+    w_close = prev_close.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+    w_open = next_open.weekday()
+
+    # XAU/USD Weekend Market Closure criteria:
+    # Closes Friday ~15:00-23:59 UTC (or Saturday <=01:00 UTC)
+    # Reopens Sunday (any hour) or early Monday <=03:00 UTC
+    # Duration is typically 20h to 65h
+    is_friday_or_sat_close = (w_close == 4 and prev_close.hour >= 15) or (w_close == 5)
+    is_sun_or_mon_open = (w_open == 6) or (w_open == 0 and next_open.hour <= 3)
+
+    if is_friday_or_sat_close and is_sun_or_mon_open and timedelta(hours=20) <= diff <= timedelta(hours=65):
+        return "PROVIDER_MARKET_CLOSURE"
+
+    # Daily maintenance break (typically 21:00 to 22:00 UTC on trading days)
+    if diff <= timedelta(hours=1, minutes=15) and prev_close.hour in (21, 22):
+        return "PROVIDER_MARKET_CLOSURE"
+
+    # Provider daylight saving alignment transition (e.g., 4h candle shift by 1 hour on transition week)
+    if timeframe == "4h" and timedelta(hours=3) <= diff <= timedelta(hours=5) and diff != timedelta(hours=4):
+        return "PROVIDER_ALIGNMENT_TRANSITION"
+
+    # Weekday gaps during regular trading (Monday through Friday):
+    if w_close in (0, 1, 2, 3, 4) and w_open in (0, 1, 2, 3, 4):
+        return "INTRASESSION_DATA_GAP"
+
+    return "UNRESOLVED"
+
+
 class ChartDataAPIView(APIView):
     """
     REST endpoint returning internal candlestick data & structural overlays for Plotly.js.
@@ -172,6 +217,31 @@ class ChartDataAPIView(APIView):
                 "side": state.risk_side,
             }
 
+        # Deterministic discontinuity classification between adjacent closed candles
+        tf_step_map = {
+            "15m": timedelta(minutes=15),
+            "1h": timedelta(hours=1),
+            "4h": timedelta(hours=4),
+            "1d": timedelta(days=1),
+        }
+        step = tf_step_map.get(timeframe, timedelta(minutes=15))
+        gaps = []
+        for i in range(len(candles) - 1):
+            c_prev = candles[i]
+            c_next = candles[i + 1]
+            diff = c_next.timestamp_open - c_prev.timestamp_close
+            if diff > step * 1.5:
+                missed_intervals = max(0, int(diff / step) - 1)
+                classification = classify_candle_gap(c_prev.timestamp_close, c_next.timestamp_open, timeframe)
+                gaps.append({
+                    "prev_close": c_prev.timestamp_close.isoformat(),
+                    "next_open": c_next.timestamp_open.isoformat(),
+                    "duration_seconds": int(diff.total_seconds()),
+                    "missed_intervals": missed_intervals,
+                    "classification": classification,
+                    "is_market_closure": (classification == "PROVIDER_MARKET_CLOSURE"),
+                })
+
         chart_payload = {
             "instrument": "XAUUSD",
             "display_symbol": "XAU/USD",
@@ -184,6 +254,7 @@ class ChartDataAPIView(APIView):
             "close": closes,
             "volume": volumes,
             "overlays": overlays,
+            "gaps": gaps,
         }
         return Response(chart_payload, status=status.HTTP_200_OK)
 

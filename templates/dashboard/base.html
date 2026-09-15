@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10,7 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <!-- Pinned Plotly.js CDN (exact release pinned) -->
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-    <link rel="stylesheet" href="/static/dashboard/css/dashboard.css">
+    <link rel="stylesheet" href="{% static 'dashboard/css/dashboard.css' %}">
 </head>
 <body class="aurum-app">
     <div class="app-layout">
@@ -98,7 +99,7 @@
     </div>
 
     <!-- Pinned Static JS -->
-    <script src="/static/dashboard/js/dashboard.js"></script>
+    <script src="{% static 'dashboard/js/dashboard.js' %}"></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>
