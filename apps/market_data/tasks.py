@@ -39,6 +39,8 @@ def ingest_primary_candles(
     xauusd_max_divergence_pct: Optional[Decimal] = None,
     is_secondary_critical: Optional[bool] = None,
     now_utc: Optional[datetime] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
 ) -> dict:
     """
     Ingest primary closed candles (15m, 1h, 4h, 1d) with quote normalization
@@ -298,13 +300,18 @@ def ingest_primary_candles(
             "1d": 1440,
         }.get(tf, 15)
 
-        start_time = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
+        if start_time is not None and end_time is not None:
+            fetch_start = start_time
+            fetch_end = end_time
+        else:
+            fetch_start = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
+            fetch_end = now_utc
 
         # Retrieve historical USDT rates for PIT normalization (legacy XAUT only)
         hist_usdt_rates = []
         if not is_direct_usd and usdt_rate_provider and hasattr(usdt_rate_provider, "fetch_historical_rates"):
             try:
-                hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=start_time, end=now_utc)
+                hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=fetch_start, end=fetch_end)
             except Exception as e:
                 logger.warning("usdt_historical_rate_fetch_failed", error=str(e))
 
@@ -313,8 +320,8 @@ def ingest_primary_candles(
             raw_candles = provider.fetch_candles(
                 symbol=listing.provider_symbol,
                 timeframe=tf,
-                start=start_time,
-                end=now_utc,
+                start=fetch_start,
+                end=fetch_end,
             )
         except Exception as e:
             logger.error("primary_ingestion_fetch_error", provider=listing.provider, tf=tf, error=str(e))
@@ -373,8 +380,8 @@ def ingest_primary_candles(
                     sec_candles = sec_provider.fetch_candles(
                         symbol=sec_listing.provider_symbol,
                         timeframe=tf,
-                        start=start_time,
-                        end=now_utc,
+                        start=fetch_start,
+                        end=fetch_end,
                     )
                     sec_lookup = {c.timestamp_open: c.close for c in sec_candles if c.is_closed}
                     if is_secondary_critical and len(sec_lookup) == 0 and len(usable_closed_candles) > 0:
@@ -695,73 +702,130 @@ def dispatch_closed_candle_ingestion(
         ).order_by("-timestamp_close").first()
         latest_stored_close = latest_stored.timestamp_close if latest_stored else None
 
-        lookback = scheduler.calculate_lookback_bars(tf, exp_close, latest_stored_close)
+        batches = scheduler.plan_recovery_batches(tf, exp_close, latest_stored_close)
+        tf_candles = 0
+        tf_batches_executed = 0
+        tf_failed = False
+        tf_partial = False
+        tf_retried = False
 
-        ledger.record_automatic_credit_consumed(now_utc)
-        res = ingest_primary_candles(
-            instrument_symbol=instrument_symbol,
-            timeframes=[tf],
-            lookback_bars=lookback,
-            now_utc=now_utc,
-        )
+        for batch_start, batch_end, batch_bars in batches:
+            # Global process-safe credit cap check before each batch request
+            if not ledger.can_consume_automatic_credit(now_utc):
+                logger.warning("daily_automatic_twelve_data_credit_limit_exceeded_halting_batches", timeframe=tf)
+                tf_partial = True
+                break
 
-        status = res.get("status")
-        candles_ingested = res.get("candles_ingested", 0)
-        total_candles += candles_ingested
+            ledger.record_automatic_credit_consumed(now_utc)
+            tf_batches_executed += 1
 
-        if status == "success":
-            ledger.record_attempt(tf, exp_close, success=True, now_utc=now_utc)
-            results[tf] = {"status": "success", "candles": candles_ingested}
-        else:
-            reason = res.get("reason", "")
-            is_429 = "429" in reason or "RATE_LIMIT" in reason
-            is_no_data = "NO_USABLE_CLOSED_DATA" in reason or "NO_DATA" in reason
-
-            # HTTP 429: STRICTLY NO immediate retry
-            if is_429:
-                logger.warning("twelve_data_429_detected_suppressing_retry", timeframe=tf, expected_close=exp_close)
-                ledger.record_attempt(tf, exp_close, success=False, is_retry=False, now_utc=now_utc)
-                results[tf] = {"status": "hard_fail", "reason": reason, "retried": False}
-                continue
-
-            # Check if automatic retry is permitted and within daily credit budget
-            can_retry = (
-                ledger.can_consume_retry_credit(now_utc)
-                and not ledger.is_suppressed(tf, exp_close)
+            res = ingest_primary_candles(
+                instrument_symbol=instrument_symbol,
+                timeframes=[tf],
+                lookback_bars=batch_bars,
+                start_time=batch_start,
+                end_time=batch_end,
+                now_utc=now_utc,
             )
 
-            if can_retry:
-                logger.info("initiating_bounded_automatic_retry", timeframe=tf, expected_close=exp_close)
-                ledger.record_automatic_credit_consumed(now_utc)
-                retry_res = ingest_primary_candles(
-                    instrument_symbol=instrument_symbol,
-                    timeframes=[tf],
-                    lookback_bars=lookback,
-                    now_utc=now_utc,
-                )
-                retry_status = retry_res.get("status")
-                retry_candles = retry_res.get("candles_ingested", 0)
-                total_candles += retry_candles
+            status = res.get("status")
+            candles_ingested = res.get("candles_ingested", 0)
+            tf_candles += candles_ingested
+            total_candles += candles_ingested
 
-                if retry_status == "success":
-                    ledger.record_attempt(tf, exp_close, success=True, is_retry=True, now_utc=now_utc)
-                    results[tf] = {"status": "success", "retried": True, "candles": retry_candles}
-                else:
-                    ledger.record_attempt(tf, exp_close, success=False, is_retry=True, now_utc=now_utc)
-                    results[tf] = {"status": "hard_fail", "reason": retry_res.get("reason", ""), "retried": True}
-                    if is_no_data or "NO_USABLE_CLOSED_DATA" in retry_res.get("reason", ""):
-                        ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+            if status == "success":
+                ledger.record_attempt(tf, batch_end, success=True, now_utc=now_utc)
             else:
-                ledger.record_attempt(tf, exp_close, success=False, is_retry=False, now_utc=now_utc)
-                results[tf] = {"status": "hard_fail", "reason": reason, "retried": False}
-                if is_no_data:
-                    ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+                reason = res.get("reason", "")
+                is_429 = "429" in reason or "RATE_LIMIT" in reason
+                is_no_data = "NO_USABLE_CLOSED_DATA" in reason or "NO_DATA" in reason
+
+                # HTTP 429: STRICTLY NO immediate retry
+                if is_429:
+                    logger.warning("twelve_data_429_detected_suppressing_retry", timeframe=tf, expected_close=batch_end)
+                    ledger.record_attempt(tf, batch_end, success=False, is_retry=False, now_utc=now_utc)
+                    tf_failed = True
+                    break
+
+                # Check if automatic retry is permitted and within daily credit budget
+                can_retry = (
+                    ledger.can_consume_retry_credit(now_utc)
+                    and not ledger.is_suppressed(tf, batch_end)
+                )
+
+                if can_retry:
+                    logger.info("initiating_bounded_automatic_retry", timeframe=tf, expected_close=batch_end)
+                    tf_retried = True
+                    ledger.record_automatic_credit_consumed(now_utc)
+                    retry_res = ingest_primary_candles(
+                        instrument_symbol=instrument_symbol,
+                        timeframes=[tf],
+                        lookback_bars=batch_bars,
+                        start_time=batch_start,
+                        end_time=batch_end,
+                        now_utc=now_utc,
+                    )
+                    retry_status = retry_res.get("status")
+                    retry_candles = retry_res.get("candles_ingested", 0)
+                    tf_candles += retry_candles
+                    total_candles += retry_candles
+
+                    if retry_status == "success":
+                        ledger.record_attempt(tf, batch_end, success=True, is_retry=True, now_utc=now_utc)
+                    else:
+                        ledger.record_attempt(tf, batch_end, success=False, is_retry=True, now_utc=now_utc)
+                        tf_failed = True
+                        if is_no_data or "NO_USABLE_CLOSED_DATA" in retry_res.get("reason", ""):
+                            ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+                        break
+                else:
+                    ledger.record_attempt(tf, batch_end, success=False, is_retry=False, now_utc=now_utc)
+                    tf_failed = True
+                    if is_no_data:
+                        ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+                    break
+
+        # Post-batch continuity evaluation
+        latest_after = MarketCandle.objects.filter(
+            instrument=instrument,
+            timeframe=tf,
+            is_closed=True,
+        ).order_by("-timestamp_close").first()
+        latest_after_close = latest_after.timestamp_close if latest_after else None
+
+        from apps.market_data.scheduler import TIMEFRAME_MINUTES
+        step_minutes = TIMEFRAME_MINUTES.get(tf, 15)
+        lag_bars = 0
+        if latest_after_close and exp_close > latest_after_close:
+            lag_bars = max(0, int((exp_close - latest_after_close).total_seconds() // (step_minutes * 60)))
+        elif latest_after_close is None:
+            lag_bars = len(batches)
+
+        continuity_ready = (lag_bars == 0 and not tf_failed and not tf_partial)
+
+        results[tf] = {
+            "status": "success" if not tf_failed else "fail",
+            "candles": tf_candles,
+            "retried": tf_retried,
+            "batches_executed": tf_batches_executed,
+            "candle_lag_bars": lag_bars,
+            "data_continuity_ready": continuity_ready,
+            "latest_stored_close": latest_after_close.isoformat() if latest_after_close else None,
+            "latest_expected_close": exp_close.isoformat(),
+        }
+
+    all_continuity_ready = (
+        len(results) > 0 and all(r.get("data_continuity_ready", False) for r in results.values())
+    )
+    total_batches = sum(r.get("batches_executed", 0) for r in results.values())
 
     return {
         "status": "success" if any(r.get("status") == "success" for r in results.values()) else "fail",
         "instrument": instrument_symbol,
         "due_timeframes": due_timeframes,
         "candles_ingested": total_candles,
+        "total_recovery_batches": total_batches,
+        "data_continuity_ready": all_continuity_ready,
         "results": results,
     }
 

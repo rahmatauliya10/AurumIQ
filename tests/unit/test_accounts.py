@@ -345,11 +345,15 @@ class ConcurrencyAdminLockoutTests(TransactionTestCase):
         results = []
 
         def worker_disable(target_id, actor_user):
+            from django.db import close_old_connections, OperationalError
+            close_old_connections()
             try:
                 success, msg = disable_user_safely(target_user_id=target_id, actor=actor_user)
                 results.append((target_id, success, msg))
+            except OperationalError as e:
+                results.append((target_id, False, str(e)))
             finally:
-                connections.close_all()
+                close_old_connections()
 
         t1 = threading.Thread(target=worker_disable, args=(admin_a.id, admin_b))
         t2 = threading.Thread(target=worker_disable, args=(admin_b.id, admin_a))

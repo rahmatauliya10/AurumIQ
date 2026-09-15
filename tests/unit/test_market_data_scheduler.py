@@ -237,7 +237,7 @@ def test_hostile_48_hour_market_closure_and_reopen(xauusd_instrument, xauusd_pri
 
     call_counter = 0
 
-    def mock_ingest_during_weekend(instrument_symbol, timeframes, lookback_bars=2, now_utc=None):
+    def mock_ingest_during_weekend(instrument_symbol, timeframes, lookback_bars=2, now_utc=None, **kwargs):
         nonlocal call_counter
         call_counter += len(timeframes)
         # Closed market before Sunday 22:00 UTC returns NO_DATA

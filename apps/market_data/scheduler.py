@@ -20,6 +20,7 @@ MAX_AUTOMATIC_TWELVE_DATA_CREDITS_PER_UTC_DAY = 200
 HEALTH_CACHE_MAX_AGE_MINUTES = 35
 NORMAL_LOOKBACK_BARS = 2
 MAX_RECOVERY_LOOKBACK_BARS = 20
+MAX_RECOVERY_BARS_PER_REQUEST = 20
 CIRCUIT_DEFAULT_COOLDOWN_MINUTES = 60
 
 TIMEFRAME_MINUTES = {
@@ -567,3 +568,66 @@ class ClosedCandleScheduler:
         if missing_bars <= 2:
             return NORMAL_LOOKBACK_BARS
         return min(max(missing_bars, NORMAL_LOOKBACK_BARS), MAX_RECOVERY_LOOKBACK_BARS)
+
+    def plan_recovery_batches(
+        self,
+        timeframe: str,
+        expected_close: datetime,
+        latest_stored_close: Optional[datetime],
+        max_batch_size: int = MAX_RECOVERY_BARS_PER_REQUEST,
+    ) -> List[Tuple[datetime, datetime, int]]:
+        """
+        Plan bounded recovery batches for missing candles between latest_stored_close and expected_close.
+
+        Guarantees:
+        1. Classifies the gap using classify_candle_gap.
+        2. If PROVIDER_MARKET_CLOSURE: do NOT attempt batch recovery across closed weekend;
+           return single normal lookback batch covering the reopen candle(s). Zero synthetic weekend candles.
+        3. If INTRASESSION_DATA_GAP: plan bounded batches of up to max_batch_size (default 20),
+           e.g. 52 missing bars -> [20, 20, 12]. Never issue 1 call per candle.
+        4. Returns list of (start_time, end_time, bar_count) tuples in chronological order.
+        """
+        minutes_per_bar = TIMEFRAME_MINUTES.get(timeframe, 15)
+        step = timedelta(minutes=minutes_per_bar)
+
+        if latest_stored_close is None:
+            return [(expected_close - step * NORMAL_LOOKBACK_BARS, expected_close, NORMAL_LOOKBACK_BARS)]
+
+        if latest_stored_close.tzinfo is None:
+            latest_stored_close = latest_stored_close.replace(tzinfo=timezone.utc)
+        if expected_close.tzinfo is None:
+            expected_close = expected_close.replace(tzinfo=timezone.utc)
+
+        diff_seconds = (expected_close - latest_stored_close).total_seconds()
+        missing_bars = int(diff_seconds // (minutes_per_bar * 60))
+
+        if missing_bars <= 0:
+            return []
+
+        if missing_bars <= NORMAL_LOOKBACK_BARS:
+            return [(expected_close - step * NORMAL_LOOKBACK_BARS, expected_close, NORMAL_LOOKBACK_BARS)]
+
+        # Classify the discontinuity
+        from apps.dashboard.api import classify_candle_gap
+        classification = classify_candle_gap(latest_stored_close, expected_close, timeframe)
+
+        if classification == "PROVIDER_MARKET_CLOSURE":
+            # Weekend / scheduled market closure: market was closed, provider had no candles.
+            # Do NOT create synthetic weekend candles or issue requests across closed hours.
+            # Return single batch for the actual reopen candle(s).
+            return [(expected_close - step * NORMAL_LOOKBACK_BARS, expected_close, NORMAL_LOOKBACK_BARS)]
+
+        # Intrasession gap (e.g. server downtime during trading hours):
+        # Bounded recovery in chunks of max_batch_size (e.g. 20)
+        batches: List[Tuple[datetime, datetime, int]] = []
+        cursor = latest_stored_close
+        remaining = missing_bars
+
+        while remaining > 0:
+            batch_size = min(remaining, max_batch_size)
+            batch_end = cursor + step * batch_size
+            batches.append((cursor, batch_end, batch_size))
+            cursor = batch_end
+            remaining -= batch_size
+
+        return batches
