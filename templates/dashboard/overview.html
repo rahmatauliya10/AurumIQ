@@ -9,9 +9,9 @@
                 <span class="symbol-name">XAU/USD</span>
                 <span class="symbol-desc">Spot Gold / US Dollar</span>
             </div>
-            <div class="freshness-indicator {% if projection.is_quote_stale %}stale{% else %}fresh{% endif %}" id="freshness-pill">
+            <div class="freshness-indicator fresh" id="freshness-pill">
                 <span class="dot"></span>
-                <span id="freshness-text">{% if projection.is_quote_stale %}STALE / EXPIRING{% else %}LIVE STREAMING{% endif %}</span>
+                <span id="freshness-text">CANDLE FEED ACTIVE | LIVE QUOTE: NOT CONFIGURED</span>
             </div>
         </div>
         <div class="quote-metrics">
@@ -25,7 +25,7 @@
             </div>
             <div class="quote-cell">
                 <span class="metric-label">SPREAD</span>
-                <span class="metric-value" id="live-spread">${{ projection.spread|default:"—" }}</span>
+                <span class="metric-value" id="live-spread">{% if projection.spread %}${{ projection.spread }}{% else %}—{% endif %}</span>
             </div>
             <div class="quote-cell">
                 <span class="metric-label">ENTRY ZONE PROXIMITY</span>
@@ -67,28 +67,28 @@
                 <div class="score-card">
                     <div class="score-title">
                         <span>LONG DIRECTION</span>
-                        <strong id="long-dir-score">{{ projection.long_direction_score|default:"0.0"|floatformat:1 }}</strong>
+                        <strong id="long-dir-score">{% if projection.long_direction_score is not None %}{{ projection.long_direction_score|floatformat:1 }}{% else %}N/E{% endif %}</strong>
                     </div>
                     <div class="progress-bar"><div class="fill gold" style="width: {{ projection.long_direction_score|default:0 }}%;"></div></div>
                 </div>
                 <div class="score-card">
                     <div class="score-title">
                         <span>SHORT DIRECTION</span>
-                        <strong id="short-dir-score">{{ projection.short_direction_score|default:"0.0"|floatformat:1 }}</strong>
+                        <strong id="short-dir-score">{% if projection.short_direction_score is not None %}{{ projection.short_direction_score|floatformat:1 }}{% else %}N/E{% endif %}</strong>
                     </div>
                     <div class="progress-bar"><div class="fill cyan" style="width: {{ projection.short_direction_score|default:0 }}%;"></div></div>
                 </div>
                 <div class="score-card">
                     <div class="score-title">
                         <span>LONG TIMING</span>
-                        <strong id="long-tim-score">{{ projection.long_timing_score|default:"0.0"|floatformat:1 }}</strong>
+                        <strong id="long-tim-score">{% if projection.long_timing_score is not None %}{{ projection.long_timing_score|floatformat:1 }}{% else %}N/E{% endif %}</strong>
                     </div>
                     <div class="progress-bar"><div class="fill gold" style="width: {{ projection.long_timing_score|default:0 }}%;"></div></div>
                 </div>
                 <div class="score-card">
                     <div class="score-title">
                         <span>SHORT TIMING</span>
-                        <strong id="short-tim-score">{{ projection.short_timing_score|default:"0.0"|floatformat:1 }}</strong>
+                        <strong id="short-tim-score">{% if projection.short_timing_score is not None %}{{ projection.short_timing_score|floatformat:1 }}{% else %}N/E{% endif %}</strong>
                     </div>
                     <div class="progress-bar"><div class="fill cyan" style="width: {{ projection.short_timing_score|default:0 }}%;"></div></div>
                 </div>
@@ -176,7 +176,7 @@
     <div class="two-col-grid">
         <section class="card">
             <div class="card-header">
-                <h3>EXPLAINABILITY & REASONS</h3>
+                <h3>EXPLAINABILITY & FACTOR BREAKDOWN</h3>
             </div>
             <div class="reasons-container">
                 {% if projection.hard_gate_reasons %}
@@ -190,22 +190,22 @@
                 </div>
                 {% endif %}
                 <div class="reasons-block positive">
-                    <h4>POSITIVE FACTORS</h4>
+                    <h4>OBSERVED MARKET FEATURES</h4>
                     <ul>
                         {% for r in projection.reasons_positive %}
                         <li>✓ {{ r }}</li>
                         {% empty %}
-                        <li class="empty-list">No positive factors active.</li>
+                        <li class="empty-list">No active observed market features.</li>
                         {% endfor %}
                     </ul>
                 </div>
                 <div class="reasons-block negative">
-                    <h4>NEGATIVE FACTORS</h4>
+                    <h4>SOFT NEGATIVE FACTORS</h4>
                     <ul>
                         {% for r in projection.reasons_negative %}
                         <li>✗ {{ r }}</li>
                         {% empty %}
-                        <li class="empty-list">No negative factors active.</li>
+                        <li class="empty-list">No soft negative factors active.</li>
                         {% endfor %}
                     </ul>
                 </div>

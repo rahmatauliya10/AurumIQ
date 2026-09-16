@@ -287,3 +287,8 @@ PROVENANCE_SIGNING_SECRET = env("PROVENANCE_SIGNING_SECRET", default=None)
 # Market Data Feed Consensus & Divergence Threshold (Decimal)
 _xauusd_div_raw = env("XAUUSD_MAX_DIVERGENCE_PCT", default=None)
 XAUUSD_MAX_DIVERGENCE_PCT = Decimal(str(_xauusd_div_raw)) if _xauusd_div_raw is not None else None
+
+# ============================================================
+# XAUUSD Calibration Artifact Identifier (Server-Side Resolution)
+# ============================================================
+XAUUSD_CALIBRATION_ARTIFACT_ID = env("XAUUSD_CALIBRATION_ARTIFACT_ID", default=None)

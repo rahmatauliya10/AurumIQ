@@ -181,7 +181,7 @@ def ingest_primary_candles(
         # Credit-safe health check reuse: reuse recent HEALTHY snapshot (<= 35 min)
         # to prevent consuming Twelve Data /api_usage credits on every candle ingestion.
         recent_snapshot = ProviderHealthSnapshot.objects.filter(
-            listing__provider=listing.provider,
+            listing=listing,
         ).order_by("-checked_at").first()
 
         health_status = None

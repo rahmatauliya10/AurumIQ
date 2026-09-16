@@ -1050,3 +1050,119 @@ def test_step_observation_cycle_forwards_paper_volume_lots(xauusd_instrument, ac
 
     obs = PaperObservationRecord.objects.get(source_signal_fingerprint="sig_step_vol_test")
     assert obs.paper_volume_lots == Decimal("0.50")
+
+
+# ---------------------------------------------------------------------------
+# 31. Hostile Test: WAIT Candidate Resolution Must Be Side-Neutral (No Fabricated BUY/SELL)
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_phase8_wait_observation_side_neutral_semantics(xauusd_instrument, active_empirical_friction):
+    """
+    Hostile Test: When Candidate is WAIT and risk_side is None:
+    - Operation status must be side-neutral (OBSERVED_WAIT_SKIPPED).
+    - Side must NOT fabricate BUY or SELL (side == 'WAIT').
+    - Outcome is SKIPPED.
+    - Neither buy_count nor sell_count is incremented.
+    """
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_hostile_wait_01",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="NO_TRADE",
+        user_decision="WAIT",
+        long_direction_score=12.5,
+        short_direction_score=15.6,
+        components_breakdown={
+            "candidate_state": "NO_TRADE",
+            "candidate_user_decision": "WAIT",
+        },
+        code_revision="rev_wait_hostile",
+    )
+
+    res = Phase8PaperService.process_production_signal_observation(sig, risk_record=None)
+    assert res.status == "OBSERVED_WAIT_SKIPPED", f"Expected OBSERVED_WAIT_SKIPPED, got {res.status}"
+    assert res.record.side == "WAIT", f"Expected side == 'WAIT', got {res.record.side}"
+    assert res.record.outcome == "SKIPPED"
+    assert "BUY" not in res.status
+    assert "SELL" not in res.status
+
+    state = Phase8PaperService.get_or_create_operational_state()
+    assert state.buy_count == 0
+    assert state.sell_count == 0
+    assert state.no_trade_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 32. Hostile Test: BUY Candidate Resolves to BUY Side
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_phase8_buy_observation_semantics(xauusd_instrument, active_empirical_friction):
+    """Verify BUY setup resolves strictly to BUY side."""
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_hostile_buy_01",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="BUY_WINDOW",
+        user_decision="BUY",
+        long_direction_score=85.0,
+        components_breakdown={"candidate_user_decision": "BUY"},
+        code_revision="rev_buy_hostile",
+    )
+    risk = LiveRiskPlanRecord.objects.create(
+        source_signal_fingerprint="sig_hostile_buy_01",
+        signal_timestamp=t0,
+        instrument="XAUUSD",
+        risk_side="LONG",
+        is_valid_risk_plan=True,
+        execution_eligible=True,
+        effective_action="BUY",
+        entry_min=Decimal("2510.0"),
+        entry_max=Decimal("2514.0"),
+        stop_final=Decimal("2498.0"),
+        tp1=Decimal("2535.0"),
+    )
+
+    res = Phase8PaperService.process_production_signal_observation(sig, risk_record=risk)
+    assert res.record.side == "BUY"
+    assert res.status.startswith("OBSERVED_BUY_")
+
+
+# ---------------------------------------------------------------------------
+# 33. Hostile Test: SELL Candidate Resolves to SELL Side
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_phase8_sell_observation_semantics(xauusd_instrument, active_empirical_friction):
+    """Verify SELL setup resolves strictly to SELL side."""
+    t0 = datetime(2026, 9, 11, 14, 0, tzinfo=timezone.utc)
+    sig = SignalRecord.objects.create(
+        analysis_fingerprint="sig_hostile_sell_01",
+        instrument=xauusd_instrument,
+        timeframe="15m",
+        timestamp=t0,
+        state="SELL_WINDOW",
+        user_decision="SELL",
+        short_direction_score=85.0,
+        components_breakdown={"candidate_user_decision": "SELL"},
+        code_revision="rev_sell_hostile",
+    )
+    risk = LiveRiskPlanRecord.objects.create(
+        source_signal_fingerprint="sig_hostile_sell_01",
+        signal_timestamp=t0,
+        instrument="XAUUSD",
+        risk_side="SHORT",
+        is_valid_risk_plan=True,
+        execution_eligible=True,
+        effective_action="SELL",
+        entry_min=Decimal("2510.0"),
+        entry_max=Decimal("2514.0"),
+        stop_final=Decimal("2525.0"),
+        tp1=Decimal("2480.0"),
+    )
+
+    res = Phase8PaperService.process_production_signal_observation(sig, risk_record=risk)
+    assert res.record.side == "SELL"
+    assert res.status.startswith("OBSERVED_SELL_")

@@ -298,7 +298,7 @@ class Phase8PaperService:
             elif obs_snap.side == "SELL":
                 state.sell_count += 1
 
-            if obs_snap.signal_decision in ("WAIT", "NO_TRADE"):
+            if obs_snap.signal_decision in ("WAIT", "NO_TRADE") or obs_snap.side == "WAIT":
                 state.no_trade_count += 1
 
             if obs_snap.paper_entry_timestamp is not None:

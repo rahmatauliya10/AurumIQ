@@ -181,3 +181,52 @@ def test_historical_xaut_explainer_preserved():
     )
     assert len(fp) == 64
 
+
+@pytest.mark.unit
+def test_revalidated_research_publication_reason_governance_lock():
+    """
+    Verify publication_reason semantics:
+    When calibration_status is REVALIDATED_RESEARCH and is_production_authorized is False:
+    Layer B publication reason is GOVERNANCE_LOCK_PRODUCTION_AUTHORITY_OFF,
+    strictly NOT BLOCKED_PENDING_PHASE6_CALIBRATION.
+    """
+    comp_dir = ComponentScore("trend", 30.0, 30.0, "Bull trend confirmed")
+    comp_tim = ComponentScore("rsi", 30.0, 30.0, "RSI dip buy")
+
+    long_dir = SideDirectionScoreResult(SignalSide.LONG, 85.0, 100.0, (comp_dir,), True, True, "v1")
+    short_dir = SideDirectionScoreResult(SignalSide.SHORT, 20.0, 100.0, (), True, False, "v1")
+    long_tim = SideTimingScoreResult(SignalSide.LONG, 80.0, 100.0, (comp_tim,), True, True, "v1")
+    short_tim = SideTimingScoreResult(SignalSide.SHORT, 10.0, 100.0, (), True, False, "v1")
+
+    rfh = RuntimeFeedHealth(primary_15m=FeedHealthStatus.HEALTHY)
+    hard_gate = XauUsdHardGateEvaluation(False, None, (), rfh)
+    cand_gate = CandidateGateResult(SignalState.BUY_WINDOW, UserDecision.BUY, "LONG_QUALIFIED", True)
+
+    # 1. REVALIDATED_RESEARCH profile with production authority OFF
+    l_pos, l_neg, s_pos, s_neg, hg_reasons, cand_res_reason, pub_reason = explain_dual_side_signal(
+        long_direction=long_dir,
+        short_direction=short_dir,
+        long_timing=long_tim,
+        short_timing=short_tim,
+        hard_gate=hard_gate,
+        candidate_result=cand_gate,
+        is_production_authorized=False,
+        calibration_status="REVALIDATED_RESEARCH",
+    )
+
+    assert "BLOCKED_PENDING_PHASE6_CALIBRATION" not in pub_reason
+    assert "GOVERNANCE_LOCK_PRODUCTION_AUTHORITY_OFF" in pub_reason
+    assert pub_reason == "GOVERNANCE_LOCK_PRODUCTION_AUTHORITY_OFF (Candidate: BUY_WINDOW / BUY)"
+
+    # 2. Uncalibrated / PENDING_PHASE6 profile retains BLOCKED_PENDING_PHASE6_CALIBRATION
+    _, _, _, _, _, _, uncal_pub_reason = explain_dual_side_signal(
+        long_direction=long_dir,
+        short_direction=short_dir,
+        long_timing=long_tim,
+        short_timing=short_tim,
+        hard_gate=hard_gate,
+        candidate_result=cand_gate,
+        is_production_authorized=False,
+        calibration_status="PENDING_PHASE6",
+    )
+    assert uncal_pub_reason == "BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: BUY_WINDOW / BUY)"

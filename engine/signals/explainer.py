@@ -318,6 +318,7 @@ def explain_dual_side_signal(
     hard_gate: XauUsdHardGateEvaluation,
     candidate_result: CandidateGateResult,
     is_production_authorized: bool = False,
+    calibration_status: Optional[Any] = None,
 ) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], str, str]:
     """
     Format structured positive and negative explanatory reasons for Long and Short setups.
@@ -355,10 +356,19 @@ def explain_dual_side_signal(
     hard_gate_reasons = tuple(hard_gate.block_reasons)
     candidate_resolution_reason = candidate_result.resolution_reason
 
+    calib_str = str(
+        calibration_status.value
+        if hasattr(calibration_status, "value")
+        else (calibration_status or "")
+    ).strip().upper()
+
     if hard_gate.is_blocked:
         publication_reason = f"SYSTEM_SAFETY_HOLD: {'; '.join(hard_gate.block_reasons)}"
     elif not is_production_authorized:
-        publication_reason = f"BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: {candidate_result.candidate_state.value} / {candidate_result.candidate_user_decision.value})"
+        if calib_str in ("REVALIDATED_RESEARCH", "CANDIDATE_NOT_FROZEN", "FROZEN"):
+            publication_reason = f"GOVERNANCE_LOCK_PRODUCTION_AUTHORITY_OFF (Candidate: {candidate_result.candidate_state.value} / {candidate_result.candidate_user_decision.value})"
+        else:
+            publication_reason = f"BLOCKED_PENDING_PHASE6_CALIBRATION (Candidate: {candidate_result.candidate_state.value} / {candidate_result.candidate_user_decision.value})"
     else:
         publication_reason = candidate_result.resolution_reason
 

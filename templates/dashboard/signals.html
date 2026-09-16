@@ -35,13 +35,17 @@
                             <span class="decision-pill decision-wait">WAIT</span>
                         </td>
                         <td>
-                            {{ s.long_direction_score|default:"—"|floatformat:1 }} / {{ s.long_timing_score|default:"—"|floatformat:1 }}
+                            {% if s.long_direction_score is not None %}{{ s.long_direction_score|floatformat:1 }}{% else %}N/E{% endif %} / {% if s.long_timing_score is not None %}{{ s.long_timing_score|floatformat:1 }}{% else %}N/E{% endif %}
                         </td>
                         <td>
-                            {{ s.short_direction_score|default:"—"|floatformat:1 }} / {{ s.short_timing_score|default:"—"|floatformat:1 }}
+                            {% if s.short_direction_score is not None %}{{ s.short_direction_score|floatformat:1 }}{% else %}N/E{% endif %} / {% if s.short_timing_score is not None %}{{ s.short_timing_score|floatformat:1 }}{% else %}N/E{% endif %}
                         </td>
                         <td>
+                            {% if s.calibration_status == "PENDING_PHASE6" %}
+                            <span class="cal-pill pending" title="Historical uncalibrated signal prior to research calibration">LEGACY STATUS — SIGNAL CALIBRATION NOT ACTIVE</span>
+                            {% else %}
                             <span class="cal-pill">{{ s.calibration_status|default:"CALIBRATION_REQUIRED" }}</span>
+                            {% endif %}
                         </td>
                         <td class="mono-code">{{ s.analysis_fingerprint|slice:":12" }}...</td>
                     </tr>
