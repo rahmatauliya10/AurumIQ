@@ -1,5 +1,5 @@
 """Live monitoring services for quote streaming, closed-candle intelligence, and state recovery."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import structlog
@@ -477,6 +477,22 @@ class XauUsdLiveDecisionPipelineService:
                 )
             )
 
+        # Step 3b: Continuity validation - detect unresolved intrasession gap
+        continuity_gap_present = False
+        continuity_gap_details = None
+        if len(engine_candles_15m) >= 2:
+            from apps.dashboard.api import classify_candle_gap
+            for i in range(len(engine_candles_15m) - 1):
+                c_prev = engine_candles_15m[i]
+                c_next = engine_candles_15m[i + 1]
+                diff = c_next.timestamp_open - c_prev.timestamp_close
+                if diff > timedelta(minutes=15) * 1.5:
+                    classification = classify_candle_gap(c_prev.timestamp_close, c_next.timestamp_open, "15m")
+                    if classification == "INTRASESSION_DATA_GAP":
+                        continuity_gap_present = True
+                        continuity_gap_details = f"{c_prev.timestamp_close.isoformat()} to {c_next.timestamp_open.isoformat()}"
+                        break
+
         # Step 4: Resolve Feed & Provider Health (Fail Closed via ListingRole)
         from apps.instruments.models import (
             ListingRole,
@@ -498,6 +514,9 @@ class XauUsdLiveDecisionPipelineService:
                 .first()
             )
             is_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
+
+        if continuity_gap_present:
+            is_feed_stale = True
 
         # Resolve explicit PRIMARY and SECONDARY listings and health
         primary_listing = MarketListing.objects.filter(
@@ -695,9 +714,13 @@ class XauUsdLiveDecisionPipelineService:
         # primary_15m reflects BOTH primary market-data evidence/data-quality state AND PRIMARY_XAUUSD_SPOT provider health.
         # If either side is UNKNOWN / MISSING / UNHEALTHY / STALE / TRANSITION -> primary_15m must NOT be HEALTHY.
         market_15m_health = (
-            FeedHealthStatus.STALE
-            if is_feed_stale
-            else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING)
+            FeedHealthStatus.UNHEALTHY
+            if continuity_gap_present
+            else (
+                FeedHealthStatus.STALE
+                if is_feed_stale
+                else (FeedHealthStatus.HEALTHY if engine_candles_15m else FeedHealthStatus.MISSING)
+            )
         )
 
         if market_15m_health == FeedHealthStatus.HEALTHY and primary_feed_health == FeedHealthStatus.HEALTHY:
@@ -841,6 +864,7 @@ class XauUsdLiveDecisionPipelineService:
             "xauusd_secondary_status": secondary_health_rec.status if secondary_health_rec else "MISSING",
             "macro_status": runtime_health.macro_blackout_feed.value,
             "provider_sync_status": provider_sync_status_val,
+            "primary_15m": runtime_health.primary_15m.value,
         }
 
         # Step 10: Atomically update Decision-Owned fields in LiveMonitorState

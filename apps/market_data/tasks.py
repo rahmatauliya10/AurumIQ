@@ -18,6 +18,7 @@ from apps.market_data.models import MarketCandle, DataQualitySnapshot, CandleQua
 from apps.market_data.providers.registry import registry
 from apps.market_data.normalization import QuoteNormalizer
 from apps.market_data.integrity import MarketIntegrityEngine
+from apps.market_data.scheduler import ClosedCandleScheduler, ledger
 
 logger = structlog.get_logger(__name__)
 
@@ -34,9 +35,12 @@ def _get_setting(key: str, default=None):
 def ingest_primary_candles(
     instrument_symbol: str = "XAU/USD",
     timeframes: list[str] = None,
-    lookback_bars: int = 50,
+    lookback_bars: int = 2,
     xauusd_max_divergence_pct: Optional[Decimal] = None,
     is_secondary_critical: Optional[bool] = None,
+    now_utc: Optional[datetime] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
 ) -> dict:
     """
     Ingest primary closed candles (15m, 1h, 4h, 1d) with quote normalization
@@ -66,7 +70,12 @@ def ingest_primary_candles(
         and instrument.quote_asset.code == "USD"
         and instrument.instrument_type == InstrumentType.SPOT
     )
-    now_utc = datetime.now(timezone.utc)
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    elif now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
 
     # 1. Deterministic Listing Resolution (PATCH A)
     if is_xauusd:
@@ -169,32 +178,71 @@ def ingest_primary_candles(
                 "candles_ingested": 0,
             }
 
-        health = provider.health_check()
-        if health.status in [
-            ProviderHealthStatus.NOT_CONFIGURED,
-            ProviderHealthStatus.UNHEALTHY,
-            ProviderHealthStatus.QUARANTINED,
-            ProviderHealthStatus.UNKNOWN,
-            ProviderHealthStatus.DEGRADED,
-        ]:
-            DataQualitySnapshot.objects.create(
-                instrument=instrument,
-                timeframe=timeframes[0] if timeframes else "15m",
-                timestamp=now_utc,
-                quality_score=Decimal("0.00"),
-                gap_count=0,
-                duplicate_count=0,
-                violation_count=1,
-                is_stale=True,
-                hard_fail=True,
-                anomalies={"error": f"PRIMARY_XAUUSD_HEALTH_{health.status}: Primary spot provider health status is {health.status} ({health.error_message or 'No details'})."},
-            )
-            return {
-                "status": "hard_fail",
-                "reason": f"PRIMARY_XAUUSD_HEALTH_{health.status}",
-                "instrument": instrument_symbol,
-                "candles_ingested": 0,
-            }
+        # Credit-safe health check reuse: reuse recent HEALTHY snapshot (<= 35 min)
+        # to prevent consuming Twelve Data /api_usage credits on every candle ingestion.
+        recent_snapshot = ProviderHealthSnapshot.objects.filter(
+            listing__provider=listing.provider,
+        ).order_by("-checked_at").first()
+
+        health_status = None
+        health_error = ""
+
+        if (
+            recent_snapshot
+            and (now_utc - recent_snapshot.checked_at) <= timedelta(minutes=35)
+        ):
+            health_status = recent_snapshot.status
+            health_error = recent_snapshot.reason or ""
+            # Fail closed immediately if recent status is not HEALTHY (do NOT mask failures)
+            if health_status != ProviderHealthStatus.HEALTHY:
+                DataQualitySnapshot.objects.create(
+                    instrument=instrument,
+                    timeframe=timeframes[0] if timeframes else "15m",
+                    timestamp=now_utc,
+                    quality_score=Decimal("0.00"),
+                    gap_count=0,
+                    duplicate_count=0,
+                    violation_count=1,
+                    is_stale=True,
+                    hard_fail=True,
+                    anomalies={"error": f"PRIMARY_XAUUSD_HEALTH_{health_status}: Primary spot provider health status is {health_status} ({health_error or 'No details'})."},
+                )
+                return {
+                    "status": "hard_fail",
+                    "reason": f"PRIMARY_XAUUSD_HEALTH_{health_status}",
+                    "instrument": instrument_symbol,
+                    "candles_ingested": 0,
+                }
+        else:
+            # Snapshot absent or older than 35 minutes: probe live endpoint
+            health = provider.health_check()
+            health_status = health.status
+            health_error = health.error_message or ""
+            if health_status in [
+                ProviderHealthStatus.NOT_CONFIGURED,
+                ProviderHealthStatus.UNHEALTHY,
+                ProviderHealthStatus.QUARANTINED,
+                ProviderHealthStatus.UNKNOWN,
+                ProviderHealthStatus.DEGRADED,
+            ]:
+                DataQualitySnapshot.objects.create(
+                    instrument=instrument,
+                    timeframe=timeframes[0] if timeframes else "15m",
+                    timestamp=now_utc,
+                    quality_score=Decimal("0.00"),
+                    gap_count=0,
+                    duplicate_count=0,
+                    violation_count=1,
+                    is_stale=True,
+                    hard_fail=True,
+                    anomalies={"error": f"PRIMARY_XAUUSD_HEALTH_{health_status}: Primary spot provider health status is {health_status} ({health_error or 'No details'})."},
+                )
+                return {
+                    "status": "hard_fail",
+                    "reason": f"PRIMARY_XAUUSD_HEALTH_{health_status}",
+                    "instrument": instrument_symbol,
+                    "candles_ingested": 0,
+                }
     else:
         if not provider:
             return {"status": "error", "message": f"Provider {listing.provider} not found in registry."}
@@ -252,13 +300,18 @@ def ingest_primary_candles(
             "1d": 1440,
         }.get(tf, 15)
 
-        start_time = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
+        if start_time is not None and end_time is not None:
+            fetch_start = start_time
+            fetch_end = end_time
+        else:
+            fetch_start = now_utc - timedelta(minutes=minutes_per_bar * lookback_bars)
+            fetch_end = now_utc
 
         # Retrieve historical USDT rates for PIT normalization (legacy XAUT only)
         hist_usdt_rates = []
         if not is_direct_usd and usdt_rate_provider and hasattr(usdt_rate_provider, "fetch_historical_rates"):
             try:
-                hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=start_time, end=now_utc)
+                hist_usdt_rates = usdt_rate_provider.fetch_historical_rates(start=fetch_start, end=fetch_end)
             except Exception as e:
                 logger.warning("usdt_historical_rate_fetch_failed", error=str(e))
 
@@ -267,8 +320,8 @@ def ingest_primary_candles(
             raw_candles = provider.fetch_candles(
                 symbol=listing.provider_symbol,
                 timeframe=tf,
-                start=start_time,
-                end=now_utc,
+                start=fetch_start,
+                end=fetch_end,
             )
         except Exception as e:
             logger.error("primary_ingestion_fetch_error", provider=listing.provider, tf=tf, error=str(e))
@@ -327,8 +380,8 @@ def ingest_primary_candles(
                     sec_candles = sec_provider.fetch_candles(
                         symbol=sec_listing.provider_symbol,
                         timeframe=tf,
-                        start=start_time,
-                        end=now_utc,
+                        start=fetch_start,
+                        end=fetch_end,
                     )
                     sec_lookup = {c.timestamp_open: c.close for c in sec_candles if c.is_closed}
                     if is_secondary_critical and len(sec_lookup) == 0 and len(usable_closed_candles) > 0:
@@ -549,6 +602,13 @@ def check_provider_health_task() -> dict:
     results = {}
 
     for provider in registry.all_providers():
+        if provider.provider_id == "twelve_data_xauusd":
+            if not ledger.can_consume_automatic_credit(now):
+                logger.warning("twelve_data_health_check_skipped_daily_credit_cap_exceeded")
+                results[provider.provider_id] = ProviderHealthStatus.DEGRADED
+                continue
+            ledger.record_automatic_credit_consumed(now)
+
         health = provider.health_check()
         results[provider.provider_id] = health.status
 
@@ -564,3 +624,208 @@ def check_provider_health_task() -> dict:
             )
 
     return {"status": "success", "checked_at": now.isoformat(), "providers": results}
+
+
+@shared_task(queue="market_data")
+def dispatch_closed_candle_ingestion(
+    instrument_symbol: str = "XAU/USD",
+    candidate_timeframes: Optional[list] = None,
+    now_utc: Optional[datetime] = None,
+) -> dict:
+    """
+    Credit-safe closed-candle ingestion dispatcher.
+
+    Evaluates newly closed candles using state-based comparison:
+    effective_now = now_utc - POST_CLOSE_DELAY_SECONDS
+    expected_close = latest_provider_native_closed_timestamp(tf, effective_now)
+
+    If no timeframe is due: exits immediately with zero API calls.
+    If due: fetches only the due timeframes using bounded lookback (<= 2 bars for normal).
+    Includes market-closure circuit protection and process-safe daily credit capping (<= 200/day).
+    """
+    parts = instrument_symbol.split("/")
+    if len(parts) != 2:
+        return {"status": "error", "message": f"Invalid symbol format: {instrument_symbol}"}
+
+    instrument = Instrument.objects.filter(
+        base_asset__code=parts[0], quote_asset__code=parts[1]
+    ).first()
+    if not instrument:
+        return {"status": "error", "message": f"Instrument {instrument_symbol} not found."}
+
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    elif now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+    # Global process-safe automatic credit cap check (<= 200/day)
+    if not ledger.can_consume_automatic_credit(now_utc):
+        logger.warning("daily_automatic_twelve_data_credit_limit_exceeded", now_utc=now_utc.isoformat())
+        return {
+            "status": "hard_fail",
+            "reason": "DAILY_AUTOMATIC_CREDIT_CAP_EXCEEDED",
+            "instrument": instrument_symbol,
+            "due_timeframes": [],
+            "candles_ingested": 0,
+        }
+
+    scheduler = ClosedCandleScheduler()
+    if candidate_timeframes is None:
+        candidate_timeframes = ["15m", "1h", "4h", "1d"]
+
+    due_timeframes = []
+    expected_closes = {}
+    for tf in candidate_timeframes:
+        is_due, exp_close, reason = scheduler.evaluate_timeframe(instrument, tf, now_utc)
+        if is_due:
+            due_timeframes.append(tf)
+            expected_closes[tf] = exp_close
+
+    if not due_timeframes:
+        return {
+            "status": "skipped",
+            "instrument": instrument_symbol,
+            "due_timeframes": [],
+            "message": "Zero closed candles due for ingestion.",
+            "candles_ingested": 0,
+        }
+
+    results = {}
+    total_candles = 0
+
+    for tf in due_timeframes:
+        exp_close = expected_closes[tf]
+        latest_stored = MarketCandle.objects.filter(
+            instrument=instrument,
+            timeframe=tf,
+            is_closed=True,
+        ).order_by("-timestamp_close").first()
+        latest_stored_close = latest_stored.timestamp_close if latest_stored else None
+
+        batches = scheduler.plan_recovery_batches(tf, exp_close, latest_stored_close)
+        tf_candles = 0
+        tf_batches_executed = 0
+        tf_failed = False
+        tf_partial = False
+        tf_retried = False
+
+        for batch_start, batch_end, batch_bars in batches:
+            # Global process-safe credit cap check before each batch request
+            if not ledger.can_consume_automatic_credit(now_utc):
+                logger.warning("daily_automatic_twelve_data_credit_limit_exceeded_halting_batches", timeframe=tf)
+                tf_partial = True
+                break
+
+            ledger.record_automatic_credit_consumed(now_utc)
+            tf_batches_executed += 1
+
+            res = ingest_primary_candles(
+                instrument_symbol=instrument_symbol,
+                timeframes=[tf],
+                lookback_bars=batch_bars,
+                start_time=batch_start,
+                end_time=batch_end,
+                now_utc=now_utc,
+            )
+
+            status = res.get("status")
+            candles_ingested = res.get("candles_ingested", 0)
+            tf_candles += candles_ingested
+            total_candles += candles_ingested
+
+            if status == "success":
+                ledger.record_attempt(tf, batch_end, success=True, now_utc=now_utc)
+            else:
+                reason = res.get("reason", "")
+                is_429 = "429" in reason or "RATE_LIMIT" in reason
+                is_no_data = "NO_USABLE_CLOSED_DATA" in reason or "NO_DATA" in reason
+
+                # HTTP 429: STRICTLY NO immediate retry
+                if is_429:
+                    logger.warning("twelve_data_429_detected_suppressing_retry", timeframe=tf, expected_close=batch_end)
+                    ledger.record_attempt(tf, batch_end, success=False, is_retry=False, now_utc=now_utc)
+                    tf_failed = True
+                    break
+
+                # Check if automatic retry is permitted and within daily credit budget
+                can_retry = (
+                    ledger.can_consume_retry_credit(now_utc)
+                    and not ledger.is_suppressed(tf, batch_end)
+                )
+
+                if can_retry:
+                    logger.info("initiating_bounded_automatic_retry", timeframe=tf, expected_close=batch_end)
+                    tf_retried = True
+                    ledger.record_automatic_credit_consumed(now_utc)
+                    retry_res = ingest_primary_candles(
+                        instrument_symbol=instrument_symbol,
+                        timeframes=[tf],
+                        lookback_bars=batch_bars,
+                        start_time=batch_start,
+                        end_time=batch_end,
+                        now_utc=now_utc,
+                    )
+                    retry_status = retry_res.get("status")
+                    retry_candles = retry_res.get("candles_ingested", 0)
+                    tf_candles += retry_candles
+                    total_candles += retry_candles
+
+                    if retry_status == "success":
+                        ledger.record_attempt(tf, batch_end, success=True, is_retry=True, now_utc=now_utc)
+                    else:
+                        ledger.record_attempt(tf, batch_end, success=False, is_retry=True, now_utc=now_utc)
+                        tf_failed = True
+                        if is_no_data or "NO_USABLE_CLOSED_DATA" in retry_res.get("reason", ""):
+                            ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+                        break
+                else:
+                    ledger.record_attempt(tf, batch_end, success=False, is_retry=False, now_utc=now_utc)
+                    tf_failed = True
+                    if is_no_data:
+                        ledger.trip_circuit(tf, now_utc, reason="MARKET_CLOSURE_NO_DATA")
+                    break
+
+        # Post-batch continuity evaluation
+        latest_after = MarketCandle.objects.filter(
+            instrument=instrument,
+            timeframe=tf,
+            is_closed=True,
+        ).order_by("-timestamp_close").first()
+        latest_after_close = latest_after.timestamp_close if latest_after else None
+
+        from apps.market_data.scheduler import TIMEFRAME_MINUTES
+        step_minutes = TIMEFRAME_MINUTES.get(tf, 15)
+        lag_bars = 0
+        if latest_after_close and exp_close > latest_after_close:
+            lag_bars = max(0, int((exp_close - latest_after_close).total_seconds() // (step_minutes * 60)))
+        elif latest_after_close is None:
+            lag_bars = len(batches)
+
+        continuity_ready = (lag_bars == 0 and not tf_failed and not tf_partial)
+
+        results[tf] = {
+            "status": "success" if not tf_failed else "fail",
+            "candles": tf_candles,
+            "retried": tf_retried,
+            "batches_executed": tf_batches_executed,
+            "candle_lag_bars": lag_bars,
+            "data_continuity_ready": continuity_ready,
+            "latest_stored_close": latest_after_close.isoformat() if latest_after_close else None,
+            "latest_expected_close": exp_close.isoformat(),
+        }
+
+    all_continuity_ready = (
+        len(results) > 0 and all(r.get("data_continuity_ready", False) for r in results.values())
+    )
+    total_batches = sum(r.get("batches_executed", 0) for r in results.values())
+
+    return {
+        "status": "success" if any(r.get("status") == "success" for r in results.values()) else "fail",
+        "instrument": instrument_symbol,
+        "due_timeframes": due_timeframes,
+        "candles_ingested": total_candles,
+        "total_recovery_batches": total_batches,
+        "data_continuity_ready": all_continuity_ready,
+        "results": results,
+    }
+
