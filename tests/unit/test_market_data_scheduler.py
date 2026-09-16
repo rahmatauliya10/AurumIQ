@@ -397,24 +397,42 @@ def test_health_check_caching_and_fail_closed(xauusd_instrument, xauusd_primary_
             # provider.health_check() must NOT have been called because healthy snapshot <= 35m was reused!
             mock_prov.health_check.assert_not_called()
 
-    # Now create an UNHEALTHY snapshot aged 5 minutes
-    ProviderHealthSnapshot.objects.create(
-        listing=xauusd_primary_listing,
-        status=ProviderHealthStatus.UNHEALTHY,
-        checked_at=now_utc - timedelta(minutes=5),
-        latency_ms=999,
-        reason="Upstream 503 Service Unavailable",
-    )
+        # Now create an UNHEALTHY snapshot aged 5 minutes
+        ProviderHealthSnapshot.objects.create(
+            listing=xauusd_primary_listing,
+            status=ProviderHealthStatus.UNHEALTHY,
+            checked_at=now_utc - timedelta(minutes=5),
+            latency_ms=999,
+            reason="Upstream 503 Service Unavailable",
+        )
 
-    res_unhealthy = ingest_primary_candles(
-        instrument_symbol="XAU/USD",
-        timeframes=["15m"],
-        lookback_bars=2,
-        now_utc=now_utc,
-    )
-    # Must fail closed immediately!
-    assert res_unhealthy["status"] == "hard_fail"
-    assert "PRIMARY_XAUUSD_HEALTH_UNHEALTHY" in res_unhealthy["reason"]
+        res_unhealthy = ingest_primary_candles(
+            instrument_symbol="XAU/USD",
+            timeframes=["15m"],
+            lookback_bars=2,
+            now_utc=now_utc,
+        )
+        # Must fail closed immediately!
+        assert res_unhealthy["status"] == "hard_fail"
+        assert "PRIMARY_XAUUSD_HEALTH_UNHEALTHY" in res_unhealthy["reason"]
+
+        # Also test DEGRADED snapshot aged 2 minutes
+        ProviderHealthSnapshot.objects.create(
+            listing=xauusd_primary_listing,
+            status=ProviderHealthStatus.DEGRADED,
+            checked_at=now_utc - timedelta(minutes=2),
+            latency_ms=850,
+            reason="High latency detected",
+        )
+
+        res_degraded = ingest_primary_candles(
+            instrument_symbol="XAU/USD",
+            timeframes=["15m"],
+            lookback_bars=2,
+            now_utc=now_utc,
+        )
+        assert res_degraded["status"] == "hard_fail"
+        assert "PRIMARY_XAUUSD_HEALTH_DEGRADED" in res_degraded["reason"]
 
 
 # =========================================================================
