@@ -114,9 +114,10 @@ class SideAwareEntryExecutionModel:
         signal_generated_at: datetime,
         quotes: Sequence[QuoteData],
         source_phase4_fingerprint: str,
+        fill_deadline: Optional[datetime] = None,
     ) -> SideAwareFillResult:
         """
-        Simulate market order execution at first available valid quote >= earliest_exec_ts.
+        Simulate market order execution at first available valid quote >= earliest_exec_ts and <= fill_deadline.
         """
         if signal_generated_at.tzinfo is None or signal_generated_at.tzinfo.utcoffset(signal_generated_at) is None:
             raise ValueError("signal_generated_at must be timezone aware with non-None utcoffset.")
@@ -129,11 +130,14 @@ class SideAwareEntryExecutionModel:
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
+        deadline_utc = fill_deadline.astimezone(timezone.utc) if fill_deadline is not None else None
 
         # Filter valid quotes and enforce chronological sort
         valid_quotes = [
             q for q in quotes
-            if validate_xauusd_quote(q) and q.timestamp.astimezone(timezone.utc) >= earliest_exec_ts
+            if validate_xauusd_quote(q)
+            and q.timestamp.astimezone(timezone.utc) >= earliest_exec_ts
+            and (deadline_utc is None or q.timestamp.astimezone(timezone.utc) <= deadline_utc)
         ]
         valid_quotes.sort(key=lambda q: q.timestamp.astimezone(timezone.utc))
 
@@ -231,9 +235,10 @@ class SideAwareEntryExecutionModel:
         signal_generated_at: datetime,
         candles: Sequence[CandleData],
         source_phase4_fingerprint: str,
+        fill_deadline: Optional[datetime] = None,
     ) -> SideAwareFillResult:
         """
-        Simulate fill on the open of the first subsequent bar >= earliest_exec_ts.
+        Simulate fill on the open of the first subsequent bar >= earliest_exec_ts and <= fill_deadline.
         """
         if signal_generated_at.tzinfo is None or signal_generated_at.tzinfo.utcoffset(signal_generated_at) is None:
             raise ValueError("signal_generated_at must be timezone aware with non-None utcoffset.")
@@ -247,10 +252,13 @@ class SideAwareEntryExecutionModel:
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
+        deadline_utc = fill_deadline.astimezone(timezone.utc) if fill_deadline is not None else None
 
         valid_bars = [
             c for c in candles
-            if validate_xauusd_candle(c) and c.timestamp_open.astimezone(timezone.utc) >= earliest_exec_ts
+            if validate_xauusd_candle(c)
+            and c.timestamp_open.astimezone(timezone.utc) >= earliest_exec_ts
+            and (deadline_utc is None or c.timestamp_open.astimezone(timezone.utc) <= deadline_utc)
         ]
         valid_bars.sort(key=lambda c: c.timestamp_open.astimezone(timezone.utc))
 
@@ -292,8 +300,22 @@ class SideAwareEntryExecutionModel:
 
         first_bar = valid_bars[0]
         raw_fill = first_bar.open
-        spread_amount = raw_fill * (sp_pct / Decimal("100"))
-        slippage_amount = raw_fill * (sl_pct / Decimal("100"))
+
+        if self.execution_policy.synthetic_spread_points is not None:
+            pt = self.execution_policy.point_size if self.execution_policy.point_size is not None else Decimal("0.001")
+            spread_amount = self.execution_policy.synthetic_spread_points * pt
+        elif sp_pct is not None:
+            spread_amount = raw_fill * (sp_pct / Decimal("100"))
+        else:
+            spread_amount = Decimal("0.00")
+
+        if self.execution_policy.modeled_execution_gap_points is not None:
+            pt = self.execution_policy.point_size if self.execution_policy.point_size is not None else Decimal("0.001")
+            slippage_amount = self.execution_policy.modeled_execution_gap_points * pt
+        elif sl_pct is not None:
+            slippage_amount = raw_fill * (sl_pct / Decimal("100"))
+        else:
+            slippage_amount = Decimal("0.00")
 
         if side == RiskSide.LONG:
             final_price = raw_fill + spread_amount + slippage_amount
@@ -347,6 +369,7 @@ class SideAwareEntryExecutionModel:
         source_phase4_fingerprint: str,
         quotes: Optional[Sequence[QuoteData]] = None,
         candles: Optional[Sequence[CandleData]] = None,
+        fill_deadline: Optional[datetime] = None,
     ) -> SideAwareFillResult:
         """
         Simulate limit order fill occurring strictly after post-activation touches.
@@ -365,12 +388,15 @@ class SideAwareEntryExecutionModel:
 
         sig_ts_utc = signal_generated_at.astimezone(timezone.utc)
         earliest_exec_ts = sig_ts_utc + timedelta(seconds=lat)
+        deadline_utc = fill_deadline.astimezone(timezone.utc) if fill_deadline is not None else None
 
         # 1. Quote-level resolution
         if quotes is not None:
             valid_quotes = [
                 q for q in quotes
-                if validate_xauusd_quote(q) and q.timestamp.astimezone(timezone.utc) >= earliest_exec_ts
+                if validate_xauusd_quote(q)
+                and q.timestamp.astimezone(timezone.utc) >= earliest_exec_ts
+                and (deadline_utc is None or q.timestamp.astimezone(timezone.utc) <= deadline_utc)
             ]
             valid_quotes.sort(key=lambda q: q.timestamp.astimezone(timezone.utc))
 
@@ -473,7 +499,8 @@ class SideAwareEntryExecutionModel:
                 if c_open < earliest_exec_ts < c_close:
                     has_midbar = True
                 elif c_open >= earliest_exec_ts:
-                    eligible_bars.append(c)
+                    if deadline_utc is None or c_open <= deadline_utc:
+                        eligible_bars.append(c)
 
             eligible_bars.sort(key=lambda c: c.timestamp_open.astimezone(timezone.utc))
 

@@ -104,19 +104,35 @@ class Phase8PaperObserver:
 
         decision_ts = _require_utc(signal_record.timestamp, "signal_record.timestamp")
 
-        # Determine side (default to LONG / BUY if side is not specified)
+        # Determine side (preserve side-neutrality for WAIT / NO_TRADE)
         raw_side = getattr(risk_record, "risk_side", None) if risk_record else None
         if not raw_side:
             # Check candidate_user_decision or user_decision on signal_record
-            dec = str(getattr(signal_record, "user_decision", "WAIT")).upper()
+            cand_dec_val = (
+                getattr(signal_record, "components_breakdown", {}).get("candidate_user_decision")
+                if isinstance(getattr(signal_record, "components_breakdown", None), dict)
+                else getattr(signal_record, "candidate_user_decision", None)
+            )
+            dec = str(cand_dec_val or getattr(signal_record, "user_decision", "WAIT")).upper()
             if dec == "SELL":
                 raw_side = "SHORT"
-            else:
+            elif dec == "BUY":
                 raw_side = "LONG"
+            else:
+                raw_side = "WAIT"
 
-        obs_side = "BUY" if str(raw_side).upper() in ("LONG", "BUY") else "SELL"
-        risk_side_enum = RiskSide.LONG if obs_side == "BUY" else RiskSide.SHORT
-        signal_side_enum = SignalSide.LONG if obs_side == "BUY" else SignalSide.SHORT
+        if str(raw_side).upper() in ("LONG", "BUY"):
+            obs_side = "BUY"
+            risk_side_enum = RiskSide.LONG
+            signal_side_enum = SignalSide.LONG
+        elif str(raw_side).upper() in ("SHORT", "SELL"):
+            obs_side = "SELL"
+            risk_side_enum = RiskSide.SHORT
+            signal_side_enum = SignalSide.SHORT
+        else:
+            obs_side = "WAIT"
+            risk_side_enum = RiskSide.LONG  # fallback typing sentinel for SideRiskPlanSnapshot; is_eligible is strictly False
+            signal_side_enum = SignalSide.NEUTRAL
 
         # Extract friction parameters
         friction_model_id = (

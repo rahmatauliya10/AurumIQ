@@ -45,3 +45,31 @@ class ProviderRegistry:
 registry = ProviderRegistry()
 registry.register(TwelveDataProvider())
 registry.register(SecondaryXauUsdSpotProvider())
+
+
+CANONICAL_SOURCE_ALIASES: Dict[str, str] = {
+    "twelve_data": "twelve_data_xauusd",
+    "twelve_data_xauusd": "twelve_data_xauusd",
+}
+
+
+def normalize_canonical_source(source: str) -> str:
+    """
+    Resolve source string or alias to authoritative canonical provider identity.
+    Preserves strict source governance without requiring database row mutations.
+    """
+    s = str(source or "").strip().lower()
+    return CANONICAL_SOURCE_ALIASES.get(s, s)
+
+
+def get_canonical_source_aliases(provider_id: str) -> list[str]:
+    """
+    Return all valid source string aliases that resolve to the given canonical provider.
+    Ensures legacy aliases (e.g. 'twelve_data') match authoritative provider (e.g. 'twelve_data_xauusd').
+    """
+    pid = str(provider_id or "").strip().lower()
+    canonical = normalize_canonical_source(pid)
+    aliases = [k for k, v in CANONICAL_SOURCE_ALIASES.items() if v == canonical]
+    if pid not in aliases:
+        aliases.append(pid)
+    return aliases

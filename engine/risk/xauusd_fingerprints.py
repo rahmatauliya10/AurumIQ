@@ -120,6 +120,9 @@ def compute_phase5_policy_fingerprint(profile: XauUsdRiskProfile) -> str:
             "latency_seconds": _enc_flt(e.latency_seconds),
             "synthetic_spread_pct": _enc_dec(e.synthetic_spread_pct),
             "slippage_pct": _enc_dec(e.slippage_pct),
+            "synthetic_spread_points": _enc_dec(e.synthetic_spread_points),
+            "point_size": _enc_dec(e.point_size),
+            "modeled_execution_gap_points": _enc_dec(e.modeled_execution_gap_points),
         }
 
     payload = {

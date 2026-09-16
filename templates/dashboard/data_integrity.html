@@ -12,22 +12,34 @@
                     <thead>
                         <tr>
                             <th>Checked At (UTC)</th>
+                            <th>Provider</th>
+                            <th>Listing Role</th>
+                            <th>Requiredness</th>
                             <th>Status</th>
                             <th>Latency</th>
-                            <th>Error</th>
+                            <th>Reason / Error</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for s in snapshots %}
                         <tr>
                             <td class="mono-text">{{ s.checked_at|date:"Y-m-d H:i:s" }}</td>
+                            <td><strong>{{ s.listing.provider|default:"Twelve Data" }}</strong></td>
+                            <td><span class="role-pill">{{ s.listing.get_listing_role_display|default:s.listing.listing_role|default:"PRIMARY_XAUUSD_SPOT" }}</span></td>
+                            <td>
+                                {% if s.listing.listing_role == "PRIMARY_XAUUSD_SPOT" or not s.listing %}
+                                <span class="badge-required">REQUIRED / ACTIVE</span>
+                                {% else %}
+                                <span class="badge-optional">OPTIONAL</span>
+                                {% endif %}
+                            </td>
                             <td><span class="status-pill status-{{ s.status|lower }}">{{ s.status }}</span></td>
                             <td>{{ s.latency_ms|default:"—" }}ms</td>
-                            <td>{{ s.error_message|default:"None"|truncatechars:30 }}</td>
+                            <td class="reason-cell">{{ s.reason|default:"Normal operation / Healthy"|truncatechars:45 }}</td>
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="4" class="text-center empty-cell">No provider health records available.</td>
+                            <td colspan="7" class="text-center empty-cell">No provider health records available.</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -55,7 +67,7 @@
                         <tr>
                             <td class="mono-text">{{ dq.timestamp|date:"Y-m-d H:i" }}</td>
                             <td><span class="tf-pill">{{ dq.timeframe }}</span></td>
-                            <td>{{ dq.completeness_score|floatformat:2 }}</td>
+                            <td>{{ dq.quality_score|default:"100.00"|floatformat:2 }}%</td>
                             <td>
                                 {% if dq.is_stale %}
                                 <span class="status-pill stale">STALE</span>

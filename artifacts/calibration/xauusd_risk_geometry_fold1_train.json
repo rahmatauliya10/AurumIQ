@@ -1,0 +1,126 @@
+{
+  "schema": "aurumiq.calibration.risk_geometry.v1",
+  "instrument": "XAUUSD",
+  "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "code_revision": "b2acb6b735c378c6ae8d39372012c91949052305",
+  "fold1_train_start": "2020-04-07T00:00:00+00:00",
+  "fold1_train_end_exclusive": "2024-02-08T19:12:00+00:00",
+  "fold1_train_row_count": 89920,
+  "observation_universe": "EVERY_ELIGIBLE_15M_TIMESTAMP",
+  "eligible_timestamps_count": 89820,
+  "pit_rules": {
+    "strict_closed_candles_only": true,
+    "zero_lookahead": true,
+    "warmup_bars": 100,
+    "future_trade_results_forbidden": true,
+    "validation_excluded": true,
+    "oos_excluded": true,
+    "phase8_excluded": true
+  },
+  "atr_provenance": "Wilder 14-period ATR from causal closed high, low, close series",
+  "structure_provenance": "CausalStructureEngine (5 left / 5 right bars causal swing confirmation, ATR-normalized zones)",
+  "quantile_method": "numpy.percentile(method='linear')",
+  "sample_counts": {
+    "long_raw_sample_count": 89820,
+    "long_valid_sample_count": 54930,
+    "short_raw_sample_count": 89820,
+    "short_valid_sample_count": 54842
+  },
+  "distributions": {
+    "long": {
+      "structure_buffer": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54930,
+        "min": 0.3,
+        "p10": 0.76,
+        "p25": 0.99,
+        "p50": 1.37,
+        "p75": 1.92,
+        "p90": 2.63,
+        "max": 15.06
+      },
+      "atr_multiplier": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54930,
+        "min": 0.0,
+        "p10": 0.28,
+        "p25": 0.64,
+        "p50": 1.26,
+        "p75": 2.28,
+        "p90": 3.84,
+        "max": 25.48
+      },
+      "max_stop_distance_atr": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54930,
+        "min": 0.0,
+        "p10": 0.86,
+        "p25": 1.62,
+        "p50": 3.06,
+        "p75": 5.41,
+        "p90": 8.68,
+        "max": 35.83
+      },
+      "min_rr_tp1": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54930,
+        "min": 0.0,
+        "p10": 0.1,
+        "p25": 0.29,
+        "p50": 0.85,
+        "p75": 2.36,
+        "p90": 6.07,
+        "max": 38595.49
+      }
+    },
+    "short": {
+      "structure_buffer": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54842,
+        "min": 0.36,
+        "p10": 0.76,
+        "p25": 0.98,
+        "p50": 1.36,
+        "p75": 1.9,
+        "p90": 2.61,
+        "max": 11.96
+      },
+      "atr_multiplier": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54842,
+        "min": 0.0,
+        "p10": 0.29,
+        "p25": 0.65,
+        "p50": 1.26,
+        "p75": 2.22,
+        "p90": 3.65,
+        "max": 25.1
+      },
+      "max_stop_distance_atr": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54842,
+        "min": 0.0,
+        "p10": 0.8,
+        "p25": 1.53,
+        "p50": 2.79,
+        "p75": 4.91,
+        "p90": 8.19,
+        "max": 32.96
+      },
+      "min_rr_tp1": {
+        "raw_sample_count": 89820,
+        "valid_sample_count": 54842,
+        "min": 0.0,
+        "p10": 0.11,
+        "p25": 0.31,
+        "p50": 0.91,
+        "p75": 2.55,
+        "p90": 6.56,
+        "max": 32253.86
+      }
+    }
+  },
+  "source_data_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "observation_vectors_fingerprint": "26229eb29142b2719dcc022b2e6fe0530c993eb92b2419ec1433bdd13ffcb729",
+  "artifact_fingerprint": "a6b2f31f2ffc6b63ec303768e8c0c80d70b96439b6ed6e24cea9ca263e2d99c4"
+}

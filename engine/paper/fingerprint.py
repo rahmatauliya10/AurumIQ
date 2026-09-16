@@ -30,8 +30,8 @@ def compute_observation_fingerprint(
 
     utc_ts = decision_timestamp.astimezone(timezone.utc).isoformat()
     norm_side = side.upper().strip()
-    if norm_side not in ("BUY", "SELL"):
-        raise ValueError(f"side must be 'BUY' or 'SELL', got: '{side}'")
+    if norm_side not in ("BUY", "SELL", "WAIT", "NONE"):
+        raise ValueError(f"side must be 'BUY', 'SELL', or 'WAIT', got: '{side}'")
 
     payload = {
         "code_revision": str(code_revision).strip(),

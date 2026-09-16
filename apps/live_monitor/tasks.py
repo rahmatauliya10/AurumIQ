@@ -395,9 +395,12 @@ def process_xauusd_closed_candle_task(
             risk_profile=risk_prof,
         )
 
-        calibrated = bool(sig_prof is not None and risk_prof is not None)
-        task_status = "SUCCESS" if calibrated else "CALIBRATION_REQUIRED"
-        calib_status_str = "CALIBRATED" if calibrated else "CALIBRATION_REQUIRED"
+        if sig_prof is not None and risk_prof is not None:
+            calib_status_str = str(getattr(sig_prof.calibration_status, "value", sig_prof.calibration_status))
+            task_status = "SUCCESS"
+        else:
+            calib_status_str = "CALIBRATION_REQUIRED"
+            task_status = "CALIBRATION_REQUIRED"
 
         # Wire to Phase 8 paper observation (Section 4)
         try:

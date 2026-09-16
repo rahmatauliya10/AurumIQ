@@ -333,7 +333,20 @@ def resolve_xauusd_research_profiles(
             st = SideTimingPolicy(**st_dict) if isinstance(st_dict, dict) else SideTimingPolicy()
             lg = SideGatePolicy(**lg_dict) if isinstance(lg_dict, dict) else SideGatePolicy()
             sg = SideGatePolicy(**sg_dict) if isinstance(sg_dict, dict) else SideGatePolicy()
-            fp = Phase4FeedPolicy(**fp_dict) if isinstance(fp_dict, dict) else Phase4FeedPolicy()
+            if isinstance(fp_dict, dict):
+                from engine.signals.profile import FeedCriticality
+                parsed_fp = {}
+                for k, v in fp_dict.items():
+                    if isinstance(v, str):
+                        try:
+                            parsed_fp[k] = FeedCriticality(v.strip().upper())
+                        except ValueError:
+                            parsed_fp[k] = v
+                    else:
+                        parsed_fp[k] = v
+                fp = Phase4FeedPolicy(**parsed_fp)
+            else:
+                fp = Phase4FeedPolicy()
 
             # Completeness and mathematical integrity check
             if not (

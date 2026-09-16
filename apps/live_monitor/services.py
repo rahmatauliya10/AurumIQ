@@ -327,16 +327,18 @@ class XauUsdLiveDecisionPipelineService:
         if not primary_source_name:
             return []
 
+        from apps.market_data.providers import get_canonical_source_aliases
+        allowed_sources = get_canonical_source_aliases(primary_listing.provider)
+        if primary_source_name and primary_source_name not in allowed_sources:
+            allowed_sources.append(primary_source_name)
+
         qs = (
             MarketCandle.objects.filter(
                 instrument=instrument,
                 timeframe=timeframe,
                 timestamp_close__lte=candle_ts,
                 is_closed=True,
-            )
-            .filter(
-                models.Q(source__iexact=primary_source_name)
-                | models.Q(source=primary_listing.provider)
+                source__in=allowed_sources,
             )
             .order_by("timestamp_close", "id")
         )
@@ -452,12 +454,13 @@ class XauUsdLiveDecisionPipelineService:
         )
 
         # An incoming event may be appended as authoritative primary evidence ONLY if:
-        # primary listing exists AND event.source is non-empty AND normalized event.source == normalized primary provider.
+        # primary listing exists AND event.source is non-empty AND canonical event.source == canonical primary provider.
+        from apps.market_data.providers import normalize_canonical_source
         event_matches_primary = bool(
             primary_listing is not None
             and primary_source_norm
             and event_source_norm
-            and event_source_norm == primary_source_norm
+            and normalize_canonical_source(event_source_norm) == normalize_canonical_source(primary_source_norm)
         )
 
         if not has_primary_candle_at_t and event_matches_primary:
@@ -1119,14 +1122,20 @@ class LiveDecisionPipelineService:
             is_feed_stale = bool(latest_dq.is_stale or latest_dq.hard_fail) if latest_dq else True
 
         if is_provider_transition is None or provider_status is None:
+            from apps.instruments.models import MarketListing, ListingRole, ListingStatus
+            primary_listing = MarketListing.objects.filter(
+                instrument=instrument_obj,
+                listing_role=ListingRole.PRIMARY_XAUUSD_SPOT,
+                status=ListingStatus.ACTIVE,
+            ).first()
             latest_health = (
                 ProviderHealthSnapshot.objects.filter(
-                    listing__instrument=instrument_obj,
+                    listing=primary_listing,
                     checked_at__lte=candle_ts,
                 )
                 .order_by("-checked_at")
                 .first()
-            )
+            ) if primary_listing else None
             if latest_health:
                 if provider_status is None:
                     provider_status = latest_health.status

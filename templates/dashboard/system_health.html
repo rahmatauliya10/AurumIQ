@@ -35,7 +35,11 @@
                 {% for key, val in feed_health.items %}
                 <div class="health-row">
                     <span class="mono-text">{{ key }}:</span>
+                    {% if val.status %}
+                    <strong class="status-pill status-{{ val.status|lower }}">{{ val.status }}{% if val.reason %} ({{ val.reason|truncatechars:35 }}){% endif %}</strong>
+                    {% else %}
                     <strong class="status-pill status-{{ val|lower }}">{{ val }}</strong>
+                    {% endif %}
                 </div>
                 {% empty %}
                 <div class="empty-list">No feed health metrics recorded.</div>

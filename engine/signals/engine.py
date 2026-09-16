@@ -562,6 +562,7 @@ class XauUsdSignalEngine:
             hard_gate=hard_gate,
             candidate_result=cand_result,
             is_production_authorized=active_profile.is_production_authorized,
+            calibration_status=active_profile.calibration_status,
         )
 
         # 9. Deterministic Multi-Timeframe Full PIT Candle Hashes & Analysis Fingerprint
