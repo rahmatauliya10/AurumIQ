@@ -331,6 +331,7 @@ def process_xauusd_closed_candle_task(
     risk_version: str = "5.0.0",
     signal_profile_dict: Optional[dict] = None,
     risk_profile_dict: Optional[dict] = None,
+    cycle_3a_profile_dict: Optional[dict] = None,
     provider_status: Optional[str] = None,
     is_provider_transition: Optional[bool] = None,
     is_feed_stale: Optional[bool] = None,
@@ -372,11 +373,22 @@ def process_xauusd_closed_candle_task(
             is_closed=True,
         )
 
-        from apps.backtests.tasks import resolve_xauusd_research_profiles
+        from apps.backtests.tasks import (
+            resolve_xauusd_research_profiles,
+            resolve_xauusd_cycle3a_profile,
+        )
         sig_prof, risk_prof = resolve_xauusd_research_profiles(
             calibration_artifact_id=getattr(settings, "XAUUSD_CALIBRATION_ARTIFACT_ID", None),
             signal_profile_dict=signal_profile_dict,
             risk_profile_dict=risk_profile_dict,
+        )
+        cycle_prof = resolve_xauusd_cycle3a_profile(
+            calibration_artifact_id=getattr(
+                settings,
+                "XAUUSD_CALIBRATION_ARTIFACT_ID",
+                None,
+            ),
+            cycle_3a_profile_dict=cycle_3a_profile_dict,
         )
 
         from apps.live_monitor.services import XauUsdLiveDecisionPipelineService
@@ -393,6 +405,7 @@ def process_xauusd_closed_candle_task(
             is_feed_stale=is_feed_stale,
             signal_profile=sig_prof,
             risk_profile=risk_prof,
+            cycle_3a_profile=cycle_prof,
         )
 
         if sig_prof is not None and risk_prof is not None:

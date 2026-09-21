@@ -431,6 +431,195 @@ def resolve_xauusd_research_profiles(
     return sig_prof, risk_prof
 
 
+def resolve_xauusd_cycle3a_profile(
+    calibration_artifact_id: Optional[str] = None,
+    cycle_3a_profile_dict: Optional[Dict[str, Any]] = None,
+):
+    """
+    Resolve an explicitly governed XAUUSD Phase 3A profile.
+
+    Safety contract:
+    - Missing Phase 3A evidence -> None.
+    - Current signal/risk champion artifact without cycle_3a_profile -> None.
+    - PENDING_DATA / CANDIDATE_NOT_FROZEN -> None.
+    - Only explicit XAUUSD 15m PRODUCTION_FROZEN profiles may proceed.
+    - Incomplete production scoring configuration -> None.
+    - No legacy XAUT fallback.
+    """
+    from engine.cycles.profile import (
+        CalibrationStatus as Cycle3ACalibrationStatus,
+        Cycle3AProfile,
+    )
+
+    profile_dict = cycle_3a_profile_dict
+
+    if calibration_artifact_id is not None:
+        if not isinstance(calibration_artifact_id, str):
+            return None
+
+        raw_id = calibration_artifact_id.strip()
+        if not raw_id:
+            return None
+
+        if (
+            os.path.isabs(raw_id)
+            or ".." in raw_id
+            or "/" in raw_id
+            or "\\" in raw_id
+            or ":" in raw_id
+            or "\x00" in raw_id
+        ):
+            return None
+
+        clean_name = (
+            raw_id
+            if raw_id.endswith(".json")
+            else f"{raw_id}.json"
+        )
+
+        base_dir = getattr(settings, "BASE_DIR", Path("."))
+        canonical_dir = (
+            Path(base_dir) / "artifacts" / "calibration"
+        ).resolve()
+
+        target_path = (canonical_dir / clean_name).resolve()
+
+        if (
+            target_path.parent != canonical_dir
+            or not target_path.is_file()
+        ):
+            return None
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                artifact_data = json.load(f)
+        except Exception:
+            return None
+
+        if not isinstance(artifact_data, dict):
+            return None
+
+        schema = artifact_data.get("schema")
+        if (
+            not schema
+            or not isinstance(schema, str)
+            or not schema.startswith("aurumiq.")
+        ):
+            return None
+
+        instrument = (
+            artifact_data.get("instrument")
+            or artifact_data.get("target_instrument")
+        )
+
+        if (
+            not isinstance(instrument, str)
+            or instrument.strip().upper()
+            not in ("XAUUSD", "XAU/USD")
+        ):
+            return None
+
+        declared_fp = (
+            artifact_data.get("artifact_fingerprint")
+            or artifact_data.get("fingerprint")
+        )
+
+        if declared_fp:
+            if not isinstance(declared_fp, str):
+                return None
+
+            computed_fp = compute_calibration_artifact_fingerprint(
+                artifact_data
+            )
+
+            if (
+                declared_fp.strip().lower()
+                != computed_fp.lower()
+            ):
+                return None
+
+        profile_dict = artifact_data.get("cycle_3a_profile")
+
+    # Current champion legitimately lands here.
+    if not isinstance(profile_dict, dict):
+        return None
+
+    try:
+        raw_status = profile_dict.get("calibration_status")
+
+        if raw_status is None:
+            return None
+
+        status = Cycle3ACalibrationStatus(
+            str(raw_status).strip()
+        )
+
+        if status != Cycle3ACalibrationStatus.PRODUCTION_FROZEN:
+            return None
+
+        target = str(
+            profile_dict.get("target_instrument", "")
+        ).strip().upper().replace("/", "")
+
+        if target != "XAUUSD":
+            return None
+
+        timeframe = str(
+            profile_dict.get("timeframe", "")
+        ).strip()
+
+        if timeframe != "15m":
+            return None
+
+        # -----------------------------------------------------------------
+        # Do NOT permit a nominally PRODUCTION_FROZEN profile that has
+        # no actual empirical scoring configuration.
+        # -----------------------------------------------------------------
+        required_numeric_fields = (
+            "session_max_score",
+            "session_min_effective_n",
+            "session_expectancy_multiplier",
+            "swing_max_score",
+            "swing_min_effective_n",
+            "calendar_max_score",
+            "calendar_min_effective_n",
+            "calendar_stability_threshold",
+            "calendar_expectancy_multiplier",
+            "macro_blackout_pre_minutes",
+            "macro_blackout_post_minutes",
+            "macro_clear_window_far_minutes",
+            "macro_clear_window_near_minutes",
+            "macro_clear_bonus_far",
+            "macro_clear_bonus_near",
+        )
+
+        if any(
+            profile_dict.get(field) is None
+            for field in required_numeric_fields
+        ):
+            return None
+
+        # Complex empirical tables are intentionally NOT reconstructed
+        # yet in this remediation step.
+        #
+        # A complete governed serializer/deserializer will be added only
+        # after Phase 3A calibration evidence is rebuilt.
+        if (
+            profile_dict.get("session_expectancy_table") is None
+            or profile_dict.get("historical_durations") is None
+            or profile_dict.get("calendar_effect_table") is None
+        ):
+            return None
+
+        # Fail closed until the governed JSON schema for empirical
+        # SessionType/RegimeType and CalendarEffectEntry serialization
+        # is implemented in Phase 3A calibration remediation.
+        return None
+
+    except Exception:
+        return None
+
+
 @shared_task(queue="backtest", bind=True, max_retries=1)
 def run_xauusd_backtest_task(
     self,

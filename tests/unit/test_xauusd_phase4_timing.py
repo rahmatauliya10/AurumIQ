@@ -217,6 +217,83 @@ def test_phase3a_target_authority_guard():
 
 
 @pytest.mark.unit
+def test_dual_timing_accepts_valid_frozen_phase3a_profile_without_argument_misrouting():
+    """
+    Regression guard:
+    calculate_xauusd_dual_timing() must pass decision_timeframe
+    to extract_xauusd_phase3a_score() by keyword.
+
+    A valid frozen XAUUSD Phase 3A profile must contribute to timing
+    without treating '15m' as max_points.
+    """
+    configured_profile = Phase4SignalProfile(
+        name="TEST_XAUUSD_SIGNAL_PROFILE",
+        target_instrument="XAUUSD",
+        calibration_status=Phase4CalibrationStatus.CANDIDATE_NOT_FROZEN,
+        long_direction=SideDirectionPolicy(
+            12.5, 12.5, 12.5, 12.5,
+            12.5, 12.5, 12.5, 12.5,
+        ),
+        short_direction=SideDirectionPolicy(
+            12.5, 12.5, 12.5, 12.5,
+            12.5, 12.5, 12.5, 12.5,
+        ),
+        long_timing=SideTimingPolicy(
+            weight_entry_zone=20.0,
+            weight_reversal_confirmation_15m=20.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=20.0,
+            weight_volume_response=20.0,
+        ),
+        short_timing=SideTimingPolicy(
+            weight_entry_zone=20.0,
+            weight_reversal_confirmation_15m=20.0,
+            weight_momentum_turn_15m_1h=20.0,
+            weight_phase3a=20.0,
+            weight_volume_response=20.0,
+        ),
+        long_gate=SideGatePolicy(
+            19.43, 69.0, 51.27, 82.78, 70.83
+        ),
+        short_gate=SideGatePolicy(
+            33.25, 90.17, 11.09, 95.44, 65.97
+        ),
+    )
+
+    cycle_profile = Cycle3AProfile(
+        name="XAUUSD_FROZEN_v1",
+        target_instrument="XAUUSD",
+        timeframe="15m",
+        calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN,
+    )
+
+    cycle_snapshot = _make_dummy_cycle_3a(
+        score=85.0,
+        profile_name="XAUUSD_FROZEN_v1",
+        calibration_status=Cycle3ACalibrationStatus.PRODUCTION_FROZEN.value,
+    )
+
+    result = calculate_xauusd_dual_timing(
+        candle_15m=_make_dummy_candle(),
+        features_15m=_make_dummy_feature(),
+        structure_15m=None,
+        features_1h=_make_dummy_feature(),
+        cycle_3a=cycle_snapshot,
+        cycle_3a_profile=cycle_profile,
+        profile=configured_profile,
+    )
+
+    phase3a_component = next(
+        c
+        for c in result.long_timing.components
+        if c.name == "Phase 3A Cycle Timing"
+    )
+
+    assert phase3a_component.is_available is True
+    assert phase3a_component.score == pytest.approx(17.0)
+
+
+@pytest.mark.unit
 def test_macro_safety_excluded_from_timing_score():
     """Verify macro blackout is NOT a component of timing score (macro is hard-gate only)."""
     configured_profile = Phase4SignalProfile(

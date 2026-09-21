@@ -38,6 +38,7 @@ from engine.core.types import (
     UserDecision,
     VolumeEvidenceType,
 )
+from engine.cycles.profile import Cycle3AProfile
 from engine.risk.planner import RiskPlanner
 from engine.risk.xauusd_planner import XauUsdRiskPlanner
 from engine.risk.xauusd_policy import uncalibrated_xauusd_risk_profile
@@ -382,6 +383,7 @@ class XauUsdLiveDecisionPipelineService:
         macro_context: Optional[MacroEventContext] = None,
         signal_profile: Optional[Any] = None,
         risk_profile: Optional[Any] = None,
+        cycle_3a_profile: Optional[Cycle3AProfile] = None,
     ) -> Tuple[SignalRecord, Optional[LiveRiskPlanRecord], LiveMonitorState]:
         """
         Execute deterministic closed-candle signal evaluation and risk planning for XAUUSD.
@@ -670,7 +672,10 @@ class XauUsdLiveDecisionPipelineService:
 
             if is_coverage_healthy and (cycle_3a_snapshot is None or (cycle_rec and cycle_rec.timestamp < candle_ts)) and engine_candles_15m and len(engine_candles_15m) >= 5:
                 try:
-                    cycle_engine = RobustTimeCycleEngine.for_xauusd(timeframe=event.timeframe)
+                    cycle_engine = RobustTimeCycleEngine.for_xauusd(
+                        profile=cycle_3a_profile,
+                        timeframe=event.timeframe,
+                    )
                     cycle_3a_snapshot = cycle_engine.analyze(
                         latest_candle=engine_candles_15m[-1],
                         structure=structure_15m,
@@ -678,6 +683,7 @@ class XauUsdLiveDecisionPipelineService:
                         regime=regime_15m.regime if regime_15m else None,
                         macro_events=macro_events,
                         instrument="XAUUSD",
+                        profile=cycle_3a_profile,
                     )
                     AnalysisPersistenceService.save_analysis_snapshots(
                         instrument=instrument_obj,
@@ -775,6 +781,7 @@ class XauUsdLiveDecisionPipelineService:
             features_1d=feats_1d,
             structure_15m=structure_15m,
             cycle_3a=cycle_3a_snapshot,
+            cycle_3a_profile=cycle_3a_profile,
             runtime_health=runtime_health,
             profile=prof,
             instrument="XAUUSD",
