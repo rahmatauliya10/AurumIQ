@@ -118,6 +118,23 @@ class CycleSnapshotRecord(models.Model):
     timeframe = models.CharField(max_length=16, db_index=True)
     timestamp = models.DateTimeField(db_index=True)
     cycle_version = models.CharField(max_length=32, default="3.0.0-3A", db_index=True)
+    profile_name = models.CharField(
+        max_length=128,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    calibration_status = models.CharField(
+        max_length=32,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    calibration_artifact_version = models.CharField(
+        max_length=128,
+        null=True,
+        blank=True,
+    )
     session = models.CharField(max_length=32, db_index=True)
     session_progress_pct = models.FloatField(default=0.0)
     is_high_liquidity = models.BooleanField(default=False)

@@ -183,13 +183,32 @@ class RobustTimeCycleEngine:
         )
 
         # 2. Swing Duration Maturity (P3A-07, P3A-08, P3A-09, P3A-15)
+        resolved_swing_sample_eval = swing_sample_eval
+        resolved_swing_effective_n = swing_effective_n
+
+        # Frozen profile evidence is only a fallback.
+        #
+        # Precedence:
+        # 1. explicit sample_eval
+        # 2. explicit effective_n
+        # 3. certified profile sample evaluation
+        # 4. None -> fail closed
+        if (
+            resolved_swing_sample_eval is None
+            and resolved_swing_effective_n is None
+            and eff_profile.is_production_scoring_enabled
+        ):
+            resolved_swing_sample_eval = (
+                eff_profile.swing_sample_evaluation
+            )
+
         swing_ctx = calculate_swing_duration(
             latest_candle=latest_candle,
             structure=structure,
             timeframe=timeframe,
             historical_durations=historical_durations,
-            effective_n=swing_effective_n,
-            sample_eval=swing_sample_eval,
+            effective_n=resolved_swing_effective_n,
+            sample_eval=resolved_swing_sample_eval,
             profile=eff_profile,
         )
 

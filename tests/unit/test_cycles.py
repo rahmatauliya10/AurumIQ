@@ -28,6 +28,11 @@ from engine.cycles.swing_duration import calculate_swing_duration, timeframe_to_
 from engine.cycles.events import evaluate_macro_event_risk
 from engine.cycles.calendar import calculate_calendar_seasonality
 from engine.cycles.engine import RobustTimeCycleEngine
+from engine.cycles.profile import (
+    CalibrationStatus as Cycle3ACalibrationStatus,
+    Cycle3AProfile,
+)
+from engine.guards.sample_guard import EffectiveSampleEstimator
 from engine.cycles.benchmark import record_baseline_benchmark
 
 
@@ -318,6 +323,221 @@ def test_p3a_18_effective_n_metadata_required():
     assert ctx_certified.effective_n == 80.0
     assert ctx_certified.sample_quality == SampleQuality.MEDIUM
     assert ctx_certified.maturity_score > 0.0
+
+
+@pytest.mark.unit
+def test_p3a_profile_can_supply_certified_swing_sample_evaluation():
+    """
+    A frozen XAUUSD Cycle3A profile may supply a certified A16
+    SampleEvaluation to runtime when no per-call override is provided.
+
+    Runtime must NOT infer effective_n from raw duration count.
+    """
+    t0 = datetime(
+        2026, 8, 1, 10, 0,
+        tzinfo=timezone.utc,
+    )
+
+    swing = SwingPoint(
+        index=10,
+        timestamp=t0,
+        detected_at=t0,
+        price=Decimal("2500"),
+        swing_type=SwingType.HIGH,
+        is_confirmed=True,
+    )
+
+    structure = StructureResult(
+        timestamp=t0,
+        structure_type=StructureType.HH,
+        bos=BosType.NONE,
+        last_swing_high=swing,
+        last_swing_low=None,
+        swings=(swing,),
+        zones=(),
+    )
+
+    # 20 known 15m bars after confirmation.
+    candle = CandleData(
+        timestamp_open=t0 + timedelta(
+            hours=4,
+            minutes=45,
+        ),
+        timestamp_close=t0 + timedelta(
+            hours=5,
+        ),
+        open=Decimal("2490"),
+        high=Decimal("2495"),
+        low=Decimal("2480"),
+        close=Decimal("2488"),
+        volume=Decimal("0"),
+        is_closed=True,
+    )
+
+    historical_durations = (
+        5, 10, 15, 20, 25
+    ) * 24  # raw N = 120
+
+    estimator = EffectiveSampleEstimator()
+
+    certified_eval = estimator.evaluate_sample(
+        n_raw=len(historical_durations),
+        regime_distribution={
+            "BULL_TREND": 40,
+            "BEAR_TREND": 40,
+            "RANGE": 40,
+        },
+        autocorrelation_factor=0.20,
+        overlap_ratio=0.0,
+    )
+
+    assert certified_eval.effective_n >= 30.0
+    assert certified_eval.is_blocked is False
+
+    profile = Cycle3AProfile(
+        name="XAUUSD_CYCLE3A_TEST_FROZEN",
+        calibration_status=(
+            Cycle3ACalibrationStatus.PRODUCTION_FROZEN
+        ),
+        target_instrument="XAUUSD",
+        timeframe="15m",
+
+        swing_max_score=20.0,
+        swing_min_effective_n=30.0,
+        historical_durations=historical_durations,
+
+        swing_sample_evaluation=certified_eval,
+
+        details={
+            "calibration_version": (
+                "xauusd-cycle3a-test-v1"
+            ),
+        },
+    )
+
+    engine = RobustTimeCycleEngine.for_xauusd(
+        profile=profile,
+        timeframe="15m",
+    )
+
+    snapshot = engine.analyze(
+        latest_candle=candle,
+        structure=structure,
+        timeframe="15m",
+        instrument="XAUUSD",
+    )
+
+    assert (
+        snapshot.swing_duration.effective_n
+        == certified_eval.effective_n
+    )
+    assert (
+        snapshot.swing_duration.sample_quality
+        == certified_eval.quality
+    )
+    assert snapshot.swing_duration.maturity_score > 0.0
+
+
+@pytest.mark.unit
+def test_p3a_explicit_runtime_effective_n_overrides_profile_sample_evidence():
+    """
+    Explicit per-call statistical evidence has precedence over
+    frozen profile evidence.
+
+    A caller-provided effective_n=18 must remain blocked even if
+    the profile contains a healthy certified SampleEvaluation.
+    """
+    t0 = datetime(
+        2026, 8, 1, 10, 0,
+        tzinfo=timezone.utc,
+    )
+
+    swing = SwingPoint(
+        index=10,
+        timestamp=t0,
+        detected_at=t0,
+        price=Decimal("2500"),
+        swing_type=SwingType.HIGH,
+        is_confirmed=True,
+    )
+
+    structure = StructureResult(
+        timestamp=t0,
+        structure_type=StructureType.HH,
+        bos=BosType.NONE,
+        last_swing_high=swing,
+        last_swing_low=None,
+        swings=(swing,),
+        zones=(),
+    )
+
+    candle = CandleData(
+        timestamp_open=t0 + timedelta(
+            hours=4,
+            minutes=45,
+        ),
+        timestamp_close=t0 + timedelta(hours=5),
+        open=Decimal("2490"),
+        high=Decimal("2495"),
+        low=Decimal("2480"),
+        close=Decimal("2488"),
+        volume=Decimal("0"),
+        is_closed=True,
+    )
+
+    historical_durations = (
+        5, 10, 15, 20, 25
+    ) * 24
+
+    certified_eval = (
+        EffectiveSampleEstimator()
+        .evaluate_sample(
+            n_raw=len(historical_durations),
+            regime_distribution={
+                "BULL_TREND": 40,
+                "BEAR_TREND": 40,
+                "RANGE": 40,
+            },
+            autocorrelation_factor=0.20,
+            overlap_ratio=0.0,
+        )
+    )
+
+    profile = Cycle3AProfile(
+        name="XAUUSD_CYCLE3A_TEST_FROZEN",
+        calibration_status=(
+            Cycle3ACalibrationStatus.PRODUCTION_FROZEN
+        ),
+        target_instrument="XAUUSD",
+        timeframe="15m",
+        swing_max_score=20.0,
+        swing_min_effective_n=30.0,
+        historical_durations=historical_durations,
+        swing_sample_evaluation=certified_eval,
+    )
+
+    engine = RobustTimeCycleEngine.for_xauusd(
+        profile=profile,
+        timeframe="15m",
+    )
+
+    snapshot = engine.analyze(
+        latest_candle=candle,
+        structure=structure,
+        timeframe="15m",
+        instrument="XAUUSD",
+
+        # Deliberately weak explicit runtime evidence.
+        swing_effective_n=18.0,
+    )
+
+    assert snapshot.swing_duration.effective_n == 18.0
+    assert (
+        snapshot.swing_duration.sample_quality
+        == SampleQuality.INSUFFICIENT
+    )
+    assert snapshot.swing_duration.maturity_score == 0.0
+
 
 
 @pytest.mark.unit

@@ -77,6 +77,7 @@ class Cycle3ACalibrationArtifact:
         default_factory=dict
     )
     swing_duration_percentiles: Mapping[str, Any] = field(default_factory=dict)
+    swing_sample_evaluation: Optional[SampleEvaluation] = None
     calendar_effect_table: Mapping[str, CalendarEffectEntry] = field(default_factory=dict)
     macro_timing_config: Mapping[str, Any] = field(default_factory=dict)
     status: CalibrationStatus = CalibrationStatus.CANDIDATE_NOT_FROZEN
@@ -313,6 +314,7 @@ def build_profile_from_artifact(
         session_expectancy_table=artifact.session_expectancy_table or None,
         swing_max_score=None,
         swing_min_effective_n=None,
+        swing_sample_evaluation=artifact.swing_sample_evaluation,
         swing_maturity_bands=None,
         historical_durations=None,
         swing_duration_percentiles=swing_pcts or None,
