@@ -540,84 +540,40 @@ def resolve_xauusd_cycle3a_profile(
 
         profile_dict = artifact_data.get("cycle_3a_profile")
 
-    # Current champion legitimately lands here.
-    if not isinstance(profile_dict, dict):
+    from engine.cycles.serialization import (
+        deserialize_cycle3a_profile,
+        is_cycle3a_production_profile_complete,
+    )
+
+    if not isinstance(
+        profile_dict,
+        dict,
+    ):
         return None
 
     try:
-        raw_status = profile_dict.get("calibration_status")
-
-        if raw_status is None:
-            return None
-
-        status = Cycle3ACalibrationStatus(
-            str(raw_status).strip()
+        profile = (
+            deserialize_cycle3a_profile(
+                profile_dict,
+                expected_instrument="XAUUSD",
+                expected_timeframe="15m",
+                require_production_frozen=True,
+            )
         )
-
-        if status != Cycle3ACalibrationStatus.PRODUCTION_FROZEN:
-            return None
-
-        target = str(
-            profile_dict.get("target_instrument", "")
-        ).strip().upper().replace("/", "")
-
-        if target != "XAUUSD":
-            return None
-
-        timeframe = str(
-            profile_dict.get("timeframe", "")
-        ).strip()
-
-        if timeframe != "15m":
-            return None
-
-        # -----------------------------------------------------------------
-        # Do NOT permit a nominally PRODUCTION_FROZEN profile that has
-        # no actual empirical scoring configuration.
-        # -----------------------------------------------------------------
-        required_numeric_fields = (
-            "session_max_score",
-            "session_min_effective_n",
-            "session_expectancy_multiplier",
-            "swing_max_score",
-            "swing_min_effective_n",
-            "calendar_max_score",
-            "calendar_min_effective_n",
-            "calendar_stability_threshold",
-            "calendar_expectancy_multiplier",
-            "macro_blackout_pre_minutes",
-            "macro_blackout_post_minutes",
-            "macro_clear_window_far_minutes",
-            "macro_clear_window_near_minutes",
-            "macro_clear_bonus_far",
-            "macro_clear_bonus_near",
-        )
-
-        if any(
-            profile_dict.get(field) is None
-            for field in required_numeric_fields
-        ):
-            return None
-
-        # Complex empirical tables are intentionally NOT reconstructed
-        # yet in this remediation step.
-        #
-        # A complete governed serializer/deserializer will be added only
-        # after Phase 3A calibration evidence is rebuilt.
-        if (
-            profile_dict.get("session_expectancy_table") is None
-            or profile_dict.get("historical_durations") is None
-            or profile_dict.get("calendar_effect_table") is None
-        ):
-            return None
-
-        # Fail closed until the governed JSON schema for empirical
-        # SessionType/RegimeType and CalendarEffectEntry serialization
-        # is implemented in Phase 3A calibration remediation.
+    except (
+        TypeError,
+        ValueError,
+    ):
         return None
 
-    except Exception:
+    if not (
+        is_cycle3a_production_profile_complete(
+            profile
+        )
+    ):
         return None
+
+    return profile
 
 
 @shared_task(queue="backtest", bind=True, max_retries=1)

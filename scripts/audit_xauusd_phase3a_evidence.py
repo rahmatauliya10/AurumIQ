@@ -286,6 +286,23 @@ def main():
         in cycle_engine_source
     )
 
+    try:
+        from engine.cycles.serialization import (
+            deserialize_cycle3a_profile,
+            serialize_cycle3a_profile,
+        )
+
+        governed_serialization_ready = (
+            callable(
+                serialize_cycle3a_profile
+            )
+            and callable(
+                deserialize_cycle3a_profile
+            )
+        )
+    except ImportError:
+        governed_serialization_ready = False
+
     calibration_capabilities = {
         "session_calibration": hasattr(
             cycle_calibration,
@@ -305,6 +322,9 @@ def main():
         "profile_builder": hasattr(
             cycle_calibration,
             "build_profile_from_artifact",
+        ),
+        "governed_serialization": (
+            governed_serialization_ready
         ),
     }
 
@@ -352,11 +372,10 @@ def main():
             "SWING_EFFECTIVE_N_RUNTIME_CONTRACT_NOT_YET_WIRED"
         )
 
-    # Production profile serializer/deserializer intentionally
-    # remains fail-closed at this stage.
-    blockers.append(
-        "CYCLE3A_GOVERNED_SERIALIZATION_NOT_YET_IMPLEMENTED"
-    )
+    if not governed_serialization_ready:
+        blockers.append(
+            "CYCLE3A_GOVERNED_SERIALIZATION_NOT_YET_IMPLEMENTED"
+        )
 
     report = {
         "audit_schema": (
