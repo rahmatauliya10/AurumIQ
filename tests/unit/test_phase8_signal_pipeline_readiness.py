@@ -651,3 +651,25 @@ def test_xauusd_task_wires_cycle3a_resolver_to_live_service():
 
     assert "resolve_xauusd_cycle3a_profile" in source
     assert "cycle_3a_profile=cycle_prof" in source
+
+
+def test_live_xauusd_regime_path_is_fail_closed():
+    import inspect
+
+    source = " ".join(
+        inspect.getsource(
+            XauUsdLiveDecisionPipelineService
+            .process_closed_candle
+        ).split()
+    )
+
+    assert (
+        "re = RegimeEngine.for_xauusd()"
+        in source
+    )
+
+    assert (
+        're.classify('
+        'feats_15m, instrument="XAUUSD")'
+        in source
+    )

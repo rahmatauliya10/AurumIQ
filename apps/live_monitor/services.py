@@ -605,11 +605,15 @@ class XauUsdLiveDecisionPipelineService:
         from engine.structure.engine import CausalStructureEngine
 
         fe = FeatureEngine()
-        re = RegimeEngine()
+        re = RegimeEngine.for_xauusd()
         se = CausalStructureEngine()
 
         feats_15m = fe.extract_features(engine_candles_15m) if len(engine_candles_15m) >= 20 else None
-        regime_15m = re.classify(feats_15m) if feats_15m else None
+        regime_15m = (
+            re.classify(feats_15m, instrument="XAUUSD")
+            if feats_15m
+            else None
+        )
         structure_15m = se.analyze(engine_candles_15m, atr=feats_15m.atr14 if feats_15m else None) if len(engine_candles_15m) >= 5 else None
 
         # Resolve Phase 3A Cycle Snapshot & Macro Context (PIT)

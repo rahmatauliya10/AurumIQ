@@ -95,7 +95,7 @@ class XauUsdPointInTimeReplay:
             )
 
         self.feature_engine = feature_engine or FeatureEngine()
-        self.regime_engine = regime_engine or RegimeEngine()
+        self.regime_engine = regime_engine or RegimeEngine.for_xauusd()
         self.structure_engine = structure_engine or CausalStructureEngine()
         self.execution_policy = execution_policy
         self.intrabar_policy = intrabar_policy
@@ -152,7 +152,11 @@ class XauUsdPointInTimeReplay:
 
             # 2. Compute PIT Features, Regime & Structure
             feats_15m = self.feature_engine.extract_features(closed_15m) if len(closed_15m) >= 20 else None
-            regime_15m = self.regime_engine.classify(feats_15m) if feats_15m else None
+            regime_15m = (
+                self.regime_engine.classify(feats_15m, instrument="XAUUSD")
+                if feats_15m
+                else None
+            )
             structure_15m = self.structure_engine.analyze(closed_15m, atr=feats_15m.atr14 if feats_15m else None) if len(closed_15m) >= 5 else None
 
             feats_1h = self.feature_engine.extract_features(closed_1h) if len(closed_1h) >= 20 else None

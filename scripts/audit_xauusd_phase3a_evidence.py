@@ -54,6 +54,12 @@ from apps.market_data.models import (
 from engine.cycles import calibration as cycle_calibration
 from engine.cycles.engine import RobustTimeCycleEngine
 from engine.cycles.profile import Cycle3AProfile
+from engine.backtest.xauusd_replay import (
+    XauUsdPointInTimeReplay,
+)
+from apps.live_monitor.services import (
+    XauUsdLiveDecisionPipelineService,
+)
 
 
 def _json_safe(value):
@@ -303,6 +309,42 @@ def main():
     except ImportError:
         governed_serialization_ready = False
 
+    replay_init_source = " ".join(
+        inspect.getsource(
+            XauUsdPointInTimeReplay.__init__
+        ).split()
+    )
+
+    replay_run_source = " ".join(
+        inspect.getsource(
+            XauUsdPointInTimeReplay.run
+        ).split()
+    )
+
+    live_pipeline_source = " ".join(
+        inspect.getsource(
+            XauUsdLiveDecisionPipelineService
+            .process_closed_candle
+        ).split()
+    )
+
+    xauusd_regime_fail_closed_wiring = (
+        "RegimeEngine.for_xauusd()"
+        in replay_init_source
+        and (
+            'self.regime_engine.classify('
+            'feats_15m, instrument="XAUUSD")'
+            in replay_run_source
+        )
+        and "RegimeEngine.for_xauusd()"
+        in live_pipeline_source
+        and (
+            're.classify('
+            'feats_15m, instrument="XAUUSD")'
+            in live_pipeline_source
+        )
+    )
+
     calibration_capabilities = {
         "session_calibration": hasattr(
             cycle_calibration,
@@ -325,6 +367,9 @@ def main():
         ),
         "governed_serialization": (
             governed_serialization_ready
+        ),
+        "xauusd_regime_fail_closed_wiring": (
+            xauusd_regime_fail_closed_wiring
         ),
     }
 
@@ -375,6 +420,11 @@ def main():
     if not governed_serialization_ready:
         blockers.append(
             "CYCLE3A_GOVERNED_SERIALIZATION_NOT_YET_IMPLEMENTED"
+        )
+
+    if not xauusd_regime_fail_closed_wiring:
+        blockers.append(
+            "XAUUSD_REGIME_LEGACY_LEAKAGE"
         )
 
     report = {

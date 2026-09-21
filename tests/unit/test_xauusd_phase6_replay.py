@@ -1,6 +1,7 @@
 """Unit tests for Phase 6 XAUUSD Point-In-Time Replay Engine."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import Mock
 import pytest
 
 from engine.backtest.clock import ReplayClock
@@ -191,3 +192,25 @@ def test_replay_unclosed_candle_activates_safety_hold(calibrated_test_risk_profi
     assert len(signals) >= 1
     sig = signals[0]
     assert sig.hard_gate.is_blocked is True or sig.state == SignalState.FORCE_WAIT
+
+
+def test_xauusd_replay_default_regime_engine_is_fail_closed():
+    """
+    XAUUSD replay must never implicitly instantiate
+    the LEGACY_XAUT_REFERENCE regime profile.
+    """
+    replay = XauUsdPointInTimeReplay(
+        dataset=PointInTimeDataset(),
+        signal_engine=Mock(),
+        risk_planner=Mock(),
+        outcome_engine=Mock(),
+    )
+
+    assert (
+        replay.regime_engine.profile.name
+        == "XAUUSD_UNCALIBRATED"
+    )
+    assert (
+        replay.regime_engine.profile.is_calibrated
+        is False
+    )
