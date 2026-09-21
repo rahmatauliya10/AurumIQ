@@ -44,13 +44,18 @@ from engine.core.types import (
 from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import calculate_swing_duration
-from engine.cycles.calendar import calculate_calendar_seasonality
+from engine.cycles.calendar import (
+    calculate_calendar_seasonality,
+    calendar_bucket_key,
+)
 from engine.cycles.events import evaluate_macro_event_risk
 from engine.cycles.engine import RobustTimeCycleEngine
 from engine.cycles.calibration import (
     CalibrationProvenance,
+    CalendarCalibrationFold,
     Cycle3ACalibrationArtifact,
     calculate_distribution_percentiles,
+    calibrate_calendar_effects,
     calibrate_session_expectancy,
     calibrate_swing_durations,
     build_profile_from_artifact,
@@ -596,3 +601,283 @@ def test_no_phase4_directional_bias():
     exported = dir(cycles_pkg)
     for kw in banned_keywords:
         assert kw not in exported, f"Found Phase 4 banned symbol '{kw}' in engine.cycles package."
+
+
+def _make_calendar_candle(
+    timestamp_open: datetime,
+    open_price: str,
+    close_price: str,
+) -> CandleData:
+    open_dec = Decimal(open_price)
+    close_dec = Decimal(close_price)
+
+    return CandleData(
+        timestamp_open=timestamp_open,
+        timestamp_close=timestamp_open + timedelta(minutes=15),
+        open=open_dec,
+        high=max(open_dec, close_dec),
+        low=min(open_dec, close_dec),
+        close=close_dec,
+        volume=Decimal("0"),
+        is_closed=True,
+    )
+
+
+@pytest.mark.unit
+def test_calendar_bucket_key_runtime_parity():
+    normal_dt = datetime(
+        2026, 8, 12, 14, 15,
+        tzinfo=timezone.utc,
+    )
+
+    month_end_dt = datetime(
+        2026, 8, 29, 14, 15,
+        tzinfo=timezone.utc,
+    )
+
+    assert (
+        calendar_bucket_key(normal_dt)
+        == "DOW_2_HOUR_14"
+    )
+
+    assert (
+        calendar_bucket_key(month_end_dt)
+        == "MONTH_END"
+    )
+
+
+@pytest.mark.unit
+def test_calendar_calibration_rejects_non_contiguous_pairs():
+    base = datetime(
+        2026, 8, 12, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _make_calendar_candle(
+            base,
+            "100",
+            "101",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=15),
+            "101",
+            "102",
+        ),
+
+        # Gap: 00:30 -> 00:45 has no candle.
+        _make_calendar_candle(
+            base + timedelta(minutes=45),
+            "200",
+            "202",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=60),
+            "202",
+            "204",
+        ),
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=2),
+        )
+    ]
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+    )
+
+    # Valid:
+    # candle0 -> candle1
+    # candle2 -> candle3
+    #
+    # Invalid:
+    # candle1 -> candle2 because there is a gap.
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    assert total_samples == 2
+
+
+@pytest.mark.unit
+def test_calendar_calibration_does_not_cross_fold_boundary():
+    base = datetime(
+        2026, 8, 12, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _make_calendar_candle(
+            base,
+            "100",
+            "101",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=15),
+            "101",
+            "102",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=30),
+            "102",
+            "103",
+        ),
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(minutes=30),
+        ),
+        CalendarCalibrationFold(
+            fold_id=2,
+            start=base + timedelta(minutes=30),
+            end=base + timedelta(hours=1),
+        ),
+    ]
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+    )
+
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    # Pair ending exactly at fold-1 end is excluded because
+    # calibration folds use strict half-open [start, end).
+    #
+    # Only 00:30 -> 00:45 belongs fully to fold 2.
+    assert total_samples == 1
+
+
+@pytest.mark.unit
+def test_calendar_calibration_stability_is_fold_based_and_explicit():
+    candles = []
+    folds = []
+
+    # Three Wednesdays, same DOW/hour bucket.
+    starts = [
+        datetime(
+            2026, 8, 5, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+        datetime(
+            2026, 8, 12, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+        datetime(
+            2026, 8, 19, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+    ]
+
+    prices = [
+        ("100", "101", "102"),
+        ("100", "102", "103"),
+        ("100", "103", "104"),
+    ]
+
+    for fold_id, (start, px) in enumerate(
+        zip(starts, prices),
+        start=1,
+    ):
+        candles.extend(
+            [
+                _make_calendar_candle(
+                    start,
+                    px[0],
+                    px[1],
+                ),
+                _make_calendar_candle(
+                    start + timedelta(minutes=15),
+                    px[1],
+                    px[2],
+                ),
+            ]
+        )
+
+        folds.append(
+            CalendarCalibrationFold(
+                fold_id=fold_id,
+                start=start,
+                end=start + timedelta(hours=1),
+            )
+        )
+
+    sample_eval = SampleEvaluation(
+        n_raw=3,
+        independent_after_overlap=3,
+        temporal_clusters=3,
+        hhi_norm=0.0,
+        regime_discount=0.0,
+        clustering_discount=0.0,
+        effective_n=3.0,
+        quality=SampleQuality.INSUFFICIENT,
+        weight_multiplier=0.0,
+        is_blocked=True,
+        message="TEST_ONLY",
+    )
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=3,
+        min_fold_observations=1,
+        sample_evaluations={
+            "DOW_2_HOUR_14": sample_eval,
+        },
+        significance_policy=(
+            lambda avg_ret, std_dev, n: True
+        ),
+        min_effective_n=3.0,
+    )
+
+    entry = result["DOW_2_HOUR_14"]
+
+    assert entry.sample_count == 3
+    assert entry.effective_n == 3.0
+    assert entry.expectancy_r > 0.0
+    assert entry.stability == 1.0
+    assert entry.is_statistically_significant is True
+
+    # Same evidence, but caller requires four valid folds.
+    result_insufficient_folds = (
+        calibrate_calendar_effects(
+            candles=candles,
+            folds=folds,
+            timeframe="15m",
+            min_stability_folds=4,
+            min_fold_observations=1,
+            sample_evaluations={
+                "DOW_2_HOUR_14": sample_eval,
+            },
+            significance_policy=(
+                lambda avg_ret, std_dev, n: True
+            ),
+            min_effective_n=3.0,
+        )
+    )
+
+    assert (
+        result_insufficient_folds[
+            "DOW_2_HOUR_14"
+        ].stability
+        == 0.0
+    )
