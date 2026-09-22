@@ -1,0 +1,317 @@
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+
+from engine.core.types import (
+    CandleData,
+    VolumeEvidenceType,
+)
+from engine.cycles.evidence_replay import (
+    PHASE3A_EVIDENCE_SCHEMA,
+    build_phase3a_descriptive_evidence,
+    compute_phase3a_evidence_fingerprint,
+)
+
+
+def _candle(
+    idx: int,
+    base: datetime,
+    close: str,
+) -> CandleData:
+    ts_open = base + timedelta(
+        minutes=15 * idx
+    )
+    px = Decimal(close)
+
+    return CandleData(
+        timestamp_open=ts_open,
+        timestamp_close=(
+            ts_open + timedelta(minutes=15)
+        ),
+        open=px,
+        high=px + Decimal("1"),
+        low=px - Decimal("1"),
+        close=px,
+        volume=Decimal("0"),
+        is_closed=True,
+        source_id="TEST_XAUUSD",
+        volume_evidence=(
+            VolumeEvidenceType.UNAVAILABLE
+        ),
+    )
+
+
+def test_phase3a_descriptive_replay_is_fail_closed():
+    base = datetime(
+        2026, 1, 5, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _candle(
+            i,
+            base,
+            str(2500 + (i % 7)),
+        )
+        for i in range(40)
+    ]
+
+    result = build_phase3a_descriptive_evidence(
+        candles=candles,
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    assert (
+        result["status"]
+        == "DESCRIPTIVE_EVIDENCE_ONLY"
+    )
+
+    assert (
+        result["production_authority"]
+        is False
+    )
+
+    assert (
+        result["candidate_profile_authority"]
+        is False
+    )
+
+    assert (
+        result["a16"][
+            "effective_n_certified"
+        ]
+        is False
+    )
+
+    assert (
+        result["regime_evidence"][
+            "regime"
+        ]
+        == "UNKNOWN"
+    )
+
+    assert (
+        result["regime_evidence"][
+            "reason"
+        ]
+        == "XAUUSD_REGIME_CALIBRATION_REQUIRED"
+    )
+
+
+def test_phase3a_session_evidence_uses_unknown_regime_only():
+    base = datetime(
+        2026, 1, 5, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _candle(
+            i,
+            base,
+            str(2500 + i),
+        )
+        for i in range(30)
+    ]
+
+    result = build_phase3a_descriptive_evidence(
+        candles=candles,
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    rows = result[
+        "session_evidence"
+    ]
+
+    assert rows
+
+    assert {
+        row["regime"]
+        for row in rows
+    } == {"UNKNOWN"}
+
+    assert all(
+        row["effective_n"] == 0.0
+        for row in rows
+    )
+
+    assert all(
+        row[
+            "is_statistically_significant"
+        ] is False
+        for row in rows
+    )
+
+
+def test_phase3a_replay_detects_market_gap():
+    base = datetime(
+        2026, 1, 5, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _candle(0, base, "2500"),
+        _candle(1, base, "2501"),
+
+        # indices 2 and 3 missing
+        _candle(4, base, "2502"),
+        _candle(5, base, "2503"),
+    ]
+
+    result = build_phase3a_descriptive_evidence(
+        candles=candles,
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    gaps = result["gap_evidence"]
+
+    assert gaps["internal_gap_count"] == 1
+    assert gaps["missing_interval_count"] == 2
+    assert gaps["contiguous_segment_count"] == 2
+
+
+def test_phase3a_swing_duration_never_crosses_gap():
+    base = datetime(
+        2026, 1, 5, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    first = [
+        _candle(
+            i,
+            base,
+            str(
+                2500
+                + [0, 1, 3, 1, 0, 2, 0, 1][i]
+            ),
+        )
+        for i in range(8)
+    ]
+
+    second_base = (
+        base + timedelta(days=3)
+    )
+
+    second = [
+        _candle(
+            i,
+            second_base,
+            str(
+                2600
+                + [0, 2, 4, 2, 0, 3, 0, 1][i]
+            ),
+        )
+        for i in range(8)
+    ]
+
+    result = build_phase3a_descriptive_evidence(
+        candles=first + second,
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    swing = result["swing_evidence"]
+
+    assert (
+        swing[
+            "cross_gap_duration_pairs"
+        ]
+        == 0
+    )
+
+    assert (
+        swing[
+            "contiguous_segment_count"
+        ]
+        == 2
+    )
+
+
+def test_phase3a_replay_fingerprint_is_deterministic():
+    base = datetime(
+        2026, 1, 5, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _candle(
+            i,
+            base,
+            str(2500 + i),
+        )
+        for i in range(30)
+    ]
+
+    first = build_phase3a_descriptive_evidence(
+        candles=candles,
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    second = build_phase3a_descriptive_evidence(
+        candles=list(reversed(candles)),
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    assert first == second
+
+    assert (
+        compute_phase3a_evidence_fingerprint(
+            first
+        )
+        == compute_phase3a_evidence_fingerprint(
+            second
+        )
+    )
+
+    assert PHASE3A_EVIDENCE_SCHEMA == (
+        "aurumiq.phase3a."
+        "descriptive_evidence.v1"
+    )
+
+
+def test_phase3a_replay_rejects_open_candle():
+    base = datetime(
+        2026, 1, 5,
+        tzinfo=timezone.utc,
+    )
+
+    candle = _candle(
+        0,
+        base,
+        "2500",
+    )
+
+    object.__setattr__(
+        candle,
+        "is_closed",
+        False,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="closed",
+    ):
+        build_phase3a_descriptive_evidence(
+            candles=[candle],
+            instrument="XAUUSD",
+            provider="TEST",
+            timeframe="15m",
+            code_revision="a" * 40,
+        )
