@@ -9,7 +9,6 @@ Zero Django imports, zero network calls, zero lookahead, zero numerical fallback
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 import math
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -30,6 +29,34 @@ from engine.cycles.calendar import (
 from engine.cycles.profile import CalibrationStatus, Cycle3AProfile, _deep_freeze
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import timeframe_to_seconds
+
+
+SignificancePolicy = Callable[
+    [
+        float,  # mean_return
+        float,  # std_dev
+        int,    # raw_n
+        float,  # effective_n
+    ],
+    bool,
+]
+
+
+def _invoke_significance_policy(
+    policy: SignificancePolicy,
+    mean_return: float,
+    std_dev: float,
+    raw_n: int,
+    effective_n: float,
+) -> bool:
+    return bool(
+        policy(
+            mean_return,
+            std_dev,
+            raw_n,
+            effective_n,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -211,7 +238,7 @@ def calibrate_session_expectancy(
         ]
     ] = None,
     significance_policy: Optional[
-        Callable[[float, float, int], bool]
+        SignificancePolicy
     ] = None,
     min_effective_n: Optional[
         float
@@ -292,9 +319,32 @@ def calibrate_session_expectancy(
         wins = sum(1 for r in rets if r > 0)
         win_rate = float(round(wins / sample_count, 4))
         avg_ret = sum(rets) / sample_count
-        variance = sum((r - avg_ret) ** 2 for r in rets) / (sample_count - 1) if sample_count > 1 else 0.0
-        std_dev = math.sqrt(variance) if variance > 0 else 0.0001
-        expectancy_r = float(round(avg_ret / std_dev, 4)) if std_dev > 0 else 0.0
+        variance = (
+            sum(
+                (r - avg_ret) ** 2
+                for r in rets
+            )
+            / (sample_count - 1)
+            if sample_count > 1
+            else 0.0
+        )
+
+        std_dev = (
+            math.sqrt(variance)
+            if variance > 0.0
+            else 0.0
+        )
+
+        expectancy_r = (
+            float(
+                round(
+                    avg_ret / std_dev,
+                    4,
+                )
+            )
+            if std_dev > 0.0
+            else 0.0
+        )
 
         # Determine effective N from explicit mapping (raw N is NEVER assumed equal to effective N)
         key = (sess, reg)
@@ -307,7 +357,13 @@ def calibrate_session_expectancy(
 
         # Significance policy evaluation (no hardcoded p-values)
         if significance_policy is not None and effective_n > 0.0:
-            is_sig = significance_policy(avg_ret, std_dev, sample_count)
+            is_sig = _invoke_significance_policy(
+                significance_policy,
+                avg_ret,
+                std_dev,
+                sample_count,
+                effective_n,
+            )
             if min_effective_n is not None and effective_n < min_effective_n:
                 is_sig = False
         else:
@@ -389,7 +445,7 @@ def calibrate_calendar_effects(
         Mapping[str, float]
     ] = None,
     significance_policy: Optional[
-        Callable[[float, float, int], bool]
+        SignificancePolicy
     ] = None,
     min_effective_n: Optional[float] = None,
 ) -> Dict[str, CalendarEffectEntry]:
@@ -651,10 +707,12 @@ def calibrate_calendar_effects(
             and effective_n > 0.0
         ):
             is_significant = bool(
-                significance_policy(
+                _invoke_significance_policy(
+                    significance_policy,
                     avg_return,
                     std_dev,
                     sample_count,
+                    effective_n,
                 )
             )
 

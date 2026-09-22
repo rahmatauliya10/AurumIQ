@@ -233,7 +233,7 @@ def test_session_calibration_requires_explicit_statistical_policy():
         candles=candles,
         regimes=regimes,
         sample_evaluations=sample_evals,
-        significance_policy=lambda avg, std, n: True,
+        significance_policy=lambda avg, std, n, eff: True,
         min_effective_n=30.0,
     )
     assert res_qualified[key].effective_n == 45.0
@@ -844,7 +844,7 @@ def test_calendar_calibration_stability_is_fold_based_and_explicit():
             "DOW_2_HOUR_14": sample_eval,
         },
         significance_policy=(
-            lambda avg_ret, std_dev, n: True
+            lambda avg_ret, std_dev, n, eff: True
         ),
         min_effective_n=3.0,
     )
@@ -869,7 +869,7 @@ def test_calendar_calibration_stability_is_fold_based_and_explicit():
                 "DOW_2_HOUR_14": sample_eval,
             },
             significance_policy=(
-                lambda avg_ret, std_dev, n: True
+                lambda avg_ret, std_dev, n, eff: True
             ),
             min_effective_n=3.0,
         )
@@ -963,3 +963,347 @@ def test_session_calibration_rejects_non_contiguous_candle_pairs():
     # Rejected:
     # 14:15 -> 14:45 because a 15m bar is missing.
     assert total_samples == 2
+
+
+def test_session_significance_policy_receives_effective_n():
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    regimes = [(c.timestamp_close, RegimeType.UNKNOWN) for c in candles]
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test eval",
+    )
+
+    calls = []
+
+    def policy(
+        mean_return: float,
+        std_dev: float,
+        raw_n: int,
+        effective_n: float,
+    ) -> bool:
+        calls.append((raw_n, effective_n))
+        return True
+
+    sess_type = classify_session(candles[0].timestamp_close).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        sample_evaluations={key: sample_eval},
+        significance_policy=policy,
+        timeframe="15m",
+    )
+
+    assert calls
+    assert any(
+        raw_n != effective_n
+        for raw_n, effective_n in calls
+    )
+    assert any(
+        effective_n == 42.0
+        for _, effective_n in calls
+    )
+
+
+def test_calendar_significance_policy_receives_effective_n():
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=5),
+        ),
+    ]
+
+    bucket = calendar_bucket_key(candles[0].timestamp_close)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=37.5,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test eval",
+    )
+
+    calls = []
+
+    def policy(
+        mean_return: float,
+        std_dev: float,
+        raw_n: int,
+        effective_n: float,
+    ) -> bool:
+        calls.append((raw_n, effective_n))
+        return True
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+        sample_evaluations={bucket: sample_eval},
+        significance_policy=policy,
+    )
+
+    assert calls
+    assert any(
+        raw_n != effective_n
+        for raw_n, effective_n in calls
+    )
+    assert any(
+        effective_n == 37.5
+        for _, effective_n in calls
+    )
+
+
+def test_session_zero_variance_significance_fails_closed():
+    calls = []
+
+    def policy(
+        mean_return,
+        std_dev,
+        raw_n,
+        effective_n,
+    ):
+        calls.append(std_dev)
+        return std_dev > 0.0
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal("2500"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+    regimes = [
+        (c.timestamp_close, RegimeType.UNKNOWN)
+        for c in candles
+    ]
+
+    sess_type = classify_session(
+        candles[0].timestamp_close
+    ).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test zero variance",
+    )
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        sample_evaluations={
+            key: sample_eval,
+        },
+        significance_policy=policy,
+        timeframe="15m",
+    )
+
+    assert calls
+    assert 0.0 in calls
+
+    entry = next(iter(result.values()))
+
+    assert (
+        entry.is_statistically_significant
+        is False
+    )
+
+
+def test_calendar_zero_variance_significance_fails_closed():
+    calls = []
+
+    def policy(
+        mean_return,
+        std_dev,
+        raw_n,
+        effective_n,
+    ):
+        calls.append(std_dev)
+        return std_dev > 0.0
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal("2500"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=5),
+        ),
+    ]
+
+    bucket = calendar_bucket_key(
+        candles[0].timestamp_close
+    )
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=37.5,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test zero variance calendar",
+    )
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+        sample_evaluations={
+            bucket: sample_eval,
+        },
+        significance_policy=policy,
+    )
+
+    assert calls
+    assert 0.0 in calls
+
+    entry = next(iter(result.values()))
+
+    assert (
+        entry.is_statistically_significant
+        is False
+    )
+
+
+def test_legacy_three_argument_significance_policy_is_rejected():
+    def legacy_policy(
+        mean_return,
+        std_dev,
+        raw_n,
+    ):
+        return True
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+    regimes = [
+        (c.timestamp_close, RegimeType.UNKNOWN)
+        for c in candles
+    ]
+
+    sess_type = classify_session(
+        candles[0].timestamp_close
+    ).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test reject 3-arg",
+    )
+
+    with pytest.raises(TypeError):
+        calibrate_session_expectancy(
+            candles=candles,
+            regimes=regimes,
+            sample_evaluations={
+                key: sample_eval,
+            },
+            significance_policy=legacy_policy,
+            timeframe="15m",
+        )
