@@ -13,10 +13,38 @@
     "status": "STRICT_EXCLUSION_ENFORCED",
     "description": "OOS dataset is strictly prohibited from entering candidate parameter generation, ranking, or tuning."
   },
+  "feature_availability": {
+    "provenance": {
+      "volume_evidence": "UNAVAILABLE on governed XAUUSD dataset",
+      "phase3a_source": "xauusd_phase3a_candidate.json",
+      "phase3a_status": "CANDIDATE_NOT_FROZEN",
+      "phase3a_scoring_authority": false
+    },
+    "direction": {
+      "weight_regime": "ACTIVE",
+      "weight_trend_1h": "ACTIVE",
+      "weight_trend_4h": "ACTIVE",
+      "weight_trend_1d": "ACTIVE",
+      "weight_structure_bos": "ACTIVE",
+      "weight_pullback": "ACTIVE",
+      "weight_momentum": "ACTIVE",
+      "weight_volume": "DISABLED_STRUCTURAL"
+    },
+    "timing": {
+      "weight_entry_zone": "ACTIVE",
+      "weight_reversal_confirmation_15m": "ACTIVE",
+      "weight_momentum_turn_15m_1h": "ACTIVE",
+      "weight_phase3a": "DISABLED_AUTHORITY_LOCK",
+      "weight_volume_response": "DISABLED_STRUCTURAL"
+    }
+  },
   "parameter_classification": {
     "total_tunable_parameters": 36,
+    "active_tunable_parameters": 30,
     "direction_components_per_side": 8,
+    "active_direction_components_per_side": 7,
     "timing_components_per_side": 5,
+    "active_timing_components_per_side": 3,
     "gate_thresholds_per_side": 5
   },
   "structural_domains": {
@@ -24,6 +52,18 @@
       "domain": "[0.0, 100.0]",
       "finite_required": true,
       "sum_constraint": "sum(weights) == 100.0",
+      "active_components": [
+        "weight_regime",
+        "weight_trend_1h",
+        "weight_trend_4h",
+        "weight_trend_1d",
+        "weight_structure_bos",
+        "weight_pullback",
+        "weight_momentum"
+      ],
+      "disabled_components": [
+        "weight_volume"
+      ],
       "components": [
         "weight_regime",
         "weight_trend_1h",
@@ -39,6 +79,15 @@
       "domain": "[0.0, 100.0]",
       "finite_required": true,
       "sum_constraint": "sum(weights) == 100.0",
+      "active_components": [
+        "weight_entry_zone",
+        "weight_reversal_confirmation_15m",
+        "weight_momentum_turn_15m_1h"
+      ],
+      "disabled_components": [
+        "weight_phase3a",
+        "weight_volume_response"
+      ],
       "components": [
         "weight_entry_zone",
         "weight_reversal_confirmation_15m",
@@ -74,13 +123,13 @@
   },
   "candidate_generation_algorithm": {
     "method": "UNIFORM_SIMPLEX_AND_ORDER_STATISTICS",
-    "direction_sampling": "Sort 7 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0",
-    "timing_sampling": "Sort 4 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0",
+    "direction_sampling": "Sort 6 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 7 active components; weight_volume set to 0.0",
+    "timing_sampling": "Sort 2 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 3 active components; weight_phase3a and weight_volume_response set to 0.0",
     "gate_sampling": "Direction: sort 3 standard uniforms in [0,1] scaled to 100.0; Timing: sort 2 standard uniforms in [0,1] scaled to 100.0",
     "equal_weight_baseline_candidate_0": {
       "permitted_as_neutral_reference": true,
-      "direction_weights_equal": 12.5,
-      "timing_weights_equal": 20.0,
+      "direction_weights_equal": "100.0 / 7 across 7 active components, weight_volume = 0.0",
+      "timing_weights_equal": "100.0 / 3 across 3 active components, weight_phase3a = 0.0, weight_volume_response = 0.0",
       "baseline_gate_policy": "NONE (sampled via standard monotonic order statistics)"
     },
     "duplicate_rejection_rule": "strict_phase4_policy_fingerprint_deduplication",
@@ -94,5 +143,5 @@
     "paper_only": true,
     "real_order_execution": "disabled"
   },
-  "policy_fingerprint": "b0893264f27be95b7e7927c6bb2cdc6dc03dbcd9be6a23a5fcbd2a2cfb8872a4"
+  "policy_fingerprint": "40de8d3d49a27fbf9ddfc61cd79b615b905a80f6c33986bf0f709e46325c25a6"
 }

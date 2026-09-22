@@ -3,6 +3,15 @@ Phase 6 / Phase 8 XAUUSD Signal Candidate Search-Space & Generation Governance.
 
 Authoritative loader, validator, deterministic seed deriver, and generator
 for XAUUSD signal parameter candidates on governed simplex and monotonic domains.
+
+Availability-Aware Recalibration:
+- Direction: 7 active components (regime, trend_1h, trend_4h, trend_1d,
+  structure_bos, pullback, momentum) sampled on 7-simplex summing to 100.0.
+  weight_volume is structurally DISABLED (0.0).
+- Timing: 3 active components (entry_zone, reversal_confirmation_15m,
+  momentum_turn_15m_1h) sampled on 3-simplex summing to 100.0.
+  weight_phase3a is authority locked (0.0) and weight_volume_response
+  is structurally DISABLED (0.0).
 """
 from dataclasses import dataclass
 import hashlib
@@ -23,19 +32,47 @@ from engine.signals.profile import (
     normalize_xauusd_target,
 )
 
-DEFAULT_CANDIDATE_POLICY_PATH = Path("artifacts/calibration/xauusd_signal_candidate_generation_policy.json")
+DEFAULT_CANDIDATE_POLICY_PATH = Path(
+    "artifacts/calibration/xauusd_signal_candidate_generation_policy.json"
+)
+
+ACTIVE_DIRECTION_COMPONENTS = (
+    "weight_regime",
+    "weight_trend_1h",
+    "weight_trend_4h",
+    "weight_trend_1d",
+    "weight_structure_bos",
+    "weight_pullback",
+    "weight_momentum",
+)
+DISABLED_DIRECTION_COMPONENTS = ("weight_volume",)
+
+ACTIVE_TIMING_COMPONENTS = (
+    "weight_entry_zone",
+    "weight_reversal_confirmation_15m",
+    "weight_momentum_turn_15m_1h",
+)
+DISABLED_TIMING_COMPONENTS = (
+    "weight_phase3a",
+    "weight_volume_response",
+)
 
 
-def compute_candidate_generation_policy_fingerprint(policy_dict: Dict[str, Any]) -> str:
+def compute_candidate_generation_policy_fingerprint(
+    policy_dict: Dict[str, Any],
+) -> str:
     """
     Generate deterministic SHA-256 fingerprint from canonical JSON payload
     excluding any fingerprint fields.
     """
     payload = {
-        k: v for k, v in policy_dict.items()
+        k: v
+        for k, v in policy_dict.items()
         if k not in ("policy_fingerprint", "artifact_fingerprint", "fingerprint")
     }
-    canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    canonical_json = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return hashlib.sha256(canonical_json).hexdigest()
 
 
@@ -50,7 +87,9 @@ def derive_deterministic_seed(
     """
     if not selection_policy_fingerprint or not code_revision or not dataset_fingerprint:
         raise ValueError("All governance seed inputs must be non-empty strings.")
-    material = f"{selection_policy_fingerprint}:{code_revision}:{dataset_fingerprint}".encode("utf-8")
+    material = f"{selection_policy_fingerprint}:{code_revision}:{dataset_fingerprint}".encode(
+        "utf-8"
+    )
     seed_hash = hashlib.sha256(material).hexdigest()
     return int(seed_hash[:16], 16)
 
@@ -72,13 +111,16 @@ class XauUsdCandidateGenerationPolicy:
     buy_sell_independence: bool
     policy_fingerprint: str
     raw_payload: Dict[str, Any]
+    feature_availability: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "XauUsdCandidateGenerationPolicy":
         """Construct and validate policy from raw dictionary."""
         schema = data.get("schema")
         if schema != "aurumiq.calibration.candidate_generation_policy.v1":
-            raise ValueError(f"Invalid candidate generation policy schema: '{schema}'")
+            raise ValueError(
+                f"Invalid candidate generation policy schema: '{schema}'"
+            )
 
         policy_id = data.get("policy_id")
         if not policy_id or not isinstance(policy_id, str):
@@ -107,12 +149,40 @@ class XauUsdCandidateGenerationPolicy:
         if data.get("buy_sell_independence") is not True:
             raise ValueError("buy_sell_independence must be strictly true.")
 
+        feature_availability = data.get("feature_availability")
+        if feature_availability:
+            dir_avail = feature_availability.get("direction", {})
+            if dir_avail.get("weight_volume") != "DISABLED_STRUCTURAL":
+                raise ValueError(
+                    "direction.weight_volume must be 'DISABLED_STRUCTURAL'"
+                )
+            for k in ACTIVE_DIRECTION_COMPONENTS:
+                if dir_avail.get(k) != "ACTIVE":
+                    raise ValueError(f"direction.{k} must be 'ACTIVE'")
+
+            tim_avail = feature_availability.get("timing", {})
+            if tim_avail.get("weight_phase3a") != "DISABLED_AUTHORITY_LOCK":
+                raise ValueError(
+                    "timing.weight_phase3a must be 'DISABLED_AUTHORITY_LOCK'"
+                )
+            if tim_avail.get("weight_volume_response") != "DISABLED_STRUCTURAL":
+                raise ValueError(
+                    "timing.weight_volume_response must be 'DISABLED_STRUCTURAL'"
+                )
+            for k in ACTIVE_TIMING_COMPONENTS:
+                if tim_avail.get(k) != "ACTIVE":
+                    raise ValueError(f"timing.{k} must be 'ACTIVE'")
+
         return cls(
             schema=schema,
             policy_id=policy_id,
-            selection_policy_fingerprint_reference=data.get("selection_policy_fingerprint_reference", ""),
+            selection_policy_fingerprint_reference=data.get(
+                "selection_policy_fingerprint_reference", ""
+            ),
             code_revision=data.get("code_revision", ""),
-            dataset_fingerprint_reference=data.get("dataset_fingerprint_reference", ""),
+            dataset_fingerprint_reference=data.get(
+                "dataset_fingerprint_reference", ""
+            ),
             instrument=inst,
             timeframe=data.get("timeframe", "15m"),
             candidate_cap=candidate_cap,
@@ -120,6 +190,7 @@ class XauUsdCandidateGenerationPolicy:
             buy_sell_independence=True,
             policy_fingerprint=expected_fp,
             raw_payload=data,
+            feature_availability=feature_availability,
         )
 
 
@@ -129,7 +200,10 @@ class XauUsdCandidateGenerator:
     Guarantees:
       1. Determinism: Identical inputs yield bit-for-bit identical candidate profiles.
       2. No Result Leakage: Operates ex-ante before backtest execution; zero OOS data dependency.
-      3. Simplex Exactness: Direction weights sum to 100.0 (8-simplex), timing weights sum to 100.0 (5-simplex).
+      3. Availability-Aware Simplex:
+         - Direction: 7 active weights sum to 100.0 (7-simplex), weight_volume == 0.0.
+         - Timing: 3 active weights sum to 100.0 (3-simplex), weight_phase3a == 0.0,
+           weight_volume_response == 0.0.
       4. Monotonic Gates: watch <= ready <= window (direction), ready <= window (timing).
       5. Independence: BUY (Long) and SELL (Short) parameters generated independently.
       6. Strict Cap: Generates at most 100 distinct candidates without duplication.
@@ -141,7 +215,9 @@ class XauUsdCandidateGenerator:
         dataset_fingerprint: Optional[str] = None,
     ):
         self.policy = policy
-        self.dataset_fingerprint = dataset_fingerprint or policy.dataset_fingerprint_reference
+        self.dataset_fingerprint = (
+            dataset_fingerprint or policy.dataset_fingerprint_reference
+        )
         self.base_seed = derive_deterministic_seed(
             selection_policy_fingerprint=policy.selection_policy_fingerprint_reference,
             code_revision=policy.code_revision,
@@ -149,7 +225,9 @@ class XauUsdCandidateGenerator:
         )
 
     @staticmethod
-    def _sample_simplex(rng: random.Random, n_components: int, precision: int = 4) -> List[float]:
+    def _sample_simplex(
+        rng: random.Random, n_components: int, precision: int = 4
+    ) -> List[float]:
         """
         Sample uniformly on the (n_components - 1)-dimensional simplex:
         all w_i >= 0.0, sum(w_i) == 100.0.
@@ -157,18 +235,35 @@ class XauUsdCandidateGenerator:
         """
         if n_components <= 1:
             return [100.0]
-        # Sample n_components - 1 uniform random cuts in (0, 1)
         cuts = sorted(rng.random() for _ in range(n_components - 1))
         cuts = [0.0] + cuts + [1.0]
-        weights = [round(100.0 * (cuts[i] - cuts[i - 1]), precision) for i in range(1, n_components + 1)]
-        # Adjust rounding drift on the maximum weight to maintain exact 100.0 sum
+        weights = [
+            round(100.0 * (cuts[i] - cuts[i - 1]), precision)
+            for i in range(1, n_components + 1)
+        ]
         drift = round(100.0 - sum(weights), precision)
         max_idx = weights.index(max(weights))
         weights[max_idx] = round(weights[max_idx] + drift, precision)
         return weights
 
     @staticmethod
-    def _sample_monotonic_gates(rng: random.Random) -> Tuple[float, float, float, float, float]:
+    def _equal_weights(n_components: int, precision: int = 4) -> List[float]:
+        """
+        Generate deterministic equal-weight partition summing to exactly 100.0.
+        Adjusts rounding drift on the first component.
+        """
+        if n_components <= 0:
+            return []
+        base = round(100.0 / n_components, precision)
+        weights = [base] * n_components
+        drift = round(100.0 - sum(weights), precision)
+        weights[0] = round(weights[0] + drift, precision)
+        return weights
+
+    @staticmethod
+    def _sample_monotonic_gates(
+        rng: random.Random,
+    ) -> Tuple[float, float, float, float, float]:
         """
         Sample valid monotonic thresholds in [0.0, 100.0]:
           watch_d <= ready_d <= window_d
@@ -191,59 +286,66 @@ class XauUsdCandidateGenerator:
         attempt: int = 0,
     ) -> Phase4SignalProfile:
         """Generate a single deterministic Phase4SignalProfile candidate."""
-        # Derive dedicated candidate seed
-        cand_material = f"{self.base_seed}:cand:{candidate_index}:att:{attempt}".encode("utf-8")
+        cand_material = f"{self.base_seed}:cand:{candidate_index}:att:{attempt}".encode(
+            "utf-8"
+        )
         cand_seed = int(hashlib.sha256(cand_material).hexdigest()[:16], 16)
         rng = random.Random(cand_seed)
 
-        # Neutral Equal-Weight Baseline Candidate (candidate_index == 0)
+        # Availability-aware weights:
+        # Direction: 7 active components + weight_volume (0.0)
+        # Timing: 3 active components + weight_phase3a (0.0) + weight_volume_response (0.0)
         if candidate_index == 0:
-            l_dir_weights = [12.5] * 8
-            s_dir_weights = [12.5] * 8
-            l_tim_weights = [20.0] * 5
-            s_tim_weights = [20.0] * 5
+            l_dir_active = self._equal_weights(7)
+            s_dir_active = self._equal_weights(7)
+            l_tim_active = self._equal_weights(3)
+            s_tim_active = self._equal_weights(3)
         else:
-            l_dir_weights = self._sample_simplex(rng, 8)
-            s_dir_weights = self._sample_simplex(rng, 8)
-            l_tim_weights = self._sample_simplex(rng, 5)
-            s_tim_weights = self._sample_simplex(rng, 5)
+            l_dir_active = self._sample_simplex(rng, 7)
+            s_dir_active = self._sample_simplex(rng, 7)
+            l_tim_active = self._sample_simplex(rng, 3)
+            s_tim_active = self._sample_simplex(rng, 3)
 
-        l_watch_d, l_ready_d, l_ready_t, l_window_d, l_window_t = self._sample_monotonic_gates(rng)
-        s_watch_d, s_ready_d, s_ready_t, s_window_d, s_window_t = self._sample_monotonic_gates(rng)
+        l_watch_d, l_ready_d, l_ready_t, l_window_d, l_window_t = (
+            self._sample_monotonic_gates(rng)
+        )
+        s_watch_d, s_ready_d, s_ready_t, s_window_d, s_window_t = (
+            self._sample_monotonic_gates(rng)
+        )
 
         long_direction = SideDirectionPolicy(
-            weight_regime=l_dir_weights[0],
-            weight_trend_1h=l_dir_weights[1],
-            weight_trend_4h=l_dir_weights[2],
-            weight_trend_1d=l_dir_weights[3],
-            weight_structure_bos=l_dir_weights[4],
-            weight_pullback=l_dir_weights[5],
-            weight_momentum=l_dir_weights[6],
-            weight_volume=l_dir_weights[7],
+            weight_regime=l_dir_active[0],
+            weight_trend_1h=l_dir_active[1],
+            weight_trend_4h=l_dir_active[2],
+            weight_trend_1d=l_dir_active[3],
+            weight_structure_bos=l_dir_active[4],
+            weight_pullback=l_dir_active[5],
+            weight_momentum=l_dir_active[6],
+            weight_volume=0.0,
         )
         short_direction = SideDirectionPolicy(
-            weight_regime=s_dir_weights[0],
-            weight_trend_1h=s_dir_weights[1],
-            weight_trend_4h=s_dir_weights[2],
-            weight_trend_1d=s_dir_weights[3],
-            weight_structure_bos=s_dir_weights[4],
-            weight_pullback=s_dir_weights[5],
-            weight_momentum=s_dir_weights[6],
-            weight_volume=s_dir_weights[7],
+            weight_regime=s_dir_active[0],
+            weight_trend_1h=s_dir_active[1],
+            weight_trend_4h=s_dir_active[2],
+            weight_trend_1d=s_dir_active[3],
+            weight_structure_bos=s_dir_active[4],
+            weight_pullback=s_dir_active[5],
+            weight_momentum=s_dir_active[6],
+            weight_volume=0.0,
         )
         long_timing = SideTimingPolicy(
-            weight_entry_zone=l_tim_weights[0],
-            weight_reversal_confirmation_15m=l_tim_weights[1],
-            weight_momentum_turn_15m_1h=l_tim_weights[2],
-            weight_phase3a=l_tim_weights[3],
-            weight_volume_response=l_tim_weights[4],
+            weight_entry_zone=l_tim_active[0],
+            weight_reversal_confirmation_15m=l_tim_active[1],
+            weight_momentum_turn_15m_1h=l_tim_active[2],
+            weight_phase3a=0.0,
+            weight_volume_response=0.0,
         )
         short_timing = SideTimingPolicy(
-            weight_entry_zone=s_tim_weights[0],
-            weight_reversal_confirmation_15m=s_tim_weights[1],
-            weight_momentum_turn_15m_1h=s_tim_weights[2],
-            weight_phase3a=s_tim_weights[3],
-            weight_volume_response=s_tim_weights[4],
+            weight_entry_zone=s_tim_active[0],
+            weight_reversal_confirmation_15m=s_tim_active[1],
+            weight_momentum_turn_15m_1h=s_tim_active[2],
+            weight_phase3a=0.0,
+            weight_volume_response=0.0,
         )
         long_gate = SideGatePolicy(
             threshold_watch_direction=l_watch_d,
@@ -276,16 +378,29 @@ class XauUsdCandidateGenerator:
                 "candidate_index": candidate_index,
                 "is_baseline": candidate_index == 0,
                 "generation_seed": cand_seed,
+                "feature_availability": {
+                    "direction_active_components": 7,
+                    "direction_disabled_components": ["weight_volume"],
+                    "timing_active_components": 3,
+                    "timing_disabled_components": [
+                        "weight_phase3a",
+                        "weight_volume_response",
+                    ],
+                },
             },
         )
         return profile
 
-    def generate_all_candidates(self, count: Optional[int] = None) -> List[Phase4SignalProfile]:
+    def generate_all_candidates(
+        self, count: Optional[int] = None
+    ) -> List[Phase4SignalProfile]:
         """
         Generate exactly `count` unique candidates (default up to policy.candidate_cap).
         Enforces no duplicate fingerprints and strict validation.
         """
-        target_count = count if count is not None else self.policy.candidate_cap
+        target_count = (
+            count if count is not None else self.policy.candidate_cap
+        )
         if target_count > self.policy.candidate_cap:
             raise ValueError(
                 f"Requested candidate count ({target_count}) exceeds governed cap ({self.policy.candidate_cap})"
@@ -301,7 +416,9 @@ class XauUsdCandidateGenerator:
             while True:
                 profile = self.generate_candidate(idx, attempt)
                 if not profile.is_fully_configured:
-                    raise ValueError(f"Generated candidate {idx} failed is_fully_configured validation.")
+                    raise ValueError(
+                        f"Generated candidate {idx} failed is_fully_configured validation."
+                    )
                 fp = compute_phase4_policy_fingerprint(profile)
                 if fp not in seen_fingerprints:
                     seen_fingerprints.add(fp)
@@ -309,7 +426,9 @@ class XauUsdCandidateGenerator:
                     break
                 attempt += 1
                 if attempt > 50:
-                    raise RuntimeError(f"Excessive fingerprint collision at candidate index {idx}")
+                    raise RuntimeError(
+                        f"Excessive fingerprint collision at candidate index {idx}"
+                    )
 
         return candidates
 
@@ -320,7 +439,9 @@ def load_governed_candidate_generation_policy(
     """Load and strictly validate authoritative candidate generation policy from disk."""
     path = policy_path or DEFAULT_CANDIDATE_POLICY_PATH
     if not path.exists():
-        raise FileNotFoundError(f"Candidate generation policy artifact not found at: {path}")
+        raise FileNotFoundError(
+            f"Candidate generation policy artifact not found at: {path}"
+        )
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return XauUsdCandidateGenerationPolicy.from_dict(data)
