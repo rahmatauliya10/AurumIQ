@@ -21,7 +21,7 @@
       "phase3a_scoring_authority": false
     },
     "direction": {
-      "weight_regime": "ACTIVE",
+      "weight_regime": "DISABLED_UNCALIBRATED",
       "weight_trend_1h": "ACTIVE",
       "weight_trend_4h": "ACTIVE",
       "weight_trend_1d": "ACTIVE",
@@ -40,9 +40,9 @@
   },
   "parameter_classification": {
     "total_tunable_parameters": 36,
-    "active_tunable_parameters": 30,
+    "active_tunable_parameters": 28,
     "direction_components_per_side": 8,
-    "active_direction_components_per_side": 7,
+    "active_direction_components_per_side": 6,
     "timing_components_per_side": 5,
     "active_timing_components_per_side": 3,
     "gate_thresholds_per_side": 5
@@ -53,7 +53,6 @@
       "finite_required": true,
       "sum_constraint": "sum(weights) == 100.0",
       "active_components": [
-        "weight_regime",
         "weight_trend_1h",
         "weight_trend_4h",
         "weight_trend_1d",
@@ -62,6 +61,7 @@
         "weight_momentum"
       ],
       "disabled_components": [
+        "weight_regime",
         "weight_volume"
       ],
       "components": [
@@ -123,12 +123,12 @@
   },
   "candidate_generation_algorithm": {
     "method": "UNIFORM_SIMPLEX_AND_ORDER_STATISTICS",
-    "direction_sampling": "Sort 6 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 7 active components; weight_volume set to 0.0",
+    "direction_sampling": "Sort 5 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 6 active components; weight_regime and weight_volume set to 0.0",
     "timing_sampling": "Sort 2 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 3 active components; weight_phase3a and weight_volume_response set to 0.0",
     "gate_sampling": "Direction: sort 3 standard uniforms in [0,1] scaled to 100.0; Timing: sort 2 standard uniforms in [0,1] scaled to 100.0",
     "equal_weight_baseline_candidate_0": {
       "permitted_as_neutral_reference": true,
-      "direction_weights_equal": "100.0 / 7 across 7 active components, weight_volume = 0.0",
+      "direction_weights_equal": "100.0 / 6 across 6 active components, weight_regime = 0.0, weight_volume = 0.0",
       "timing_weights_equal": "100.0 / 3 across 3 active components, weight_phase3a = 0.0, weight_volume_response = 0.0",
       "baseline_gate_policy": "NONE (sampled via standard monotonic order statistics)"
     },
@@ -143,5 +143,5 @@
     "paper_only": true,
     "real_order_execution": "disabled"
   },
-  "policy_fingerprint": "40de8d3d49a27fbf9ddfc61cd79b615b905a80f6c33986bf0f709e46325c25a6"
+  "policy_fingerprint": "dab7126bbdb4ae97bead8dac048c9c08fff237e603c19b5a0473967d6b3f2c3d"
 }

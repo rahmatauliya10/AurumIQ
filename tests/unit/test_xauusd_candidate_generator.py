@@ -147,9 +147,8 @@ class TestCandidateSimplexAndMonotonicityInvariants:
     ):
         candidates = candidate_generator.generate_all_candidates(count=20)
         for c in candidates:
-            # Long direction active components
+            # Long direction active components (6 components, regime & volume disabled)
             l_active = [
-                c.long_direction.weight_regime,
                 c.long_direction.weight_trend_1h,
                 c.long_direction.weight_trend_4h,
                 c.long_direction.weight_trend_1d,
@@ -159,14 +158,17 @@ class TestCandidateSimplexAndMonotonicityInvariants:
             ]
             assert all(w >= 0.0 for w in l_active)
             assert abs(sum(l_active) - 100.0) < 1e-4
+            assert c.long_direction.weight_regime == 0.0
             assert c.long_direction.weight_volume == 0.0
 
-            l_all = l_active + [c.long_direction.weight_volume]
+            l_all = l_active + [
+                c.long_direction.weight_regime,
+                c.long_direction.weight_volume,
+            ]
             assert abs(sum(l_all) - 100.0) < 1e-4
 
-            # Short direction active components
+            # Short direction active components (6 components, regime & volume disabled)
             s_active = [
-                c.short_direction.weight_regime,
                 c.short_direction.weight_trend_1h,
                 c.short_direction.weight_trend_4h,
                 c.short_direction.weight_trend_1d,
@@ -176,9 +178,13 @@ class TestCandidateSimplexAndMonotonicityInvariants:
             ]
             assert all(w >= 0.0 for w in s_active)
             assert abs(sum(s_active) - 100.0) < 1e-4
+            assert c.short_direction.weight_regime == 0.0
             assert c.short_direction.weight_volume == 0.0
 
-            s_all = s_active + [c.short_direction.weight_volume]
+            s_all = s_active + [
+                c.short_direction.weight_regime,
+                c.short_direction.weight_volume,
+            ]
             assert abs(sum(s_all) - 100.0) < 1e-4
 
     def test_07_timing_weights_simplex_invariants(
@@ -256,8 +262,8 @@ class TestCandidateSimplexAndMonotonicityInvariants:
         identical_pair_count = 0
         for c in candidates[1:]:  # skip baseline candidate 0
             if (
-                c.long_direction.weight_regime
-                == c.short_direction.weight_regime
+                c.long_direction.weight_trend_1h
+                == c.short_direction.weight_trend_1h
                 and c.long_timing.weight_entry_zone
                 == c.short_timing.weight_entry_zone
                 and c.long_gate.threshold_window_direction
@@ -270,11 +276,12 @@ class TestCandidateSimplexAndMonotonicityInvariants:
         c0 = candidate_generator.generate_candidate(0)
         assert c0.details["is_baseline"] is True
 
-        # Direction: 7 active components sum to 100.0 (~14.2857 each), volume == 0.0
+        # Direction: 6 active components sum to 100.0 (~16.6667 each), regime == 0.0, volume == 0.0
+        assert c0.long_direction.weight_regime == 0.0
+        assert c0.short_direction.weight_regime == 0.0
         assert c0.long_direction.weight_volume == 0.0
         assert c0.short_direction.weight_volume == 0.0
         l_dir = [
-            c0.long_direction.weight_regime,
             c0.long_direction.weight_trend_1h,
             c0.long_direction.weight_trend_4h,
             c0.long_direction.weight_trend_1d,
@@ -283,10 +290,9 @@ class TestCandidateSimplexAndMonotonicityInvariants:
             c0.long_direction.weight_momentum,
         ]
         assert abs(sum(l_dir) - 100.0) < 1e-4
-        assert all(14.0 <= w <= 15.0 for w in l_dir)
+        assert all(16.0 <= w <= 17.5 for w in l_dir)
 
         s_dir = [
-            c0.short_direction.weight_regime,
             c0.short_direction.weight_trend_1h,
             c0.short_direction.weight_trend_4h,
             c0.short_direction.weight_trend_1d,
@@ -295,7 +301,7 @@ class TestCandidateSimplexAndMonotonicityInvariants:
             c0.short_direction.weight_momentum,
         ]
         assert abs(sum(s_dir) - 100.0) < 1e-4
-        assert all(14.0 <= w <= 15.0 for w in s_dir)
+        assert all(16.0 <= w <= 17.5 for w in s_dir)
 
         # Timing: 3 active components sum to 100.0 (~33.3333 each), disabled == 0.0
         assert c0.long_timing.weight_phase3a == 0.0
@@ -390,9 +396,10 @@ class TestFeatureAvailabilityContract:
         assert fa is not None
 
         # Direction availability
+        assert fa["direction"]["weight_regime"] == "DISABLED_UNCALIBRATED"
         assert fa["direction"]["weight_volume"] == "DISABLED_STRUCTURAL"
         for k in [
-            "weight_regime", "weight_trend_1h", "weight_trend_4h",
+            "weight_trend_1h", "weight_trend_4h",
             "weight_trend_1d", "weight_structure_bos", "weight_pullback",
             "weight_momentum",
         ]:
@@ -417,6 +424,10 @@ class TestFeatureAvailabilityContract:
         # Verify across generated candidates
         candidates = candidate_generator.generate_all_candidates(count=25)
         for candidate in candidates:
+            # Regime direction = 0
+            assert candidate.long_direction.weight_regime == 0.0
+            assert candidate.short_direction.weight_regime == 0.0
+
             # Volume direction = 0
             assert candidate.long_direction.weight_volume == 0.0
             assert candidate.short_direction.weight_volume == 0.0

@@ -5,9 +5,9 @@ Authoritative loader, validator, deterministic seed deriver, and generator
 for XAUUSD signal parameter candidates on governed simplex and monotonic domains.
 
 Availability-Aware Recalibration:
-- Direction: 7 active components (regime, trend_1h, trend_4h, trend_1d,
-  structure_bos, pullback, momentum) sampled on 7-simplex summing to 100.0.
-  weight_volume is structurally DISABLED (0.0).
+- Direction: 6 active components (trend_1h, trend_4h, trend_1d,
+  structure_bos, pullback, momentum) sampled on 6-simplex summing to 100.0.
+  weight_regime is uncalibrated DISABLED (0.0) and weight_volume is structurally DISABLED (0.0).
 - Timing: 3 active components (entry_zone, reversal_confirmation_15m,
   momentum_turn_15m_1h) sampled on 3-simplex summing to 100.0.
   weight_phase3a is authority locked (0.0) and weight_volume_response
@@ -37,7 +37,6 @@ DEFAULT_CANDIDATE_POLICY_PATH = Path(
 )
 
 ACTIVE_DIRECTION_COMPONENTS = (
-    "weight_regime",
     "weight_trend_1h",
     "weight_trend_4h",
     "weight_trend_1d",
@@ -45,7 +44,10 @@ ACTIVE_DIRECTION_COMPONENTS = (
     "weight_pullback",
     "weight_momentum",
 )
-DISABLED_DIRECTION_COMPONENTS = ("weight_volume",)
+DISABLED_DIRECTION_COMPONENTS = (
+    "weight_regime",
+    "weight_volume",
+)
 
 ACTIVE_TIMING_COMPONENTS = (
     "weight_entry_zone",
@@ -152,6 +154,10 @@ class XauUsdCandidateGenerationPolicy:
         feature_availability = data.get("feature_availability")
         if feature_availability:
             dir_avail = feature_availability.get("direction", {})
+            if dir_avail.get("weight_regime") != "DISABLED_UNCALIBRATED":
+                raise ValueError(
+                    "direction.weight_regime must be 'DISABLED_UNCALIBRATED'"
+                )
             if dir_avail.get("weight_volume") != "DISABLED_STRUCTURAL":
                 raise ValueError(
                     "direction.weight_volume must be 'DISABLED_STRUCTURAL'"
@@ -293,16 +299,16 @@ class XauUsdCandidateGenerator:
         rng = random.Random(cand_seed)
 
         # Availability-aware weights:
-        # Direction: 7 active components + weight_volume (0.0)
+        # Direction: 6 active components + weight_regime (0.0) + weight_volume (0.0)
         # Timing: 3 active components + weight_phase3a (0.0) + weight_volume_response (0.0)
         if candidate_index == 0:
-            l_dir_active = self._equal_weights(7)
-            s_dir_active = self._equal_weights(7)
+            l_dir_active = self._equal_weights(6)
+            s_dir_active = self._equal_weights(6)
             l_tim_active = self._equal_weights(3)
             s_tim_active = self._equal_weights(3)
         else:
-            l_dir_active = self._sample_simplex(rng, 7)
-            s_dir_active = self._sample_simplex(rng, 7)
+            l_dir_active = self._sample_simplex(rng, 6)
+            s_dir_active = self._sample_simplex(rng, 6)
             l_tim_active = self._sample_simplex(rng, 3)
             s_tim_active = self._sample_simplex(rng, 3)
 
@@ -314,23 +320,23 @@ class XauUsdCandidateGenerator:
         )
 
         long_direction = SideDirectionPolicy(
-            weight_regime=l_dir_active[0],
-            weight_trend_1h=l_dir_active[1],
-            weight_trend_4h=l_dir_active[2],
-            weight_trend_1d=l_dir_active[3],
-            weight_structure_bos=l_dir_active[4],
-            weight_pullback=l_dir_active[5],
-            weight_momentum=l_dir_active[6],
+            weight_regime=0.0,
+            weight_trend_1h=l_dir_active[0],
+            weight_trend_4h=l_dir_active[1],
+            weight_trend_1d=l_dir_active[2],
+            weight_structure_bos=l_dir_active[3],
+            weight_pullback=l_dir_active[4],
+            weight_momentum=l_dir_active[5],
             weight_volume=0.0,
         )
         short_direction = SideDirectionPolicy(
-            weight_regime=s_dir_active[0],
-            weight_trend_1h=s_dir_active[1],
-            weight_trend_4h=s_dir_active[2],
-            weight_trend_1d=s_dir_active[3],
-            weight_structure_bos=s_dir_active[4],
-            weight_pullback=s_dir_active[5],
-            weight_momentum=s_dir_active[6],
+            weight_regime=0.0,
+            weight_trend_1h=s_dir_active[0],
+            weight_trend_4h=s_dir_active[1],
+            weight_trend_1d=s_dir_active[2],
+            weight_structure_bos=s_dir_active[3],
+            weight_pullback=s_dir_active[4],
+            weight_momentum=s_dir_active[5],
             weight_volume=0.0,
         )
         long_timing = SideTimingPolicy(
@@ -379,8 +385,11 @@ class XauUsdCandidateGenerator:
                 "is_baseline": candidate_index == 0,
                 "generation_seed": cand_seed,
                 "feature_availability": {
-                    "direction_active_components": 7,
-                    "direction_disabled_components": ["weight_volume"],
+                    "direction_active_components": 6,
+                    "direction_disabled_components": [
+                        "weight_regime",
+                        "weight_volume",
+                    ],
                     "timing_active_components": 3,
                     "timing_disabled_components": [
                         "weight_phase3a",
