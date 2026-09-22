@@ -1,0 +1,1697 @@
+{
+  "artifact_fingerprint": "d35f088364cfcfb179578a092e440768fa356912926d598fb075e163b759c9d5",
+  "artifact_id": "xauusd_phase3a_descriptive_evidence",
+  "candidate_profile_authority": false,
+  "code_revision": "e716f015b5e1c1027d026f8176417c310a056368",
+  "created_at": "2026-09-22T01:33:44.712168+00:00",
+  "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "evidence": {
+    "a16": {
+      "autocorrelation_factor": null,
+      "effective_n": 0.0,
+      "effective_n_certified": false,
+      "overlap_ratio": null,
+      "raw_n_must_not_be_used_as_effective_n": true,
+      "status": "A16_POLICY_NOT_YET_GOVERNED"
+    },
+    "auxiliary_evidence": {
+      "legacy_manifest_macro_status": {
+        "manifest_decision": "CANDLES_READY_MACRO_MISSING",
+        "manifest_generated_at": "2026-09-04T04:32:00Z",
+        "used_as_current_macro_evidence": false
+      },
+      "macro_pit": {
+        "identity_count": 3,
+        "observation": {
+          "count": 204,
+          "earliest_known": "2020-04-10T12:30:00+00:00",
+          "earliest_release": "2020-04-10T12:30:00+00:00",
+          "latest_known": "2026-08-12T12:30:00+00:00",
+          "latest_release": "2026-08-12T12:30:00+00:00",
+          "with_source_snapshot_count": 204,
+          "with_source_snapshot_pct": 100.0
+        },
+        "schedule": {
+          "count": 360,
+          "earliest_known": "2019-05-17T00:00:00+00:00",
+          "earliest_scheduled": "2020-04-10T12:30:00+00:00",
+          "known_before_release_count": 357,
+          "known_before_release_pct": 99.17,
+          "latest_known": "2026-07-14T12:30:00+00:00",
+          "latest_scheduled": "2026-08-12T12:30:00+00:00",
+          "with_source_snapshot_count": 360,
+          "with_source_snapshot_pct": 100.0
+        }
+      },
+      "selection_policy": {
+        "historical_end_exclusive": "2026-09-01T00:00:00+00:00",
+        "historical_start": "2020-04-07T00:00:00+00:00",
+        "policy_fingerprint": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
+        "policy_id": "XAUUSD-SELECTION-POLICY-20260911"
+      }
+    },
+    "calendar_evidence": [
+      {
+        "bucket": "DOW_0_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0351,
+        "is_statistically_significant": false,
+        "sample_count": 1170,
+        "stability": 0.0,
+        "win_rate": 0.4769
+      },
+      {
+        "bucket": "DOW_0_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0672,
+        "is_statistically_significant": false,
+        "sample_count": 1173,
+        "stability": 0.0,
+        "win_rate": 0.5141
+      },
+      {
+        "bucket": "DOW_0_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0391,
+        "is_statistically_significant": false,
+        "sample_count": 1183,
+        "stability": 0.0,
+        "win_rate": 0.4945
+      },
+      {
+        "bucket": "DOW_0_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0339,
+        "is_statistically_significant": false,
+        "sample_count": 1180,
+        "stability": 0.0,
+        "win_rate": 0.522
+      },
+      {
+        "bucket": "DOW_0_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0056,
+        "is_statistically_significant": false,
+        "sample_count": 1179,
+        "stability": 0.0,
+        "win_rate": 0.5038
+      },
+      {
+        "bucket": "DOW_0_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0259,
+        "is_statistically_significant": false,
+        "sample_count": 1181,
+        "stability": 0.0,
+        "win_rate": 0.4911
+      },
+      {
+        "bucket": "DOW_0_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0025,
+        "is_statistically_significant": false,
+        "sample_count": 1184,
+        "stability": 0.0,
+        "win_rate": 0.5076
+      },
+      {
+        "bucket": "DOW_0_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0471,
+        "is_statistically_significant": false,
+        "sample_count": 1182,
+        "stability": 0.0,
+        "win_rate": 0.4966
+      },
+      {
+        "bucket": "DOW_0_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": 0.022,
+        "is_statistically_significant": false,
+        "sample_count": 1180,
+        "stability": 0.0,
+        "win_rate": 0.5153
+      },
+      {
+        "bucket": "DOW_0_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0073,
+        "is_statistically_significant": false,
+        "sample_count": 1165,
+        "stability": 0.0,
+        "win_rate": 0.4884
+      },
+      {
+        "bucket": "DOW_0_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0402,
+        "is_statistically_significant": false,
+        "sample_count": 1147,
+        "stability": 0.0,
+        "win_rate": 0.5109
+      },
+      {
+        "bucket": "DOW_0_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0161,
+        "is_statistically_significant": false,
+        "sample_count": 1118,
+        "stability": 0.0,
+        "win_rate": 0.5152
+      },
+      {
+        "bucket": "DOW_0_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0459,
+        "is_statistically_significant": false,
+        "sample_count": 1176,
+        "stability": 0.0,
+        "win_rate": 0.5
+      },
+      {
+        "bucket": "DOW_0_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0259,
+        "is_statistically_significant": false,
+        "sample_count": 1100,
+        "stability": 0.0,
+        "win_rate": 0.5309
+      },
+      {
+        "bucket": "DOW_0_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0054,
+        "is_statistically_significant": false,
+        "sample_count": 521,
+        "stability": 0.0,
+        "win_rate": 0.5317
+      },
+      {
+        "bucket": "DOW_0_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0476,
+        "is_statistically_significant": false,
+        "sample_count": 716,
+        "stability": 0.0,
+        "win_rate": 0.5182
+      },
+      {
+        "bucket": "DOW_0_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0722,
+        "is_statistically_significant": false,
+        "sample_count": 1114,
+        "stability": 0.0,
+        "win_rate": 0.544
+      },
+      {
+        "bucket": "DOW_0_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": -0.053,
+        "is_statistically_significant": false,
+        "sample_count": 1177,
+        "stability": 0.0,
+        "win_rate": 0.4911
+      },
+      {
+        "bucket": "DOW_0_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.013,
+        "is_statistically_significant": false,
+        "sample_count": 1176,
+        "stability": 0.0,
+        "win_rate": 0.4855
+      },
+      {
+        "bucket": "DOW_0_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0221,
+        "is_statistically_significant": false,
+        "sample_count": 1178,
+        "stability": 0.0,
+        "win_rate": 0.5017
+      },
+      {
+        "bucket": "DOW_0_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0134,
+        "is_statistically_significant": false,
+        "sample_count": 1180,
+        "stability": 0.0,
+        "win_rate": 0.489
+      },
+      {
+        "bucket": "DOW_0_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0139,
+        "is_statistically_significant": false,
+        "sample_count": 1184,
+        "stability": 0.0,
+        "win_rate": 0.511
+      },
+      {
+        "bucket": "DOW_0_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0495,
+        "is_statistically_significant": false,
+        "sample_count": 1182,
+        "stability": 0.0,
+        "win_rate": 0.5118
+      },
+      {
+        "bucket": "DOW_0_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0073,
+        "is_statistically_significant": false,
+        "sample_count": 1183,
+        "stability": 0.0,
+        "win_rate": 0.4962
+      },
+      {
+        "bucket": "DOW_1_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0012,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.4983
+      },
+      {
+        "bucket": "DOW_1_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0178,
+        "is_statistically_significant": false,
+        "sample_count": 1197,
+        "stability": 0.0,
+        "win_rate": 0.5029
+      },
+      {
+        "bucket": "DOW_1_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0064,
+        "is_statistically_significant": false,
+        "sample_count": 1199,
+        "stability": 0.0,
+        "win_rate": 0.4996
+      },
+      {
+        "bucket": "DOW_1_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0088,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5192
+      },
+      {
+        "bucket": "DOW_1_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0034,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.4842
+      },
+      {
+        "bucket": "DOW_1_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0094,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5242
+      },
+      {
+        "bucket": "DOW_1_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0322,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5158
+      },
+      {
+        "bucket": "DOW_1_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0163,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5025
+      },
+      {
+        "bucket": "DOW_1_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0324,
+        "is_statistically_significant": false,
+        "sample_count": 1199,
+        "stability": 0.0,
+        "win_rate": 0.5221
+      },
+      {
+        "bucket": "DOW_1_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0132,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.5125
+      },
+      {
+        "bucket": "DOW_1_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0179,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5034
+      },
+      {
+        "bucket": "DOW_1_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0448,
+        "is_statistically_significant": false,
+        "sample_count": 1192,
+        "stability": 0.0,
+        "win_rate": 0.5243
+      },
+      {
+        "bucket": "DOW_1_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0201,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5233
+      },
+      {
+        "bucket": "DOW_1_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": 0.016,
+        "is_statistically_significant": false,
+        "sample_count": 1191,
+        "stability": 0.0,
+        "win_rate": 0.492
+      },
+      {
+        "bucket": "DOW_1_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0198,
+        "is_statistically_significant": false,
+        "sample_count": 578,
+        "stability": 0.0,
+        "win_rate": 0.4948
+      },
+      {
+        "bucket": "DOW_1_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0159,
+        "is_statistically_significant": false,
+        "sample_count": 715,
+        "stability": 0.0,
+        "win_rate": 0.4769
+      },
+      {
+        "bucket": "DOW_1_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0666,
+        "is_statistically_significant": false,
+        "sample_count": 1114,
+        "stability": 0.0,
+        "win_rate": 0.5162
+      },
+      {
+        "bucket": "DOW_1_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0218,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5075
+      },
+      {
+        "bucket": "DOW_1_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0339,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.4692
+      },
+      {
+        "bucket": "DOW_1_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0141,
+        "is_statistically_significant": false,
+        "sample_count": 1198,
+        "stability": 0.0,
+        "win_rate": 0.5092
+      },
+      {
+        "bucket": "DOW_1_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0187,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5067
+      },
+      {
+        "bucket": "DOW_1_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0213,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.4883
+      },
+      {
+        "bucket": "DOW_1_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0246,
+        "is_statistically_significant": false,
+        "sample_count": 1200,
+        "stability": 0.0,
+        "win_rate": 0.5167
+      },
+      {
+        "bucket": "DOW_1_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": -0.007,
+        "is_statistically_significant": false,
+        "sample_count": 1199,
+        "stability": 0.0,
+        "win_rate": 0.4887
+      },
+      {
+        "bucket": "DOW_2_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0027,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.477
+      },
+      {
+        "bucket": "DOW_2_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0711,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5243
+      },
+      {
+        "bucket": "DOW_2_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0323,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.4828
+      },
+      {
+        "bucket": "DOW_2_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0076,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.4987
+      },
+      {
+        "bucket": "DOW_2_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0261,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.5293
+      },
+      {
+        "bucket": "DOW_2_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0278,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.4975
+      },
+      {
+        "bucket": "DOW_2_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0632,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.4908
+      },
+      {
+        "bucket": "DOW_2_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0006,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.5268
+      },
+      {
+        "bucket": "DOW_2_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0312,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5142
+      },
+      {
+        "bucket": "DOW_2_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0772,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.4757
+      },
+      {
+        "bucket": "DOW_2_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0013,
+        "is_statistically_significant": false,
+        "sample_count": 1191,
+        "stability": 0.0,
+        "win_rate": 0.4996
+      },
+      {
+        "bucket": "DOW_2_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0023,
+        "is_statistically_significant": false,
+        "sample_count": 1190,
+        "stability": 0.0,
+        "win_rate": 0.5076
+      },
+      {
+        "bucket": "DOW_2_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0204,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5243
+      },
+      {
+        "bucket": "DOW_2_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0281,
+        "is_statistically_significant": false,
+        "sample_count": 1189,
+        "stability": 0.0,
+        "win_rate": 0.4617
+      },
+      {
+        "bucket": "DOW_2_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0518,
+        "is_statistically_significant": false,
+        "sample_count": 582,
+        "stability": 0.0,
+        "win_rate": 0.5189
+      },
+      {
+        "bucket": "DOW_2_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0703,
+        "is_statistically_significant": false,
+        "sample_count": 719,
+        "stability": 0.0,
+        "win_rate": 0.5369
+      },
+      {
+        "bucket": "DOW_2_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0558,
+        "is_statistically_significant": false,
+        "sample_count": 1118,
+        "stability": 0.0,
+        "win_rate": 0.5331
+      },
+      {
+        "bucket": "DOW_2_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0374,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.4816
+      },
+      {
+        "bucket": "DOW_2_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0096,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5017
+      },
+      {
+        "bucket": "DOW_2_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0601,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.5305
+      },
+      {
+        "bucket": "DOW_2_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0437,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.5172
+      },
+      {
+        "bucket": "DOW_2_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0377,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.4983
+      },
+      {
+        "bucket": "DOW_2_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0171,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.5213
+      },
+      {
+        "bucket": "DOW_2_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0166,
+        "is_statistically_significant": false,
+        "sample_count": 1195,
+        "stability": 0.0,
+        "win_rate": 0.5163
+      },
+      {
+        "bucket": "DOW_3_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0481,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.5117
+      },
+      {
+        "bucket": "DOW_3_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0424,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.5042
+      },
+      {
+        "bucket": "DOW_3_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0432,
+        "is_statistically_significant": false,
+        "sample_count": 1202,
+        "stability": 0.0,
+        "win_rate": 0.5108
+      },
+      {
+        "bucket": "DOW_3_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0139,
+        "is_statistically_significant": false,
+        "sample_count": 1204,
+        "stability": 0.0,
+        "win_rate": 0.5141
+      },
+      {
+        "bucket": "DOW_3_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0311,
+        "is_statistically_significant": false,
+        "sample_count": 1205,
+        "stability": 0.0,
+        "win_rate": 0.4954
+      },
+      {
+        "bucket": "DOW_3_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0098,
+        "is_statistically_significant": false,
+        "sample_count": 1205,
+        "stability": 0.0,
+        "win_rate": 0.4988
+      },
+      {
+        "bucket": "DOW_3_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0361,
+        "is_statistically_significant": false,
+        "sample_count": 1208,
+        "stability": 0.0,
+        "win_rate": 0.519
+      },
+      {
+        "bucket": "DOW_3_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0054,
+        "is_statistically_significant": false,
+        "sample_count": 1206,
+        "stability": 0.0,
+        "win_rate": 0.5257
+      },
+      {
+        "bucket": "DOW_3_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0292,
+        "is_statistically_significant": false,
+        "sample_count": 1208,
+        "stability": 0.0,
+        "win_rate": 0.5083
+      },
+      {
+        "bucket": "DOW_3_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0302,
+        "is_statistically_significant": false,
+        "sample_count": 1207,
+        "stability": 0.0,
+        "win_rate": 0.5178
+      },
+      {
+        "bucket": "DOW_3_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0078,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.5192
+      },
+      {
+        "bucket": "DOW_3_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0215,
+        "is_statistically_significant": false,
+        "sample_count": 1187,
+        "stability": 0.0,
+        "win_rate": 0.5198
+      },
+      {
+        "bucket": "DOW_3_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": -0.047,
+        "is_statistically_significant": false,
+        "sample_count": 1196,
+        "stability": 0.0,
+        "win_rate": 0.4941
+      },
+      {
+        "bucket": "DOW_3_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0174,
+        "is_statistically_significant": false,
+        "sample_count": 1182,
+        "stability": 0.0,
+        "win_rate": 0.4898
+      },
+      {
+        "bucket": "DOW_3_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0556,
+        "is_statistically_significant": false,
+        "sample_count": 565,
+        "stability": 0.0,
+        "win_rate": 0.5274
+      },
+      {
+        "bucket": "DOW_3_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0507,
+        "is_statistically_significant": false,
+        "sample_count": 703,
+        "stability": 0.0,
+        "win_rate": 0.4794
+      },
+      {
+        "bucket": "DOW_3_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0157,
+        "is_statistically_significant": false,
+        "sample_count": 1092,
+        "stability": 0.0,
+        "win_rate": 0.5275
+      },
+      {
+        "bucket": "DOW_3_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0116,
+        "is_statistically_significant": false,
+        "sample_count": 1194,
+        "stability": 0.0,
+        "win_rate": 0.4858
+      },
+      {
+        "bucket": "DOW_3_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0088,
+        "is_statistically_significant": false,
+        "sample_count": 1199,
+        "stability": 0.0,
+        "win_rate": 0.4821
+      },
+      {
+        "bucket": "DOW_3_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0436,
+        "is_statistically_significant": false,
+        "sample_count": 1201,
+        "stability": 0.0,
+        "win_rate": 0.4888
+      },
+      {
+        "bucket": "DOW_3_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0548,
+        "is_statistically_significant": false,
+        "sample_count": 1203,
+        "stability": 0.0,
+        "win_rate": 0.5303
+      },
+      {
+        "bucket": "DOW_3_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0014,
+        "is_statistically_significant": false,
+        "sample_count": 1203,
+        "stability": 0.0,
+        "win_rate": 0.5104
+      },
+      {
+        "bucket": "DOW_3_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0026,
+        "is_statistically_significant": false,
+        "sample_count": 1204,
+        "stability": 0.0,
+        "win_rate": 0.4875
+      },
+      {
+        "bucket": "DOW_3_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0125,
+        "is_statistically_significant": false,
+        "sample_count": 1202,
+        "stability": 0.0,
+        "win_rate": 0.5075
+      },
+      {
+        "bucket": "DOW_4_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0214,
+        "is_statistically_significant": false,
+        "sample_count": 1168,
+        "stability": 0.0,
+        "win_rate": 0.5086
+      },
+      {
+        "bucket": "DOW_4_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0125,
+        "is_statistically_significant": false,
+        "sample_count": 1168,
+        "stability": 0.0,
+        "win_rate": 0.5068
+      },
+      {
+        "bucket": "DOW_4_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0397,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.4949
+      },
+      {
+        "bucket": "DOW_4_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0199,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.4991
+      },
+      {
+        "bucket": "DOW_4_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0346,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.5307
+      },
+      {
+        "bucket": "DOW_4_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0366,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.5026
+      },
+      {
+        "bucket": "DOW_4_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0257,
+        "is_statistically_significant": false,
+        "sample_count": 1122,
+        "stability": 0.0,
+        "win_rate": 0.525
+      },
+      {
+        "bucket": "DOW_4_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0028,
+        "is_statistically_significant": false,
+        "sample_count": 1121,
+        "stability": 0.0,
+        "win_rate": 0.5227
+      },
+      {
+        "bucket": "DOW_4_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0124,
+        "is_statistically_significant": false,
+        "sample_count": 1116,
+        "stability": 0.0,
+        "win_rate": 0.5081
+      },
+      {
+        "bucket": "DOW_4_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0198,
+        "is_statistically_significant": false,
+        "sample_count": 1111,
+        "stability": 0.0,
+        "win_rate": 0.4986
+      },
+      {
+        "bucket": "DOW_4_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0293,
+        "is_statistically_significant": false,
+        "sample_count": 1109,
+        "stability": 0.0,
+        "win_rate": 0.532
+      },
+      {
+        "bucket": "DOW_4_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0565,
+        "is_statistically_significant": false,
+        "sample_count": 1100,
+        "stability": 0.0,
+        "win_rate": 0.4682
+      },
+      {
+        "bucket": "DOW_4_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0404,
+        "is_statistically_significant": false,
+        "sample_count": 1168,
+        "stability": 0.0,
+        "win_rate": 0.5163
+      },
+      {
+        "bucket": "DOW_4_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": 0.09,
+        "is_statistically_significant": false,
+        "sample_count": 946,
+        "stability": 0.0,
+        "win_rate": 0.556
+      },
+      {
+        "bucket": "DOW_4_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0348,
+        "is_statistically_significant": false,
+        "sample_count": 445,
+        "stability": 0.0,
+        "win_rate": 0.5708
+      },
+      {
+        "bucket": "DOW_4_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0272,
+        "is_statistically_significant": false,
+        "sample_count": 250,
+        "stability": 0.0,
+        "win_rate": 0.504
+      },
+      {
+        "bucket": "DOW_4_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0857,
+        "is_statistically_significant": false,
+        "sample_count": 250,
+        "stability": 0.0,
+        "win_rate": 0.428
+      },
+      {
+        "bucket": "DOW_4_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0369,
+        "is_statistically_significant": false,
+        "sample_count": 1171,
+        "stability": 0.0,
+        "win_rate": 0.5149
+      },
+      {
+        "bucket": "DOW_4_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0027,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.4727
+      },
+      {
+        "bucket": "DOW_4_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0144,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.5256
+      },
+      {
+        "bucket": "DOW_4_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0208,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.5162
+      },
+      {
+        "bucket": "DOW_4_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": 0.027,
+        "is_statistically_significant": false,
+        "sample_count": 1172,
+        "stability": 0.0,
+        "win_rate": 0.5239
+      },
+      {
+        "bucket": "DOW_4_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0022,
+        "is_statistically_significant": false,
+        "sample_count": 1171,
+        "stability": 0.0,
+        "win_rate": 0.5149
+      },
+      {
+        "bucket": "DOW_4_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0182,
+        "is_statistically_significant": false,
+        "sample_count": 1171,
+        "stability": 0.0,
+        "win_rate": 0.4902
+      },
+      {
+        "bucket": "DOW_5_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0171,
+        "is_statistically_significant": false,
+        "sample_count": 248,
+        "stability": 0.0,
+        "win_rate": 0.5
+      },
+      {
+        "bucket": "DOW_5_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0343,
+        "is_statistically_significant": false,
+        "sample_count": 245,
+        "stability": 0.0,
+        "win_rate": 0.4898
+      },
+      {
+        "bucket": "DOW_5_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0432,
+        "is_statistically_significant": false,
+        "sample_count": 244,
+        "stability": 0.0,
+        "win_rate": 0.4795
+      },
+      {
+        "bucket": "DOW_5_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0459,
+        "is_statistically_significant": false,
+        "sample_count": 246,
+        "stability": 0.0,
+        "win_rate": 0.4959
+      },
+      {
+        "bucket": "DOW_5_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0113,
+        "is_statistically_significant": false,
+        "sample_count": 246,
+        "stability": 0.0,
+        "win_rate": 0.4553
+      },
+      {
+        "bucket": "DOW_5_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0574,
+        "is_statistically_significant": false,
+        "sample_count": 198,
+        "stability": 0.0,
+        "win_rate": 0.4848
+      },
+      {
+        "bucket": "DOW_5_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0204,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_5_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0168,
+        "is_statistically_significant": false,
+        "sample_count": 116,
+        "stability": 0.0,
+        "win_rate": 0.4828
+      },
+      {
+        "bucket": "DOW_5_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0192,
+        "is_statistically_significant": false,
+        "sample_count": 119,
+        "stability": 0.0,
+        "win_rate": 0.4874
+      },
+      {
+        "bucket": "DOW_5_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0054,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_5_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0077,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_5_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0095,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.475
+      },
+      {
+        "bucket": "DOW_5_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": 0.1275,
+        "is_statistically_significant": false,
+        "sample_count": 245,
+        "stability": 0.0,
+        "win_rate": 0.502
+      },
+      {
+        "bucket": "DOW_5_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0122,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_5_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0022,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_5_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": 0.087,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_5_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0169,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.475
+      },
+      {
+        "bucket": "DOW_5_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0685,
+        "is_statistically_significant": false,
+        "sample_count": 245,
+        "stability": 0.0,
+        "win_rate": 0.4735
+      },
+      {
+        "bucket": "DOW_5_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0412,
+        "is_statistically_significant": false,
+        "sample_count": 244,
+        "stability": 0.0,
+        "win_rate": 0.4959
+      },
+      {
+        "bucket": "DOW_5_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0299,
+        "is_statistically_significant": false,
+        "sample_count": 242,
+        "stability": 0.0,
+        "win_rate": 0.5289
+      },
+      {
+        "bucket": "DOW_5_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0054,
+        "is_statistically_significant": false,
+        "sample_count": 251,
+        "stability": 0.0,
+        "win_rate": 0.4582
+      },
+      {
+        "bucket": "DOW_5_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0216,
+        "is_statistically_significant": false,
+        "sample_count": 248,
+        "stability": 0.0,
+        "win_rate": 0.496
+      },
+      {
+        "bucket": "DOW_5_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0628,
+        "is_statistically_significant": false,
+        "sample_count": 248,
+        "stability": 0.0,
+        "win_rate": 0.504
+      },
+      {
+        "bucket": "DOW_5_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0535,
+        "is_statistically_significant": false,
+        "sample_count": 251,
+        "stability": 0.0,
+        "win_rate": 0.494
+      },
+      {
+        "bucket": "DOW_6_HOUR_0",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0587,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_6_HOUR_1",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0881,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_6_HOUR_10",
+        "effective_n": 0.0,
+        "expectancy_r": -0.085,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_6_HOUR_11",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0273,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_6_HOUR_12",
+        "effective_n": 0.0,
+        "expectancy_r": 0.1047,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.5
+      },
+      {
+        "bucket": "DOW_6_HOUR_13",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0013,
+        "is_statistically_significant": false,
+        "sample_count": 141,
+        "stability": 0.0,
+        "win_rate": 0.4894
+      },
+      {
+        "bucket": "DOW_6_HOUR_14",
+        "effective_n": 0.0,
+        "expectancy_r": 0.064,
+        "is_statistically_significant": false,
+        "sample_count": 173,
+        "stability": 0.0,
+        "win_rate": 0.5145
+      },
+      {
+        "bucket": "DOW_6_HOUR_15",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0063,
+        "is_statistically_significant": false,
+        "sample_count": 181,
+        "stability": 0.0,
+        "win_rate": 0.4862
+      },
+      {
+        "bucket": "DOW_6_HOUR_16",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0298,
+        "is_statistically_significant": false,
+        "sample_count": 183,
+        "stability": 0.0,
+        "win_rate": 0.4809
+      },
+      {
+        "bucket": "DOW_6_HOUR_17",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0127,
+        "is_statistically_significant": false,
+        "sample_count": 181,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_6_HOUR_18",
+        "effective_n": 0.0,
+        "expectancy_r": 0.043,
+        "is_statistically_significant": false,
+        "sample_count": 171,
+        "stability": 0.0,
+        "win_rate": 0.4912
+      },
+      {
+        "bucket": "DOW_6_HOUR_19",
+        "effective_n": 0.0,
+        "expectancy_r": 0.001,
+        "is_statistically_significant": false,
+        "sample_count": 170,
+        "stability": 0.0,
+        "win_rate": 0.4588
+      },
+      {
+        "bucket": "DOW_6_HOUR_2",
+        "effective_n": 0.0,
+        "expectancy_r": -0.1117,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.45
+      },
+      {
+        "bucket": "DOW_6_HOUR_20",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0164,
+        "is_statistically_significant": false,
+        "sample_count": 159,
+        "stability": 0.0,
+        "win_rate": 0.4843
+      },
+      {
+        "bucket": "DOW_6_HOUR_21",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0438,
+        "is_statistically_significant": false,
+        "sample_count": 157,
+        "stability": 0.0,
+        "win_rate": 0.5032
+      },
+      {
+        "bucket": "DOW_6_HOUR_22",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0601,
+        "is_statistically_significant": false,
+        "sample_count": 657,
+        "stability": 0.0,
+        "win_rate": 0.449
+      },
+      {
+        "bucket": "DOW_6_HOUR_23",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0127,
+        "is_statistically_significant": false,
+        "sample_count": 1080,
+        "stability": 0.0,
+        "win_rate": 0.4861
+      },
+      {
+        "bucket": "DOW_6_HOUR_3",
+        "effective_n": 0.0,
+        "expectancy_r": 0.0384,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_6_HOUR_4",
+        "effective_n": 0.0,
+        "expectancy_r": 0.1321,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4917
+      },
+      {
+        "bucket": "DOW_6_HOUR_5",
+        "effective_n": 0.0,
+        "expectancy_r": 0.1106,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "DOW_6_HOUR_6",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0419,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4583
+      },
+      {
+        "bucket": "DOW_6_HOUR_7",
+        "effective_n": 0.0,
+        "expectancy_r": -0.1622,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4583
+      },
+      {
+        "bucket": "DOW_6_HOUR_8",
+        "effective_n": 0.0,
+        "expectancy_r": 0.1452,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.5083
+      },
+      {
+        "bucket": "DOW_6_HOUR_9",
+        "effective_n": 0.0,
+        "expectancy_r": -0.1325,
+        "is_statistically_significant": false,
+        "sample_count": 120,
+        "stability": 0.0,
+        "win_rate": 0.4833
+      },
+      {
+        "bucket": "MONTH_END",
+        "effective_n": 0.0,
+        "expectancy_r": -0.0019,
+        "is_statistically_significant": false,
+        "sample_count": 15808,
+        "stability": 0.0,
+        "win_rate": 0.498
+      }
+    ],
+    "calendar_stability_status": "NOT_EVALUATED_NO_GOVERNED_CALIBRATION_FOLDS",
+    "candidate_profile_authority": false,
+    "candle_count": 161233,
+    "code_revision": "e716f015b5e1c1027d026f8176417c310a056368",
+    "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+    "dataset_fingerprint_match": true,
+    "gap_evidence": {
+      "contiguous_segment_count": 1496,
+      "internal_gap_count": 1495,
+      "largest_gap_seconds": 274500,
+      "missing_interval_count": 63215
+    },
+    "instrument": "XAUUSD",
+    "production_authority": false,
+    "provider": "twelve_data_xauusd",
+    "regime_evidence": {
+      "legacy_xaut_thresholds_used": false,
+      "observation_count": 161233,
+      "reason": "XAUUSD_REGIME_CALIBRATION_REQUIRED",
+      "regime": "UNKNOWN"
+    },
+    "session_evidence": [
+      {
+        "effective_n": 0.0,
+        "expectancy_r": 0.0036,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 42401,
+        "session": "ASIA",
+        "win_rate": 0.5009
+      },
+      {
+        "effective_n": 0.0,
+        "expectancy_r": 0.0017,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 35070,
+        "session": "LONDON",
+        "win_rate": 0.5015
+      },
+      {
+        "effective_n": 0.0,
+        "expectancy_r": -0.0001,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 23872,
+        "session": "LONDON_NY_OVERLAP",
+        "win_rate": 0.5106
+      },
+      {
+        "effective_n": 0.0,
+        "expectancy_r": 0.0267,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 7018,
+        "session": "LONDON_PREOPEN",
+        "win_rate": 0.5021
+      },
+      {
+        "effective_n": 0.0,
+        "expectancy_r": 0.0026,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 37029,
+        "session": "NEW_YORK",
+        "win_rate": 0.5065
+      },
+      {
+        "effective_n": 0.0,
+        "expectancy_r": 0.0184,
+        "is_statistically_significant": false,
+        "regime": "UNKNOWN",
+        "sample_count": 14347,
+        "session": "US_LATE",
+        "win_rate": 0.5071
+      }
+    ],
+    "status": "DESCRIPTIVE_EVIDENCE_ONLY",
+    "swing_evidence": {
+      "confirmed_swing_count": 30550,
+      "contiguous_segment_count": 1496,
+      "cross_gap_duration_pairs": 0,
+      "duration_pair_count": 29150,
+      "effective_n": 0.0,
+      "effective_n_certified": false,
+      "known_duration_percentiles": {
+        "P10": 2.0,
+        "P25": 3.0,
+        "P50": 4.0,
+        "P75": 6.0,
+        "P90": 9.0,
+        "P95": 11.0
+      },
+      "known_duration_raw_count": 29150,
+      "market_duration_percentiles": {
+        "P10": 2.0,
+        "P25": 3.0,
+        "P50": 4.0,
+        "P75": 6.0,
+        "P90": 9.0,
+        "P95": 11.0
+      },
+      "market_duration_raw_count": 29150,
+      "swing_high_count": 15195,
+      "swing_low_count": 15355
+    },
+    "timeframe": "15m",
+    "window": {
+      "end": "2026-09-01T00:00:00+00:00",
+      "start": "2020-04-07T00:00:00+00:00"
+    }
+  },
+  "evidence_fingerprint": "4cce5b5c5afd109966a035c4fcc4b38ce66b64c93780264f609c40dd565eed8b",
+  "evidence_schema": "aurumiq.phase3a.descriptive_evidence.v1",
+  "instrument": "XAUUSD",
+  "legacy_manifest_dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "production_authority": false,
+  "schema": "aurumiq.phase3a.descriptive_artifact.v1",
+  "selection_policy_fingerprint": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
+  "status": "DESCRIPTIVE_EVIDENCE_ONLY",
+  "timeframe": "15m"
+}
