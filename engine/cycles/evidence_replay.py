@@ -21,14 +21,26 @@ from engine.core.types import (
     CandleData,
     RegimeType,
 )
+from engine.cycles.calendar import (
+    calendar_bucket_key,
+)
 from engine.cycles.calibration import (
     CalendarCalibrationFold,
     calculate_distribution_percentiles,
     calibrate_calendar_effects,
     calibrate_session_expectancy,
 )
+from engine.cycles.session import (
+    classify_session,
+)
 from engine.cycles.swing_duration import (
     timeframe_to_seconds,
+)
+from engine.guards.empirical_a16 import (
+    A16_EMPIRICAL_POLICY_SCHEMA,
+    ObservationWindow,
+    compute_empirical_a16_policy_fingerprint,
+    evaluate_empirical_a16,
 )
 from engine.structure.causal_swings import (
     detect_causal_swings,
@@ -209,6 +221,202 @@ def _split_contiguous_segments(
     )
 
 
+def _build_return_observations(
+    candles: Sequence[CandleData],
+    timeframe: str,
+):
+    """
+    Build the exact one-bar forward-return samples
+    used by session/calendar empirical calibration.
+
+    Physical gaps are excluded.
+    Regime remains explicitly UNKNOWN.
+    """
+    tf_seconds = timeframe_to_seconds(
+        timeframe
+    )
+
+    session_observations = {}
+    calendar_observations = {}
+
+    for idx in range(
+        len(candles) - 1
+    ):
+        current = candles[idx]
+        nxt = candles[idx + 1]
+
+        if (
+            not current.is_closed
+            or not nxt.is_closed
+        ):
+            continue
+
+        if (
+            nxt.timestamp_open
+            != current.timestamp_close
+        ):
+            continue
+
+        close_delta = (
+            nxt.timestamp_close
+            - current.timestamp_close
+        ).total_seconds()
+
+        if close_delta != tf_seconds:
+            continue
+
+        if current.close <= 0:
+            continue
+
+        realized_return = float(
+            (
+                nxt.close
+                - current.close
+            )
+            / current.close
+        )
+
+        observation = ObservationWindow(
+            start=current.timestamp_close,
+            end=nxt.timestamp_close,
+            value=realized_return,
+            regime=RegimeType.UNKNOWN.value,
+        )
+
+        session = classify_session(
+            current.timestamp_close
+        ).session
+
+        session_key = (
+            session,
+            RegimeType.UNKNOWN,
+        )
+
+        session_observations.setdefault(
+            session_key,
+            [],
+        ).append(
+            observation
+        )
+
+        calendar_key = (
+            calendar_bucket_key(
+                current.timestamp_close
+            )
+        )
+
+        calendar_observations.setdefault(
+            calendar_key,
+            [],
+        ).append(
+            observation
+        )
+
+    return (
+        session_observations,
+        calendar_observations,
+    )
+
+
+def _sample_evaluation_dict(
+    evaluation,
+):
+    if evaluation is None:
+        return None
+
+    return {
+        "n_raw": evaluation.n_raw,
+        "independent_after_overlap": (
+            evaluation
+            .independent_after_overlap
+        ),
+        "temporal_clusters": (
+            evaluation.temporal_clusters
+        ),
+        "hhi_norm": evaluation.hhi_norm,
+        "regime_discount": (
+            evaluation.regime_discount
+        ),
+        "clustering_discount": (
+            evaluation.clustering_discount
+        ),
+        "effective_n": (
+            evaluation.effective_n
+        ),
+        "quality": (
+            evaluation.quality.value
+        ),
+        "weight_multiplier": (
+            evaluation.weight_multiplier
+        ),
+        "is_blocked": (
+            evaluation.is_blocked
+        ),
+        "message": evaluation.message,
+    }
+
+
+def _empirical_a16_dict(
+    result,
+):
+    return {
+        "is_certified": (
+            result.is_certified
+        ),
+        "reason": result.reason,
+
+        "overlap_method": (
+            result.overlap_method
+        ),
+        "overlapping_count": (
+            result.overlapping_count
+        ),
+        "overlap_ratio": (
+            result.overlap_ratio
+        ),
+
+        "autocorrelation_method": (
+            result.autocorrelation_method
+        ),
+        "lag1_autocorrelation": (
+            result.lag1_autocorrelation
+        ),
+        "autocorrelation_factor": (
+            result.autocorrelation_factor
+        ),
+
+        "regime_policy": (
+            result.regime_policy
+        ),
+        "regime_distribution": (
+            dict(
+                result.regime_distribution
+            )
+        ),
+
+        "policy_fingerprint": (
+            result.policy_fingerprint
+        ),
+
+        "n_raw": (
+            result.evaluation.n_raw
+            if result.evaluation
+            is not None
+            else sum(
+                result
+                .regime_distribution
+                .values()
+            )
+        ),
+
+        "evaluation": (
+            _sample_evaluation_dict(
+                result.evaluation
+            )
+        ),
+    }
+
+
 def _build_swing_evidence(
     segments,
     timeframe: str,
@@ -224,6 +432,7 @@ def _build_swing_evidence(
     swing_high_count = 0
     swing_low_count = 0
     duration_pairs = 0
+    swing_observations = []
 
     for segment in segments:
         if len(segment) < 7:
@@ -270,15 +479,15 @@ def _build_swing_evidence(
                 - current.timestamp
             ).total_seconds()
 
-            known_durations.append(
-                max(
-                    1,
-                    int(
-                        known_seconds
-                        // tf_seconds
-                    ),
-                )
+            known_bars = max(
+                1,
+                int(
+                    known_seconds
+                    // tf_seconds
+                ),
             )
+
+            known_durations.append(known_bars)
 
             market_durations.append(
                 max(
@@ -291,6 +500,57 @@ def _build_swing_evidence(
             )
 
             duration_pairs += 1
+
+            observation_start = (
+                current.detected_at
+            )
+
+            observation_end = (
+                nxt.detected_at
+            )
+
+            # Existing swing calibration defines
+            # minimum known duration as one bar.
+            #
+            # If two confirmed swings share the same
+            # detected_at timestamp, preserve that
+            # conservative one-bar minimum in the
+            # A16 observation geometry.
+            if observation_end <= observation_start:
+                observation_end = (
+                    observation_start
+                    + timedelta(
+                        seconds=tf_seconds
+                    )
+                )
+
+            swing_observations.append(
+                ObservationWindow(
+                    start=observation_start,
+                    end=observation_end,
+                    value=float(known_bars),
+                    regime=(
+                        RegimeType.UNKNOWN.value
+                    ),
+                )
+            )
+
+    swing_a16 = evaluate_empirical_a16(
+        swing_observations
+    )
+
+    swing_effective_n = 0.0
+
+    if (
+        swing_a16.is_certified
+        and swing_a16.evaluation
+        is not None
+    ):
+        swing_effective_n = (
+            swing_a16
+            .evaluation
+            .effective_n
+        )
 
     return {
         "confirmed_swing_count": total_swings,
@@ -317,8 +577,13 @@ def _build_swing_evidence(
         "market_duration_raw_count": len(
             market_durations
         ),
-        "effective_n": 0.0,
-        "effective_n_certified": False,
+        "effective_n": swing_effective_n,
+        "effective_n_certified": (
+            swing_a16.is_certified
+        ),
+        "a16": _empirical_a16_dict(
+            swing_a16
+        ),
     }
 
 
@@ -407,11 +672,45 @@ def build_phase3a_descriptive_evidence(
         for candle in ordered
     )
 
+    (
+        session_observations,
+        calendar_observations,
+    ) = _build_return_observations(
+        ordered,
+        timeframe,
+    )
+
+    session_a16_results = {}
+    session_sample_evaluations = {}
+
+    for key, observations in (
+        session_observations.items()
+    ):
+        measured = evaluate_empirical_a16(
+            observations
+        )
+
+        session_a16_results[key] = (
+            measured
+        )
+
+        if (
+            measured.is_certified
+            and measured.evaluation
+            is not None
+        ):
+            session_sample_evaluations[
+                key
+            ] = measured.evaluation
+
     session_table = (
         calibrate_session_expectancy(
             candles=ordered,
             regimes=regimes,
             timeframe=timeframe,
+            sample_evaluations=(
+                session_sample_evaluations
+            ),
         )
     )
 
@@ -449,6 +748,32 @@ def build_phase3a_descriptive_evidence(
         )
     )
 
+    session_a16_rows = []
+
+    for (
+        session,
+        regime,
+    ), measured in (
+        session_a16_results.items()
+    ):
+        row = _empirical_a16_dict(
+            measured
+        )
+
+        row["session"] = session.value
+        row["regime"] = regime.value
+
+        session_a16_rows.append(
+            row
+        )
+
+    session_a16_rows.sort(
+        key=lambda row: (
+            row["session"],
+            row["regime"],
+        )
+    )
+
     tf_seconds = timeframe_to_seconds(
         timeframe
     )
@@ -466,6 +791,29 @@ def build_phase3a_descriptive_evidence(
         )
     )
 
+    calendar_a16_results = {}
+    calendar_sample_evaluations = {}
+
+    for bucket, observations in (
+        calendar_observations.items()
+    ):
+        measured = evaluate_empirical_a16(
+            observations
+        )
+
+        calendar_a16_results[
+            bucket
+        ] = measured
+
+        if (
+            measured.is_certified
+            and measured.evaluation
+            is not None
+        ):
+            calendar_sample_evaluations[
+                bucket
+            ] = measured.evaluation
+
     calendar_table = (
         calibrate_calendar_effects(
             candles=ordered,
@@ -477,7 +825,9 @@ def build_phase3a_descriptive_evidence(
             min_stability_folds=2,
             min_fold_observations=1,
 
-            sample_evaluations=None,
+            sample_evaluations=(
+                calendar_sample_evaluations
+            ),
             effective_n_mapping=None,
             significance_policy=None,
             min_effective_n=None,
@@ -517,6 +867,58 @@ def build_phase3a_descriptive_evidence(
 
     calendar_rows.sort(
         key=lambda row: row["bucket"]
+    )
+
+    calendar_a16_rows = []
+
+    for bucket, measured in (
+        calendar_a16_results.items()
+    ):
+        row = _empirical_a16_dict(
+            measured
+        )
+
+        row["bucket"] = bucket
+
+        calendar_a16_rows.append(
+            row
+        )
+
+    calendar_a16_rows.sort(
+        key=lambda row: row["bucket"]
+    )
+
+    swing_evidence = (
+        _build_swing_evidence(
+            segments,
+            timeframe,
+        )
+    )
+
+    session_certified = sum(
+        1
+        for row in session_a16_rows
+        if row["is_certified"]
+    )
+
+    calendar_certified = sum(
+        1
+        for row in calendar_a16_rows
+        if row["is_certified"]
+    )
+
+    swing_certified = bool(
+        swing_evidence[
+            "effective_n_certified"
+        ]
+    )
+
+    all_certified = (
+        session_certified
+        == len(session_a16_rows)
+        and calendar_certified
+        == len(calendar_a16_rows)
+        and swing_certified
     )
 
     evidence = {
@@ -573,12 +975,7 @@ def build_phase3a_descriptive_evidence(
 
         "session_evidence": session_rows,
 
-        "swing_evidence": (
-            _build_swing_evidence(
-                segments,
-                timeframe,
-            )
-        ),
+        "swing_evidence": swing_evidence,
 
         "calendar_evidence": (
             calendar_rows
@@ -590,15 +987,64 @@ def build_phase3a_descriptive_evidence(
         ),
 
         "a16": {
-            "effective_n_certified": False,
-            "effective_n": 0.0,
-            "overlap_ratio": None,
-            "autocorrelation_factor": None,
-            "status": (
-                "A16_POLICY_NOT_YET_GOVERNED"
+            "schema": (
+                A16_EMPIRICAL_POLICY_SCHEMA
             ),
+
+            "policy_fingerprint": (
+                compute_empirical_a16_policy_fingerprint()
+            ),
+
+            "certification_scope": (
+                "PER_BUCKET_AND_SWING"
+            ),
+
+            "status": (
+                "FULLY_CERTIFIED"
+                if all_certified
+                else "PARTIALLY_CERTIFIED"
+                if (
+                    session_certified > 0
+                    or calendar_certified > 0
+                    or swing_certified
+                )
+                else "NOT_CERTIFIED"
+            ),
+
+            "effective_n_certified": (
+                all_certified
+            ),
+
             "raw_n_must_not_be_used_as_effective_n": (
                 True
+            ),
+
+            "session": {
+                "bucket_count": (
+                    len(session_a16_rows)
+                ),
+                "certified_bucket_count": (
+                    session_certified
+                ),
+                "buckets": (
+                    session_a16_rows
+                ),
+            },
+
+            "calendar": {
+                "bucket_count": (
+                    len(calendar_a16_rows)
+                ),
+                "certified_bucket_count": (
+                    calendar_certified
+                ),
+                "buckets": (
+                    calendar_a16_rows
+                ),
+            },
+
+            "swing": (
+                swing_evidence["a16"]
             ),
         },
 

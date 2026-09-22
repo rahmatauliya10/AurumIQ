@@ -772,8 +772,40 @@ def main() -> int:
     print(
         "CANDIDATE_PROFILE_AUTHORITY = false"
     )
+    a16 = evidence["a16"]
+
     print(
-        "A16_EFFECTIVE_N_CERTIFIED = false"
+        "A16_POLICY_FINGERPRINT = "
+        f"{a16['policy_fingerprint']}"
+    )
+
+    print(
+        "A16_STATUS = "
+        f"{a16['status']}"
+    )
+
+    print(
+        "A16_SESSION_CERTIFIED_BUCKETS = "
+        f"{a16['session']['certified_bucket_count']}"
+        "/"
+        f"{a16['session']['bucket_count']}"
+    )
+
+    print(
+        "A16_CALENDAR_CERTIFIED_BUCKETS = "
+        f"{a16['calendar']['certified_bucket_count']}"
+        "/"
+        f"{a16['calendar']['bucket_count']}"
+    )
+
+    print(
+        "A16_SWING_CERTIFIED = "
+        f"{a16['swing']['is_certified']}"
+    )
+
+    print(
+        "A16_GLOBAL_CERTIFICATION = "
+        f"{a16['effective_n_certified']}"
     )
 
     return 0
