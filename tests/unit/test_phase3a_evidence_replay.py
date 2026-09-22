@@ -142,9 +142,10 @@ def test_phase3a_session_evidence_uses_unknown_regime_only():
     )
 
     assert all(
-        row[
-            "is_statistically_significant"
-        ] is False
+        isinstance(
+            row["is_statistically_significant"],
+            bool,
+        )
         for row in rows
     )
 
@@ -510,3 +511,83 @@ def test_phase3a_swing_a16_uses_actual_duration_samples():
             ]
             is True
         )
+
+
+def test_phase3a_fold_stability_wiring_is_descriptive_only():
+    evidence = build_phase3a_descriptive_evidence(
+        candles=_varied_candles(),
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    assert evidence["production_authority"] is False
+    assert evidence["candidate_profile_authority"] is False
+
+    stability = evidence["temporal_stability"]
+
+    assert stability["production_authority"] is False
+    assert stability["session"]["bucket_count"] == 6
+    assert len(stability["folds"]) == 5
+
+
+def test_session_fold_samples_do_not_exceed_full_history_samples():
+    evidence = build_phase3a_descriptive_evidence(
+        candles=_varied_candles(),
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    full = {
+        (row["session"], row["regime"]): row["sample_count"]
+        for row in evidence["session_evidence"]
+    }
+
+    stability = evidence["temporal_stability"]
+
+    for row in stability["session"]["buckets"]:
+        fold_n = sum(
+            fold["raw_n"]
+            for fold in row["folds"]
+        )
+
+        assert fold_n <= full[
+            (
+                row["session"],
+                row["regime"],
+            )
+        ]
+
+    calendar_full = {
+        row["bucket"]: row["sample_count"]
+        for row in evidence["calendar_evidence"]
+    }
+
+    for row in stability["calendar"]["buckets"]:
+        fold_n = sum(
+            fold["raw_n"]
+            for fold in row["folds"]
+        )
+        assert fold_n <= calendar_full[row["bucket"]]
+
+
+def test_phase3a_actual_significance_and_stability_are_separate():
+    evidence = build_phase3a_descriptive_evidence(
+        candles=_varied_candles(),
+        instrument="XAUUSD",
+        provider="TEST_XAUUSD",
+        timeframe="15m",
+        code_revision="a" * 40,
+    )
+
+    for row in evidence["session_evidence"]:
+        assert "is_statistically_significant" in row
+        assert isinstance(row["is_statistically_significant"], bool)
+
+    stability = evidence["temporal_stability"]
+    for row in stability["session"]["buckets"]:
+        assert "temporal_stability_passed" in row
+        assert isinstance(row["temporal_stability_passed"], bool)

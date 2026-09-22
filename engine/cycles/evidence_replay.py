@@ -9,7 +9,7 @@ This module deliberately DOES NOT:
 - use Django or network access.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -30,6 +30,13 @@ from engine.cycles.calibration import (
     calibrate_calendar_effects,
     calibrate_session_expectancy,
 )
+from engine.cycles.fold_stability import (
+    PHASE3A_FOLD_STABILITY_SCHEMA,
+    TemporalStabilityResult,
+    build_equal_duration_folds,
+    compute_phase3a_fold_stability_policy_fingerprint,
+    evaluate_temporal_stability,
+)
 from engine.cycles.session import (
     classify_session,
 )
@@ -42,9 +49,94 @@ from engine.guards.empirical_a16 import (
     compute_empirical_a16_policy_fingerprint,
     evaluate_empirical_a16,
 )
+from engine.guards.statistical_significance import (
+    PHASE3A_SIGNIFICANCE_SCHEMA,
+    compute_phase3a_significance_policy_fingerprint,
+    evaluate_positive_mean_significance,
+)
 from engine.structure.causal_swings import (
     detect_causal_swings,
 )
+
+
+def _phase3a_significance_policy(
+    mean_return: float,
+    std_dev: float,
+    raw_n: int,
+    effective_n: float,
+) -> bool:
+    del raw_n
+
+    result = evaluate_positive_mean_significance(
+        mean_return=mean_return,
+        std_dev=std_dev,
+        effective_n=effective_n,
+    )
+
+    return result.is_significant
+
+
+def _temporal_stability_dict(
+    result: TemporalStabilityResult,
+) -> Dict[str, Any]:
+    return {
+        "fold_count": result.fold_count,
+        "covered_fold_count": (
+            result.covered_fold_count
+        ),
+        "positive_fold_count": (
+            result.positive_fold_count
+        ),
+        "fold_expectancies": list(
+            result.fold_expectancies
+        ),
+        "mean_fold_expectancy": (
+            result.mean_fold_expectancy
+        ),
+        "std_fold_expectancy": (
+            result.std_fold_expectancy
+        ),
+        "stability_score": (
+            result.stability_score
+        ),
+        "positive_fold_rule_passed": (
+            result.positive_fold_rule_passed
+        ),
+        "stability_rule_passed": (
+            result.stability_rule_passed
+        ),
+        "temporal_stability_passed": (
+            result.temporal_stability_passed
+        ),
+        "policy_fingerprint": (
+            result.policy_fingerprint
+        ),
+        "folds": [
+            {
+                "fold_id": fold.fold_id,
+                "raw_n": fold.raw_n,
+                "effective_n": (
+                    fold.effective_n
+                ),
+                "mean_return": (
+                    fold.mean_return
+                ),
+                "std_dev": fold.std_dev,
+                "expectancy_r": (
+                    fold.expectancy_r
+                ),
+                "positive": fold.positive,
+                "significant_positive": (
+                    fold.significant_positive
+                ),
+                "lcb_95": fold.lcb_95,
+                "a16_certified": (
+                    fold.a16_certified
+                ),
+            }
+            for fold in result.folds
+        ],
+    }
 
 
 PHASE3A_EVIDENCE_SCHEMA = (
@@ -595,6 +687,8 @@ def build_phase3a_descriptive_evidence(
     code_revision: str,
     expected_dataset_fingerprint: str = "",
     auxiliary_evidence: Optional[Dict[str, Any]] = None,
+    fold_window_start: Optional[datetime] = None,
+    fold_window_end: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     if (
         instrument.upper()
@@ -614,6 +708,51 @@ def build_phase3a_descriptive_evidence(
 
     ordered = _canonical_candles(
         candles
+    )
+
+    resolved_fold_start = (
+        fold_window_start
+        if fold_window_start is not None
+        else ordered[0].timestamp_open
+    )
+
+    resolved_fold_end = (
+        fold_window_end
+        if fold_window_end is not None
+        else ordered[-1].timestamp_close
+    )
+
+    for name, value in (
+        ("fold_window_start", resolved_fold_start),
+        ("fold_window_end", resolved_fold_end),
+    ):
+        if (
+            value.tzinfo is None
+            or value.tzinfo.utcoffset(value) is None
+        ):
+            raise ValueError(
+                f"{name} must be timezone-aware."
+            )
+
+    if resolved_fold_start >= resolved_fold_end:
+        raise ValueError(
+            "Fold stability window must have start < end."
+        )
+
+    if ordered[0].timestamp_open < resolved_fold_start:
+        raise ValueError(
+            "Candle evidence starts before governed fold window."
+        )
+
+    if ordered[-1].timestamp_close > resolved_fold_end:
+        raise ValueError(
+            "Candle evidence ends after governed fold window."
+        )
+
+    chronological_folds = build_equal_duration_folds(
+        start=resolved_fold_start,
+        end=resolved_fold_end,
+        total_folds=5,
     )
 
     segments, gap_evidence = (
@@ -711,6 +850,7 @@ def build_phase3a_descriptive_evidence(
             sample_evaluations=(
                 session_sample_evaluations
             ),
+            significance_policy=_phase3a_significance_policy,
         )
     )
 
@@ -829,7 +969,7 @@ def build_phase3a_descriptive_evidence(
                 calendar_sample_evaluations
             ),
             effective_n_mapping=None,
-            significance_policy=None,
+            significance_policy=_phase3a_significance_policy,
             min_effective_n=None,
         )
     )
@@ -887,6 +1027,52 @@ def build_phase3a_descriptive_evidence(
     calendar_a16_rows.sort(
         key=lambda row: row["bucket"]
     )
+
+    session_stability = []
+
+    for (
+        session,
+        regime,
+    ), observations in sorted(
+        session_observations.items(),
+        key=lambda item: (
+            item[0][0].value,
+            item[0][1].value,
+        ),
+    ):
+        result = evaluate_temporal_stability(
+            observations=observations,
+            folds=chronological_folds,
+        )
+
+        session_stability.append(
+            {
+                "session": session.value,
+                "regime": regime.value,
+                **_temporal_stability_dict(
+                    result
+                ),
+            }
+        )
+
+    calendar_stability = []
+
+    for bucket, observations in sorted(
+        calendar_observations.items()
+    ):
+        result = evaluate_temporal_stability(
+            observations=observations,
+            folds=chronological_folds,
+        )
+
+        calendar_stability.append(
+            {
+                "bucket": bucket,
+                **_temporal_stability_dict(
+                    result
+                ),
+            }
+        )
 
     swing_evidence = (
         _build_swing_evidence(
@@ -1046,6 +1232,62 @@ def build_phase3a_descriptive_evidence(
             "swing": (
                 swing_evidence["a16"]
             ),
+        },
+
+        "statistical_significance": {
+            "schema": (
+                PHASE3A_SIGNIFICANCE_SCHEMA
+            ),
+            "policy_fingerprint": (
+                compute_phase3a_significance_policy_fingerprint()
+            ),
+            "sample_size_basis": (
+                "A16_EFFECTIVE_N"
+            ),
+            "production_authority": False,
+        },
+
+        "temporal_stability": {
+            "schema": (
+                PHASE3A_FOLD_STABILITY_SCHEMA
+            ),
+            "policy_fingerprint": (
+                compute_phase3a_fold_stability_policy_fingerprint()
+            ),
+
+            "production_authority": False,
+
+            "window": {
+                "start": (
+                    resolved_fold_start.isoformat()
+                ),
+                "end": (
+                    resolved_fold_end.isoformat()
+                ),
+            },
+
+            "folds": [
+                {
+                    "fold_id": fold.fold_id,
+                    "start": fold.start.isoformat(),
+                    "end": fold.end.isoformat(),
+                }
+                for fold in chronological_folds
+            ],
+
+            "session": {
+                "bucket_count": len(
+                    session_stability
+                ),
+                "buckets": session_stability,
+            },
+
+            "calendar": {
+                "bucket_count": len(
+                    calendar_stability
+                ),
+                "buckets": calendar_stability,
+            },
         },
 
         "auxiliary_evidence": (

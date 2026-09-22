@@ -649,6 +649,10 @@ def main() -> int:
                 manifest_dataset_fp
             ),
             auxiliary_evidence=auxiliary,
+            fold_window_start=policy.historical_start,
+            fold_window_end=(
+                policy.historical_end_exclusive
+            ),
         )
     )
 
