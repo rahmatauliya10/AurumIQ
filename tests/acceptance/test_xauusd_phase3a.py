@@ -881,3 +881,85 @@ def test_calendar_calibration_stability_is_fold_based_and_explicit():
         ].stability
         == 0.0
     )
+
+
+@pytest.mark.unit
+def test_session_calibration_rejects_non_contiguous_candle_pairs():
+    """
+    Session empirical calibration must not treat a market-data
+    gap as one 15m forward-return observation.
+
+    Only physically contiguous T -> T+1 candle pairs are eligible.
+    """
+    base = datetime(
+        2026, 8, 12, 14, 0,
+        tzinfo=timezone.utc,
+    )
+
+    def candle(
+        ts_open: datetime,
+        close_price: str,
+    ) -> CandleData:
+        close = Decimal(close_price)
+
+        return CandleData(
+            timestamp_open=ts_open,
+            timestamp_close=(
+                ts_open
+                + timedelta(minutes=15)
+            ),
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=Decimal("0"),
+            is_closed=True,
+        )
+
+    candles = [
+        candle(
+            base,
+            "101",
+        ),
+        candle(
+            base + timedelta(minutes=15),
+            "102",
+        ),
+
+        # 14:30 -> 14:45 candle is missing.
+        candle(
+            base + timedelta(minutes=45),
+            "201",
+        ),
+        candle(
+            base + timedelta(minutes=60),
+            "202",
+        ),
+    ]
+
+    regimes = [
+        (
+            c.timestamp_close,
+            RegimeType.UNKNOWN,
+        )
+        for c in candles
+    ]
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        timeframe="15m",
+    )
+
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    # Eligible:
+    # 14:00 -> 14:15 pair
+    # 14:45 -> 15:00 pair
+    #
+    # Rejected:
+    # 14:15 -> 14:45 because a 15m bar is missing.
+    assert total_samples == 2

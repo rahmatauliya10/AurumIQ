@@ -195,24 +195,50 @@ def calculate_distribution_percentiles(durations: Sequence[int]) -> Dict[str, fl
 
 def calibrate_session_expectancy(
     candles: Sequence[CandleData],
-    regimes: Sequence[Tuple[datetime, RegimeType]],
-    sample_evaluations: Optional[Mapping[Tuple[SessionType, RegimeType], SampleEvaluation]] = None,
-    effective_n_mapping: Optional[Mapping[Tuple[SessionType, RegimeType], float]] = None,
-    significance_policy: Optional[Callable[[float, float, int], bool]] = None,
-    min_effective_n: Optional[float] = None,
-) -> Dict[Tuple[SessionType, RegimeType], SessionExpectancyEntry]:
+    regimes: Sequence[
+        Tuple[datetime, RegimeType]
+    ],
+    sample_evaluations: Optional[
+        Mapping[
+            Tuple[SessionType, RegimeType],
+            SampleEvaluation,
+        ]
+    ] = None,
+    effective_n_mapping: Optional[
+        Mapping[
+            Tuple[SessionType, RegimeType],
+            float,
+        ]
+    ] = None,
+    significance_policy: Optional[
+        Callable[[float, float, int], bool]
+    ] = None,
+    min_effective_n: Optional[
+        float
+    ] = None,
+    timeframe: str = "15m",
+) -> Dict[
+    Tuple[SessionType, RegimeType],
+    SessionExpectancyEntry,
+]:
     """
     Calibrate empirical session expectancy table from closed historical candles and point-in-time regimes.
 
     Invariants:
-      - Zero hardcoded sample thresholds (no default min_samples=30).
-      - Zero hardcoded t-statistic thresholds (no default 1.96).
+      - Closed candles only.
+      - T -> T+1 must be physically contiguous for the
+        declared timeframe.
+      - Market gaps are excluded, never interpolated.
+      - Zero hardcoded sample thresholds.
       - Raw N is NEVER assumed equal to effective N.
-      - If sample_evaluations or effective_n_mapping is not supplied, effective_n defaults to 0.0
-        and is_statistically_significant defaults to False.
+      - Missing statistical evidence fails closed.
     """
     if not candles or not regimes:
         return {}
+
+    tf_seconds = timeframe_to_seconds(
+        timeframe
+    )
 
     regime_map = {ts: reg for ts, reg in regimes}
     bucket_returns: Dict[Tuple[SessionType, RegimeType], List[float]] = {}
@@ -221,6 +247,25 @@ def calibrate_session_expectancy(
         c_curr = candles[i]
         c_next = candles[i + 1]
         if not c_curr.is_closed or not c_next.is_closed:
+            continue
+
+        # Physical candle continuity is mandatory.
+        #
+        # A weekend, holiday, provider outage, or missing
+        # interval must never be interpreted as a one-bar
+        # session return.
+        if (
+            c_next.timestamp_open
+            != c_curr.timestamp_close
+        ):
+            continue
+
+        close_delta_seconds = (
+            c_next.timestamp_close
+            - c_curr.timestamp_close
+        ).total_seconds()
+
+        if close_delta_seconds != tf_seconds:
             continue
 
         as_of = c_curr.timestamp_close
