@@ -2,7 +2,7 @@
   "schema": "aurumiq.calibration.risk_candidate_generation_policy.v1",
   "policy_id": "XAUUSD-RISK-CANDIDATE-GENERATION-POLICY-20260915",
   "selection_policy_fingerprint_reference": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
-  "signal_candidate_policy_fingerprint_reference": "b0893264f27be95b7e7927c6bb2cdc6dc03dbcd9be6a23a5fcbd2a2cfb8872a4",
+  "signal_candidate_policy_fingerprint_reference": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f",
   "code_revision": "b2acb6b735c378c6ae8d39372012c91949052305",
   "dataset_fingerprint_reference": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
   "instrument": "XAUUSD",
@@ -232,6 +232,6 @@
     "paper_only": true,
     "real_order_execution": "disabled"
   },
-  "policy_fingerprint": "b992694c4f3f7b13c60cee471733d5629219e674a58455f749b4f9ab8074aa67",
+  "policy_fingerprint": "a6a15e7c878a70dc9ee4b5ca8a1b8abd6b1444587ea67e44448db2ce0cd955ca",
   "geometry_artifact_fingerprint_reference": "a6b2f31f2ffc6b63ec303768e8c0c80d70b96439b6ed6e24cea9ca263e2d99c4"
 }

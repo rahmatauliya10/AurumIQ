@@ -1,6 +1,6 @@
 {
-  "schema": "aurumiq.calibration.candidate_generation_policy.v1",
-  "policy_id": "XAUUSD-CANDIDATE-GENERATION-POLICY-20260915",
+  "schema": "aurumiq.calibration.candidate_generation_policy.v3",
+  "policy_id": "XAUUSD-CANDIDATE-GENERATION-POLICY-20260923-V3",
   "selection_policy_fingerprint_reference": "28da9f1b84b8aaddff44a535c38a6e99aeaa8b019a5687205d3605b5d80e8ccc",
   "code_revision": "b2acb6b735c378c6ae8d39372012c91949052305",
   "dataset_fingerprint_reference": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
@@ -123,14 +123,14 @@
   },
   "candidate_generation_algorithm": {
     "method": "UNIFORM_SIMPLEX_AND_ORDER_STATISTICS",
-    "direction_sampling": "Sort 5 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 6 active components; weight_regime and weight_volume set to 0.0",
-    "timing_sampling": "Sort 2 standard uniforms in (0,1), prepend 0.0, append 1.0; compute successive differences scaled to 100.0 for 3 active components; weight_phase3a and weight_volume_response set to 0.0",
-    "gate_sampling": "Direction: sort 3 standard uniforms in [0,1] scaled to 100.0; Timing: sort 2 standard uniforms in [0,1] scaled to 100.0",
+    "direction_sampling": "Candidates 001-099: independently sampled on 6-simplex for Long and Short across active components (trend_1h, trend_4h, trend_1d, structure_bos, pullback, momentum); weight_regime and weight_volume set to 0.0.",
+    "timing_sampling": "Candidates 001-099: coupled timing weights on 3-simplex (long_timing == short_timing) across active components (entry_zone, reversal_confirmation_15m, momentum_turn_15m_1h); weight_phase3a and weight_volume_response set to 0.0.",
+    "gate_sampling": "Candidates 001-099: coupled/symmetric gate sampling where a single monotonic gate tuple across governed domain [0.0, 100.0] is assigned identically to both Long and Short gates (long_gate == short_gate).",
     "equal_weight_baseline_candidate_0": {
       "permitted_as_neutral_reference": true,
       "direction_weights_equal": "100.0 / 6 across 6 active components, weight_regime = 0.0, weight_volume = 0.0",
       "timing_weights_equal": "100.0 / 3 across 3 active components, weight_phase3a = 0.0, weight_volume_response = 0.0",
-      "baseline_gate_policy": "NONE (sampled via standard monotonic order statistics)"
+      "baseline_gate_policy": "FROZEN_REFERENCE_INDEPENDENT (sampled via standard monotonic order statistics independently for Long and Short)"
     },
     "duplicate_rejection_rule": "strict_phase4_policy_fingerprint_deduplication",
     "rounding_precision": {
@@ -143,5 +143,5 @@
     "paper_only": true,
     "real_order_execution": "disabled"
   },
-  "policy_fingerprint": "dab7126bbdb4ae97bead8dac048c9c08fff237e603c19b5a0473967d6b3f2c3d"
+  "policy_fingerprint": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f"
 }

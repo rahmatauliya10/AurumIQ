@@ -22,6 +22,7 @@ import json
 import math
 import os
 from pathlib import Path
+import pickle
 import sqlite3
 import statistics
 import sys
@@ -33,6 +34,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
+os.environ["AURUMIQ_ENABLE_OOS"] = "0"
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 import django
 django.setup()
@@ -66,6 +70,10 @@ from engine.backtest.xauusd_risk_candidate_generator import (
     XauUsdJointCandidate,
     XauUsdJointCandidateGenerator,
     load_governed_risk_candidate_generation_policy,
+)
+from engine.backtest.xauusd_replay import (
+    XauUsdReplayMarketSnapshot,
+    build_market_snapshot_cache,
 )
 from engine.backtest.xauusd_runner import XauUsdBacktestRunner
 from engine.backtest.xauusd_types import (
@@ -210,11 +218,12 @@ def evaluate_candidate_val(
     cost_config: Optional[XauUsdCostConfig] = None,
     runner: Optional[XauUsdBacktestRunner] = None,
     relative_mdd_ceiling: Optional[float] = None,
+    market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
 ) -> Dict[str, Any]:
     """
     Execute empirical backtest replay across historical validation folds and calculate metrics.
     """
-    c_config = cost_config or XauUsdCostConfig.frictionless()
+    c_config = cost_config or XauUsdCostConfig.idealized()
     bt_runner = runner or XauUsdBacktestRunner()
 
     val_folds = policy.folds
@@ -223,17 +232,40 @@ def evaluate_candidate_val(
 
     spec = XauUsdBacktestRunSpec(
         instrument="XAUUSD",
-        timeframe="15m",
         start_time=val_start,
         end_time=val_end,
-        signal_profile=candidate.signal_profile,
-        risk_profile=candidate.risk_profile,
+        timeframes=("15m",),
         cost_config=c_config,
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
         dataset_hash="",
         code_revision=policy.code_revision,
+        holding_horizon_bars_15m=32,
+        max_fill_wait_bars_15m=8,
+        signal_profile=candidate.signal_profile,
+        risk_profile=candidate.risk_profile,
     )
 
-    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(dataset, spec)
+    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(
+        dataset,
+        spec,
+        market_cache=market_cache,
+    )
+
+    reachability_buy_window = any(
+        getattr(s, "candidate_state", None) == SignalState.BUY_WINDOW
+        or getattr(s, "candidate_state", None) == SignalState.BUY_WINDOW.value
+        for s in signals
+    )
+    reachability_sell_window = any(
+        getattr(s, "candidate_state", None) == SignalState.SELL_WINDOW
+        or getattr(s, "candidate_state", None) == SignalState.SELL_WINDOW.value
+        for s in signals
+    )
+    reachability_ready_short = any(
+        getattr(s, "candidate_state", None) == SignalState.READY_SHORT
+        or getattr(s, "candidate_state", None) == SignalState.READY_SHORT.value
+        for s in signals
+    )
 
     # Partition trades strictly within validation boundaries
     val_trades: List[XauUsdSimulatedTrade] = []
@@ -340,6 +372,9 @@ def evaluate_candidate_val(
         "macro_blackout_protective": True,
         "qualified": qualified,
         "trade_count": len(filled_trades),
+        "reachability_buy_window": reachability_buy_window,
+        "reachability_sell_window": reachability_sell_window,
+        "reachability_ready_short": reachability_ready_short,
     }
 
 
@@ -349,24 +384,39 @@ def evaluate_candidate_0_baseline(
     policy: XauUsdSignalCalibrationSelectionPolicy,
     cost_config: Optional[XauUsdCostConfig] = None,
     evaluator_fn: Optional[Callable] = None,
+    market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
 ) -> Tuple[float, float, Dict[str, Any]]:
     """
     Establish empirical baseline MDD from actual validation replay of Candidate 0.
     Strictly zero hardcoded baseline values.
     """
     eval_fn = evaluator_fn or evaluate_candidate_val
-    cand0_metrics = eval_fn(
-        dataset,
-        candidate_0,
-        policy,
-        cost_config,
-    )
+    import inspect
+    sig = inspect.signature(eval_fn)
+    if "market_cache" in sig.parameters:
+        cand0_metrics = eval_fn(
+            dataset,
+            candidate_0,
+            policy,
+            cost_config,
+            market_cache=market_cache,
+        )
+    else:
+        cand0_metrics = eval_fn(
+            dataset,
+            candidate_0,
+            policy,
+            cost_config,
+        )
     baseline_mdd_r = float(cand0_metrics["val_max_drawdown_r"])
     max_deterioration_pct = policy.max_drawdown_deterioration_pct
-    relative_mdd_ceiling = min(
-        policy.absolute_max_drawdown_r,
-        baseline_mdd_r * (1.0 + max_deterioration_pct / 100.0),
-    )
+    if baseline_mdd_r > 0:
+        relative_mdd_ceiling = min(
+            policy.absolute_max_drawdown_r,
+            baseline_mdd_r * (1.0 + max_deterioration_pct / 100.0),
+        )
+    else:
+        relative_mdd_ceiling = policy.absolute_max_drawdown_r
     return baseline_mdd_r, relative_mdd_ceiling, cand0_metrics
 
 
@@ -446,26 +496,57 @@ def evaluate_champion_oos(
             "CHAMPION_NOT_LOCKED: OOS access strictly forbidden before champion is locked."
         )
 
-    c_config = cost_config or XauUsdCostConfig.frictionless()
+    c_config = cost_config or XauUsdCostConfig.idealized()
     bt_runner = runner or XauUsdBacktestRunner()
 
     oos_folds = policy.folds
     oos_start = min(_to_utc(f["oos_start"]) for f in oos_folds)
     oos_end = max(_to_utc(f["oos_end"]) for f in oos_folds)
 
+    # Strictly build OOS cache ONLY AFTER champion lock verification
+    oos_cache_file = (
+        ROOT
+        / "artifacts"
+        / "calibration"
+        / f"xauusd_oos_market_cache_{policy.policy_fingerprint[:16]}.pkl"
+    )
+    if oos_cache_file.exists():
+        print(f"Loading existing OOS market snapshot cache from {oos_cache_file.name}...")
+        t_load = time.time()
+        with open(oos_cache_file, "rb") as f:
+            oos_market_cache = pickle.load(f)
+        print(f"OOS market snapshot cache loaded: {len(oos_market_cache)} snapshots in {time.time() - t_load:.2f}s")
+    else:
+        t_oos_cache = time.time()
+        oos_market_cache = build_market_snapshot_cache(dataset, oos_start, oos_end)
+        print(f"OOS market snapshot cache built: {len(oos_market_cache)} snapshots in {time.time() - t_oos_cache:.2f}s")
+        try:
+            with open(oos_cache_file, "wb") as f:
+                pickle.dump(oos_market_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Saved OOS market snapshot cache to {oos_cache_file.name}")
+        except Exception as e:
+            print(f"Warning: could not cache OOS to disk: {e}")
+
     spec = XauUsdBacktestRunSpec(
         instrument="XAUUSD",
-        timeframe="15m",
         start_time=oos_start,
         end_time=oos_end,
-        signal_profile=champion_candidate.signal_profile,
-        risk_profile=champion_candidate.risk_profile,
+        timeframes=("15m",),
         cost_config=c_config,
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
         dataset_hash="",
         code_revision=policy.code_revision,
+        holding_horizon_bars_15m=32,
+        max_fill_wait_bars_15m=8,
+        signal_profile=champion_candidate.signal_profile,
+        risk_profile=champion_candidate.risk_profile,
     )
 
-    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(dataset, spec)
+    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(
+        dataset,
+        spec,
+        market_cache=oos_market_cache,
+    )
 
     fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
         f["fold_id"]: [] for f in oos_folds
@@ -547,8 +628,12 @@ def load_point_in_time_dataset_from_db(
     start_time: datetime,
     end_time: datetime,
 ) -> PointInTimeDataset:
-    """Load historical candles from SQLite into in-memory PointInTimeDataset."""
-    from apps.market_data.models import MarketCandle
+    """Load historical candles and PIT macro evidence from SQLite into in-memory PointInTimeDataset."""
+    import bisect
+    from datetime import timedelta
+    from django.db.models import F
+    from apps.market_data.models import MacroScheduleVintage, MarketCandle, ScheduleStatus
+    from engine.core.types import MacroEventContext
 
     candles_15m: List[CandleData] = []
     qs = MarketCandle.objects.filter(
@@ -574,220 +659,76 @@ def load_point_in_time_dataset_from_db(
                 close_usd=r.close_usd,
             )
         )
-    return PointInTimeDataset(candles_15m=candles_15m)
-
-
-def main():
-    print("==================================================================")
-    print("AURUMIQ XAUUSD EMPIRICAL CALIBRATION RUNNER (PHASE 6 / PHASE 8)")
-    print("==================================================================")
-
-    # 1. Dataset Provenance
-    print("\n--- STEP 1: DATASET PROVENANCE VERIFICATION ---")
-    db_path = ROOT / "db.sqlite3"
-    if not db_path.exists():
-        raise FileNotFoundError(f"Historical datastore not found at {db_path}")
-
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT count(*) FROM market_data_marketcandle WHERE timeframe='15m'"
-    )
-    count_15m = cur.fetchone()[0]
-
-    manifest_path = (
-        ROOT / "artifacts" / "calibration" / "xauusd_data_manifest.json"
-    )
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Missing data manifest at {manifest_path}")
-
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
-
-    expected_dataset_fp = manifest["dataset_fingerprint"]
-    print(f"Governed Dataset Fingerprint: {expected_dataset_fp}")
-
-    if count_15m != 161233:
-        raise AssertionError(
-            f"DATASET_VERIFICATION_FAIL: 15m candle count mismatch ({count_15m} != 161233)"
-        )
-
-    print("DATASET_FINGERPRINT_MATCH = PASS")
-
-    # 2. Frozen Selection Policy & Embargo
-    print("\n--- STEP 2: FROZEN SELECTION POLICY & EMBARGO ---")
-    policy = load_governed_selection_policy()
-    print(f"Policy ID: {policy.policy_id}")
-    print(f"Policy Fingerprint: {policy.policy_fingerprint}")
-
-    max_fill_bars = 8
-    holding_bars = 32
-    declared_embargo = 86400.0
-
-    if not policy.validate_dynamic_embargo(
-        max_fill_wait_bars_15m=max_fill_bars,
-        holding_horizon_bars_15m=holding_bars,
-        declared_embargo_seconds=declared_embargo,
-    ):
-        raise AssertionError("DYNAMIC_EMBARGO_GATE = FAIL")
-
-    print("DYNAMIC_EMBARGO_GATE = PASS")
-
-    # 3. Candidate Generation (Budget <= 100)
-    print("\n--- STEP 3: JOINT CANDIDATE GENERATION ---")
-    joint_gen = XauUsdJointCandidateGenerator()
-    candidates = joint_gen.generate_all_joint_candidates(100)
-    print(f"Total Candidates Generated: {len(candidates)} (Cap: 100)")
-    assert len(candidates) == 100
-    assert candidates[0].is_reference is True
-
-    # 4. Structural Reachability Precheck
-    print("\n--- STEP 4: STRUCTURAL REACHABILITY PRECHECK ---")
-    reachable_candidates: List[XauUsdJointCandidate] = []
-    for cand in candidates:
-        reachable, reason = check_structural_reachability(cand.signal_profile)
-        if reachable:
-            reachable_candidates.append(cand)
-        else:
-            print(f"Candidate {cand.signal_profile.name} UNREACHABLE: {reason}")
-
-    print(
-        f"Reachable Candidates: {len(reachable_candidates)}/{len(candidates)}"
+    # Load provenanced macro schedules from SQLite (Phase 3A PIT evidence)
+    # Filter for valid schedules known strictly before release (known_at < scheduled_at)
+    schedules = list(
+        MacroScheduleVintage.objects.filter(
+            schedule_status=ScheduleStatus.SCHEDULED,
+            known_at__lt=F("scheduled_at"),
+            scheduled_at__gte=start_time - timedelta(days=2),
+            scheduled_at__lte=end_time + timedelta(days=2),
+        ).values("event_id", "reference_period", "scheduled_at", "known_at")
+        .order_by("scheduled_at")
     )
 
-    # 5. Load Dataset from DB
-    print("\n--- STEP 5: LOADING HISTORICAL DATASET ---")
-    dataset = load_point_in_time_dataset_from_db(
-        policy.historical_start,
-        policy.historical_end_exclusive,
-    )
+    macro_events: List[Tuple[datetime, MacroEventContext]] = []
+    if schedules:
+        # Precompute blackout intervals: [-30 min, +30 min] of scheduled_at
+        intervals = [
+            (
+                s["scheduled_at"] - timedelta(minutes=30),
+                s["scheduled_at"] + timedelta(minutes=30),
+                s["known_at"],
+                s["event_id"],
+            )
+            for s in schedules
+        ]
+        b_starts = [inv[0] for inv in intervals]
 
-    # 6. Empirical Drawdown Baseline (Candidate 0)
-    print("\n--- STEP 6: EMPIRICAL DRAWDOWN BASELINE (CANDIDATE 0) ---")
-    cand0 = candidates[0]
-    (
-        baseline_mdd_r,
-        relative_mdd_ceiling,
-        cand0_val_metrics,
-    ) = evaluate_candidate_0_baseline(
-        dataset=dataset,
-        candidate_0=cand0,
-        policy=policy,
-    )
-    print(f"DRAWDOWN_BASELINE_ID = REFERENCE_CANDIDATE_0")
-    print(f"BASELINE_MAX_DRAWDOWN_R = {baseline_mdd_r:.4f} R")
-    print(f"RELATIVE_DRAWDOWN_CEILING = {relative_mdd_ceiling:.4f} R")
+        cov_start = min(s["known_at"] for s in schedules)
+        cov_end = max(s["scheduled_at"] for s in schedules) + timedelta(minutes=30)
 
-    # 7. Evaluate Candidates on VAL & Rank
-    print("\n--- STEP 7: EVALUATE CANDIDATES ON VAL ---")
-    val_results: List[Dict[str, Any]] = []
-    for cand in reachable_candidates:
-        c_res = evaluate_candidate_val(
-            dataset=dataset,
-            candidate=cand,
-            policy=policy,
-            relative_mdd_ceiling=relative_mdd_ceiling,
-        )
-        val_results.append(c_res)
+        for c in candles_15m:
+            t = c.timestamp_close
+            if t < cov_start or t > cov_end:
+                ctx = MacroEventContext(
+                    is_in_blackout=False,
+                    is_feed_healthy=False,
+                )
+                macro_events.append((t, ctx))
+                continue
 
-    qualified_candidates = [r for r in val_results if r["qualified"]]
-    print(
-        f"Qualified Candidates on VAL: {len(qualified_candidates)}/{len(val_results)}"
-    )
+            low_idx = bisect.bisect_left(b_starts, t - timedelta(minutes=60))
+            high_idx = bisect.bisect_right(b_starts, t)
+            in_blackout = False
+            active_name = None
+            for k in range(max(0, low_idx), min(len(intervals), high_idx)):
+                inv_start, inv_end, kt, eid = intervals[k]
+                if inv_start <= t <= inv_end and kt <= t:
+                    in_blackout = True
+                    active_name = eid
+                    break
 
-    if not qualified_candidates:
-        print("NO_CANDIDATES_QUALIFIED: CALIBRATION_REQUIRED")
-        return 1
+            ctx = MacroEventContext(
+                is_in_blackout=in_blackout,
+                active_event_name=active_name,
+                is_feed_healthy=True,
+            )
+            macro_events.append((t, ctx))
 
-    champion_dict = select_champion(qualified_candidates)
-    if champion_dict is None:
-        print("CHAMPION_SELECTION_FAILED: CALIBRATION_REQUIRED")
-        return 1
+    return PointInTimeDataset(candles_15m=candles_15m, macro_events=macro_events)
 
-    # Map champion back to joint candidate object
-    champion_candidate = next(
-        c for c in candidates if c.index == champion_dict["index"]
-    )
-    champion_sig_fp = compute_phase4_policy_fingerprint(
-        champion_candidate.signal_profile
-    )
-    champion_risk_fp = compute_phase5_policy_fingerprint(
-        champion_candidate.risk_profile
-    )
-    champion_combined_fp = f"{champion_sig_fp}:{champion_risk_fp}"
-    champion_dict["champion_fingerprint"] = champion_combined_fp
 
-    # 8. LOCK 1 CHAMPION BEFORE OOS
-    print("\n--- STEP 8: LOCK 1 CHAMPION (BEFORE OOS ACCESS) ---")
-    champion_dict = lock_champion(
-        champion_dict=champion_dict,
-        selection_policy=policy,
-        dataset_fingerprint=expected_dataset_fp,
-    )
-    print(f"SELECTED_CHAMPION_ID = {champion_dict['candidate_id']}")
-    print(f"SELECTED_CHAMPION_FINGERPRINT = {champion_combined_fp}")
-    print(
-        f"SELECTION_EVIDENCE_FINGERPRINT = {champion_dict['selection_evidence_fingerprint']}"
-    )
-    print("CHAMPION_LOCKED_BEFORE_OOS = true")
-
-    if os.getenv("AURUMIQ_ENABLE_OOS", "0") != "1":
-        print("\n==================================================================")
-        print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY)")
-        print("==================================================================")
-        print(f"CANDIDATES_GENERATED = {len(candidates)}")
-        print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
-        print(f"CANDIDATES_VAL_EVALUATED = {len(val_results)}")
-        print(f"CANDIDATES_QUALIFIED = {len(qualified_candidates)}")
-        print("")
-        print(f"BASELINE_MDD_R = {baseline_mdd_r:.4f} R")
-        print(f"RELATIVE_MDD_CEILING = {relative_mdd_ceiling:.4f} R")
-        print("")
-        print(f"SELECTED_CHAMPION_ID = {champion_dict['candidate_id']}")
-        print(f"SELECTED_CHAMPION_FINGERPRINT = {champion_combined_fp}")
-        print("")
-        print(f"BUY_EFFECTIVE_N = {champion_dict['buy_effective_n']:.2f}")
-        print(f"SELL_EFFECTIVE_N = {champion_dict['sell_effective_n']:.2f}")
-        print(f"COMBINED_EFFECTIVE_N = {champion_dict['combined_effective_n']:.2f}")
-        print(f"VAL_LCB95 = +{champion_dict['val_lcb_95']:.4f} R")
-        print(f"VAL_MAX_DRAWDOWN_R = {champion_dict['val_max_drawdown_r']:.4f} R")
-        print(f"VAL_TEMPORAL_STABILITY = {champion_dict['val_temporal_stability']:.4f}")
-        print("")
-        print("CHAMPION_LOCKED_BEFORE_OOS = true")
-        print("OOS_ACCESS_COUNT = 0")
-        print("VAL_ONLY_CALIBRATION = COMPLETE")
-        return 0
-
-    # 9. OOS Confirmatory Evaluation
-    print("\n--- STEP 9: OOS ONE-TIME CONFIRMATORY EVALUATION ---")
-    oos_results = evaluate_champion_oos(
-        dataset=dataset,
-        champion_candidate=champion_candidate,
-        policy=policy,
-        champion_locked=champion_dict.get("CHAMPION_LOCKED_BEFORE_OOS", False),
-    )
-
-    print(
-        f"OOS Positive Folds: {oos_results['positive_folds']}/{oos_results['total_folds']}"
-    )
-    print(
-        f"OOS Temporal Stability: {oos_results['oos_temporal_stability']:.4f}"
-    )
-    print(f"OOS Expectancy LCB_95: +{oos_results['oos_lcb_95']:.4f} R")
-    print(f"OOS Max Drawdown: {oos_results['oos_max_drawdown_r']:.4f} R")
-
-    if not oos_results["passed"]:
-        print("OOS_ONE_TIME_RESULT = FAIL")
-        print("FINAL_PROFILE_STATUS = CALIBRATION_REQUIRED")
-        return 1
-
-    print("OOS_ONE_TIME_RESULT = PASS")
-    final_profile_status = "REVALIDATED_RESEARCH"
-    print(f"FINAL_PROFILE_STATUS = {final_profile_status}")
-
-    # 10. Seal Calibration Artifact
-    print("\n--- STEP 10: SEALING CALIBRATION ARTIFACT ---")
-    target_artifact_name = "xauusd_calibrated_profile_champion"
+def save_champion_artifact(
+    champion_candidate: XauUsdJointCandidate,
+    champion_dict: Dict[str, Any],
+    champion_combined_fp: str,
+    expected_dataset_fp: str,
+    policy: XauUsdSignalCalibrationSelectionPolicy,
+    final_profile_status: str,
+    oos_results: Optional[Dict[str, Any]] = None,
+    target_artifact_name: str = "xauusd_calibrated_profile_champion",
+) -> str:
     target_artifact_path = (
         ROOT / "artifacts" / "calibration" / f"{target_artifact_name}.json"
     )
@@ -910,6 +851,9 @@ def main():
         "artifact_id": target_artifact_name,
         "instrument": "XAUUSD",
         "calibration_status": final_profile_status,
+        "production_authority": False,
+        "paper_only": True,
+        "real_order_execution": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "champion_id": champion_dict["candidate_id"],
         "champion_fingerprint": champion_combined_fp,
@@ -930,6 +874,360 @@ def main():
     with open(target_artifact_path, "w", encoding="utf-8") as f:
         json.dump(artifact_dict, f, indent=2)
 
+    return artifact_fp
+
+
+def main():
+    print("==================================================================")
+    print("AURUMIQ XAUUSD EMPIRICAL CALIBRATION RUNNER (PHASE 6 / PHASE 8)")
+    print("==================================================================")
+
+    # 1. Dataset Provenance
+    print("\n--- STEP 1: DATASET PROVENANCE VERIFICATION ---")
+    db_path = ROOT / "db.sqlite3"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Historical datastore not found at {db_path}")
+
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT count(*) FROM market_data_marketcandle WHERE timeframe='15m'"
+    )
+    count_15m = cur.fetchone()[0]
+
+    manifest_path = (
+        ROOT / "artifacts" / "calibration" / "xauusd_data_manifest.json"
+    )
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing data manifest at {manifest_path}")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    expected_dataset_fp = manifest["dataset_fingerprint"]
+    print(f"Governed Dataset Fingerprint: {expected_dataset_fp}")
+
+    if count_15m != 161233:
+        raise AssertionError(
+            f"DATASET_VERIFICATION_FAIL: 15m candle count mismatch ({count_15m} != 161233)"
+        )
+
+    print("DATASET_FINGERPRINT_MATCH = PASS")
+
+    # 2. Frozen Selection Policy & Embargo
+    print("\n--- STEP 2: FROZEN SELECTION POLICY & EMBARGO ---")
+    policy = load_governed_selection_policy()
+    print(f"Policy ID: {policy.policy_id}")
+    print(f"Policy Fingerprint: {policy.policy_fingerprint}")
+
+    max_fill_bars = 8
+    holding_bars = 32
+    declared_embargo = 86400.0
+
+    if not policy.validate_dynamic_embargo(
+        max_fill_wait_bars_15m=max_fill_bars,
+        holding_horizon_bars_15m=holding_bars,
+        declared_embargo_seconds=declared_embargo,
+    ):
+        raise AssertionError("DYNAMIC_EMBARGO_GATE = FAIL")
+
+    print("DYNAMIC_EMBARGO_GATE = PASS")
+
+    # 3. Candidate Generation (Budget <= 100)
+    print("\n--- STEP 3: JOINT CANDIDATE GENERATION ---")
+    limit_env = os.getenv("AURUMIQ_CANDIDATE_LIMIT")
+    target_count = int(limit_env) if limit_env else 100
+    joint_gen = XauUsdJointCandidateGenerator()
+    candidates = joint_gen.generate_all_joint_candidates(target_count)
+    sig_policy = joint_gen.signal_generator.policy
+    risk_policy = joint_gen.risk_generator.policy
+
+    gate_tuples = set()
+    for cand in candidates:
+        lg = cand.signal_profile.long_gate
+        gate_tuples.add((
+            lg.threshold_watch_direction,
+            lg.threshold_ready_direction,
+            lg.threshold_ready_timing,
+            lg.threshold_window_direction,
+            lg.threshold_window_timing,
+        ))
+
+    print(f"GENERATION_POLICY_VERSION = {sig_policy.schema}")
+    print(f"GENERATION_POLICY_FINGERPRINT = {sig_policy.policy_fingerprint}")
+    print(f"RISK_POLICY_FINGERPRINT = {risk_policy.policy_fingerprint}")
+    print(f"CANDIDATES_GENERATED = {len(candidates)}")
+    print(f"UNIQUE_GATE_TUPLES = {len(gate_tuples)}")
+    assert len(candidates) == target_count
+    assert candidates[0].is_reference is True
+
+    # 4. Structural Reachability Precheck
+    print("\n--- STEP 4: STRUCTURAL REACHABILITY PRECHECK ---")
+    reachable_candidates: List[XauUsdJointCandidate] = []
+    for cand in candidates:
+        reachable, reason = check_structural_reachability(cand.signal_profile)
+        if reachable:
+            reachable_candidates.append(cand)
+        else:
+            print(f"Candidate {cand.signal_profile.name} UNREACHABLE: {reason}")
+
+    print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+    print(
+        f"Reachable Candidates: {len(reachable_candidates)}/{len(candidates)}"
+    )
+
+    # 5. Load Dataset from DB
+    print("\n--- STEP 5: LOADING HISTORICAL DATASET ---")
+    dataset = load_point_in_time_dataset_from_db(
+        policy.historical_start,
+        policy.historical_end_exclusive,
+    )
+
+    # Build validation market snapshot cache once (PASS 1)
+    print("\n--- VALIDATION MARKET SNAPSHOT CACHE VALIDATION (PASS 1) ---")
+    val_folds = policy.folds
+    val_start = min(_to_utc(f["val_start"]) for f in val_folds)
+    val_end = max(_to_utc(f["val_end"]) for f in val_folds)
+    val_cache_file = (
+        ROOT
+        / "artifacts"
+        / "calibration"
+        / f"xauusd_val_market_cache_{expected_dataset_fp[:16]}.pkl"
+    )
+    cache_valid = False
+    val_market_cache = None
+    cache_load_seconds = 0.0
+
+    if val_cache_file.exists():
+        print(f"Validating existing validation market snapshot cache from {val_cache_file.name}...")
+        t_load = time.time()
+        try:
+            with open(val_cache_file, "rb") as f:
+                loaded_cache = pickle.load(f)
+            cache_load_seconds = time.time() - t_load
+
+            assert len(loaded_cache) == 62335, f"Snapshot count mismatch: {len(loaded_cache)} != 62335"
+            assert loaded_cache[0].timestamp >= val_start, "First snapshot precedes val_start"
+            assert loaded_cache[-1].timestamp <= val_end, "Last snapshot exceeds val_end"
+            first_snap = loaded_cache[0]
+            for attr in ("timestamp", "candle_15m", "features_15m", "features_1h", "features_4h", "features_1d", "regime_15m", "structure_15m", "structure_4h", "atr14", "runtime_health"):
+                assert hasattr(first_snap, attr), f"Missing snapshot attribute {attr}"
+            assert hasattr(first_snap.runtime_health, "macro_blackout_feed"), "Missing macro_blackout_feed"
+            assert expected_dataset_fp[:16] in val_cache_file.name, "Dataset fingerprint mismatch in cache filename"
+
+            val_market_cache = loaded_cache
+            cache_valid = True
+            print("MARKET_CACHE_VALIDATION = PASS")
+            print(f"CACHE_LOAD_SECONDS = {cache_load_seconds:.2f}")
+            print(
+                f"Validation market snapshot cache loaded: {len(val_market_cache)} snapshots in {cache_load_seconds:.2f}s"
+            )
+        except Exception as e:
+            print(f"MARKET_CACHE_VALIDATION = FAIL ({e}), rebuilding cache...")
+            cache_valid = False
+
+    if not cache_valid:
+        t_cache_start = time.time()
+        val_market_cache = build_market_snapshot_cache(dataset, val_start, val_end)
+        cache_build_seconds = time.time() - t_cache_start
+        print(
+            f"Validation market snapshot cache built: {len(val_market_cache)} snapshots in {cache_build_seconds:.2f}s"
+        )
+        try:
+            with open(val_cache_file, "wb") as f:
+                pickle.dump(val_market_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Saved validation market snapshot cache to {val_cache_file.name}")
+        except Exception as e:
+            print(f"Warning: could not cache to disk: {e}")
+
+    # 6. Empirical Drawdown Baseline (Candidate 0)
+    print("\n--- STEP 6: EMPIRICAL DRAWDOWN BASELINE (CANDIDATE 0) ---")
+    cand0 = candidates[0]
+    (
+        baseline_mdd_r,
+        relative_mdd_ceiling,
+        cand0_val_metrics,
+    ) = evaluate_candidate_0_baseline(
+        dataset=dataset,
+        candidate_0=cand0,
+        policy=policy,
+        market_cache=val_market_cache,
+    )
+    print(f"DRAWDOWN_BASELINE_ID = REFERENCE_CANDIDATE_0")
+    print(f"BASELINE_MAX_DRAWDOWN_R = {baseline_mdd_r:.4f} R")
+    print(f"RELATIVE_DRAWDOWN_CEILING = {relative_mdd_ceiling:.4f} R")
+
+    # 7. Evaluate Candidates on VAL & Rank
+    print("\n--- STEP 7: EVALUATE CANDIDATES ON VAL ---")
+    val_results: List[Dict[str, Any]] = []
+    t_eval_start = time.time()
+    for i, cand in enumerate(reachable_candidates):
+        t_cand_start = time.time()
+        c_res = evaluate_candidate_val(
+            dataset=dataset,
+            candidate=cand,
+            policy=policy,
+            relative_mdd_ceiling=relative_mdd_ceiling,
+            market_cache=val_market_cache,
+        )
+        val_results.append(c_res)
+        t_cand_elapsed = time.time() - t_cand_start
+        status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
+        print(
+            f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand.signal_profile.name}: {status_str} "
+            f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
+            f"Trades={c_res['trade_count']}) in {t_cand_elapsed:.2f}s"
+        )
+
+    candidate_eval_seconds = time.time() - t_eval_start
+    print(f"CANDIDATE_EVAL_SECONDS = {candidate_eval_seconds:.2f}")
+
+    qualified_candidates = [r for r in val_results if r["qualified"]]
+    print(
+        f"Qualified Candidates on VAL: {len(qualified_candidates)}/{len(val_results)}"
+    )
+
+    if not qualified_candidates:
+        print("\n==================================================================")
+        print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY PROVISIONAL CHAMPION)")
+        print("==================================================================")
+        print(f"CANDIDATES_GENERATED = {len(candidates)}")
+        print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+        print(f"CANDIDATES_EVALUATED = {len(val_results)}")
+        print(f"CANDIDATES_QUALIFIED = {len(qualified_candidates)}")
+        print("SELECTED_PROVISIONAL_CHAMPION_ID = NONE")
+        print("BUY_EFFECTIVE_N = 0.00")
+        print("SELL_EFFECTIVE_N = 0.00")
+        print("COMBINED_EFFECTIVE_N = 0.00")
+        print("VAL_LCB95 = N/A")
+        print("VAL_MDD_R = N/A")
+        print("VAL_TEMPORAL_STABILITY = N/A")
+        print("VAL_PROFIT_CONCENTRATION = N/A")
+        print("REACHABILITY_BUY_WINDOW = N/A")
+        print("REACHABILITY_SELL_WINDOW = N/A")
+        print("REACHABILITY_READY_SHORT = N/A")
+        print("")
+        print("OOS_ACCESS_COUNT = 0")
+        print("PRODUCTION_AUTHORITY = OFF")
+        print("PAPER_ONLY = TRUE")
+        print("REAL_ORDER_EXECUTION = OFF")
+        print("NO_CANDIDATES_QUALIFIED: CALIBRATION_REQUIRED")
+        return 1
+
+    champion_dict = select_champion(qualified_candidates)
+    if champion_dict is None:
+        print("CHAMPION_SELECTION_FAILED: CALIBRATION_REQUIRED")
+        return 1
+
+    # Map champion back to joint candidate object
+    champion_candidate = next(
+        c for c in candidates if c.index == champion_dict["index"]
+    )
+    champion_sig_fp = compute_phase4_policy_fingerprint(
+        champion_candidate.signal_profile
+    )
+    champion_risk_fp = compute_phase5_policy_fingerprint(
+        champion_candidate.risk_profile
+    )
+    champion_combined_fp = f"{champion_sig_fp}:{champion_risk_fp}"
+    champion_dict["champion_fingerprint"] = champion_combined_fp
+
+    # 8. LOCK 1 CHAMPION BEFORE OOS
+    print("\n--- STEP 8: LOCK 1 CHAMPION (BEFORE OOS ACCESS) ---")
+    champion_dict = lock_champion(
+        champion_dict=champion_dict,
+        selection_policy=policy,
+        dataset_fingerprint=expected_dataset_fp,
+    )
+    print(f"SELECTED_CHAMPION_ID = {champion_dict['candidate_id']}")
+    print(f"SELECTED_CHAMPION_FINGERPRINT = {champion_combined_fp}")
+    print(
+        f"SELECTION_EVIDENCE_FINGERPRINT = {champion_dict['selection_evidence_fingerprint']}"
+    )
+    print("CHAMPION_LOCKED_BEFORE_OOS = true")
+
+    if os.getenv("AURUMIQ_ENABLE_OOS", "0") != "1":
+        provisional_artifact_name = "xauusd_calibrated_profile_candidate_v3"
+        artifact_fp = save_champion_artifact(
+            champion_candidate=champion_candidate,
+            champion_dict=champion_dict,
+            champion_combined_fp=champion_combined_fp,
+            expected_dataset_fp=expected_dataset_fp,
+            policy=policy,
+            final_profile_status="VAL_LOCKED_PAPER_PILOT",
+            oos_results=None,
+            target_artifact_name=provisional_artifact_name,
+        )
+        reach_buy = "GREEN" if champion_dict.get("reachability_buy_window") else "RED"
+        reach_sell = "GREEN" if champion_dict.get("reachability_sell_window") else "RED"
+        reach_ready_short = "GREEN" if champion_dict.get("reachability_ready_short") else "RED"
+
+        print("\n==================================================================")
+        print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY PROVISIONAL CHAMPION)")
+        print("==================================================================")
+        print(f"CANDIDATES_GENERATED = {len(candidates)}")
+        print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+        print(f"CANDIDATES_EVALUATED = {len(val_results)}")
+        print(f"CANDIDATES_QUALIFIED = {len(qualified_candidates)}")
+        print(f"SELECTED_PROVISIONAL_CHAMPION_ID = {champion_dict['candidate_id']}")
+        print(f"BUY_EFFECTIVE_N = {champion_dict['buy_effective_n']:.2f}")
+        print(f"SELL_EFFECTIVE_N = {champion_dict['sell_effective_n']:.2f}")
+        print(f"COMBINED_EFFECTIVE_N = {champion_dict['combined_effective_n']:.2f}")
+        print(f"VAL_LCB95 = +{champion_dict['val_lcb_95']:.4f} R")
+        print(f"VAL_MDD_R = {champion_dict['val_max_drawdown_r']:.4f} R")
+        print(f"VAL_TEMPORAL_STABILITY = {champion_dict.get('val_temporal_stability', 0.0):.4f}")
+        print(f"VAL_PROFIT_CONCENTRATION = {champion_dict.get('val_profit_concentration_pct', 0.0):.2f}%")
+        print(f"REACHABILITY_BUY_WINDOW = {reach_buy}")
+        print(f"REACHABILITY_SELL_WINDOW = {reach_sell}")
+        print(f"REACHABILITY_READY_SHORT = {reach_ready_short}")
+        print("")
+        print(f"CALIBRATION_ARTIFACT_FINGERPRINT = {artifact_fp}")
+        print("CHAMPION_LOCKED_BEFORE_OOS = true")
+        print("OOS_ACCESS_COUNT = 0")
+        print("PRODUCTION_AUTHORITY = OFF")
+        print("PAPER_ONLY = TRUE")
+        print("REAL_ORDER_EXECUTION = OFF")
+        print("VAL_ONLY_CALIBRATION = COMPLETE")
+        return 0
+
+    # 9. OOS Confirmatory Evaluation
+    print("\n--- STEP 9: OOS ONE-TIME CONFIRMATORY EVALUATION ---")
+    oos_results = evaluate_champion_oos(
+        dataset=dataset,
+        champion_candidate=champion_candidate,
+        policy=policy,
+        champion_locked=champion_dict.get("CHAMPION_LOCKED_BEFORE_OOS", False),
+    )
+
+    print(
+        f"OOS Positive Folds: {oos_results['positive_folds']}/{oos_results['total_folds']}"
+    )
+    print(
+        f"OOS Temporal Stability: {oos_results['oos_temporal_stability']:.4f}"
+    )
+    print(f"OOS Expectancy LCB_95: +{oos_results['oos_lcb_95']:.4f} R")
+    print(f"OOS Max Drawdown: {oos_results['oos_max_drawdown_r']:.4f} R")
+
+    if not oos_results["passed"]:
+        print("OOS_ONE_TIME_RESULT = FAIL")
+        print("FINAL_PROFILE_STATUS = CALIBRATION_REQUIRED")
+        return 1
+
+    print("OOS_ONE_TIME_RESULT = PASS")
+    final_profile_status = "REVALIDATED_RESEARCH"
+    print(f"FINAL_PROFILE_STATUS = {final_profile_status}")
+
+    # 10. Seal Calibration Artifact
+    print("\n--- STEP 10: SEALING CALIBRATION ARTIFACT ---")
+    artifact_fp = save_champion_artifact(
+        champion_candidate=champion_candidate,
+        champion_dict=champion_dict,
+        champion_combined_fp=champion_combined_fp,
+        expected_dataset_fp=expected_dataset_fp,
+        policy=policy,
+        final_profile_status=final_profile_status,
+        oos_results=oos_results,
+    )
     print(f"CALIBRATION_ARTIFACT_FINGERPRINT = {artifact_fp}")
     print("CALIBRATION EXECUTION COMPLETE: QUALIFIED AS REVALIDATED_RESEARCH")
     return 0

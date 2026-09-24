@@ -119,7 +119,11 @@ class XauUsdCandidateGenerationPolicy:
     def from_dict(cls, data: Dict[str, Any]) -> "XauUsdCandidateGenerationPolicy":
         """Construct and validate policy from raw dictionary."""
         schema = data.get("schema")
-        if schema != "aurumiq.calibration.candidate_generation_policy.v1":
+        if schema not in (
+            "aurumiq.calibration.candidate_generation_policy.v1",
+            "aurumiq.calibration.candidate_generation_policy.v2",
+            "aurumiq.calibration.candidate_generation_policy.v3",
+        ):
             raise ValueError(
                 f"Invalid candidate generation policy schema: '{schema}'"
             )
@@ -306,18 +310,32 @@ class XauUsdCandidateGenerator:
             s_dir_active = self._equal_weights(6)
             l_tim_active = self._equal_weights(3)
             s_tim_active = self._equal_weights(3)
+            # Candidate 000: Frozen Reference Baseline preserves independent sampling
+            l_watch_d, l_ready_d, l_ready_t, l_window_d, l_window_t = (
+                self._sample_monotonic_gates(rng)
+            )
+            s_watch_d, s_ready_d, s_ready_t, s_window_d, s_window_t = (
+                self._sample_monotonic_gates(rng)
+            )
         else:
+            # Candidates 001-099:
+            # 1. Direction: independently sampled on 6-simplex for Long and Short
             l_dir_active = self._sample_simplex(rng, 6)
             s_dir_active = self._sample_simplex(rng, 6)
-            l_tim_active = self._sample_simplex(rng, 3)
-            s_tim_active = self._sample_simplex(rng, 3)
-
-        l_watch_d, l_ready_d, l_ready_t, l_window_d, l_window_t = (
-            self._sample_monotonic_gates(rng)
-        )
-        s_watch_d, s_ready_d, s_ready_t, s_window_d, s_window_t = (
-            self._sample_monotonic_gates(rng)
-        )
+            # 2. Timing: coupled on 3-simplex (long_timing == short_timing)
+            tim_active = self._sample_simplex(rng, 3)
+            l_tim_active = tim_active
+            s_tim_active = tim_active
+            # 3. Gates: coupled monotonic gate tuple across governed domain [0.0, 100.0] (long_gate == short_gate)
+            watch_d, ready_d, ready_t, window_d, window_t = (
+                self._sample_monotonic_gates(rng)
+            )
+            l_watch_d, l_ready_d, l_ready_t, l_window_d, l_window_t = (
+                watch_d, ready_d, ready_t, window_d, window_t
+            )
+            s_watch_d, s_ready_d, s_ready_t, s_window_d, s_window_t = (
+                watch_d, ready_d, ready_t, window_d, window_t
+            )
 
         long_direction = SideDirectionPolicy(
             weight_regime=0.0,

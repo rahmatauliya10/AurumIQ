@@ -44,11 +44,11 @@ class TestCandidatePolicyArtifactIntegrity:
         assert candidate_policy is not None
         assert (
             candidate_policy.schema
-            == "aurumiq.calibration.candidate_generation_policy.v1"
+            == "aurumiq.calibration.candidate_generation_policy.v3"
         )
         assert (
             candidate_policy.policy_id
-            == "XAUUSD-CANDIDATE-GENERATION-POLICY-20260915"
+            == "XAUUSD-CANDIDATE-GENERATION-POLICY-20260923-V3"
         )
         assert candidate_policy.instrument == "XAUUSD"
         assert candidate_policy.candidate_cap == 100
@@ -257,20 +257,63 @@ class TestCandidateSimplexAndMonotonicityInvariants:
                 <= c.short_gate.threshold_window_timing
             )
 
-    def test_09_buy_and_sell_side_independence(self, candidate_generator):
+    def test_08b_coupled_gates_and_timing_for_v3_candidates(
+        self, candidate_generator
+    ):
         candidates = candidate_generator.generate_all_candidates(count=20)
-        identical_pair_count = 0
+        # Candidate 000 is baseline reference
+        for c in candidates[1:]:
+            # Gates coupled
+            assert c.long_gate == c.short_gate
+            assert (
+                c.long_gate.threshold_watch_direction
+                == c.short_gate.threshold_watch_direction
+            )
+            assert (
+                c.long_gate.threshold_ready_direction
+                == c.short_gate.threshold_ready_direction
+            )
+            assert (
+                c.long_gate.threshold_ready_timing
+                == c.short_gate.threshold_ready_timing
+            )
+            assert (
+                c.long_gate.threshold_window_direction
+                == c.short_gate.threshold_window_direction
+            )
+            assert (
+                c.long_gate.threshold_window_timing
+                == c.short_gate.threshold_window_timing
+            )
+            # Timing weights coupled
+            assert c.long_timing == c.short_timing
+            assert (
+                c.long_timing.weight_entry_zone
+                == c.short_timing.weight_entry_zone
+            )
+            assert (
+                c.long_timing.weight_reversal_confirmation_15m
+                == c.short_timing.weight_reversal_confirmation_15m
+            )
+            assert (
+                c.long_timing.weight_momentum_turn_15m_1h
+                == c.short_timing.weight_momentum_turn_15m_1h
+            )
+
+    def test_09_direction_weights_remain_independent(self, candidate_generator):
+        candidates = candidate_generator.generate_all_candidates(count=20)
+        identical_direction_count = 0
         for c in candidates[1:]:  # skip baseline candidate 0
             if (
                 c.long_direction.weight_trend_1h
                 == c.short_direction.weight_trend_1h
-                and c.long_timing.weight_entry_zone
-                == c.short_timing.weight_entry_zone
-                and c.long_gate.threshold_window_direction
-                == c.short_gate.threshold_window_direction
+                and c.long_direction.weight_trend_4h
+                == c.short_direction.weight_trend_4h
+                and c.long_direction.weight_momentum
+                == c.short_direction.weight_momentum
             ):
-                identical_pair_count += 1
-        assert identical_pair_count == 0
+                identical_direction_count += 1
+        assert identical_direction_count == 0
 
     def test_10_equal_weight_baseline_candidate_0(self, candidate_generator):
         c0 = candidate_generator.generate_candidate(0)

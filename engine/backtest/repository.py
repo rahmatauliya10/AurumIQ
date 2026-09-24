@@ -1,4 +1,4 @@
-"""Point-in-time in-memory dataset repository strictly preventing lookahead bias."""
+import bisect
 import hashlib
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -64,6 +64,7 @@ class PointInTimeDataset:
             [(_to_utc(t), ctx) for t, ctx in (macro_events or [])],
             key=lambda x: x[0]
         )
+        self._macro_event_keys: List[datetime] = [x[0] for x in self._macro_events]
         self._cycle_3a: List[Cycle3ASnapshot] = sorted(
             list(cycle_3a or []),
             key=lambda s: _to_utc(s.timestamp)
@@ -104,8 +105,10 @@ class PointInTimeDataset:
 
     def add_macro_context(self, timestamp: datetime, context: MacroEventContext) -> None:
         """Add a point-in-time MacroEventContext."""
-        self._macro_events.append((_to_utc(timestamp), context))
+        ts = _to_utc(timestamp)
+        self._macro_events.append((ts, context))
         self._macro_events.sort(key=lambda x: x[0])
+        self._macro_event_keys = [x[0] for x in self._macro_events]
 
     def add_quote(self, quote: QuoteData) -> None:
         """Add a market quote for execution simulation."""
@@ -188,11 +191,13 @@ class PointInTimeDataset:
 
     def get_macro_context(self, as_of: datetime) -> Optional[MacroEventContext]:
         """Retrieve the latest point-in-time MacroEventContext <= as_of."""
-        as_of_utc = _to_utc(as_of)
-        eligible = [x for x in self._macro_events if x[0] <= as_of_utc]
-        if not eligible:
+        if not self._macro_events:
             return None
-        return eligible[-1][1]
+        as_of_utc = _to_utc(as_of)
+        idx = bisect.bisect_right(self._macro_event_keys, as_of_utc) - 1
+        if idx < 0:
+            return None
+        return self._macro_events[idx][1]
 
     def add_cycle_3a(self, snapshot: Cycle3ASnapshot) -> None:
         """Add a point-in-time Cycle3ASnapshot."""
