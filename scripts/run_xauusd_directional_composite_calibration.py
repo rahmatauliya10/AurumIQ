@@ -604,6 +604,7 @@ def main():
     print("\n--- STEP 6: CANDIDATE REPLAY (SINGLE PASS) & SIDE METRICS (PHASE B) ---")
     long_metrics_list: List[SideEvaluationMetrics] = []
     short_metrics_list: List[SideEvaluationMetrics] = []
+    candidate_ledger: List[Dict[str, Any]] = []
 
     total_inv_entries = 0
     total_stale_tp = 0
@@ -620,15 +621,19 @@ def main():
         )
         t_cand_elapsed = time.time() - t_cand_start
 
-        total_inv_entries += sum(
+        cand_inv_entries = sum(
             1 for t in trades if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
         )
-        total_stale_tp += sum(
+        cand_stale_tp = sum(
             1 for t in trades if t.outcome == XauUsdTradeOutcome.TP1_FIRST and (t.gross_r or Decimal("0")) < Decimal("0")
         )
-        total_stale_sl += sum(
+        cand_stale_sl = sum(
             1 for t in trades if t.outcome in (XauUsdTradeOutcome.SL_FIRST, XauUsdTradeOutcome.CONSERVATIVE_SL_FIRST) and (t.gross_r or Decimal("0")) > Decimal("0")
         )
+
+        total_inv_entries += cand_inv_entries
+        total_stale_tp += cand_stale_tp
+        total_stale_sl += cand_stale_sl
 
         # Derive LONG metrics strictly from LONG trades
         l_met = evaluate_side_trades(
@@ -652,6 +657,74 @@ def main():
         )
         short_metrics_list.append(s_met)
 
+        # Filter genuine filled trades for combined calculations
+        filled_trades = [
+            t for t in trades
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
+        ]
+        comb_eff_n = compute_trade_effective_n(filled_trades)
+        net_r_list = [float(t.net_r or Decimal("0")) for t in filled_trades]
+        comb_mean_r = float(statistics.mean(net_r_list)) if net_r_list else 0.0
+        comb_std_r = float(statistics.stdev(net_r_list)) if len(net_r_list) > 1 else 0.0
+        comb_lcb_95 = policy.compute_effective_n_lcb_95(comb_mean_r, comb_std_r, comb_eff_n)
+
+        comb_max_dd = 0.0
+        peak_r = 0.0
+        cum_r = 0.0
+        for r in net_r_list:
+            cum_r += r
+            if cum_r > peak_r:
+                peak_r = cum_r
+            else:
+                dd = peak_r - cum_r
+                if dd > comb_max_dd:
+                    comb_max_dd = dd
+
+        candidate_ledger.append({
+            "candidate_id": cand.signal_profile.name,
+            "candidate_index": cand.index,
+            "buy_trade_count": l_met.trade_count,
+            "sell_trade_count": s_met.trade_count,
+            "buy_effective_n": l_met.effective_n,
+            "sell_effective_n": s_met.effective_n,
+            "combined_effective_n": round(comb_eff_n, 2),
+            "buy_lcb95": l_met.side_lcb_95,
+            "sell_lcb95": s_met.side_lcb_95,
+            "combined_lcb95": comb_lcb_95,
+            "buy_mdd": l_met.side_max_drawdown_r,
+            "sell_mdd": s_met.side_max_drawdown_r,
+            "combined_mdd": round(comb_max_dd, 4),
+            "fold_metrics": {
+                "long_fold_expectancies": list(l_met.fold_expectancies),
+                "long_positive_folds": l_met.positive_folds,
+                "short_fold_expectancies": list(s_met.fold_expectancies),
+                "short_positive_folds": s_met.positive_folds,
+            },
+            "temporal_stability": {
+                "long": l_met.temporal_stability,
+                "short": s_met.temporal_stability,
+            },
+            "profit_concentration": {
+                "long": l_met.profit_concentration_pct,
+                "short": s_met.profit_concentration_pct,
+            },
+            "qualification_flags": {
+                "long_qualified": l_met.qualified,
+                "short_qualified": s_met.qualified,
+            },
+            "rejection_reasons": {
+                "long": list(l_met.disqualification_reasons),
+                "short": list(s_met.disqualification_reasons),
+            },
+            "invalidated_entry_count": cand_inv_entries,
+            "run_fingerprint": policy.policy_fingerprint,
+        })
+
         l_status = "QUALIFIED" if l_met.qualified else "REJECTED"
         s_status = "QUALIFIED" if s_met.qualified else "REJECTED"
 
@@ -672,6 +745,23 @@ def main():
 
     eval_total_seconds = time.time() - t_eval_start
     print(f"\nALL_CANDIDATES_REPLAY_SECONDS = {eval_total_seconds:.2f}")
+
+    # Persist compact candidate ledger
+    ledger_path = ROOT / "artifacts" / "calibration" / "xauusd_directional_composite_candidate_ledger.json"
+    ledger_payload = {
+        "schema": "aurumiq.calibration.candidate_ledger.v1",
+        "policy_id": policy.policy_id,
+        "policy_fingerprint": policy.policy_fingerprint,
+        "code_revision": policy.code_revision,
+        "dataset_fingerprint": expected_dataset_fp,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "candidates_evaluated": len(candidate_ledger),
+        "candidates": candidate_ledger,
+    }
+    with open(ledger_path, "w", encoding="utf-8") as f:
+        json.dump(ledger_payload, f, indent=2)
+        f.write("\n")
+    print(f"CANDIDATE_LEDGER_SAVED = {ledger_path}")
 
     # 7. Side-Wise Selection (Phase B)
     long_qualified = [m for m in long_metrics_list if m.qualified]
