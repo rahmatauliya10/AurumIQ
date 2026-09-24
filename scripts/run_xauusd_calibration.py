@@ -282,13 +282,41 @@ def evaluate_candidate_val(
                 fold_trade_map[f["fold_id"]].append(t)
                 break
 
-    buy_trades = [
-        t for t in val_trades if t.side == SignalSide.LONG and t.fill_timestamp is not None
+    # Strictly filter genuine filled trades, excluding non-filled and invalidated entries
+    filled_trades = [
+        t
+        for t in val_trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
+            XauUsdTradeOutcome.NO_FILL,
+            XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            XauUsdTradeOutcome.SKIPPED,
+        )
     ]
-    sell_trades = [
-        t for t in val_trades if t.side == SignalSide.SHORT and t.fill_timestamp is not None
-    ]
-    filled_trades = [t for t in val_trades if t.fill_timestamp is not None]
+    buy_trades = [t for t in filled_trades if t.side == SignalSide.LONG]
+    sell_trades = [t for t in filled_trades if t.side == SignalSide.SHORT]
+
+    invalidated_entry_count = sum(
+        1
+        for t in val_trades
+        if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
+    )
+    stale_tp_negative_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome == XauUsdTradeOutcome.TP1_FIRST
+        and (t.gross_r or Decimal("0")) < Decimal("0")
+    )
+    stale_sl_positive_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome
+        in (
+            XauUsdTradeOutcome.SL_FIRST,
+            XauUsdTradeOutcome.CONSERVATIVE_SL_FIRST,
+        )
+        and (t.gross_r or Decimal("0")) > Decimal("0")
+    )
 
     buy_eff_n = compute_trade_effective_n(buy_trades)
     sell_eff_n = compute_trade_effective_n(sell_trades)
@@ -318,7 +346,14 @@ def evaluate_candidate_val(
     fold_profits = []
     for f in val_folds:
         f_trades = [
-            t for t in fold_trade_map[f["fold_id"]] if t.fill_timestamp is not None
+            t
+            for t in fold_trade_map[f["fold_id"]]
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
         ]
         f_r = [float(t.net_r or Decimal("0")) for t in f_trades]
         f_mean = float(statistics.mean(f_r)) if f_r else 0.0
@@ -372,6 +407,9 @@ def evaluate_candidate_val(
         "macro_blackout_protective": True,
         "qualified": qualified,
         "trade_count": len(filled_trades),
+        "invalidated_entry_count": invalidated_entry_count,
+        "stale_tp_negative_gross_count": stale_tp_negative_gross_count,
+        "stale_sl_positive_gross_count": stale_sl_positive_gross_count,
         "reachability_buy_window": reachability_buy_window,
         "reachability_sell_window": reachability_sell_window,
         "reachability_ready_short": reachability_ready_short,
@@ -554,7 +592,11 @@ def evaluate_champion_oos(
     oos_filled_trades: List[XauUsdSimulatedTrade] = []
 
     for t in trades:
-        if t.fill_timestamp is None:
+        if t.fill_timestamp is None or t.outcome in (
+            XauUsdTradeOutcome.NO_FILL,
+            XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            XauUsdTradeOutcome.SKIPPED,
+        ):
             continue
         for f in oos_folds:
             f_start = _to_utc(f["oos_start"])
@@ -1088,6 +1130,10 @@ def main():
     )
 
     if not qualified_candidates:
+        total_inv = sum(r.get("invalidated_entry_count", 0) for r in val_results)
+        total_stale_tp = sum(r.get("stale_tp_negative_gross_count", 0) for r in val_results)
+        total_stale_sl = sum(r.get("stale_sl_positive_gross_count", 0) for r in val_results)
+
         print("\n==================================================================")
         print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY PROVISIONAL CHAMPION)")
         print("==================================================================")
@@ -1106,6 +1152,9 @@ def main():
         print("REACHABILITY_BUY_WINDOW = N/A")
         print("REACHABILITY_SELL_WINDOW = N/A")
         print("REACHABILITY_READY_SHORT = N/A")
+        print(f"INVALIDATED_ENTRY_COUNT = {total_inv}")
+        print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {total_stale_tp}")
+        print(f"STALE_SL_POSITIVE_GROSS_COUNT = {total_stale_sl}")
         print("")
         print("OOS_ACCESS_COUNT = 0")
         print("PRODUCTION_AUTHORITY = OFF")
@@ -1147,14 +1196,14 @@ def main():
     print("CHAMPION_LOCKED_BEFORE_OOS = true")
 
     if os.getenv("AURUMIQ_ENABLE_OOS", "0") != "1":
-        provisional_artifact_name = "xauusd_calibrated_profile_candidate_v3"
+        provisional_artifact_name = "xauusd_calibrated_profile_candidate_v3_post_remediation"
         artifact_fp = save_champion_artifact(
             champion_candidate=champion_candidate,
             champion_dict=champion_dict,
             champion_combined_fp=champion_combined_fp,
             expected_dataset_fp=expected_dataset_fp,
             policy=policy,
-            final_profile_status="VAL_LOCKED_PAPER_PILOT",
+            final_profile_status="DEVELOPMENT_POST_REMEDIATION_PROVISIONAL",
             oos_results=None,
             target_artifact_name=provisional_artifact_name,
         )
@@ -1180,6 +1229,9 @@ def main():
         print(f"REACHABILITY_BUY_WINDOW = {reach_buy}")
         print(f"REACHABILITY_SELL_WINDOW = {reach_sell}")
         print(f"REACHABILITY_READY_SHORT = {reach_ready_short}")
+        print(f"INVALIDATED_ENTRY_COUNT = {champion_dict.get('invalidated_entry_count', 0)}")
+        print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {champion_dict.get('stale_tp_negative_gross_count', 0)}")
+        print(f"STALE_SL_POSITIVE_GROSS_COUNT = {champion_dict.get('stale_sl_positive_gross_count', 0)}")
         print("")
         print(f"CALIBRATION_ARTIFACT_FINGERPRINT = {artifact_fp}")
         print("CHAMPION_LOCKED_BEFORE_OOS = true")
