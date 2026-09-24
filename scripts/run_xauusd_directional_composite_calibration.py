@@ -77,6 +77,7 @@ from engine.backtest.xauusd_types import (
     XauUsdCostConfig,
     XauUsdCostScenario,
     XauUsdSimulatedTrade,
+    XauUsdTradeOutcome,
 )
 from engine.backtest.xauusd_composite_policy import (
     SideEvaluationMetrics,
