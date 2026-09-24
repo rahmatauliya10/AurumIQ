@@ -3,6 +3,8 @@ import bisect
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
+import pickle
 from typing import Any, List, Optional, Sequence, Tuple
 
 from engine.backtest.clock import ReplayClock
@@ -199,6 +201,105 @@ def build_market_snapshot_cache(
                 cycle_3a=cycle_3a_snap,
             )
         )
+
+    return tuple(snapshots)
+
+
+SNAPSHOT_CACHE_SCHEMA_VERSION = "aurumiq.xauusd_market_cache.v2"
+SNAPSHOT_BUILDER_SEMANTICS_VERSION = "v2_mtf_features"
+REQUIRED_CACHE_TIMEFRAMES = ("15m", "1h", "4h", "1d")
+
+
+def save_market_snapshot_cache(
+    cache_path: Path,
+    snapshots: Sequence[XauUsdReplayMarketSnapshot],
+    dataset_fingerprint: str,
+    val_start: datetime,
+    val_end: datetime,
+    feature_policy_fingerprint: str = "",
+    code_revision: str = "",
+) -> None:
+    """Save market snapshot cache with full provenance metadata."""
+    payload = {
+        "snapshot_cache_schema_version": SNAPSHOT_CACHE_SCHEMA_VERSION,
+        "snapshot_builder_semantics_version": SNAPSHOT_BUILDER_SEMANTICS_VERSION,
+        "required_timeframes": list(REQUIRED_CACHE_TIMEFRAMES),
+        "dataset_fingerprint": dataset_fingerprint,
+        "feature_policy_fingerprint": feature_policy_fingerprint,
+        "code_revision": code_revision,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "val_start": val_start.isoformat(),
+        "val_end": val_end.isoformat(),
+        "snapshot_count": len(snapshots),
+        "snapshots": tuple(snapshots),
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_market_snapshot_cache(
+    cache_path: Path,
+    expected_dataset_fp: Optional[str] = None,
+    val_start: Optional[datetime] = None,
+    val_end: Optional[datetime] = None,
+) -> Tuple[XauUsdReplayMarketSnapshot, ...]:
+    """
+    Load and validate market snapshot cache.
+    Rejects legacy raw tuples without schema metadata or missing MTF features.
+    """
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Cache file does not exist: {cache_path}")
+
+    with open(cache_path, "rb") as f:
+        loaded = pickle.load(f)
+
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            "STALE_CACHE_REJECTED: Cache file is legacy raw tuple without explicit provenance schema. "
+            "Rebuilding required."
+        )
+
+    schema = loaded.get("snapshot_cache_schema_version")
+    if schema != SNAPSHOT_CACHE_SCHEMA_VERSION:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Schema mismatch ({schema} != {SNAPSHOT_CACHE_SCHEMA_VERSION})"
+        )
+
+    builder_sem = loaded.get("snapshot_builder_semantics_version")
+    if builder_sem != SNAPSHOT_BUILDER_SEMANTICS_VERSION:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Builder semantics mismatch ({builder_sem} != {SNAPSHOT_BUILDER_SEMANTICS_VERSION})"
+        )
+
+    req_tfs = tuple(loaded.get("required_timeframes", []))
+    if req_tfs != REQUIRED_CACHE_TIMEFRAMES:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Required timeframes mismatch ({req_tfs} != {REQUIRED_CACHE_TIMEFRAMES})"
+        )
+
+    if expected_dataset_fp:
+        ds_fp = loaded.get("dataset_fingerprint", "")
+        if ds_fp != expected_dataset_fp:
+            raise ValueError(
+                f"CACHE_DATASET_MISMATCH: Dataset fingerprint mismatch ({ds_fp} != {expected_dataset_fp})"
+            )
+
+    snapshots = loaded.get("snapshots")
+    if not snapshots:
+        raise ValueError("Cache contains no snapshots")
+
+    if val_start and snapshots[0].timestamp < val_start:
+        raise ValueError(f"First snapshot {snapshots[0].timestamp} precedes val_start {val_start}")
+    if val_end and snapshots[-1].timestamp > val_end:
+        raise ValueError(f"Last snapshot {snapshots[-1].timestamp} exceeds val_end {val_end}")
+
+    # Verify MTF features are populated in the sample
+    has_1h = any(s.features_1h is not None for s in snapshots[:500])
+    has_4h = any(s.features_4h is not None for s in snapshots[:500])
+    has_1d = any(s.features_1d is not None for s in snapshots[:500])
+    if not (has_1h and has_4h and has_1d):
+        raise ValueError("STALE_CACHE_REJECTED: Multi-timeframe feature coverage missing (1h/4h/1d are None)")
 
     return tuple(snapshots)
 

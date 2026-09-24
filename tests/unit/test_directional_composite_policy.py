@@ -255,3 +255,76 @@ def test_composite_construction_and_structural_reachability():
     # 4. Structural Reachability Precheck
     reachable, reason = check_structural_reachability(sig)
     assert reachable is True, f"Composite signal profile failed reachability: {reason}"
+
+
+def test_fold_assignment_overlapping_windows_no_double_counting():
+    """
+    Regression test for Step 2 & 3:
+    Required test scenario:
+    - one trade belongs to F1 and F2
+    - unique overall trade count = 1
+    - F1 count = 1
+    - F2 count = 1
+    - no double counting in overall N_eff/MDD/LCB
+    """
+    from engine.backtest.xauusd_composite_policy import assign_trades_to_folds
+    policy = load_governed_composite_calibration_policy()
+    folds = policy.folds
+
+    f1_start = datetime.fromisoformat(folds[0]["val_start"].replace("Z", "+00:00"))
+    f1_end = datetime.fromisoformat(folds[0]["val_end"].replace("Z", "+00:00"))
+    f2_start = datetime.fromisoformat(folds[1]["val_start"].replace("Z", "+00:00"))
+    f2_end = datetime.fromisoformat(folds[1]["val_end"].replace("Z", "+00:00"))
+
+    # Ensure windows overlap and pick a timestamp inside BOTH F1 and F2
+    assert f1_end > f2_start, "Validation windows must overlap"
+    overlap_ts = f2_start + timedelta(days=5)
+    assert f1_start <= overlap_ts < f1_end
+    assert f2_start <= overlap_ts < f2_end
+
+    single_trade = XauUsdSimulatedTrade(
+        trade_id="t_overlap",
+        side=SignalSide.LONG,
+        candidate_state=SignalState.BUY_WINDOW,
+        candidate_user_decision=UserDecision.BUY,
+        source_signal_fingerprint="fp_overlap",
+        signal_timestamp=overlap_ts,
+        fill_timestamp=overlap_ts + timedelta(minutes=15),
+        exit_timestamp=overlap_ts + timedelta(hours=2),
+        risk_plan_fingerprint="rp_overlap",
+        planned_risk_amount=Decimal("100.00"),
+        outcome=XauUsdTradeOutcome.TP1_FIRST,
+        net_r=Decimal("2.50"),
+    )
+
+    # 1. Test canonical assign_trades_to_folds directly
+    unique_trades, fold_trade_map = assign_trades_to_folds(
+        [single_trade],
+        folds,
+        start_key="val_start",
+        end_key="val_end",
+    )
+
+    assert len(unique_trades) == 1, f"Expected exactly 1 unique overall trade, got {len(unique_trades)}"
+    assert len(fold_trade_map[folds[0]["fold_id"]]) == 1, "F1 must contain the overlapping trade"
+    assert len(fold_trade_map[folds[1]["fold_id"]]) == 1, "F2 must contain the overlapping trade"
+
+    # 2. Test evaluate_side_trades overall metrics vs fold metrics
+    res = evaluate_side_trades(
+        trades=[single_trade],
+        side=SignalSide.LONG,
+        folds=folds,
+        policy=policy,
+        candidate_id="CAND_OVERLAP_TEST",
+        candidate_index=1,
+    )
+
+    # Invariants:
+    assert res.trade_count == 1, f"Overall trade count must be 1, got {res.trade_count}"
+    assert res.effective_n == 1.0, f"Overall effective_n must be 1.0 (no duplication), got {res.effective_n}"
+    assert res.mean_r == 2.50, f"Overall mean_r must be 2.50, got {res.mean_r}"
+    assert res.side_max_drawdown_r == 0.0
+
+    # Folds 1 and 2 expectancies must both reflect the trade
+    assert res.fold_expectancies[0] == 2.50, f"F1 expectancy should be 2.50, got {res.fold_expectancies[0]}"
+    assert res.fold_expectancies[1] == 2.50, f"F2 expectancy should be 2.50, got {res.fold_expectancies[1]}"

@@ -74,6 +74,8 @@ from engine.backtest.xauusd_risk_candidate_generator import (
 from engine.backtest.xauusd_replay import (
     XauUsdReplayMarketSnapshot,
     build_market_snapshot_cache,
+    load_market_snapshot_cache,
+    save_market_snapshot_cache,
 )
 from engine.backtest.xauusd_runner import XauUsdBacktestRunner
 from engine.backtest.xauusd_types import (
@@ -84,6 +86,7 @@ from engine.backtest.xauusd_types import (
     XauUsdSimulatedTrade,
     XauUsdTradeOutcome,
 )
+from engine.backtest.xauusd_composite_policy import assign_trades_to_folds
 from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
 from apps.backtests.tasks import compute_calibration_artifact_fingerprint
 
@@ -268,19 +271,13 @@ def evaluate_candidate_val(
     )
 
     # Partition trades strictly within validation boundaries
-    val_trades: List[XauUsdSimulatedTrade] = []
-    fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
-        f["fold_id"]: [] for f in val_folds
-    }
-
-    for t in trades:
-        for f in val_folds:
-            f_start = _to_utc(f["val_start"])
-            f_end = _to_utc(f["val_end"])
-            if f_start <= _to_utc(t.signal_timestamp) < f_end:
-                val_trades.append(t)
-                fold_trade_map[f["fold_id"]].append(t)
-                break
+    val_folds = policy.folds
+    val_trades, fold_trade_map = assign_trades_to_folds(
+        trades=trades,
+        folds=val_folds,
+        start_key="val_start",
+        end_key="val_end",
+    )
 
     # Strictly filter genuine filled trades, excluding non-filled and invalidated entries
     filled_trades = [
@@ -586,25 +583,21 @@ def evaluate_champion_oos(
         market_cache=oos_market_cache,
     )
 
-    fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
-        f["fold_id"]: [] for f in oos_folds
-    }
-    oos_filled_trades: List[XauUsdSimulatedTrade] = []
-
-    for t in trades:
-        if t.fill_timestamp is None or t.outcome in (
+    valid_oos_trades = [
+        t for t in trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
             XauUsdTradeOutcome.NO_FILL,
             XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
             XauUsdTradeOutcome.SKIPPED,
-        ):
-            continue
-        for f in oos_folds:
-            f_start = _to_utc(f["oos_start"])
-            f_end = _to_utc(f["oos_end"])
-            if f_start <= _to_utc(t.signal_timestamp) < f_end:
-                fold_trade_map[f["fold_id"]].append(t)
-                oos_filled_trades.append(t)
-                break
+        )
+    ]
+    oos_filled_trades, fold_trade_map = assign_trades_to_folds(
+        trades=valid_oos_trades,
+        folds=oos_folds,
+        start_key="oos_start",
+        end_key="oos_end",
+    )
 
     fold_expectancies = []
     positive_folds = 0
@@ -669,38 +662,50 @@ def evaluate_champion_oos(
 def load_point_in_time_dataset_from_db(
     start_time: datetime,
     end_time: datetime,
+    required_timeframes: Sequence[str] = ("15m", "1h", "4h", "1d"),
 ) -> PointInTimeDataset:
     """Load historical candles and PIT macro evidence from SQLite into in-memory PointInTimeDataset."""
     import bisect
     from datetime import timedelta
     from django.db.models import F
+    from apps.instruments.models import Instrument, InstrumentRole
     from apps.market_data.models import MacroScheduleVintage, MarketCandle, ScheduleStatus
     from engine.core.types import MacroEventContext
 
-    candles_15m: List[CandleData] = []
-    qs = MarketCandle.objects.filter(
-        timeframe="15m",
-        timestamp_open__gte=start_time,
-        timestamp_open__lt=end_time,
-        is_closed=True,
-    ).order_by("timestamp_open")
+    gold_inst = Instrument.objects.filter(role=InstrumentRole.GOLD_REFERENCE).first()
+    inst_filter = {"instrument": gold_inst} if gold_inst else {}
 
-    for r in qs.iterator(chunk_size=10000):
-        candles_15m.append(
-            CandleData(
-                timestamp_open=r.timestamp_open,
-                timestamp_close=r.timestamp_close,
-                open=Decimal(str(r.open)),
-                high=Decimal(str(r.high)),
-                low=Decimal(str(r.low)),
-                close=Decimal(str(r.close)),
-                volume=Decimal(str(r.volume or "0")),
-                is_closed=r.is_closed,
-                source_id=r.source,
-                quote_rate=r.quote_rate,
-                close_usd=r.close_usd,
+    candles_by_tf: Dict[str, List[CandleData]] = {
+        tf: [] for tf in required_timeframes
+    }
+
+    for tf in required_timeframes:
+        qs = MarketCandle.objects.filter(
+            timeframe=tf,
+            timestamp_open__gte=start_time,
+            timestamp_open__lt=end_time,
+            is_closed=True,
+            **inst_filter,
+        ).order_by("timestamp_open")
+
+        for r in qs.iterator(chunk_size=10000):
+            candles_by_tf[tf].append(
+                CandleData(
+                    timestamp_open=r.timestamp_open,
+                    timestamp_close=r.timestamp_close,
+                    open=Decimal(str(r.open)),
+                    high=Decimal(str(r.high)),
+                    low=Decimal(str(r.low)),
+                    close=Decimal(str(r.close)),
+                    volume=Decimal(str(r.volume or "0")),
+                    is_closed=r.is_closed,
+                    source_id=r.source,
+                    quote_rate=r.quote_rate,
+                    close_usd=r.close_usd,
+                )
             )
-        )
+
+    candles_15m = candles_by_tf.get("15m", [])
     # Load provenanced macro schedules from SQLite (Phase 3A PIT evidence)
     # Filter for valid schedules known strictly before release (known_at < scheduled_at)
     schedules = list(
@@ -758,7 +763,13 @@ def load_point_in_time_dataset_from_db(
             )
             macro_events.append((t, ctx))
 
-    return PointInTimeDataset(candles_15m=candles_15m, macro_events=macro_events)
+    return PointInTimeDataset(
+        candles_15m=candles_by_tf.get("15m", []),
+        candles_1h=candles_by_tf.get("1h", []),
+        candles_4h=candles_by_tf.get("4h", []),
+        candles_1d=candles_by_tf.get("1d", []),
+        macro_events=macro_events,
+    )
 
 
 def save_champion_artifact(
@@ -1030,11 +1041,12 @@ def main():
     val_folds = policy.folds
     val_start = min(_to_utc(f["val_start"]) for f in val_folds)
     val_end = max(_to_utc(f["val_end"]) for f in val_folds)
+    actual_dataset_fp = dataset.compute_dataset_hash()
     val_cache_file = (
         ROOT
         / "artifacts"
         / "calibration"
-        / f"xauusd_val_market_cache_{expected_dataset_fp[:16]}.pkl"
+        / f"xauusd_val_market_cache_{actual_dataset_fp[:16]}.pkl"
     )
     cache_valid = False
     val_market_cache = None
@@ -1044,20 +1056,13 @@ def main():
         print(f"Validating existing validation market snapshot cache from {val_cache_file.name}...")
         t_load = time.time()
         try:
-            with open(val_cache_file, "rb") as f:
-                loaded_cache = pickle.load(f)
+            val_market_cache = load_market_snapshot_cache(
+                cache_path=val_cache_file,
+                expected_dataset_fp=actual_dataset_fp,
+                val_start=val_start,
+                val_end=val_end,
+            )
             cache_load_seconds = time.time() - t_load
-
-            assert len(loaded_cache) == 62335, f"Snapshot count mismatch: {len(loaded_cache)} != 62335"
-            assert loaded_cache[0].timestamp >= val_start, "First snapshot precedes val_start"
-            assert loaded_cache[-1].timestamp <= val_end, "Last snapshot exceeds val_end"
-            first_snap = loaded_cache[0]
-            for attr in ("timestamp", "candle_15m", "features_15m", "features_1h", "features_4h", "features_1d", "regime_15m", "structure_15m", "structure_4h", "atr14", "runtime_health"):
-                assert hasattr(first_snap, attr), f"Missing snapshot attribute {attr}"
-            assert hasattr(first_snap.runtime_health, "macro_blackout_feed"), "Missing macro_blackout_feed"
-            assert expected_dataset_fp[:16] in val_cache_file.name, "Dataset fingerprint mismatch in cache filename"
-
-            val_market_cache = loaded_cache
             cache_valid = True
             print("MARKET_CACHE_VALIDATION = PASS")
             print(f"CACHE_LOAD_SECONDS = {cache_load_seconds:.2f}")
@@ -1076,8 +1081,14 @@ def main():
             f"Validation market snapshot cache built: {len(val_market_cache)} snapshots in {cache_build_seconds:.2f}s"
         )
         try:
-            with open(val_cache_file, "wb") as f:
-                pickle.dump(val_market_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            save_market_snapshot_cache(
+                cache_path=val_cache_file,
+                snapshots=val_market_cache,
+                dataset_fingerprint=actual_dataset_fp,
+                val_start=val_start,
+                val_end=val_end,
+                code_revision=policy.code_revision,
+            )
             print(f"Saved validation market snapshot cache to {val_cache_file.name}")
         except Exception as e:
             print(f"Warning: could not cache to disk: {e}")

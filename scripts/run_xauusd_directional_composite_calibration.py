@@ -70,6 +70,8 @@ from engine.backtest.xauusd_risk_candidate_generator import (
 from engine.backtest.xauusd_replay import (
     XauUsdReplayMarketSnapshot,
     build_market_snapshot_cache,
+    load_market_snapshot_cache,
+    save_market_snapshot_cache,
 )
 from engine.backtest.xauusd_runner import XauUsdBacktestRunner
 from engine.backtest.xauusd_types import (
@@ -82,6 +84,7 @@ from engine.backtest.xauusd_types import (
 from engine.backtest.xauusd_composite_policy import (
     SideEvaluationMetrics,
     XauUsdDirectionalCompositeCalibrationPolicy,
+    assign_trades_to_folds,
     construct_composite_candidate,
     evaluate_side_trades,
     load_governed_composite_calibration_policy,
@@ -182,19 +185,12 @@ def evaluate_dual_side_composite(
     )
 
     val_folds = policy.folds
-    val_trades: List[XauUsdSimulatedTrade] = []
-    fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
-        f["fold_id"]: [] for f in val_folds
-    }
-
-    for t in trades:
-        for f in val_folds:
-            f_start = _to_utc(f["val_start"])
-            f_end = _to_utc(f["val_end"])
-            if f_start <= _to_utc(t.signal_timestamp) < f_end:
-                val_trades.append(t)
-                fold_trade_map[f["fold_id"]].append(t)
-                break
+    val_trades, fold_trade_map = assign_trades_to_folds(
+        trades=trades,
+        folds=val_folds,
+        start_key="val_start",
+        end_key="val_end",
+    )
 
     # Strictly filter genuine filled trades, excluding non-filled and invalidated entries
     filled_trades = [
@@ -581,23 +577,41 @@ def main():
         policy.historical_start,
         policy.historical_end_exclusive,
     )
+    actual_dataset_fp = dataset.compute_dataset_hash()
     val_cache_file = (
         ROOT
         / "artifacts"
         / "calibration"
-        / f"xauusd_val_market_cache_{expected_dataset_fp[:16]}.pkl"
+        / f"xauusd_val_market_cache_{actual_dataset_fp[:16]}.pkl"
     )
-    if not val_cache_file.exists():
-        raise FileNotFoundError(
-            f"Validation market cache not found at {val_cache_file}"
-        )
+    val_folds = policy.folds
+    val_start = min(_to_utc(f["val_start"]) for f in val_folds)
+    val_end = max(_to_utc(f["val_end"]) for f in val_folds)
 
-    t_load = time.time()
-    with open(val_cache_file, "rb") as f:
-        val_market_cache = pickle.load(f)
-    print(
-        f"Validation market cache loaded: {len(val_market_cache)} snapshots in {time.time() - t_load:.2f}s"
-    )
+    if not val_cache_file.exists():
+        print(f"Validation market cache not found at {val_cache_file.name}, building fresh cache...")
+        t_cache_start = time.time()
+        val_market_cache = build_market_snapshot_cache(dataset, val_start, val_end)
+        save_market_snapshot_cache(
+            cache_path=val_cache_file,
+            snapshots=val_market_cache,
+            dataset_fingerprint=actual_dataset_fp,
+            val_start=val_start,
+            val_end=val_end,
+            code_revision=policy.code_revision,
+        )
+        print(f"Saved validation market cache to {val_cache_file.name}")
+    else:
+        t_load = time.time()
+        val_market_cache = load_market_snapshot_cache(
+            cache_path=val_cache_file,
+            expected_dataset_fp=actual_dataset_fp,
+            val_start=val_start,
+            val_end=val_end,
+        )
+        print(
+            f"Validation market cache loaded: {len(val_market_cache)} snapshots in {time.time() - t_load:.2f}s"
+        )
     assert len(val_market_cache) == 62335
 
     # 6. Replay Candidates on VAL exactly ONCE & Derive Side Metrics (Phase B)

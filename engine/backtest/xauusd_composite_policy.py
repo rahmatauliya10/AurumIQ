@@ -99,6 +99,44 @@ def compute_trade_effective_n(trades: Sequence[XauUsdSimulatedTrade]) -> float:
         return float(len(filled))
 
 
+def assign_trades_to_folds(
+    trades: Sequence[XauUsdSimulatedTrade],
+    folds: Sequence[Dict[str, Any]],
+    start_key: str = "val_start",
+    end_key: str = "val_end",
+) -> Tuple[List[XauUsdSimulatedTrade], Dict[int, List[XauUsdSimulatedTrade]]]:
+    """
+    Partition simulated trades across governed validation/OOS folds strictly and canonically.
+
+    Guarantees:
+      1. Overall Deduplication: `unique_trades` contains trades that fall within AT LEAST ONE fold window.
+         Each physical trade appears EXACTLY ONCE, preserving order. Used for overall metrics (N_eff,
+         mean_R, LCB95, MDD, total trade count, overall expectancy).
+      2. Fold Membership: `fold_trade_map` maps fold_id -> List[XauUsdSimulatedTrade]. A trade is appended to
+         EVERY fold whose [start_key, end_key) contains its signal timestamp. Used for fold-level metrics
+         (fold expectancies, positive-fold count, temporal stability, fold profit, profit concentration).
+      3. No FIRST_MATCH_ONLY short-circuiting: Overlapping folds both evaluate the trade independently.
+    """
+    fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
+        f["fold_id"]: [] for f in folds
+    }
+    unique_trades: List[XauUsdSimulatedTrade] = []
+
+    for t in trades:
+        t_sig = _to_utc(t.signal_timestamp)
+        matched_any = False
+        for f in folds:
+            f_start = _to_utc(f[start_key])
+            f_end = _to_utc(f[end_key])
+            if f_start <= t_sig < f_end:
+                fold_trade_map[f["fold_id"]].append(t)
+                matched_any = True
+        if matched_any:
+            unique_trades.append(t)
+
+    return unique_trades, fold_trade_map
+
+
 @dataclass(frozen=True)
 class SideEvaluationMetrics:
     """
@@ -368,29 +406,23 @@ def evaluate_side_trades(
     - Max drawdown peak-to-trough in R
     - Temporal stability and profit concentration across governed folds
     """
-    fold_trade_map: Dict[int, List[XauUsdSimulatedTrade]] = {
-        f["fold_id"]: [] for f in folds
-    }
-    side_trades: List[XauUsdSimulatedTrade] = []
-
-    for t in trades:
-        if t.fill_timestamp is None:
-            continue
-        if t.outcome in (
+    valid_side_trades = [
+        t for t in trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
             XauUsdTradeOutcome.NO_FILL,
             XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
             XauUsdTradeOutcome.SKIPPED,
-        ):
-            continue
-        if t.side != side:
-            continue
-        for f in folds:
-            f_start = _to_utc(f["val_start"])
-            f_end = _to_utc(f["val_end"])
-            if f_start <= _to_utc(t.signal_timestamp) < f_end:
-                side_trades.append(t)
-                fold_trade_map[f["fold_id"]].append(t)
-                break
+        )
+        and t.side == side
+    ]
+
+    side_trades, fold_trade_map = assign_trades_to_folds(
+        trades=valid_side_trades,
+        folds=folds,
+        start_key="val_start",
+        end_key="val_end",
+    )
 
     eff_n = compute_trade_effective_n(side_trades)
     net_r_list = [float(t.net_r or Decimal("0")) for t in side_trades]
