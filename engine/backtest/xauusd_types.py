@@ -46,6 +46,7 @@ class XauUsdTradeOutcome(str, Enum):
     UNRESOLVED = "UNRESOLVED"
     SKIPPED = "SKIPPED"
     CONSERVATIVE_SL_FIRST = "CONSERVATIVE_SL_FIRST"
+    ENTRY_INVALIDATED_STALE_RISK_PLAN = "ENTRY_INVALIDATED_STALE_RISK_PLAN"
 
 
 class XauUsdAblationType(str, Enum):
@@ -183,6 +184,7 @@ class XauUsdBacktestMetrics:
     execution_eligible_count: int = 0
     fill_count: int = 0
     no_fill_count: int = 0
+    invalidated_entry_count: int = 0
     fill_rate: float = 0.0
     no_fill_rate: float = 0.0
     trade_count: int = 0

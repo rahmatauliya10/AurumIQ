@@ -290,6 +290,53 @@ class XauUsdOutcomeEngine:
         sl_price = risk_plan.stop_final
         tp2_price = risk_plan.tp2
 
+        # Post-Fill Risk Plan Geometric Validation
+        # Invariant: Precomputed barriers must strictly surround the actual fill_price.
+        # LONG requires: stop_final < fill_price < tp1
+        # SHORT requires: tp1 < fill_price < stop_final
+        is_fill_geometrically_valid = True
+        invalidation_reason = None
+
+        if tp1_price is None or sl_price is None or not getattr(risk_plan, "is_valid_risk_plan", True):
+            is_fill_geometrically_valid = False
+            invalidation_reason = "Missing valid tp1 or stop_final in risk plan."
+        elif risk_side == RiskSide.LONG:
+            if fill_price >= tp1_price:
+                is_fill_geometrically_valid = False
+                invalidation_reason = f"LONG fill_price ({fill_price}) >= tp1 ({tp1_price})"
+            elif fill_price <= sl_price:
+                is_fill_geometrically_valid = False
+                invalidation_reason = f"LONG fill_price ({fill_price}) <= stop_final ({sl_price})"
+        else:  # RiskSide.SHORT
+            if fill_price <= tp1_price:
+                is_fill_geometrically_valid = False
+                invalidation_reason = f"SHORT fill_price ({fill_price}) <= tp1 ({tp1_price})"
+            elif fill_price >= sl_price:
+                is_fill_geometrically_valid = False
+                invalidation_reason = f"SHORT fill_price ({fill_price}) >= stop_final ({sl_price})"
+
+        if not is_fill_geometrically_valid:
+            return XauUsdSimulatedTrade(
+                trade_id=trade_id,
+                side=signal_side,
+                candidate_state=signal.candidate_state,
+                candidate_user_decision=signal.candidate_user_decision,
+                source_signal_fingerprint=signal.analysis_fingerprint,
+                signal_timestamp=signal_ts,
+                risk_plan_fingerprint=risk_plan.risk_plan_fingerprint,
+                planned_risk_amount=planned_risk,
+                outcome=XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                fill_timestamp=fill_ts,
+                fill_price=fill_price,
+                exit_timestamp=None,
+                exit_price=None,
+                dependency_end_timestamp=fill_ts,
+                run_fingerprint=run_fingerprint,
+                fold_id=fold_id,
+                dependency_window=(signal_ts, fill_ts),
+                execution_evidence_fingerprint=evidence_fp,
+            )
+
         eff_bars = holding_horizon_bars_15m or self.holding_horizon_bars_15m
         eff_sec = holding_horizon_seconds or self.holding_horizon_seconds
 
@@ -352,6 +399,7 @@ class XauUsdOutcomeEngine:
                 tp_price=tp1_price,
                 sl_price=sl_price,
                 fill_timestamp=fill_ts,
+                fill_price=fill_price,
                 lower_tf_candles_1m=sub_1m or None,
                 lower_tf_candles_5m=sub_5m or None,
                 policy=intrabar_policy,
