@@ -176,13 +176,19 @@ class XauUsdDirectionalCompositeCalibrationPolicy:
         cls, data: Dict[str, Any]
     ) -> "XauUsdDirectionalCompositeCalibrationPolicy":
         schema = data.get("schema")
-        if schema != "aurumiq.calibration.composite_calibration_policy.v1":
+        if schema not in (
+            "aurumiq.calibration.composite_calibration_policy.v1",
+            "aurumiq.calibration.composite_calibration_policy.v2",
+        ):
             raise ValueError(
                 f"Invalid composite calibration policy schema: '{schema}'"
             )
 
         policy_id = data.get("policy_id")
-        if policy_id != "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v1":
+        if policy_id not in (
+            "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v1",
+            "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v2",
+        ):
             raise ValueError(f"Invalid policy_id: '{policy_id}'")
 
         inst = data.get("instrument", "")

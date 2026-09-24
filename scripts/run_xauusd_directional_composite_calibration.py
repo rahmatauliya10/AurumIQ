@@ -195,13 +195,41 @@ def evaluate_dual_side_composite(
                 fold_trade_map[f["fold_id"]].append(t)
                 break
 
-    buy_trades = [
-        t for t in val_trades if t.side == SignalSide.LONG and t.fill_timestamp is not None
+    # Strictly filter genuine filled trades, excluding non-filled and invalidated entries
+    filled_trades = [
+        t
+        for t in val_trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
+            XauUsdTradeOutcome.NO_FILL,
+            XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            XauUsdTradeOutcome.SKIPPED,
+        )
     ]
-    sell_trades = [
-        t for t in val_trades if t.side == SignalSide.SHORT and t.fill_timestamp is not None
-    ]
-    filled_trades = [t for t in val_trades if t.fill_timestamp is not None]
+    buy_trades = [t for t in filled_trades if t.side == SignalSide.LONG]
+    sell_trades = [t for t in filled_trades if t.side == SignalSide.SHORT]
+
+    invalidated_entry_count = sum(
+        1
+        for t in val_trades
+        if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
+    )
+    stale_tp_negative_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome == XauUsdTradeOutcome.TP1_FIRST
+        and (t.gross_r or Decimal("0")) < Decimal("0")
+    )
+    stale_sl_positive_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome
+        in (
+            XauUsdTradeOutcome.SL_FIRST,
+            XauUsdTradeOutcome.CONSERVATIVE_SL_FIRST,
+        )
+        and (t.gross_r or Decimal("0")) > Decimal("0")
+    )
 
     buy_eff_n = compute_trade_effective_n(buy_trades)
     sell_eff_n = compute_trade_effective_n(sell_trades)
@@ -232,7 +260,14 @@ def evaluate_dual_side_composite(
     positive_folds = 0
     for f in val_folds:
         f_trades = [
-            t for t in fold_trade_map[f["fold_id"]] if t.fill_timestamp is not None
+            t
+            for t in fold_trade_map[f["fold_id"]]
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
         ]
         f_r = [float(t.net_r or Decimal("0")) for t in f_trades]
         f_mean = float(statistics.mean(f_r)) if f_r else 0.0
@@ -286,6 +321,9 @@ def evaluate_dual_side_composite(
         "positive_folds": positive_folds,
         "total_folds": len(val_folds),
         "trade_count": len(filled_trades),
+        "invalidated_entry_count": invalidated_entry_count,
+        "stale_tp_negative_gross_count": stale_tp_negative_gross_count,
+        "stale_sl_positive_gross_count": stale_sl_positive_gross_count,
         "qualified": qualified,
         "reachability_buy_window": reachability["reachability_buy_window"],
         "reachability_sell_window": reachability["reachability_sell_window"],
@@ -317,7 +355,7 @@ def save_composite_provisional_artifact(
     sig_payload = {
         "name": sig.name,
         "target_instrument": sig.target_instrument,
-        "calibration_status": "DEVELOPMENT_COMPOSITE_PROVISIONAL",
+        "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
         "timeframe": sig.timeframe,
         "long_direction": {
             k: getattr(sig.long_direction, k)
@@ -384,7 +422,7 @@ def save_composite_provisional_artifact(
     risk_payload = {
         "name": risk.name,
         "target_instrument": risk.target_instrument,
-        "calibration_status": "DEVELOPMENT_COMPOSITE_PROVISIONAL",
+        "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
         "long_risk_policy": {
             "structure_buffer": str(risk.long_risk_policy.structure_buffer),
             "atr_multiplier": str(risk.long_risk_policy.atr_multiplier),
@@ -413,12 +451,14 @@ def save_composite_provisional_artifact(
 
     artifact_dict = {
         "schema": "aurumiq.calibration.profile.v1",
-        "artifact_id": "xauusd_calibrated_profile_candidate_composite",
+        "artifact_id": Path(policy.provisional_artifact_path).stem,
         "instrument": "XAUUSD",
-        "calibration_status": "DEVELOPMENT_COMPOSITE_PROVISIONAL",
+        "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
         "production_authority": False,
         "paper_only": True,
         "real_order_execution": False,
+        "code_revision": policy.code_revision,
+        "remediation_reference": policy.raw_payload.get("remediation_reference", ""),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "composite_id": sig.name,
         "composite_fingerprint": composite_fp,
@@ -564,6 +604,10 @@ def main():
     long_metrics_list: List[SideEvaluationMetrics] = []
     short_metrics_list: List[SideEvaluationMetrics] = []
 
+    total_inv_entries = 0
+    total_stale_tp = 0
+    total_stale_sl = 0
+
     t_eval_start = time.time()
     for i, cand in enumerate(reachable_candidates):
         t_cand_start = time.time()
@@ -574,6 +618,16 @@ def main():
             market_cache=val_market_cache,
         )
         t_cand_elapsed = time.time() - t_cand_start
+
+        total_inv_entries += sum(
+            1 for t in trades if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
+        )
+        total_stale_tp += sum(
+            1 for t in trades if t.outcome == XauUsdTradeOutcome.TP1_FIRST and (t.gross_r or Decimal("0")) < Decimal("0")
+        )
+        total_stale_sl += sum(
+            1 for t in trades if t.outcome in (XauUsdTradeOutcome.SL_FIRST, XauUsdTradeOutcome.CONSERVATIVE_SL_FIRST) and (t.gross_r or Decimal("0")) > Decimal("0")
+        )
 
         # Derive LONG metrics strictly from LONG trades
         l_met = evaluate_side_trades(
@@ -645,13 +699,19 @@ def main():
         print("COMPOSITE_NOT_CONSTRUCTED")
         print("CALIBRATION_REQUIRED")
         print("STOP")
-        print("\nPOLICY_FINGERPRINT = " + policy.policy_fingerprint)
+        print("")
+        print(f"COMPOSITE_POLICY_VERSION = {policy.schema}")
+        print(f"COMPOSITE_POLICY_FINGERPRINT = {policy.policy_fingerprint}")
+        print(f"POST_REMEDIATION_CODE_REVISION = {policy.code_revision}")
+        print("")
         print(f"LONG_CANDIDATES_EVALUATED = {long_candidates_evaluated}")
         print(f"LONG_CANDIDATES_QUALIFIED = {long_candidates_qualified}")
         print("SELECTED_LONG_ID = NONE")
         print("LONG_EFFECTIVE_N = 0.00")
         print("LONG_LCB95 = N/A")
         print("LONG_MDD_R = N/A")
+        print("LONG_TEMPORAL_STABILITY = N/A")
+        print("LONG_PROFIT_CONCENTRATION = N/A")
         print("")
         print(f"SHORT_CANDIDATES_EVALUATED = {short_candidates_evaluated}")
         print(f"SHORT_CANDIDATES_QUALIFIED = {short_candidates_qualified}")
@@ -659,7 +719,10 @@ def main():
         print("SHORT_EFFECTIVE_N = 0.00")
         print("SHORT_LCB95 = N/A")
         print("SHORT_MDD_R = N/A")
+        print("SHORT_TEMPORAL_STABILITY = N/A")
+        print("SHORT_PROFIT_CONCENTRATION = N/A")
         print("")
+        print("COMPOSITE_STATUS = NOT_CONSTRUCTED")
         print("COMPOSITE_BUY_EFFECTIVE_N = 0.00")
         print("COMPOSITE_SELL_EFFECTIVE_N = 0.00")
         print("COMPOSITE_COMBINED_EFFECTIVE_N = 0.00")
@@ -671,7 +734,11 @@ def main():
         print("REACHABILITY_SELL_WINDOW = RED")
         print("REACHABILITY_READY_SHORT = RED")
         print("")
-        print("OOS_ACCESS_COUNT = 0")
+        print(f"INVALIDATED_ENTRY_COUNT = {total_inv_entries}")
+        print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {total_stale_tp}")
+        print(f"STALE_SL_POSITIVE_GROSS_COUNT = {total_stale_sl}")
+        print("")
+        print("OOS_ACCESS_THIS_RUN = 0")
         print("PRODUCTION_AUTHORITY = OFF")
         print("PAPER_ONLY = TRUE")
         print("REAL_ORDER_EXECUTION = OFF")
@@ -747,13 +814,18 @@ def main():
     print("\n==================================================================")
     print("DIRECTIONAL COMPOSITE CALIBRATION REPORT (PHASE D)")
     print("==================================================================")
-    print(f"POLICY_FINGERPRINT = {policy.policy_fingerprint}")
+    print(f"COMPOSITE_POLICY_VERSION = {policy.schema}")
+    print(f"COMPOSITE_POLICY_FINGERPRINT = {policy.policy_fingerprint}")
+    print(f"POST_REMEDIATION_CODE_REVISION = {policy.code_revision}")
+    print("")
     print(f"LONG_CANDIDATES_EVALUATED = {long_candidates_evaluated}")
     print(f"LONG_CANDIDATES_QUALIFIED = {long_candidates_qualified}")
     print(f"SELECTED_LONG_ID = {selected_long.candidate_id}")
     print(f"LONG_EFFECTIVE_N = {selected_long.effective_n:.2f}")
     print(f"LONG_LCB95 = {selected_long.side_lcb_95:+.4f}")
     print(f"LONG_MDD_R = {selected_long.side_max_drawdown_r:.4f}")
+    print(f"LONG_TEMPORAL_STABILITY = {selected_long.temporal_stability:.4f}")
+    print(f"LONG_PROFIT_CONCENTRATION = {selected_long.profit_concentration_pct:.2f}%")
     print("")
     print(f"SHORT_CANDIDATES_EVALUATED = {short_candidates_evaluated}")
     print(f"SHORT_CANDIDATES_QUALIFIED = {short_candidates_qualified}")
@@ -761,7 +833,10 @@ def main():
     print(f"SHORT_EFFECTIVE_N = {selected_short.effective_n:.2f}")
     print(f"SHORT_LCB95 = {selected_short.side_lcb_95:+.4f}")
     print(f"SHORT_MDD_R = {selected_short.side_max_drawdown_r:.4f}")
+    print(f"SHORT_TEMPORAL_STABILITY = {selected_short.temporal_stability:.4f}")
+    print(f"SHORT_PROFIT_CONCENTRATION = {selected_short.profit_concentration_pct:.2f}%")
     print("")
+    print(f"COMPOSITE_STATUS = {'QUALIFIED' if comp_metrics['qualified'] else 'REJECTED'}")
     print(f"COMPOSITE_BUY_EFFECTIVE_N = {comp_metrics['buy_effective_n']:.2f}")
     print(f"COMPOSITE_SELL_EFFECTIVE_N = {comp_metrics['sell_effective_n']:.2f}")
     print(f"COMPOSITE_COMBINED_EFFECTIVE_N = {comp_metrics['combined_effective_n']:.2f}")
@@ -774,7 +849,11 @@ def main():
     print(f"REACHABILITY_SELL_WINDOW = {reach_sell_str}")
     print(f"REACHABILITY_READY_SHORT = {reach_ready_short_str}")
     print("")
-    print("OOS_ACCESS_COUNT = 0")
+    print(f"INVALIDATED_ENTRY_COUNT = {comp_metrics.get('invalidated_entry_count', 0)}")
+    print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {comp_metrics.get('stale_tp_negative_gross_count', 0)}")
+    print(f"STALE_SL_POSITIVE_GROSS_COUNT = {comp_metrics.get('stale_sl_positive_gross_count', 0)}")
+    print("")
+    print("OOS_ACCESS_THIS_RUN = 0")
     print("PRODUCTION_AUTHORITY = OFF")
     print("PAPER_ONLY = TRUE")
     print("REAL_ORDER_EXECUTION = OFF")

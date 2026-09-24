@@ -1,11 +1,11 @@
 {
-  "schema": "aurumiq.calibration.composite_calibration_policy.v1",
-  "policy_id": "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v1",
+  "schema": "aurumiq.calibration.composite_calibration_policy.v2",
+  "policy_id": "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v2",
   "instrument": "XAUUSD",
   "target_instrument_normalized": "XAUUSD",
   "timeframe": "15m",
-  "base_code_revision": "0fe9c534c632921fa504136e69dc266a05baed82",
-  "code_revision": "0fe9c534c632921fa504136e69dc266a05baed82",
+  "base_code_revision": "2da87311dc1b811f1455cfa57643221f3f9823f0",
+  "code_revision": "2da87311dc1b811f1455cfa57643221f3f9823f0",
   "decision_at": "2026-09-24T08:00:00Z",
   "created_at": "2026-09-24T08:00:00Z",
   "historical_bounds": {
@@ -130,7 +130,7 @@
   "shared_profile_specification": {
     "target_instrument": "XAUUSD",
     "timeframe": "15m",
-    "calibration_status": "DEVELOPMENT_COMPOSITE_PROVISIONAL",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
     "production_authority": false,
     "paper_only": true,
     "real_order_execution": false,
@@ -152,11 +152,12 @@
     "generator_class": "engine.backtest.xauusd_risk_candidate_generator.XauUsdJointCandidateGenerator",
     "signal_generation_policy_reference": "XAUUSD-CANDIDATE-GENERATION-POLICY-20260923-V3"
   },
-  "provisional_artifact_path": "artifacts/calibration/xauusd_calibrated_profile_candidate_composite.json",
+  "provisional_artifact_path": "artifacts/calibration/xauusd_calibrated_profile_candidate_composite_post_remediation.json",
   "production_authority_status": {
     "is_production_authorized": false,
     "paper_only": true,
     "real_order_execution": "disabled"
   },
-  "policy_fingerprint": "d6b8ea7da2ace2e99ac67f8c9d0bc2e96d8c3f1f7e1c31326bba976bb0e12484"
+  "remediation_reference": "Outcome-accounting remediation: post-fill risk plan validation with ENTRY_INVALIDATED_STALE_RISK_PLAN, eliminating stale TP negative gross R manufactured trades.",
+  "policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b"
 }

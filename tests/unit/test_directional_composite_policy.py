@@ -28,8 +28,14 @@ from scripts.run_xauusd_calibration import check_structural_reachability
 def test_composite_policy_loading_and_fingerprint():
     """Verify governed policy artifact loads correctly and fingerprint is cryptographically valid."""
     policy = load_governed_composite_calibration_policy()
-    assert policy.schema == "aurumiq.calibration.composite_calibration_policy.v1"
-    assert policy.policy_id == "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v1"
+    assert policy.schema in (
+        "aurumiq.calibration.composite_calibration_policy.v1",
+        "aurumiq.calibration.composite_calibration_policy.v2",
+    )
+    assert policy.policy_id in (
+        "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v1",
+        "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v2",
+    )
     assert policy.instrument == "XAUUSD"
     assert policy.total_folds == 5
     assert len(policy.folds) == 5
