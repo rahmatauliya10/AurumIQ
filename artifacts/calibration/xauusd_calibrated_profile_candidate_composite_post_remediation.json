@@ -1,14 +1,16 @@
 {
   "schema": "aurumiq.calibration.profile.v1",
-  "artifact_id": "xauusd_calibrated_profile_champion",
+  "artifact_id": "xauusd_calibrated_profile_candidate_composite_post_remediation",
   "instrument": "XAUUSD",
-  "calibration_status": "REVALIDATED_RESEARCH",
+  "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
   "production_authority": false,
   "paper_only": true,
   "real_order_execution": false,
   "code_revision": "14dbd98b84c3e1bfc6cab9d9ec7f0fbe258d1e15",
   "remediation_reference": "Outcome-accounting remediation: post-fill risk plan validation with ENTRY_INVALIDATED_STALE_RISK_PLAN, eliminating stale TP negative gross R manufactured trades.",
-  "created_at": "2026-09-25T07:03:53.092988+00:00",
+  "created_at": "2026-09-25T06:49:48.210449+00:00",
+  "composite_id": "XAUUSD_COMPOSITE_L018_S031",
+  "composite_fingerprint": "c5a63597d8b652b8a30372c2effe86ca3c4452212e209b0bc013da5fe6684ffc:ed59b898a5e07b87d304e401b51198aa6e2a7f5a3032dfa309d32102e618cd70",
   "policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
   "selection_policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
   "generator_policy_fingerprint": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f",
@@ -100,7 +102,7 @@
   "signal_profile": {
     "name": "XAUUSD_COMPOSITE_L018_S031",
     "target_instrument": "XAUUSD",
-    "calibration_status": "REVALIDATED_RESEARCH",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
     "timeframe": "15m",
     "long_direction": {
       "weight_regime": 0.0,
@@ -166,7 +168,7 @@
   "risk_profile": {
     "name": "XAUUSD_RISK_COMPOSITE_L018_S031",
     "target_instrument": "XAUUSD",
-    "calibration_status": "REVALIDATED_RESEARCH",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
     "long_risk_policy": {
       "structure_buffer": "0.94",
       "atr_multiplier": "0.28",
@@ -192,23 +194,5 @@
       "slippage_pct": "0.01"
     }
   },
-  "artifact_fingerprint": "77913fba9263026a4d1a5daca4a52f116cb8df8a9e6e7b1f9765475a20411878",
-  "champion_id": "XAUUSD_COMPOSITE_L018_S031",
-  "champion_fingerprint": "c5a63597d8b652b8a30372c2effe86ca3c4452212e209b0bc013da5fe6684ffc:ed59b898a5e07b87d304e401b51198aa6e2a7f5a3032dfa309d32102e618cd70",
-  "selection_evidence_fingerprint": "ac4f2c34327a3408b0823190bb6e3543c97cc175d23ed766c85d48da33a41f9a",
-  "val_metrics": {
-    "candidate_id": "XAUUSD_COMPOSITE_L018_S031",
-    "buy_effective_n": 110.0,
-    "sell_effective_n": 82.0,
-    "combined_effective_n": 192.0,
-    "val_mean_r": 0.3038,
-    "val_std_r": 1.5093,
-    "val_lcb_95": 0.1244,
-    "val_max_drawdown_r": 16.7866,
-    "val_profit_concentration_pct": 47.0168,
-    "val_temporal_stability": 0.8702,
-    "positive_folds": 5,
-    "total_folds": 5,
-    "qualified": true
-  }
+  "artifact_fingerprint": "ac4f2c34327a3408b0823190bb6e3543c97cc175d23ed766c85d48da33a41f9a"
 }
