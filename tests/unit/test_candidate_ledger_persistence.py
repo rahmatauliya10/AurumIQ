@@ -54,6 +54,20 @@ def sample_candidate_record(sample_provenance):
         "positive_fold_count": 4,
         "temporal_stability": 0.9425,
         "profit_concentration": 36.8,
+        "buy_mean_r": 0.05,
+        "sell_mean_r": -0.02,
+        "buy_temporal_stability": 0.9425,
+        "sell_temporal_stability": 0.85,
+        "buy_profit_concentration": 36.8,
+        "sell_profit_concentration": 20.0,
+        "buy_positive_fold_count": 4,
+        "sell_positive_fold_count": 2,
+        "buy_fold_expectancies": [-0.03, 0.06, 0.09, 0.12, 0.10],
+        "sell_fold_expectancies": [-0.01, 0.02, -0.05, 0.01, -0.02],
+        "buy_fold_profits": [-5.0, 10.0, 15.0, 25.0, 20.0],
+        "sell_fold_profits": [-1.0, 2.0, -5.0, 1.0, -2.0],
+        "buy_fold_trade_counts": [50, 60, 70, 80, 111],
+        "sell_fold_trade_counts": [10, 15, 20, 20, 20],
         "invalidated_entry_count": 196,
         "stale_tp_negative_gross_count": 0,
         "stale_sl_positive_gross_count": 0,
@@ -100,6 +114,14 @@ def test_01_atomic_write_and_read(custom_tmp_dir, sample_provenance, sample_cand
     assert stored_cand["candidate_id"] == "XAUUSD_CANDIDATE_012"
     assert stored_cand["combined_effective_n"] == 280.0
     assert stored_cand["eval_result"] == eval_result
+    assert stored_cand["buy_mean_r"] == 0.05
+    assert stored_cand["sell_mean_r"] == -0.02
+    assert stored_cand["buy_temporal_stability"] == 0.9425
+    assert stored_cand["sell_temporal_stability"] == 0.85
+    assert stored_cand["buy_profit_concentration"] == 36.8
+    assert stored_cand["sell_profit_concentration"] == 20.0
+    assert stored_cand["buy_positive_fold_count"] == 4
+    assert stored_cand["sell_positive_fold_count"] == 2
 
 
 def test_02_provenance_validation_exact_match(custom_tmp_dir, sample_provenance, sample_candidate_record):

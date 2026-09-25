@@ -415,6 +415,78 @@ def evaluate_candidate_val(
 
     positive_folds = sum(1 for exp in fold_expectancies if exp > 0.0)
 
+    # Directional side fold metrics
+    buy_fold_expectancies = []
+    buy_fold_profits = []
+    buy_fold_trade_counts = []
+    sell_fold_expectancies = []
+    sell_fold_profits = []
+    sell_fold_trade_counts = []
+
+    for f in val_folds:
+        fid = f["fold_id"]
+        f_trades = [
+            t
+            for t in fold_trade_map[fid]
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
+        ]
+        f_b = [t for t in f_trades if t.side == SignalSide.LONG]
+        f_s = [t for t in f_trades if t.side == SignalSide.SHORT]
+
+        f_b_r = [float(t.net_r or Decimal("0")) for t in f_b]
+        f_s_r = [float(t.net_r or Decimal("0")) for t in f_s]
+
+        buy_fold_expectancies.append(float(statistics.mean(f_b_r)) if f_b_r else 0.0)
+        buy_fold_profits.append(sum(f_b_r))
+        buy_fold_trade_counts.append(len(f_b))
+
+        sell_fold_expectancies.append(float(statistics.mean(f_s_r)) if f_s_r else 0.0)
+        sell_fold_profits.append(sum(f_s_r))
+        sell_fold_trade_counts.append(len(f_s))
+
+    b_tot_profit = sum(buy_fold_profits)
+    b_max_profit = max(buy_fold_profits) if buy_fold_profits else 0.0
+    buy_profit_concentration = (
+        float(b_max_profit / b_tot_profit * 100.0)
+        if b_tot_profit > 0 and b_max_profit > 0
+        else 0.0
+    )
+    if buy_fold_expectancies and len(buy_fold_expectancies) > 1:
+        b_f_mean = statistics.mean(buy_fold_expectancies)
+        b_f_std = statistics.stdev(buy_fold_expectancies)
+        buy_temporal_stability = (
+            max(0.0, 1.0 - (b_f_std / (abs(b_f_mean) + 1.0)))
+            if (abs(b_f_mean) + 1.0) > 0
+            else 0.0
+        )
+    else:
+        buy_temporal_stability = 0.0
+    buy_positive_folds = sum(1 for exp in buy_fold_expectancies if exp > 0.0)
+
+    s_tot_profit = sum(sell_fold_profits)
+    s_max_profit = max(sell_fold_profits) if sell_fold_profits else 0.0
+    sell_profit_concentration = (
+        float(s_max_profit / s_tot_profit * 100.0)
+        if s_tot_profit > 0 and s_max_profit > 0
+        else 0.0
+    )
+    if sell_fold_expectancies and len(sell_fold_expectancies) > 1:
+        s_f_mean = statistics.mean(sell_fold_expectancies)
+        s_f_std = statistics.stdev(sell_fold_expectancies)
+        sell_temporal_stability = (
+            max(0.0, 1.0 - (s_f_std / (abs(s_f_mean) + 1.0)))
+            if (abs(s_f_mean) + 1.0) > 0
+            else 0.0
+        )
+    else:
+        sell_temporal_stability = 0.0
+    sell_positive_folds = sum(1 for exp in sell_fold_expectancies if exp > 0.0)
+
     mdd_ceiling = relative_mdd_ceiling or policy.absolute_max_drawdown_r
     qualified = (
         buy_eff_n >= policy.buy_min_effective_n
@@ -477,6 +549,20 @@ def evaluate_candidate_val(
         "sell_max_drawdown_r": round(sell_mdd_r, 4),
         "positive_folds": positive_folds,
         "fold_profits": [round(x, 4) for x in fold_profits],
+        "buy_mean_r": round(buy_mean_r, 4),
+        "sell_mean_r": round(sell_mean_r, 4),
+        "buy_temporal_stability": round(buy_temporal_stability, 4),
+        "sell_temporal_stability": round(sell_temporal_stability, 4),
+        "buy_profit_concentration_pct": round(buy_profit_concentration, 2),
+        "sell_profit_concentration_pct": round(sell_profit_concentration, 2),
+        "buy_positive_folds": buy_positive_folds,
+        "sell_positive_folds": sell_positive_folds,
+        "buy_fold_expectancies": [round(x, 4) for x in buy_fold_expectancies],
+        "sell_fold_expectancies": [round(x, 4) for x in sell_fold_expectancies],
+        "buy_fold_profits": [round(x, 4) for x in buy_fold_profits],
+        "sell_fold_profits": [round(x, 4) for x in sell_fold_profits],
+        "buy_fold_trade_counts": buy_fold_trade_counts,
+        "sell_fold_trade_counts": sell_fold_trade_counts,
         "rejection_reasons": rejection_reasons,
     }
 
@@ -1251,6 +1337,20 @@ def main():
                 "positive_fold_count": c_res.get("positive_folds", 0),
                 "temporal_stability": c_res.get("val_temporal_stability", 0.0),
                 "profit_concentration": c_res.get("val_profit_concentration_pct", 0.0),
+                "buy_mean_r": c_res.get("buy_mean_r", 0.0),
+                "sell_mean_r": c_res.get("sell_mean_r", 0.0),
+                "buy_temporal_stability": c_res.get("buy_temporal_stability", 0.0),
+                "sell_temporal_stability": c_res.get("sell_temporal_stability", 0.0),
+                "buy_profit_concentration": c_res.get("buy_profit_concentration_pct", 0.0),
+                "sell_profit_concentration": c_res.get("sell_profit_concentration_pct", 0.0),
+                "buy_positive_fold_count": c_res.get("buy_positive_folds", 0),
+                "sell_positive_fold_count": c_res.get("sell_positive_folds", 0),
+                "buy_fold_expectancies": c_res.get("buy_fold_expectancies", []),
+                "sell_fold_expectancies": c_res.get("sell_fold_expectancies", []),
+                "buy_fold_profits": c_res.get("buy_fold_profits", []),
+                "sell_fold_profits": c_res.get("sell_fold_profits", []),
+                "buy_fold_trade_counts": c_res.get("buy_fold_trade_counts", []),
+                "sell_fold_trade_counts": c_res.get("sell_fold_trade_counts", []),
                 "invalidated_entry_count": c_res.get("invalidated_entry_count", 0),
                 "stale_tp_negative_gross_count": c_res.get("stale_tp_negative_gross_count", 0),
                 "stale_sl_positive_gross_count": c_res.get("stale_sl_positive_gross_count", 0),
