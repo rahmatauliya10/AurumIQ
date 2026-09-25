@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 DEFAULT_POLICY_PATH = Path("artifacts/calibration/xauusd_signal_calibration_selection_policy.json")
+DEFAULT_POLICY_PATH_V2 = Path("artifacts/calibration/xauusd_signal_calibration_selection_policy_v2.json")
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -80,13 +81,22 @@ class XauUsdSignalCalibrationSelectionPolicy:
     base_code_revision: str = ""
     decision_at: str = ""
     artifact_created_at: str = ""
+    dataset_fingerprint: str = ""
+    required_timeframes: Tuple[str, ...] = ()
+    cache_schema: str = ""
+    cache_semantics: str = ""
+    fold_assignment: str = ""
+    overall_trade_semantics: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "XauUsdSignalCalibrationSelectionPolicy":
         """Construct and strictly validate policy from raw dictionary."""
         # 1. Schema & Identity
         schema = data.get("schema")
-        if schema != "aurumiq.calibration.selection_policy.v1":
+        if schema not in (
+            "aurumiq.calibration.selection_policy.v1",
+            "aurumiq.calibration.selection_policy.v2",
+        ):
             raise ValueError(f"Unknown or invalid policy schema: '{schema}'")
 
         policy_id = data.get("policy_id")
@@ -244,6 +254,12 @@ class XauUsdSignalCalibrationSelectionPolicy:
             base_code_revision=data.get("base_code_revision", data.get("code_revision", "")),
             decision_at=data.get("decision_at", ""),
             artifact_created_at=data.get("artifact_created_at", data.get("created_at", "")),
+            dataset_fingerprint=data.get("dataset_fingerprint", ""),
+            required_timeframes=tuple(data.get("required_timeframes", ())),
+            cache_schema=data.get("cache_schema", ""),
+            cache_semantics=data.get("cache_semantics", ""),
+            fold_assignment=data.get("fold_assignment", ""),
+            overall_trade_semantics=data.get("overall_trade_semantics", ""),
         )
 
     def validate_dynamic_embargo(
@@ -287,7 +303,13 @@ def load_governed_selection_policy(
     policy_path: Optional[Path] = None,
 ) -> XauUsdSignalCalibrationSelectionPolicy:
     """Load and validate authoritative XAUUSD calibration selection policy from disk."""
-    path = policy_path or DEFAULT_POLICY_PATH
+    if policy_path is not None:
+        path = policy_path
+    elif DEFAULT_POLICY_PATH_V2.exists():
+        path = DEFAULT_POLICY_PATH_V2
+    else:
+        path = DEFAULT_POLICY_PATH
+
     if not path.exists():
         raise FileNotFoundError(f"Authoritative selection policy not found at: {path}")
 

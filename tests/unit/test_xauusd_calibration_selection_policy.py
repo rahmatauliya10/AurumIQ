@@ -25,8 +25,8 @@ def raw_policy_dict():
 
 @pytest.fixture
 def selection_policy():
-    """Load authoritative selection policy object."""
-    return load_governed_selection_policy()
+    """Load authoritative selection policy object (V1 baseline)."""
+    return load_governed_selection_policy(DEFAULT_POLICY_PATH)
 
 
 class TestPolicyArtifactIntegrity:
@@ -40,6 +40,19 @@ class TestPolicyArtifactIntegrity:
         assert selection_policy.base_code_revision == "0fe9c534c632921fa504136e69dc266a05baed82"
         assert selection_policy.decision_at == "2026-09-11T23:45:00Z"
         assert selection_policy.artifact_created_at == "2026-09-13T15:15:00Z"
+
+    def test_01b_v2_policy_artifact_exists_and_loads(self):
+        v2_pol = load_governed_selection_policy()
+        assert v2_pol is not None
+        assert v2_pol.policy_id == "XAUUSD-SELECTION-POLICY-20260924-V2"
+        assert v2_pol.schema == "aurumiq.calibration.selection_policy.v2"
+        assert v2_pol.code_revision == "b1cd4b04f4c073d7d8c06a9c1728477b52315d98"
+        assert v2_pol.dataset_fingerprint == "547ec898e42ed0eff2992400d784e40c6b53c1d26b7a5e5722e0eb1128080242"
+        assert v2_pol.required_timeframes == ("15m", "1h", "4h", "1d")
+        assert v2_pol.cache_schema == "aurumiq.xauusd_market_cache.v2"
+        assert v2_pol.cache_semantics == "v2_mtf_features"
+        assert v2_pol.fold_assignment == "ALL_MATCHING_FOLDS"
+        assert v2_pol.overall_trade_semantics == "UNIQUE_PHYSICAL_TRADES"
 
     def test_02_fingerprint_deterministic_and_key_order_invariant(self, raw_policy_dict):
         computed_fp = compute_selection_policy_fingerprint(raw_policy_dict)

@@ -87,6 +87,7 @@ from engine.backtest.xauusd_types import (
     XauUsdTradeOutcome,
 )
 from engine.backtest.xauusd_composite_policy import assign_trades_to_folds
+from engine.backtest.xauusd_candidate_ledger import XauUsdCandidateLedgerManager
 from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
 from apps.backtests.tasks import compute_calibration_artifact_fingerprint
 
@@ -377,6 +378,43 @@ def evaluate_candidate_val(
     else:
         temporal_stability = 0.0
 
+    # Directional side metrics
+    buy_trade_count = len(buy_trades)
+    sell_trade_count = len(sell_trades)
+    buy_r_list = [float(t.net_r or Decimal("0")) for t in buy_trades]
+    buy_mean_r = float(statistics.mean(buy_r_list)) if buy_r_list else 0.0
+    buy_std_r = float(statistics.stdev(buy_r_list)) if len(buy_r_list) > 1 else 0.0
+    buy_lcb_95 = policy.compute_effective_n_lcb_95(buy_mean_r, buy_std_r, buy_eff_n)
+    buy_mdd_r = 0.0
+    b_peak = 0.0
+    b_cum = 0.0
+    for r in buy_r_list:
+        b_cum += r
+        if b_cum > b_peak:
+            b_peak = b_cum
+        else:
+            dd = b_peak - b_cum
+            if dd > buy_mdd_r:
+                buy_mdd_r = dd
+
+    sell_r_list = [float(t.net_r or Decimal("0")) for t in sell_trades]
+    sell_mean_r = float(statistics.mean(sell_r_list)) if sell_r_list else 0.0
+    sell_std_r = float(statistics.stdev(sell_r_list)) if len(sell_r_list) > 1 else 0.0
+    sell_lcb_95 = policy.compute_effective_n_lcb_95(sell_mean_r, sell_std_r, sell_eff_n)
+    sell_mdd_r = 0.0
+    s_peak = 0.0
+    s_cum = 0.0
+    for r in sell_r_list:
+        s_cum += r
+        if s_cum > s_peak:
+            s_peak = s_cum
+        else:
+            dd = s_peak - s_cum
+            if dd > sell_mdd_r:
+                sell_mdd_r = dd
+
+    positive_folds = sum(1 for exp in fold_expectancies if exp > 0.0)
+
     mdd_ceiling = relative_mdd_ceiling or policy.absolute_max_drawdown_r
     qualified = (
         buy_eff_n >= policy.buy_min_effective_n
@@ -386,7 +424,27 @@ def evaluate_candidate_val(
         and max_dd_r <= mdd_ceiling
         and profit_concentration
         <= policy.max_single_fold_profit_concentration_pct
+        and positive_folds >= policy.min_positive_folds
+        and temporal_stability >= policy.min_temporal_stability_score
     )
+
+    rejection_reasons = []
+    if buy_eff_n < policy.buy_min_effective_n:
+        rejection_reasons.append(f"BUY N_eff {buy_eff_n:.1f} < {policy.buy_min_effective_n}")
+    if sell_eff_n < policy.sell_min_effective_n:
+        rejection_reasons.append(f"SELL N_eff {sell_eff_n:.1f} < {policy.sell_min_effective_n}")
+    if comb_eff_n < policy.combined_min_effective_n:
+        rejection_reasons.append(f"Combined N_eff {comb_eff_n:.1f} < {policy.combined_min_effective_n}")
+    if val_lcb_95 <= 0.0:
+        rejection_reasons.append(f"LCB95 {val_lcb_95:+.4f} <= 0.0")
+    if max_dd_r > mdd_ceiling:
+        rejection_reasons.append(f"MDD {max_dd_r:.2f}R > {mdd_ceiling:.2f}R")
+    if profit_concentration > policy.max_single_fold_profit_concentration_pct:
+        rejection_reasons.append(f"Profit concentration {profit_concentration:.1f}% > {policy.max_single_fold_profit_concentration_pct}%")
+    if positive_folds < policy.min_positive_folds:
+        rejection_reasons.append(f"Positive folds {positive_folds}/{policy.min_positive_folds_total} < {policy.min_positive_folds}")
+    if temporal_stability < policy.min_temporal_stability_score:
+        rejection_reasons.append(f"Temporal stability {temporal_stability:.4f} < {policy.min_temporal_stability_score}")
 
     return {
         "candidate_id": candidate.signal_profile.name,
@@ -410,6 +468,16 @@ def evaluate_candidate_val(
         "reachability_buy_window": reachability_buy_window,
         "reachability_sell_window": reachability_sell_window,
         "reachability_ready_short": reachability_ready_short,
+        "run_fingerprint": run_fp,
+        "buy_trade_count": buy_trade_count,
+        "sell_trade_count": sell_trade_count,
+        "buy_lcb_95": buy_lcb_95,
+        "sell_lcb_95": sell_lcb_95,
+        "buy_max_drawdown_r": round(buy_mdd_r, 4),
+        "sell_max_drawdown_r": round(sell_mdd_r, 4),
+        "positive_folds": positive_folds,
+        "fold_profits": [round(x, 4) for x in fold_profits],
+        "rejection_reasons": rejection_reasons,
     }
 
 
@@ -1114,23 +1182,99 @@ def main():
     print("\n--- STEP 7: EVALUATE CANDIDATES ON VAL ---")
     val_results: List[Dict[str, Any]] = []
     t_eval_start = time.time()
+
+    ledger_path = ROOT / "artifacts" / "calibration" / "xauusd_standard_calibration_candidate_ledger.json"
+    generator_policy = load_governed_candidate_generation_policy()
+    expected_provenance = {
+        "dataset_fingerprint": actual_dataset_fp,
+        "code_revision": policy.code_revision,
+        "selection_policy_fingerprint": policy.policy_fingerprint,
+        "generator_policy_fingerprint": generator_policy.policy_fingerprint,
+        "cache_semantics_version": "v2_mtf_features",
+    }
+    ledger_manager = XauUsdCandidateLedgerManager(
+        ledger_path=ledger_path,
+        expected_provenance=expected_provenance,
+    )
+
     for i, cand in enumerate(reachable_candidates):
-        t_cand_start = time.time()
-        c_res = evaluate_candidate_val(
-            dataset=dataset,
-            candidate=cand,
-            policy=policy,
-            relative_mdd_ceiling=relative_mdd_ceiling,
-            market_cache=val_market_cache,
-        )
-        val_results.append(c_res)
-        t_cand_elapsed = time.time() - t_cand_start
-        status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
-        print(
-            f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand.signal_profile.name}: {status_str} "
-            f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
-            f"Trades={c_res['trade_count']}) in {t_cand_elapsed:.2f}s"
-        )
+        cand_id = cand.signal_profile.name
+        if ledger_manager.can_reuse(cand_id):
+            c_res = ledger_manager.get_candidate_eval_result(cand_id)
+            val_results.append(c_res)
+            status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
+            print(
+                f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand_id}: {status_str} [REUSED_FROM_LEDGER] "
+                f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
+                f"Trades={c_res['trade_count']})"
+            )
+        else:
+            t_cand_start = time.time()
+            c_res = evaluate_candidate_val(
+                dataset=dataset,
+                candidate=cand,
+                policy=policy,
+                relative_mdd_ceiling=relative_mdd_ceiling,
+                market_cache=val_market_cache,
+            )
+            val_results.append(c_res)
+            t_cand_elapsed = time.time() - t_cand_start
+
+            # Build ledger record
+            cand_record = {
+                "candidate_id": cand_id,
+                "candidate_index": cand.index,
+                "dataset_fingerprint": actual_dataset_fp,
+                "code_revision": policy.code_revision,
+                "selection_policy_fingerprint": policy.policy_fingerprint,
+                "generator_policy_fingerprint": generator_policy.policy_fingerprint,
+                "cache_semantics_version": "v2_mtf_features",
+                "run_fingerprint": c_res.get("run_fingerprint", ""),
+                "buy_trade_count": c_res.get("buy_trade_count", 0),
+                "sell_trade_count": c_res.get("sell_trade_count", 0),
+                "combined_trade_count": c_res.get("trade_count", 0),
+                "buy_effective_n": c_res.get("buy_effective_n", 0.0),
+                "sell_effective_n": c_res.get("sell_effective_n", 0.0),
+                "combined_effective_n": c_res.get("combined_effective_n", 0.0),
+                "buy_lcb95": c_res.get("buy_lcb_95", -999.0),
+                "sell_lcb95": c_res.get("sell_lcb_95", -999.0),
+                "combined_lcb95": c_res.get("val_lcb_95", -999.0),
+                "buy_mdd": c_res.get("buy_max_drawdown_r", 0.0),
+                "sell_mdd": c_res.get("sell_max_drawdown_r", 0.0),
+                "combined_mdd": c_res.get("val_max_drawdown_r", 0.0),
+                "fold_metrics": {
+                    "fold_expectancies": c_res.get("fold_expectancies", []),
+                    "fold_profits": c_res.get("fold_profits", []),
+                    "positive_fold_count": c_res.get("positive_folds", 0),
+                    "total_folds": len(policy.folds),
+                },
+                "positive_fold_count": c_res.get("positive_folds", 0),
+                "temporal_stability": c_res.get("val_temporal_stability", 0.0),
+                "profit_concentration": c_res.get("val_profit_concentration_pct", 0.0),
+                "invalidated_entry_count": c_res.get("invalidated_entry_count", 0),
+                "stale_tp_negative_gross_count": c_res.get("stale_tp_negative_gross_count", 0),
+                "stale_sl_positive_gross_count": c_res.get("stale_sl_positive_gross_count", 0),
+                "qualification_flags": {
+                    "qualified": c_res.get("qualified", False),
+                    "buy_eff_n_pass": bool(c_res.get("buy_effective_n", 0) >= policy.buy_min_effective_n),
+                    "sell_eff_n_pass": bool(c_res.get("sell_effective_n", 0) >= policy.sell_min_effective_n),
+                    "comb_eff_n_pass": bool(c_res.get("combined_effective_n", 0) >= policy.combined_min_effective_n),
+                    "lcb95_pass": bool(c_res.get("val_lcb_95", -999) > 0.0),
+                    "mdd_pass": bool(c_res.get("val_max_drawdown_r", 999) <= relative_mdd_ceiling),
+                    "concentration_pass": bool(c_res.get("val_profit_concentration_pct", 999) <= policy.max_single_fold_profit_concentration_pct),
+                    "positive_folds_pass": bool(c_res.get("positive_folds", 0) >= policy.min_positive_folds),
+                    "stability_pass": bool(c_res.get("val_temporal_stability", 0) >= policy.min_temporal_stability_score),
+                },
+                "rejection_reasons": c_res.get("rejection_reasons", []),
+            }
+            ledger_manager.record_candidate(cand_record, eval_result=c_res)
+
+            status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
+            print(
+                f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand_id}: {status_str} "
+                f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
+                f"Trades={c_res['trade_count']}) in {t_cand_elapsed:.2f}s"
+            )
 
     candidate_eval_seconds = time.time() - t_eval_start
     print(f"CANDIDATE_EVAL_SECONDS = {candidate_eval_seconds:.2f}")
