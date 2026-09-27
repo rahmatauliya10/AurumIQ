@@ -776,7 +776,7 @@ def test_xauusd_e2e_producer_to_asgi_websocket_delivery():
     session[HASH_SESSION_KEY] = user.get_session_auth_hash()
     session.save()
 
-    now_utc = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
     ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=now_utc)
 
     # Seed 30 historical candles

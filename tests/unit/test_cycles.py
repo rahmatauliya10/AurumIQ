@@ -334,7 +334,7 @@ def test_p3a_profile_can_supply_certified_swing_sample_evaluation():
     Runtime must NOT infer effective_n from raw duration count.
     """
     t0 = datetime(
-        2026, 8, 1, 10, 0,
+        2026, 8, 5, 10, 0,
         tzinfo=timezone.utc,
     )
 
@@ -448,7 +448,7 @@ def test_p3a_explicit_runtime_effective_n_overrides_profile_sample_evidence():
     the profile contains a healthy certified SampleEvaluation.
     """
     t0 = datetime(
-        2026, 8, 1, 10, 0,
+        2026, 8, 5, 10, 0,
         tzinfo=timezone.utc,
     )
 

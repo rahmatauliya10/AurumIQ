@@ -56,7 +56,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_01_xaut_rejected_in_active_pipeline(self):
         """XAUT sent to XAUUSD live pipeline must be rejected."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_H1",
             instrument="XAUT",
@@ -78,7 +78,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_02_xautusdt_rejected_in_active_pipeline(self):
         """XAUTUSDT sent to active pipeline must be rejected."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_H2",
             instrument="XAUT/USDT",
@@ -105,15 +105,15 @@ class TestPhase7HostileScenarios(TestCase):
             provider="feed1",
             bid=Decimal("2650.00"),
             ask=Decimal("2651.00"),
-            source_timestamp=datetime(2026, 8, 1, 10, 0),  # Naive
-            received_timestamp=datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+            source_timestamp=datetime(2026, 8, 5, 10, 0),  # Naive
+            received_timestamp=datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc),
         )
         with self.assertRaises(ValueError):
             LiveQuoteService.process_quote(event)
 
     def test_hostile_04_invalid_prices_rejected(self):
         """Negative bid/ask or ask < bid must be rejected."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
 
         # Negative bid
         with self.assertRaises(ValueError):
@@ -145,7 +145,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_05_out_of_order_quotes_ignored(self):
         """Out-of-order sequence quotes must be ignored deterministically."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         q1 = LiveQuoteEvent(
             event_id="Q1",
             instrument="XAUUSD",
@@ -176,7 +176,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_06_side_aware_short_uses_bid_not_ask(self):
         """SHORT candidate entry zone monitoring strictly uses BID, not ASK."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={
@@ -238,7 +238,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_08_alert_payload_forbids_order_fields(self):
         """Alert payload containing broker/order fields must fail immediately."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         payload = AlertPayload(
             event_id="ALERT_EVT_1",
             event_type=AlertEventType.BUY_WINDOW_CANDIDATE,
@@ -251,7 +251,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_09_alert_idempotency_prevents_duplicate_storm(self):
         """Identical quote ticks must not emit duplicate alert events."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={
@@ -318,8 +318,8 @@ class TestPhase7HostileScenarios(TestCase):
     def test_hostile_12_adapters_strict_timezone_rejection(self):
         """PublicMarketDataAdapter must reject naive timestamps in create_xauusd_quote_event and create_xauusd_candle_closed_event."""
         from apps.live_monitor.adapter import PublicMarketDataAdapter
-        naive_dt = datetime(2026, 8, 1, 12, 0)
-        aware_dt = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        naive_dt = datetime(2026, 8, 5, 12, 0)
+        aware_dt = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 
         # Naive quote source_timestamp
         with self.assertRaises(ValueError):
@@ -346,7 +346,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_13_non_15m_candle_rejected_as_decision_trigger(self):
         """Triggering active XAUUSD pipeline with 1h/4h candle must fail."""
-        aware_dt = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        aware_dt = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
         from apps.live_monitor.adapter import PublicMarketDataAdapter
         with self.assertRaises(ValueError):
             PublicMarketDataAdapter.create_xauusd_candle_closed_event(
@@ -362,7 +362,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_14_safety_hold_suppresses_entry_and_invalidation(self):
         """Hard gates / safety hold must strictly suppress entry-zone and invalidation alerts."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={
@@ -398,7 +398,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_15_no_fake_risk_plan_on_wait_or_conflict(self):
         """WAIT and CONFLICT states must produce risk_plan_snapshot=None and clear risk fields."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_WAIT",
             instrument="XAUUSD",
@@ -424,7 +424,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_16_state_recovery_restores_candidate_without_fake_health(self):
         """State recovery recovers candidate breakdown without asserting healthy feeds."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         sig = SignalRecord.objects.create(
             instrument=self.xauusd,
             timeframe="15m",
@@ -510,7 +510,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_19_direct_service_rejects_non_15m(self):
         """Direct call to XauUsdLiveDecisionPipelineService.process_closed_candle with non-15m must raise ValueError."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event_5m = CandleClosedEvent(
             event_id="EVT_NON_15M",
             instrument="XAUUSD",
@@ -576,7 +576,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_21_live_risk_immutability_multiple_risk_profiles_same_signal(self):
         """Same Phase 4 signal evaluated with 2 different risk profiles persists 2 records uniquely on risk_plan_fingerprint."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         sig_fp = "sig_fp_immutability_test_1"
 
         # Record 1
@@ -610,7 +610,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_22_multi_minute_incident_state_transitions_and_deduplication(self):
         """HEALTHY -> STALE emits once; continuous STALE -> STALE does not duplicate; STALE -> HEALTHY resets."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={"effective_action": "WAIT", "feed_health_data": {}},
@@ -710,7 +710,7 @@ class TestPhase7HostileScenarios(TestCase):
             short_gate=SideGatePolicy(70.0, 75.0, 70.0, 80.0, 80.0),
         )
 
-        base_ts = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        base_ts = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         # Seed 30 15m candles
         for i in range(30):
             ts = base_ts - timedelta(minutes=15 * (30 - i))
@@ -773,6 +773,8 @@ class TestPhase7HostileScenarios(TestCase):
         )
 
         # Case 2: No PIT snapshot + caller HEALTHY -> FORCE_WAIT
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         ProviderHealthSnapshot.objects.filter(listing=prim_listing).delete()
         sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
             event=evt,
@@ -784,6 +786,8 @@ class TestPhase7HostileScenarios(TestCase):
         self.assertEqual(state.candidate_state, "FORCE_WAIT")
 
         # Case 3: PIT UNHEALTHY + caller HEALTHY -> FORCE_WAIT (Persisted status is authoritative; caller cannot upgrade)
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         snap = ProviderHealthSnapshot.objects.create(
             listing=prim_listing,
             status="UNHEALTHY",
@@ -800,6 +804,8 @@ class TestPhase7HostileScenarios(TestCase):
         self.assertEqual(state.feed_health_data.get("xauusd_primary_status"), "UNHEALTHY")
 
         # Case 4: PIT HEALTHY + caller UNHEALTHY -> FORCE_WAIT (Caller downgrades)
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         snap.status = "HEALTHY"
         snap.save()
         sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
@@ -813,6 +819,8 @@ class TestPhase7HostileScenarios(TestCase):
         self.assertEqual(state.feed_health_data.get("xauusd_primary_status"), "UNHEALTHY")
 
         # Case 5: PIT HEALTHY + caller HEALTHY -> Candidate mechanics eligible
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         sig_rec, _, state = XauUsdLiveDecisionPipelineService.process_closed_candle(
             event=evt,
             code_revision="test_rev",
@@ -844,8 +852,8 @@ class TestPhase7HostileScenarios(TestCase):
             provider_symbol="XAUUSD_SEC",
         )
 
-        ts_open = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
-        ts_close = datetime(2026, 8, 1, 10, 15, tzinfo=timezone.utc)
+        ts_open = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
+        ts_close = datetime(2026, 8, 5, 10, 15, tzinfo=timezone.utc)
 
         # Create two distinct provider rows for the same timestamp
         c_prim = MarketCandle.objects.create(
@@ -916,7 +924,7 @@ class TestPhase7HostileScenarios(TestCase):
             provider_symbol="XAUUSD",
         )
 
-        ts_close = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        ts_close = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
         ts_open = ts_close - timedelta(minutes=15)
         ts_prev = ts_open - timedelta(minutes=15)
 
@@ -986,7 +994,7 @@ class TestPhase7HostileScenarios(TestCase):
             provider_symbol="XAUUSD",
         )
 
-        t_close = datetime(2026, 8, 1, 14, 0, tzinfo=timezone.utc)
+        t_close = datetime(2026, 8, 5, 14, 0, tzinfo=timezone.utc)
         t_open = t_close - timedelta(minutes=15)
         ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=t_close)
         macro_ctx = MacroEventContext(is_in_blackout=False, is_feed_healthy=True, active_event_name="Normal", minutes_to_next_event=120)
@@ -1079,7 +1087,7 @@ class TestPhase7HostileScenarios(TestCase):
 
     def test_hostile_27_incident_state_persistence_across_decision_and_restart(self):
         """Incident state survives closed-candle decision cycles, projection updates, and restart reconstruction."""
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={"effective_action": "WAIT", "feed_health_data": {}},
@@ -1390,7 +1398,7 @@ class TestPhase7HostileScenarios(TestCase):
             provider_symbol="XAUUSD",
         )
 
-        base_ts = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        base_ts = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         t_close = base_ts + timedelta(minutes=15)
         ProviderHealthSnapshot.objects.create(listing=prim_listing, status="HEALTHY", checked_at=t_close)
         macro_ctx = MacroEventContext(is_in_blackout=False, is_feed_healthy=True, active_event_name="Normal", minutes_to_next_event=120)
@@ -1484,6 +1492,8 @@ class TestPhase7HostileScenarios(TestCase):
         self.assertEqual(sig_none.analysis_fingerprint, sig_empty.analysis_fingerprint)
 
         # Valid primary source event at T with new price information is appended in-memory
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         evt_valid = CandleClosedEvent(
             event_id="EVT_SRC_VALID",
             instrument="XAUUSD",
