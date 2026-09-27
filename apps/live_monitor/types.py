@@ -207,6 +207,8 @@ class XauUsdLiveProjectionState:
     """
     instrument: str = "XAUUSD"
     display_symbol: str = "XAU/USD"
+    market_session: str = "OPEN"
+    is_market_closed: bool = False
 
     # Path A: Quote fields
     current_bid: Optional[Decimal] = None

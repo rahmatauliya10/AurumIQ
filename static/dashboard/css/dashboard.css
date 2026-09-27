@@ -318,6 +318,18 @@ body.aurum-app {
     color: var(--emerald-primary);
 }
 
+.freshness-indicator.closed {
+    background-color: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.freshness-indicator.reconnecting,
+.freshness-indicator.connecting {
+    background-color: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+}
+
+.freshness-indicator.error,
 .freshness-indicator.stale {
     background-color: var(--rose-subtle);
     color: var(--rose-primary);

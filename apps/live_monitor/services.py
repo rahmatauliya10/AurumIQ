@@ -1459,12 +1459,21 @@ class XauUsdLiveProjectionService:
     @classmethod
     def assemble_projection(cls, state: Optional[LiveMonitorState]) -> XauUsdLiveProjectionState:
         """Assemble canonical typed projection from LiveMonitorState record."""
+        from engine.paper.continuity import is_expected_market_closure
+        now_utc = datetime.now(timezone.utc)
+        market_closed = is_expected_market_closure(now_utc)
+
         if state is None:
-            return XauUsdLiveProjectionState()
+            return XauUsdLiveProjectionState(
+                market_session="CLOSED" if market_closed else "OPEN",
+                is_market_closed=market_closed,
+            )
 
         return XauUsdLiveProjectionState(
             instrument="XAUUSD",
             display_symbol="XAU/USD",
+            market_session="CLOSED" if market_closed else "OPEN",
+            is_market_closed=market_closed,
             # Quote
             current_bid=state.current_bid,
             current_ask=state.current_ask,
@@ -1539,6 +1548,8 @@ class XauUsdLiveProjectionService:
         return {
             "instrument": proj.instrument,
             "display_symbol": proj.display_symbol,
+            "market_session": proj.market_session,
+            "is_market_closed": proj.is_market_closed,
             "current_bid": str(proj.current_bid) if proj.current_bid is not None else None,
             "current_ask": str(proj.current_ask) if proj.current_ask is not None else None,
             "spread": str(proj.spread) if proj.spread is not None else None,

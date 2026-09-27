@@ -314,6 +314,26 @@ class LiveMonitorAsyncWebsocketConsumer:
 
         self.handler.async_sender = _async_send
 
+        # Send initial snapshot with current projection and market session state
+        try:
+            def _get_snapshot_dict():
+                from apps.live_monitor.services import XauUsdLiveProjectionService
+                from apps.live_monitor.models import LiveMonitorState
+                state = LiveMonitorState.objects.filter(instrument=instrument).first()
+                return XauUsdLiveProjectionService.assemble_projection_dict(state)
+
+            proj_dict = await asyncio.to_thread(_get_snapshot_dict)
+            await _safe_send({
+                "type": "websocket.send",
+                "text": json.dumps({
+                    "event_type": "initial_snapshot",
+                    "instrument": instrument,
+                    "data": proj_dict,
+                }),
+            })
+        except Exception as snap_err:
+            logger.debug("initial_ws_snapshot_failed", error=str(snap_err))
+
         # Background Redis pub/sub listener loop for cross-process worker delivery
         async def _redis_listener_loop():
             r = LiveEventBroadcaster.get_redis_client()
