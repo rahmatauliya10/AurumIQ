@@ -518,6 +518,23 @@ class ClosedCandleScheduler:
         if anchor_close is not None and expected_close <= anchor_close:
             return False, expected_close, "ALREADY_STORED"
 
+        # Governed market-closure interval guard for canonical XAUUSD
+        is_xauusd = (
+            getattr(instrument, "symbol", "") in ("XAUUSD", "XAU/USD")
+            or (
+                hasattr(instrument, "base_asset")
+                and hasattr(instrument, "quote_asset")
+                and getattr(instrument.base_asset, "code", "") == "XAU"
+                and getattr(instrument.quote_asset, "code", "") == "USD"
+            )
+        )
+        if is_xauusd:
+            from engine.paper.continuity import is_expected_market_interval_closed
+            minutes_per_bar = TIMEFRAME_MINUTES.get(timeframe, 15)
+            expected_open = expected_close - timedelta(minutes=minutes_per_bar)
+            if is_expected_market_interval_closed(expected_open, expected_close):
+                return False, expected_close, "MARKET_CLOSED_SCHEDULED"
+
         # If not stored, check if request is suppressed for this specific expected_close
         if self.ledger.is_suppressed(timeframe, expected_close):
             return False, expected_close, "SUPPRESSED_MAX_RETRIES_EXCEEDED"

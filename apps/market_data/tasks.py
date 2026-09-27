@@ -418,6 +418,19 @@ def ingest_primary_candles(
 
         with transaction.atomic():
             for raw in candles_to_process:
+                # Defense-in-depth: strictly reject persisting closed-market bars
+                if is_xauusd:
+                    from engine.paper.continuity import is_expected_market_interval_closed
+                    if is_expected_market_interval_closed(raw.timestamp_open, raw.timestamp_close):
+                        logger.info(
+                            "market_closure_candle_rejected",
+                            instrument=instrument_symbol,
+                            timeframe=tf,
+                            open=raw.timestamp_open.isoformat(),
+                            close=raw.timestamp_close.isoformat(),
+                        )
+                        continue
+
                 # OHLC logical validation
                 is_valid_ohlc, ohlc_errs = integrity_engine.validate_candle_ohlc(
                     raw.open, raw.high, raw.low, raw.close, raw.volume

@@ -40,6 +40,34 @@ def is_expected_market_closure(dt: datetime) -> bool:
     return False
 
 
+def is_expected_market_interval_closed(
+    timestamp_open: datetime,
+    timestamp_close: datetime,
+) -> bool:
+    """
+    Determine if a candle's trading interval falls within governed market closure.
+
+    Evaluates the interior midpoint of (timestamp_open, timestamp_close) against
+    is_expected_market_closure() to prevent boundary point misclassifications:
+      - Friday 20:45 - 21:00 UTC (final valid trading bar closing at 21:00) -> OPEN
+      - Friday 21:00 - 21:15 UTC (first invalid post-close bar) -> CLOSED
+      - Saturday bars -> CLOSED
+      - Sunday 20:45 - 21:00 UTC (pre-open bar closing at 21:00) -> CLOSED
+      - Sunday 21:00 - 21:15 UTC (first valid post-open trading bar) -> OPEN
+    """
+    if timestamp_open.tzinfo is None or timestamp_close.tzinfo is None:
+        raise ValueError("Timestamps must be timezone-aware UTC.")
+
+    t_open = timestamp_open.astimezone(timezone.utc)
+    t_close = timestamp_close.astimezone(timezone.utc)
+
+    if t_close <= t_open:
+        raise ValueError(f"timestamp_close ({t_close}) must be > timestamp_open ({t_open}).")
+
+    t_mid = t_open + (t_close - t_open) / 2
+    return is_expected_market_closure(t_mid)
+
+
 def get_expected_15m_closes(start_time: datetime, end_time: datetime) -> List[datetime]:
     """
     Generate all 15-minute candle close timestamps occurring in (start_time, end_time].
