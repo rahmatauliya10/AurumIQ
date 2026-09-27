@@ -174,6 +174,16 @@ class RobustTimeCycleEngine:
                 f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
             )
 
+        # Closed-interval check for XAUUSD Phase 3A (Step 4)
+        norm_inst = (instrument or "").upper().replace("/", "")
+        if norm_inst == "XAUUSD" and latest_candle:
+            from apps.market_data.market_hours import is_expected_market_interval_closed
+            if is_expected_market_interval_closed(latest_candle.timestamp_open, latest_candle.timestamp_close):
+                raise ValueError(
+                    f"XAUUSD Phase 3A rejected: candle interval {latest_candle.timestamp_open} -> {latest_candle.timestamp_close} "
+                    "is fully inside governed market closure."
+                )
+
         # 1. Trading Session Cycle (A02, P3A-06, P3A-14)
         session_ctx = classify_session(
             timestamp=as_of,

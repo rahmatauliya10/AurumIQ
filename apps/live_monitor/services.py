@@ -384,6 +384,7 @@ class XauUsdLiveDecisionPipelineService:
         signal_profile: Optional[Any] = None,
         risk_profile: Optional[Any] = None,
         cycle_3a_profile: Optional[Cycle3AProfile] = None,
+        dry_run: bool = False,
     ) -> Tuple[SignalRecord, Optional[LiveRiskPlanRecord], LiveMonitorState]:
         """
         Execute deterministic closed-candle signal evaluation and risk planning for XAUUSD.
@@ -396,6 +397,14 @@ class XauUsdLiveDecisionPipelineService:
         if event.timeframe != "15m":
             raise ValueError(
                 f"XauUsdLiveDecisionPipelineService strictly requires 15m decision timeframe, got '{event.timeframe}'"
+            )
+
+        # Step 1c: Reject fully closed market interval
+        from apps.market_data.market_hours import is_expected_market_interval_closed
+        if is_expected_market_interval_closed(event.timestamp_open, event.timestamp_close):
+            raise ValueError(
+                f"REJECTED: Candle interval {event.timestamp_open} -> {event.timestamp_close} "
+                "is fully inside governed market closure."
             )
 
         # Step 2: Canonical Instrument Validation
@@ -426,6 +435,31 @@ class XauUsdLiveDecisionPipelineService:
 
         candle_ts = event.timestamp_close.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
+
+        # Step 2b: Live-Path Idempotency Guard (Canonical Invariant)
+        # ONE LEGITIMATE PRIMARY CANDLE = AT MOST ONE LIVE SIGNAL EVALUATION
+        if not dry_run:
+            from apps.signals.models import SignalRecord
+            existing_sig = SignalRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=event.timeframe,
+                timestamp=candle_ts,
+            ).first()
+            if existing_sig:
+                logger.info(
+                    "ALREADY_PROCESSED_PRIMARY_CANDLE",
+                    instrument=event.instrument,
+                    timeframe=event.timeframe,
+                    candle_ts=candle_ts.isoformat(),
+                    fingerprint=existing_sig.analysis_fingerprint,
+                )
+                existing_risk = LiveRiskPlanRecord.objects.filter(
+                    source_signal_fingerprint=existing_sig.analysis_fingerprint
+                ).first()
+                state = LiveMonitorState.objects.filter(instrument="XAUUSD").first()
+                if state is None:
+                    state, _ = LiveMonitorState.objects.get_or_create(instrument="XAUUSD")
+                return existing_sig, existing_risk, state
 
         # Step 3: Query closed historical candles <= candle_ts (Deterministic Complete History without mutating DB)
         engine_candles_15m = cls.get_engine_candles(instrument_obj, "15m", candle_ts)
@@ -675,31 +709,35 @@ class XauUsdLiveDecisionPipelineService:
                     )
 
             if is_coverage_healthy and (cycle_3a_snapshot is None or (cycle_rec and cycle_rec.timestamp < candle_ts)) and engine_candles_15m and len(engine_candles_15m) >= 5:
-                try:
-                    cycle_engine = RobustTimeCycleEngine.for_xauusd(
-                        profile=cycle_3a_profile,
-                        timeframe=event.timeframe,
-                    )
-                    cycle_3a_snapshot = cycle_engine.analyze(
-                        latest_candle=engine_candles_15m[-1],
-                        structure=structure_15m,
-                        timeframe=event.timeframe,
-                        regime=regime_15m.regime if regime_15m else None,
-                        macro_events=macro_events,
-                        instrument="XAUUSD",
-                        profile=cycle_3a_profile,
-                    )
-                    AnalysisPersistenceService.save_analysis_snapshots(
-                        instrument=instrument_obj,
-                        timeframe=event.timeframe,
-                        features=feats_15m,
-                        regime=regime_15m,
-                        structure=structure_15m,
-                        cycle_3a=cycle_3a_snapshot,
-                        feature_version=feature_version,
-                    )
-                except Exception as cycle_exc:
-                    logger.warning("failed_to_compute_or_persist_cycle_3a", error=str(cycle_exc))
+                from apps.market_data.market_hours import is_expected_market_interval_closed
+                latest_c = engine_candles_15m[-1]
+                if not is_expected_market_interval_closed(latest_c.timestamp_open, latest_c.timestamp_close):
+                    try:
+                        cycle_engine = RobustTimeCycleEngine.for_xauusd(
+                            profile=cycle_3a_profile,
+                            timeframe=event.timeframe,
+                        )
+                        cycle_3a_snapshot = cycle_engine.analyze(
+                            latest_candle=latest_c,
+                            structure=structure_15m,
+                            timeframe=event.timeframe,
+                            regime=regime_15m.regime if regime_15m else None,
+                            macro_events=macro_events,
+                            instrument="XAUUSD",
+                            profile=cycle_3a_profile,
+                        )
+                        if not dry_run:
+                            AnalysisPersistenceService.save_analysis_snapshots(
+                                instrument=instrument_obj,
+                                timeframe=event.timeframe,
+                                features=feats_15m,
+                                regime=regime_15m,
+                                structure=structure_15m,
+                                cycle_3a=cycle_3a_snapshot,
+                                feature_version=feature_version,
+                            )
+                    except Exception as cycle_exc:
+                        logger.warning("failed_to_compute_or_persist_cycle_3a", error=str(cycle_exc))
         else:
             if macro_context is None and cycle_3a_snapshot is not None:
                 macro_context = cycle_3a_snapshot.macro_event
@@ -797,6 +835,7 @@ class XauUsdLiveDecisionPipelineService:
         signal_record, _ = SignalPersistenceService.save_dual_side_snapshot(
             instrument=instrument_obj,
             snapshot=signal_snapshot,
+            dry_run=dry_run,
         )
 
         # Step 7: Evaluate Phase 5 XauUsdRiskPlanner (Side-aware, No Fake Plans)
@@ -830,47 +869,94 @@ class XauUsdLiveDecisionPipelineService:
         # Step 8: Persist Immutable LiveRiskPlanRecord (Idempotent on risk_plan_fingerprint)
         risk_record: Optional[LiveRiskPlanRecord] = None
         if risk_plan_snapshot is not None:
-            risk_record, _ = LiveRiskPlanRecord.objects.get_or_create(
-                risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
-                defaults={
-                    "source_signal_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
-                    "signal_timestamp": risk_plan_snapshot.signal_generated_at,
-                    "instrument": "XAUUSD",
-                    "risk_side": risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
-                    "risk_candidate_status": risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
-                    "risk_candidate_valid": risk_plan_snapshot.risk_candidate_valid,
-                    "simulation_eligible": risk_plan_snapshot.simulation_eligible,
-                    "candidate_effective_action": risk_plan_snapshot.candidate_effective_action.value,
-                    "publication_effective_action": risk_plan_snapshot.publication_effective_action.value,
-                    "entry_min": risk_plan_snapshot.entry_min,
-                    "entry_mid": risk_plan_snapshot.entry_mid,
-                    "entry_max": risk_plan_snapshot.entry_max,
-                    "stop_structure": risk_plan_snapshot.stop_structure,
-                    "stop_atr": risk_plan_snapshot.stop_atr,
-                    "stop_final": risk_plan_snapshot.stop_final,
-                    "stop_distance_atr": risk_plan_snapshot.stop_distance_atr,
-                    "tp1": risk_plan_snapshot.tp1,
-                    "tp2": risk_plan_snapshot.tp2,
-                    "rr_tp1": risk_plan_snapshot.planned_rr_tp1,
-                    "rr_tp2": risk_plan_snapshot.planned_rr_tp2,
-                    "is_valid_risk_plan": risk_plan_snapshot.is_valid_risk_plan,
-                    "execution_eligible": risk_plan_snapshot.execution_eligible,
-                    "effective_action": risk_plan_snapshot.publication_effective_action.value,
-                    "reasons": list(risk_plan_snapshot.reasons),
-                    "entry_zone_fingerprint": risk_plan_snapshot.entry_zone_fingerprint,
-                    "tp1_zone_fingerprint": risk_plan_snapshot.tp1_zone_fingerprint,
-                    "tp2_zone_fingerprint": risk_plan_snapshot.tp2_zone_fingerprint,
-                    "phase5_policy_fingerprint": risk_plan_snapshot.phase5_policy_fingerprint,
-                    "risk_plan_fingerprint": risk_plan_snapshot.risk_plan_fingerprint,
-                    "source_phase4_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
-                    "source_zone_id": None,
-                    "source_zone_timestamp": None,
-                    "risk_version": risk_plan_snapshot.risk_version,
-                    "execution_model_version": "5.0.0-exec-v1",
-                    "config_version": config_version,
-                    "code_revision": code_revision,
-                },
-            )
+            if not dry_run:
+                risk_record, _ = LiveRiskPlanRecord.objects.get_or_create(
+                    risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
+                    defaults={
+                        "source_signal_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
+                        "signal_timestamp": risk_plan_snapshot.signal_generated_at,
+                        "instrument": "XAUUSD",
+                        "risk_side": risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
+                        "risk_candidate_status": risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
+                        "risk_candidate_valid": risk_plan_snapshot.risk_candidate_valid,
+                        "simulation_eligible": risk_plan_snapshot.simulation_eligible,
+                        "candidate_effective_action": risk_plan_snapshot.candidate_effective_action.value,
+                        "publication_effective_action": risk_plan_snapshot.publication_effective_action.value,
+                        "entry_min": risk_plan_snapshot.entry_min,
+                        "entry_mid": risk_plan_snapshot.entry_mid,
+                        "entry_max": risk_plan_snapshot.entry_max,
+                        "stop_structure": risk_plan_snapshot.stop_structure,
+                        "stop_atr": risk_plan_snapshot.stop_atr,
+                        "stop_final": risk_plan_snapshot.stop_final,
+                        "stop_distance_atr": risk_plan_snapshot.stop_distance_atr,
+                        "tp1": risk_plan_snapshot.tp1,
+                        "tp2": risk_plan_snapshot.tp2,
+                        "rr_tp1": risk_plan_snapshot.planned_rr_tp1,
+                        "rr_tp2": risk_plan_snapshot.planned_rr_tp2,
+                        "is_valid_risk_plan": risk_plan_snapshot.is_valid_risk_plan,
+                        "execution_eligible": risk_plan_snapshot.execution_eligible,
+                        "effective_action": risk_plan_snapshot.publication_effective_action.value,
+                        "reasons": list(risk_plan_snapshot.reasons),
+                        "entry_zone_fingerprint": risk_plan_snapshot.entry_zone_fingerprint,
+                        "tp1_zone_fingerprint": risk_plan_snapshot.tp1_zone_fingerprint,
+                        "tp2_zone_fingerprint": risk_plan_snapshot.tp2_zone_fingerprint,
+                        "phase5_policy_fingerprint": risk_plan_snapshot.phase5_policy_fingerprint,
+                        "risk_plan_fingerprint": risk_plan_snapshot.risk_plan_fingerprint,
+                        "source_phase4_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
+                        "source_zone_id": None,
+                        "source_zone_timestamp": None,
+                        "risk_version": risk_plan_snapshot.risk_version,
+                        "execution_model_version": "5.0.0-exec-v1",
+                        "config_version": config_version,
+                        "code_revision": code_revision,
+                    },
+                )
+            else:
+                risk_record = LiveRiskPlanRecord(
+                    source_signal_fingerprint=risk_plan_snapshot.source_phase4_fingerprint,
+                    signal_timestamp=risk_plan_snapshot.signal_generated_at,
+                    instrument="XAUUSD",
+                    risk_side=risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
+                    risk_candidate_status=risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
+                    risk_candidate_valid=risk_plan_snapshot.risk_candidate_valid,
+                    simulation_eligible=risk_plan_snapshot.simulation_eligible,
+                    candidate_effective_action=risk_plan_snapshot.candidate_effective_action.value,
+                    publication_effective_action=risk_plan_snapshot.publication_effective_action.value,
+                    entry_min=risk_plan_snapshot.entry_min,
+                    entry_mid=risk_plan_snapshot.entry_mid,
+                    entry_max=risk_plan_snapshot.entry_max,
+                    stop_structure=risk_plan_snapshot.stop_structure,
+                    stop_atr=risk_plan_snapshot.stop_atr,
+                    stop_final=risk_plan_snapshot.stop_final,
+                    stop_distance_atr=risk_plan_snapshot.stop_distance_atr,
+                    tp1=risk_plan_snapshot.tp1,
+                    tp2=risk_plan_snapshot.tp2,
+                    rr_tp1=risk_plan_snapshot.planned_rr_tp1,
+                    rr_tp2=risk_plan_snapshot.planned_rr_tp2,
+                    is_valid_risk_plan=risk_plan_snapshot.is_valid_risk_plan,
+                    execution_eligible=risk_plan_snapshot.execution_eligible,
+                    effective_action=risk_plan_snapshot.publication_effective_action.value,
+                    reasons=list(risk_plan_snapshot.reasons),
+                    entry_zone_fingerprint=risk_plan_snapshot.entry_zone_fingerprint,
+                    tp1_zone_fingerprint=risk_plan_snapshot.tp1_zone_fingerprint,
+                    tp2_zone_fingerprint=risk_plan_snapshot.tp2_zone_fingerprint,
+                    phase5_policy_fingerprint=risk_plan_snapshot.phase5_policy_fingerprint,
+                    risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
+                    source_phase4_fingerprint=risk_plan_snapshot.source_phase4_fingerprint,
+                    source_zone_id=None,
+                    source_zone_timestamp=None,
+                    risk_version=risk_plan_snapshot.risk_version,
+                    execution_model_version="5.0.0-exec-v1",
+                    config_version=config_version,
+                    code_revision=code_revision,
+                )
+
+        if dry_run:
+            # Audit/Dry-run mode: do NOT mutate LiveMonitorState, do NOT emit alerts, do NOT broadcast
+            state = LiveMonitorState.objects.filter(instrument="XAUUSD").first()
+            if state is None:
+                state = LiveMonitorState(instrument="XAUUSD", effective_action="WAIT")
+            return signal_record, risk_record, state
 
         # Step 9: Assemble Feed Health Status (Fail Closed)
         feed_health = {

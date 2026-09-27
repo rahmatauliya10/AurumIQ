@@ -87,6 +87,20 @@ class AlertGenerationService:
         cand_state = signal_snapshot.candidate_state
         cand_decision = signal_snapshot.candidate_user_decision
 
+        # Defense-in-depth: Suppress actionable candidate alerts when governed market is currently closed
+        # Prevents stale Friday candidates or weekend direct invocations from emitting alerts during closure.
+        from apps.market_data.market_hours import is_expected_market_closure
+        now_utc = datetime.now(timezone.utc)
+        if is_expected_market_closure(now_utc):
+            logger.info(
+                "actionable_candidate_alert_suppressed_market_closed",
+                instrument=inst,
+                candidate_state=cand_state.value if hasattr(cand_state, "value") else str(cand_state),
+                candidate_decision=cand_decision.value if hasattr(cand_decision, "value") else str(cand_decision),
+                now_utc=now_utc.isoformat(),
+            )
+            return emitted_alerts
+
         if cand_state == SignalState.CONFLICT:
             event_id = cls.generate_event_id(inst, AlertEventType.CONFLICT.value, sig_fp)
             alert = cls._create_or_get_alert(

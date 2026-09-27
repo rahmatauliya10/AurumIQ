@@ -359,6 +359,42 @@ def process_xauusd_closed_candle_task(
         if timeframe != "15m":
             raise ValueError(f"Active XAUUSD decision pipeline must be triggered by 15m closed candle, got: {timeframe}")
 
+        # Step 0a: Market closure check (suppress fully-closed candle intervals)
+        from apps.market_data.market_hours import is_expected_market_interval_closed
+        if is_expected_market_interval_closed(ts_open, ts_close):
+            logger.info(
+                "xauusd_candle_closed_market_closure_suppressed",
+                ts_open=ts_open.isoformat(),
+                ts_close=ts_close.isoformat(),
+            )
+            return {"status": "MARKET_CLOSED_SUPPRESSED"}
+
+        # Step 0b: Check live idempotency before expensive pipeline execution
+        from apps.instruments.models import Instrument, InstrumentType
+        instrument_obj = Instrument.objects.filter(
+            base_asset__code="XAU",
+            quote_asset__code="USD",
+            instrument_type=InstrumentType.SPOT,
+            is_active=True,
+        ).first()
+        if instrument_obj:
+            from apps.signals.models import SignalRecord
+            existing_sig = SignalRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=timeframe,
+                timestamp=ts_close,
+            ).first()
+            if existing_sig:
+                logger.info(
+                    "xauusd_candle_closed_already_processed",
+                    candle_ts=ts_close.isoformat(),
+                    fingerprint=existing_sig.analysis_fingerprint,
+                )
+                return {
+                    "status": "ALREADY_PROCESSED_PRIMARY_CANDLE",
+                    "fingerprint": existing_sig.analysis_fingerprint,
+                }
+
         event = PublicMarketDataAdapter.create_xauusd_candle_closed_event(
             instrument=instrument,
             timeframe=timeframe,

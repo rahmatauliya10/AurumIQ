@@ -79,6 +79,7 @@ class SignalPersistenceService:
     def save_dual_side_snapshot(
         instrument: Instrument,
         snapshot: DualSideSignalSnapshot,
+        dry_run: bool = False,
     ) -> Tuple[SignalRecord, bool]:
         """
         Idempotently persist a Phase 4 XAUUSD DualSideSignalSnapshot.
@@ -128,6 +129,38 @@ class SignalPersistenceService:
 
         reasons_pos = list(snapshot.reasons_long_positive) + list(snapshot.reasons_short_positive)
         reasons_neg = list(snapshot.reasons_long_negative) + list(snapshot.reasons_short_negative)
+
+        if dry_run:
+            record = SignalRecord(
+                instrument=instrument,
+                timeframe=snapshot.timeframe,
+                timestamp=snapshot.timestamp,
+                state=snapshot.state.value,
+                user_decision=snapshot.user_decision.value,
+                direction_score=None,  # Strictly NULL for XAUUSD
+                timing_score=None,     # Strictly NULL for XAUUSD
+                long_direction_score=snapshot.long_direction.total_score,
+                short_direction_score=snapshot.short_direction.total_score,
+                long_timing_score=snapshot.long_timing.total_score,
+                short_timing_score=snapshot.short_timing.total_score,
+                profile_name=snapshot.profile_name,
+                calibration_status=snapshot.calibration_status,
+                resolution_reason=snapshot.publication_reason or snapshot.resolution_reason,
+                phase4_policy_fingerprint=snapshot.phase4_policy_fingerprint,
+                reasons_positive=reasons_pos,
+                reasons_negative=reasons_neg,
+                hard_gate_reasons=list(snapshot.hard_gate_reasons),
+                components_breakdown=components_dict,
+                provenance=provenance_dict,
+                research_fingerprint=snapshot.research_fingerprint,
+                engine_version=snapshot.engine_version,
+                config_version=snapshot.config_version,
+                feature_version=snapshot.feature_version,
+                cycle_version=snapshot.cycle_version,
+                code_revision=snapshot.code_revision,
+                analysis_fingerprint=snapshot.analysis_fingerprint,
+            )
+            return record, False
 
         record, created = SignalRecord.objects.get_or_create(
             analysis_fingerprint=snapshot.analysis_fingerprint,
