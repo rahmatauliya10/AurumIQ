@@ -181,7 +181,7 @@ class TestXauP1Contracts(TestCase):
           - Disagreement > threshold flags candles as SUSPECT and marks DataQualitySnapshot hard_fail=True.
           - Secondary price is strictly integrity evidence (zero directional alpha).
         """
-        t0 = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+        t0 = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
         primary_candles = [
             RawCandle(
                 symbol="XAUUSD", timeframe="15m",
@@ -599,7 +599,7 @@ class TestXauP1Contracts(TestCase):
           - trusted ingested count = 1
           - repository operational window contains only closed candle
         """
-        t0 = datetime.now(timezone.utc)
+        t0 = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
         t_open = t0 - timedelta(minutes=30)
         t_forming = t0 - timedelta(minutes=15)
 
