@@ -205,13 +205,27 @@ class AuditLogView(LoginRequiredMixin, View):
 
     def get(self, request: HttpRequest) -> HttpResponse:
         alerts = AlertEvent.objects.all().order_by("-created_at")[:50]
-        risk_plans = LiveRiskPlanRecord.objects.filter(instrument="XAUUSD").order_by("-signal_timestamp")[:50]
+        active_risk_plan = (
+            LiveRiskPlanRecord.objects.filter(
+                instrument="XAUUSD",
+                is_valid_risk_plan=True,
+                execution_eligible=True,
+            )
+            .order_by("-signal_timestamp")
+            .first()
+        )
+        risk_plans_history = (
+            LiveRiskPlanRecord.objects.filter(instrument="XAUUSD")
+            .order_by("-signal_timestamp")[:50]
+        )
 
         context = {
             "page_title": "Audit Log",
             "active_tab": "audit_log",
             "alerts": alerts,
-            "risk_plans": risk_plans,
+            "active_risk_plan": active_risk_plan,
+            "risk_plans_history": risk_plans_history,
+            "risk_plans": risk_plans_history,
             "user": request.user,
         }
         return render(request, "dashboard/audit.html", context)

@@ -192,6 +192,14 @@ document.addEventListener("DOMContentLoaded", function() {
             setElementText("geo-tp1", d.tp1 || "—");
             setElementText("geo-tp2", d.tp2 || "—");
             setElementText("geo-rr", d.rr_tp1 ? `${d.rr_tp1}R` : "—");
+            if (d.risk_plan_invalidation_reason) {
+                setElementText("risk-invalidation-text", d.risk_plan_invalidation_reason);
+                const box = document.getElementById("risk-invalidation-box");
+                if (box) box.style.display = "flex";
+            } else if (d.is_valid_risk_plan) {
+                const box = document.getElementById("risk-invalidation-box");
+                if (box) box.style.display = "none";
+            }
         }
     }
 

@@ -576,6 +576,52 @@ body.aurum-app {
     color: var(--rose-primary);
 }
 
+.status-pill.neutral {
+    background-color: var(--bg-surface-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
+}
+
+/* Risk Invalidation Banner */
+.risk-invalidation-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    background-color: rgba(244, 63, 94, 0.1);
+    border: 1px solid rgba(244, 63, 94, 0.3);
+    border-radius: var(--radius-sm);
+    color: var(--rose-primary);
+    font-size: 0.82rem;
+    font-weight: 500;
+}
+
+.risk-invalidation-banner .invalidation-label {
+    font-weight: 700;
+    color: #fda4af;
+}
+
+.risk-invalidation-banner .invalidation-text {
+    color: #fecdd3;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Candidate Reference in Published Layer */
+.candidate-ref {
+    color: var(--amber-primary);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Inactive Explainability Factors */
+.reasons-block.inactive ul li {
+    color: var(--text-muted);
+}
+
+.reasons-block.inactive h4 {
+    color: var(--text-muted);
+}
+
 .status-pill.stale {
     background-color: var(--rose-subtle);
     color: var(--rose-primary);

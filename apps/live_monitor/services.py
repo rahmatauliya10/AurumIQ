@@ -984,6 +984,14 @@ class XauUsdLiveDecisionPipelineService:
                 if inc_key in existing_feed_data:
                     merged_feed_health[inc_key] = existing_feed_data[inc_key]
 
+            if risk_plan_snapshot and not risk_plan_snapshot.is_valid_risk_plan and risk_plan_snapshot.reasons:
+                merged_feed_health["risk_plan_invalidation_reason"] = "; ".join(risk_plan_snapshot.reasons)
+            else:
+                merged_feed_health.pop("risk_plan_invalidation_reason", None)
+
+            if signal_record and signal_record.components_breakdown:
+                merged_feed_health["components_breakdown"] = signal_record.components_breakdown
+
             # Re-evaluate side-aware entry zone if quote is present
             entry_status = EntryZoneStatus.NO_ACTIVE_ZONE
             dist_pct = None
@@ -1037,17 +1045,17 @@ class XauUsdLiveDecisionPipelineService:
                 effective_action=risk_plan_snapshot.publication_effective_action.value if risk_plan_snapshot else "WAIT",
                 risk_plan_valid=risk_plan_snapshot.is_valid_risk_plan if risk_plan_snapshot else False,
                 execution_eligible=risk_plan_snapshot.execution_eligible if risk_plan_snapshot else False,
-                entry_min=risk_plan_snapshot.entry_min if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                entry_mid=risk_plan_snapshot.entry_mid if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                entry_max=risk_plan_snapshot.entry_max if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_structure=risk_plan_snapshot.stop_structure if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_atr=risk_plan_snapshot.stop_atr if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_final=risk_plan_snapshot.stop_final if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_distance_atr=risk_plan_snapshot.stop_distance_atr if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                tp1=risk_plan_snapshot.tp1 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                tp2=risk_plan_snapshot.tp2 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                rr_tp1=risk_plan_snapshot.planned_rr_tp1 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                rr_tp2=risk_plan_snapshot.planned_rr_tp2 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
+                entry_min=risk_plan_snapshot.entry_min if risk_plan_snapshot else None,
+                entry_mid=risk_plan_snapshot.entry_mid if risk_plan_snapshot else None,
+                entry_max=risk_plan_snapshot.entry_max if risk_plan_snapshot else None,
+                stop_structure=risk_plan_snapshot.stop_structure if risk_plan_snapshot else None,
+                stop_atr=risk_plan_snapshot.stop_atr if risk_plan_snapshot else None,
+                stop_final=risk_plan_snapshot.stop_final if risk_plan_snapshot else None,
+                stop_distance_atr=risk_plan_snapshot.stop_distance_atr if risk_plan_snapshot else None,
+                tp1=risk_plan_snapshot.tp1 if risk_plan_snapshot else None,
+                tp2=risk_plan_snapshot.tp2 if risk_plan_snapshot else None,
+                rr_tp1=risk_plan_snapshot.planned_rr_tp1 if risk_plan_snapshot else None,
+                rr_tp2=risk_plan_snapshot.planned_rr_tp2 if risk_plan_snapshot else None,
                 # Explainability & Fingerprints
                 candidate_resolution_reason=signal_snapshot.candidate_resolution_reason,
                 publication_reason=signal_snapshot.publication_reason,
@@ -1543,6 +1551,101 @@ class XauUsdLiveProjectionService:
     """
 
     @classmethod
+    def categorize_explainability_factors(
+        cls,
+        cb: Optional[Dict[str, Any]] = None,
+        reasons_pos: Optional[List[str]] = None,
+        reasons_neg: Optional[List[str]] = None,
+        candidate_side: Optional[str] = None,
+    ) -> Dict[str, List[str]]:
+        """
+        Separate explainability factors into three strictly distinct categories:
+        1. Contributing factors: active weight/max_score > 0 and positive contribution.
+        2. Weak / Negative factors: active weight/max_score > 0 and weak/negative contribution.
+        3. Inactive / Zero-weight components: weight/max_score == 0.
+        """
+        inactive_components: List[str] = []
+        contributing_factors: List[str] = []
+        weak_negative_factors: List[str] = []
+
+        seen_inactive = set()
+
+        def _clean_inactive_name(name: str) -> str:
+            lower = name.lower()
+            if "regime" in lower:
+                return "Market Regime"
+            if "volume confirmation" in lower or "volume data" in lower:
+                return "Volume Confirmation"
+            if "phase 3a" in lower or "phase3a" in lower:
+                return "Phase 3A"
+            if "volume response" in lower:
+                return "Volume Response"
+            return name
+
+        if cb and isinstance(cb, dict):
+            # Check components across direction and timing
+            all_comps = []
+            for key in ("long_direction", "short_direction", "long_timing", "short_timing"):
+                for c in cb.get(key, []):
+                    all_comps.append((key, c))
+
+            for group_key, c in all_comps:
+                name = c.get("name", "")
+                score = float(c.get("score", 0.0) or 0.0)
+                max_score = float(c.get("max_score", 0.0) or 0.0)
+                reason = c.get("reason", "")
+
+                if max_score <= 0.0:
+                    clean = _clean_inactive_name(name)
+                    lbl = f"{clean} — inactive (weight 0)"
+                    if lbl not in seen_inactive:
+                        seen_inactive.add(lbl)
+                        inactive_components.append(lbl)
+                else:
+                    # Active component
+                    if score >= (max_score * 0.60):
+                        txt = f"+ {name}: {reason} (+{score:.2f}/{max_score:.2f} pts)"
+                        if txt not in contributing_factors:
+                            contributing_factors.append(txt)
+                    else:
+                        txt = f"- {name}: {reason} ({score:.2f}/{max_score:.2f} pts)"
+                        if txt not in weak_negative_factors:
+                            weak_negative_factors.append(txt)
+
+        # Always ensure the 4 canonical zero-weight components are represented in inactive_components
+        canonical_inactive = [
+            "Market Regime — inactive (weight 0)",
+            "Volume Confirmation — inactive (weight 0)",
+            "Phase 3A — inactive (weight 0)",
+            "Volume Response — inactive (weight 0)",
+        ]
+        for ci in canonical_inactive:
+            if ci not in seen_inactive:
+                seen_inactive.add(ci)
+                inactive_components.append(ci)
+
+        # Fallback or supplemental filtering for reasons_pos / reasons_neg
+        if not contributing_factors and reasons_pos:
+            for r in reasons_pos:
+                if "0.0/0.0 pts" in r or "+0.0 / 0.0 pts" in r or "weight 0" in r:
+                    continue
+                if r not in contributing_factors:
+                    contributing_factors.append(r)
+
+        if not weak_negative_factors and reasons_neg:
+            for r in reasons_neg:
+                if "0.0/0.0 pts" in r or "+0.0 / 0.0 pts" in r or "weight 0" in r:
+                    continue
+                if r not in weak_negative_factors:
+                    weak_negative_factors.append(r)
+
+        return {
+            "contributing_factors": contributing_factors,
+            "weak_negative_factors": weak_negative_factors,
+            "inactive_components": inactive_components,
+        }
+
+    @classmethod
     def assemble_projection(cls, state: Optional[LiveMonitorState]) -> XauUsdLiveProjectionState:
         """Assemble canonical typed projection from LiveMonitorState record."""
         from engine.paper.continuity import is_expected_market_closure
@@ -1554,6 +1657,33 @@ class XauUsdLiveProjectionService:
                 market_session="CLOSED" if market_closed else "OPEN",
                 is_market_closed=market_closed,
             )
+
+        # Invalidation reason
+        invalidation_reason = None
+        if state.feed_health_data and "risk_plan_invalidation_reason" in state.feed_health_data:
+            invalidation_reason = state.feed_health_data["risk_plan_invalidation_reason"]
+        elif not state.risk_plan_valid and state.risk_plan_fingerprint:
+            risk_rec = LiveRiskPlanRecord.objects.filter(risk_plan_fingerprint=state.risk_plan_fingerprint).first()
+            if risk_rec and risk_rec.reasons:
+                invalidation_reason = "; ".join(risk_rec.reasons)
+
+        # Explainability categorization
+        cb = None
+        if state.feed_health_data and "components_breakdown" in state.feed_health_data:
+            cb = state.feed_health_data["components_breakdown"]
+        if cb is None:
+            inst_obj = Instrument.get_canonical_xauusd()
+            if inst_obj:
+                sig = SignalRecord.objects.filter(instrument=inst_obj).order_by("-timestamp", "-created_at").first()
+                if sig:
+                    cb = sig.components_breakdown
+
+        factors = cls.categorize_explainability_factors(
+            cb=cb,
+            reasons_pos=state.reasons_positive,
+            reasons_neg=state.reasons_negative,
+            candidate_side=state.risk_side,
+        )
 
         return XauUsdLiveProjectionState(
             instrument="XAUUSD",
@@ -1591,26 +1721,30 @@ class XauUsdLiveProjectionService:
             execution_eligible=state.execution_eligible,
             candidate_effective_action=state.candidate_effective_action or state.effective_action,
             publication_effective_action=state.publication_effective_action or "WAIT",
-            # Geometry
-            entry_min=state.entry_min if state.risk_plan_valid else None,
-            entry_mid=state.entry_mid if state.risk_plan_valid else None,
-            entry_max=state.entry_max if state.risk_plan_valid else None,
-            stop_structure=state.stop_structure if state.risk_plan_valid else None,
-            stop_atr=state.stop_atr if state.risk_plan_valid else None,
-            stop_final=state.stop_final if state.risk_plan_valid else None,
-            stop_distance_atr=state.stop_distance_atr if state.risk_plan_valid else None,
-            tp1=state.tp1 if state.risk_plan_valid else None,
-            tp2=state.tp2 if state.risk_plan_valid else None,
-            planned_rr_tp1=state.rr_tp1 if state.risk_plan_valid else None,
-            planned_rr_tp2=state.rr_tp2 if state.risk_plan_valid else None,
+            risk_plan_invalidation_reason=invalidation_reason,
+            # Geometry (preserved for valid or audit-evaluated candidate plans)
+            entry_min=state.entry_min,
+            entry_mid=state.entry_mid,
+            entry_max=state.entry_max,
+            stop_structure=state.stop_structure,
+            stop_atr=state.stop_atr,
+            stop_final=state.stop_final,
+            stop_distance_atr=state.stop_distance_atr,
+            tp1=state.tp1,
+            tp2=state.tp2,
+            planned_rr_tp1=state.rr_tp1,
+            planned_rr_tp2=state.rr_tp2,
             # Diagnostics & Provenance
             calibration_status=state.calibration_status or "CALIBRATION_REQUIRED",
             profile_name=state.profile_name,
             phase3b_status="RESEARCH_ONLY",
             phase3b_production_weight=0.0,
-            reasons_positive=state.reasons_positive or [],
-            reasons_negative=state.reasons_negative or [],
+            reasons_positive=factors["contributing_factors"],
+            reasons_negative=factors["weak_negative_factors"],
             hard_gate_reasons=state.hard_gate_reasons or [],
+            contributing_factors=factors["contributing_factors"],
+            weak_negative_factors=factors["weak_negative_factors"],
+            inactive_components=factors["inactive_components"],
             candidate_resolution_reason=state.candidate_resolution_reason,
             publication_reason=state.publication_reason,
             feed_health=state.feed_health_data or {},
@@ -1663,6 +1797,7 @@ class XauUsdLiveProjectionService:
             "execution_eligible": proj.execution_eligible,
             "candidate_effective_action": proj.candidate_effective_action,
             "publication_effective_action": proj.publication_effective_action,
+            "risk_plan_invalidation_reason": proj.risk_plan_invalidation_reason,
             "entry_min": str(proj.entry_min) if proj.entry_min is not None else None,
             "entry_mid": str(proj.entry_mid) if proj.entry_mid is not None else None,
             "entry_max": str(proj.entry_max) if proj.entry_max is not None else None,
@@ -1681,6 +1816,9 @@ class XauUsdLiveProjectionService:
             "reasons_positive": list(proj.reasons_positive),
             "reasons_negative": list(proj.reasons_negative),
             "hard_gate_reasons": list(proj.hard_gate_reasons),
+            "contributing_factors": list(proj.contributing_factors),
+            "weak_negative_factors": list(proj.weak_negative_factors),
+            "inactive_components": list(proj.inactive_components),
             "candidate_resolution_reason": proj.candidate_resolution_reason,
             "publication_reason": proj.publication_reason,
             "feed_health": proj.feed_health,
@@ -1776,20 +1914,22 @@ class XauUsdLiveProjectionService:
                 state.candidate_effective_action = risk_record.candidate_effective_action or risk_record.effective_action
                 state.publication_effective_action = "WAIT"
                 state.effective_action = "WAIT"
-                state.entry_min = risk_record.entry_min if risk_record.is_valid_risk_plan else None
-                state.entry_mid = risk_record.entry_mid if risk_record.is_valid_risk_plan else None
-                state.entry_max = risk_record.entry_max if risk_record.is_valid_risk_plan else None
-                state.stop_structure = risk_record.stop_structure if risk_record.is_valid_risk_plan else None
-                state.stop_atr = risk_record.stop_atr if risk_record.is_valid_risk_plan else None
-                state.stop_final = risk_record.stop_final if risk_record.is_valid_risk_plan else None
-                state.stop_distance_atr = risk_record.stop_distance_atr if risk_record.is_valid_risk_plan else None
-                state.tp1 = risk_record.tp1 if risk_record.is_valid_risk_plan else None
-                state.tp2 = risk_record.tp2 if risk_record.is_valid_risk_plan else None
-                state.rr_tp1 = risk_record.rr_tp1 if risk_record.is_valid_risk_plan else None
-                state.rr_tp2 = risk_record.rr_tp2 if risk_record.is_valid_risk_plan else None
+                state.entry_min = risk_record.entry_min
+                state.entry_mid = risk_record.entry_mid
+                state.entry_max = risk_record.entry_max
+                state.stop_structure = risk_record.stop_structure
+                state.stop_atr = risk_record.stop_atr
+                state.stop_final = risk_record.stop_final
+                state.stop_distance_atr = risk_record.stop_distance_atr
+                state.tp1 = risk_record.tp1
+                state.tp2 = risk_record.tp2
+                state.rr_tp1 = risk_record.rr_tp1
+                state.rr_tp2 = risk_record.rr_tp2
                 state.risk_plan_fingerprint = risk_record.risk_plan_fingerprint
                 state.source_phase4_fingerprint = risk_record.source_phase4_fingerprint
                 state.risk_version = risk_record.risk_version
+                if not risk_record.is_valid_risk_plan and risk_record.reasons:
+                    feed_health["risk_plan_invalidation_reason"] = "; ".join(risk_record.reasons)
             else:
                 state.risk_side = None
                 state.risk_candidate_status = None
@@ -1810,6 +1950,9 @@ class XauUsdLiveProjectionService:
                 state.rr_tp1 = None
                 state.rr_tp2 = None
                 state.risk_plan_fingerprint = None
+
+            if latest_signal:
+                feed_health["components_breakdown"] = cb
 
             existing_feed_data = state.feed_health_data or {}
             merged_feed_health = {

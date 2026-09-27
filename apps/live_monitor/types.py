@@ -244,8 +244,9 @@ class XauUsdLiveProjectionState:
     execution_eligible: bool = False
     candidate_effective_action: str = "WAIT"
     publication_effective_action: str = "WAIT"
+    risk_plan_invalidation_reason: Optional[str] = None
 
-    # Geometry (None when invalid)
+    # Geometry (Preserved for valid or audit-evaluated candidate plans)
     entry_min: Optional[Decimal] = None
     entry_mid: Optional[Decimal] = None
     entry_max: Optional[Decimal] = None
@@ -268,6 +269,9 @@ class XauUsdLiveProjectionState:
     reasons_positive: List[str] = field(default_factory=list)
     reasons_negative: List[str] = field(default_factory=list)
     hard_gate_reasons: List[str] = field(default_factory=list)
+    contributing_factors: List[str] = field(default_factory=list)
+    weak_negative_factors: List[str] = field(default_factory=list)
+    inactive_components: List[str] = field(default_factory=list)
     candidate_resolution_reason: Optional[str] = None
     publication_reason: Optional[str] = None
 
