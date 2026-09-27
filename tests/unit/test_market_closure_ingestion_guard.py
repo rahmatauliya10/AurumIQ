@@ -46,6 +46,7 @@ class TestIntervalAwareClosureSemantics:
             # 1d Timeframe
             ("1d", "2026-09-25T00:00:00Z", "2026-09-26T00:00:00Z", False, "Friday trading day 1d"),
             ("1d", "2026-09-26T00:00:00Z", "2026-09-27T00:00:00Z", True, "Saturday closed day 1d"),
+            ("1d", "2026-09-27T00:00:00Z", "2026-09-28T00:00:00Z", False, "Sunday trading day 1d (post-21:00 UTC open overlap)"),
             ("1d", "2026-09-23T00:00:00Z", "2026-09-24T00:00:00Z", False, "Wednesday normal weekday 1d"),
         ],
     )

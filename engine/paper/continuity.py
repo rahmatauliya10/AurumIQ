@@ -45,15 +45,12 @@ def is_expected_market_interval_closed(
     timestamp_close: datetime,
 ) -> bool:
     """
-    Determine if a candle's trading interval falls within governed market closure.
+    Determine if a candle's trading interval [timestamp_open, timestamp_close)
+    is WHOLLY contained within expected market closure (zero market-open overlap).
 
-    Evaluates the interior midpoint of (timestamp_open, timestamp_close) against
-    is_expected_market_closure() to prevent boundary point misclassifications:
-      - Friday 20:45 - 21:00 UTC (final valid trading bar closing at 21:00) -> OPEN
-      - Friday 21:00 - 21:15 UTC (first invalid post-close bar) -> CLOSED
-      - Saturday bars -> CLOSED
-      - Sunday 20:45 - 21:00 UTC (pre-open bar closing at 21:00) -> CLOSED
-      - Sunday 21:00 - 21:15 UTC (first valid post-open trading bar) -> OPEN
+    Rejects a candle iff the entire interval contains NO legitimate trading activity.
+    If the interval contains ANY market-open time (e.g., Sunday 00:00 -> Monday 00:00 UTC,
+    which includes 21:00 -> 00:00 UTC legitimate post-reopen trading), it is PRESERVED (False).
     """
     if timestamp_open.tzinfo is None or timestamp_close.tzinfo is None:
         raise ValueError("Timestamps must be timezone-aware UTC.")
@@ -64,8 +61,28 @@ def is_expected_market_interval_closed(
     if t_close <= t_open:
         raise ValueError(f"timestamp_close ({t_close}) must be > timestamp_open ({t_open}).")
 
-    t_mid = t_open + (t_close - t_open) / 2
-    return is_expected_market_closure(t_mid)
+    # If interval is >= 48 hours, it necessarily spans beyond weekend closure
+    if (t_close - t_open) >= timedelta(hours=48):
+        return False
+
+    # Check start point: if open timestamp itself is during open market, it has open overlap
+    if not is_expected_market_closure(t_open):
+        return False
+
+    # Check end point (just before close): if close - 1 second is open, it has open overlap
+    t_end_inner = t_close - timedelta(seconds=1)
+    if not is_expected_market_closure(t_end_inner):
+        return False
+
+    # Sample internal points every 15 minutes to guarantee zero open market overlap throughout
+    curr = t_open
+    step = timedelta(minutes=15)
+    while curr < t_close:
+        if not is_expected_market_closure(curr):
+            return False
+        curr += step
+
+    return True
 
 
 def get_expected_15m_closes(start_time: datetime, end_time: datetime) -> List[datetime]:
