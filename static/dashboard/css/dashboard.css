@@ -313,7 +313,8 @@ body.aurum-app {
     border-radius: var(--radius-sm);
 }
 
-.freshness-indicator.fresh {
+.freshness-indicator.fresh,
+.freshness-indicator.ref-live {
     background-color: var(--emerald-subtle);
     color: var(--emerald-primary);
 }
@@ -344,7 +345,7 @@ body.aurum-app {
 
 .quote-metrics {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 16px;
 }
 

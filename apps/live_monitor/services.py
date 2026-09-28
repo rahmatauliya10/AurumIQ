@@ -979,6 +979,12 @@ class XauUsdLiveDecisionPipelineService:
                 **existing_feed_data,
                 **feed_health,
             }
+            # Record analytical reference price from validated closed candle and execution venue status
+            merged_feed_health["reference_price"] = str(event.close)
+            merged_feed_health["reference_price_timestamp"] = event.timestamp_close.isoformat()
+            merged_feed_health["reference_price_source"] = getattr(event, "source", "twelve_data") or "twelve_data"
+            merged_feed_health["primary_execution_venue_status"] = "HALTED"
+            merged_feed_health["secondary_execution_venue_status"] = "NOT_CONFIGURED"
             # Specifically preserve incident tracking keys across closed candle decisions
             for inc_key in ("stale_incident_active", "unhealthy_incident_active"):
                 if inc_key in existing_feed_data:
@@ -1656,6 +1662,10 @@ class XauUsdLiveProjectionService:
             return XauUsdLiveProjectionState(
                 market_session="CLOSED" if market_closed else "OPEN",
                 is_market_closed=market_closed,
+                reference_feed_status="HEALTHY" if market_closed else "UNHEALTHY",
+                execution_quote_available=False,
+                primary_execution_venue_status="HALTED",
+                secondary_execution_venue_status="NOT_CONFIGURED",
             )
 
         # Invalidation reason
@@ -1685,12 +1695,67 @@ class XauUsdLiveProjectionService:
             candidate_side=state.risk_side,
         )
 
+        # Reference Market Data extraction
+        ref_price = None
+        ref_price_ts = None
+        ref_source = "twelve_data"
+        ref_feed_status = "HEALTHY"
+
+        feed_health_data = state.feed_health_data if state.feed_health_data else {}
+
+        if "reference_price" in feed_health_data and feed_health_data["reference_price"]:
+            try:
+                ref_price = Decimal(str(feed_health_data["reference_price"]))
+            except Exception:
+                ref_price = None
+        if "reference_price_timestamp" in feed_health_data and feed_health_data["reference_price_timestamp"]:
+            try:
+                ts_val = feed_health_data["reference_price_timestamp"]
+                if isinstance(ts_val, str):
+                    ref_price_ts = datetime.fromisoformat(ts_val)
+                elif isinstance(ts_val, datetime):
+                    ref_price_ts = ts_val
+            except Exception:
+                ref_price_ts = None
+        if "reference_price_source" in feed_health_data and feed_health_data["reference_price_source"]:
+            ref_source = str(feed_health_data["reference_price_source"])
+
+        # Fallback to latest MarketCandle if reference_price not yet in feed_health_data
+        if ref_price is None:
+            try:
+                from apps.market_data.models import MarketCandle
+                latest_candle = MarketCandle.objects.filter(
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                    is_closed=True,
+                ).order_by("-timestamp_close").first()
+                if latest_candle:
+                    ref_price = latest_candle.close
+                    ref_price_ts = latest_candle.timestamp_close
+                    ref_source = getattr(latest_candle, "source", "twelve_data") or "twelve_data"
+            except Exception:
+                pass
+
+        primary_st = feed_health_data.get("xauusd_primary_status") or feed_health_data.get("primary_15m")
+        if primary_st in ("UNHEALTHY", "DOWN", "ERROR", "STALE"):
+            ref_feed_status = primary_st
+        elif ref_price is not None:
+            ref_feed_status = "HEALTHY"
+        elif not market_closed:
+            ref_feed_status = "UNHEALTHY"
+        else:
+            ref_feed_status = "HEALTHY"
+
+        has_execution_quote = bool(state.current_bid is not None and state.current_ask is not None)
+        primary_venue = feed_health_data.get("primary_execution_venue_status", "HALTED")
+        secondary_venue = feed_health_data.get("secondary_execution_venue_status", "NOT_CONFIGURED")
+
         return XauUsdLiveProjectionState(
             instrument="XAUUSD",
             display_symbol="XAU/USD",
             market_session="CLOSED" if market_closed else "OPEN",
             is_market_closed=market_closed,
-            # Quote
+            # Quote (Execution Venue)
             current_bid=state.current_bid,
             current_ask=state.current_ask,
             spread=state.spread,
@@ -1702,6 +1767,15 @@ class XauUsdLiveProjectionService:
             quote_sequence=state.quote_sequence,
             entry_zone_status=EntryZoneStatus(state.entry_zone_status) if state.entry_zone_status in EntryZoneStatus._value2member_map_ else EntryZoneStatus.NO_ACTIVE_ZONE,
             distance_to_entry_zone_pct=state.distance_to_entry_zone_pct,
+            # Reference Market Data
+            reference_price=ref_price,
+            reference_price_timestamp=ref_price_ts,
+            reference_price_source=ref_source,
+            reference_feed_status=ref_feed_status,
+            # Execution Venue & Quote Availability
+            execution_quote_available=has_execution_quote,
+            primary_execution_venue_status=primary_venue,
+            secondary_execution_venue_status=secondary_venue,
             # Dual-Layer Decisions
             last_closed_candle_ts=state.last_closed_candle_ts,
             last_analysis_timestamp=state.last_analysis_timestamp,
@@ -1781,6 +1855,14 @@ class XauUsdLiveProjectionService:
             "quote_sequence": proj.quote_sequence,
             "entry_zone_status": proj.entry_zone_status.value,
             "distance_to_entry_zone_pct": str(proj.distance_to_entry_zone_pct) if proj.distance_to_entry_zone_pct is not None else None,
+            # Reference Market Data & Execution Venue
+            "reference_price": str(proj.reference_price) if proj.reference_price is not None else None,
+            "reference_price_timestamp": proj.reference_price_timestamp.isoformat() if proj.reference_price_timestamp else None,
+            "reference_price_source": proj.reference_price_source,
+            "reference_feed_status": proj.reference_feed_status,
+            "execution_quote_available": proj.execution_quote_available,
+            "primary_execution_venue_status": proj.primary_execution_venue_status,
+            "secondary_execution_venue_status": proj.secondary_execution_venue_status,
             "last_closed_candle_ts": proj.last_closed_candle_ts.isoformat() if proj.last_closed_candle_ts else None,
             "last_analysis_timestamp": proj.last_analysis_timestamp.isoformat() if proj.last_analysis_timestamp else None,
             "candidate_state": proj.candidate_state,
@@ -1869,6 +1951,17 @@ class XauUsdLiveProjectionService:
                     "macro_status": prov.get("macro_blackout_feed", "MISSING"),
                     "provider_sync_status": prov.get("primary_15m", "MISSING"),
                 }
+
+            latest_candle = MarketCandle.objects.filter(
+                instrument=inst_obj,
+                is_closed=True,
+            ).order_by("-timestamp_close").first()
+            if latest_candle:
+                feed_health["reference_price"] = str(latest_candle.close)
+                feed_health["reference_price_timestamp"] = latest_candle.timestamp_close.isoformat()
+                feed_health["reference_price_source"] = getattr(latest_candle, "source", "twelve_data") or "twelve_data"
+            feed_health["primary_execution_venue_status"] = "HALTED"
+            feed_health["secondary_execution_venue_status"] = "NOT_CONFIGURED"
 
             state, _ = LiveMonitorState.objects.select_for_update().get_or_create(
                 instrument="XAUUSD",

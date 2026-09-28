@@ -210,7 +210,7 @@ class XauUsdLiveProjectionState:
     market_session: str = "OPEN"
     is_market_closed: bool = False
 
-    # Path A: Quote fields
+    # Path A: Quote fields (Execution Venue)
     current_bid: Optional[Decimal] = None
     current_ask: Optional[Decimal] = None
     spread: Optional[Decimal] = None
@@ -222,6 +222,17 @@ class XauUsdLiveProjectionState:
     quote_sequence: Optional[int] = None
     entry_zone_status: EntryZoneStatus = EntryZoneStatus.NO_ACTIVE_ZONE
     distance_to_entry_zone_pct: Optional[Decimal] = None
+
+    # Reference Market Data (Analytical Provider e.g. Twelve Data)
+    reference_price: Optional[Decimal] = None
+    reference_price_timestamp: Optional[datetime] = None
+    reference_price_source: str = "twelve_data"
+    reference_feed_status: str = "HEALTHY"
+
+    # Execution Venue & Quote Availability
+    execution_quote_available: bool = False
+    primary_execution_venue_status: str = "HALTED"
+    secondary_execution_venue_status: str = "NOT_CONFIGURED"
 
     # Path B: Dual-Layer Phase 4 Decision fields
     last_closed_candle_ts: Optional[datetime] = None

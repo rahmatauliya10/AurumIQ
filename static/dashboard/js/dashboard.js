@@ -15,6 +15,8 @@ document.addEventListener("DOMContentLoaded", function() {
     let isMarketClosed = false;
     let wsConnected = false;
     let hasLiveQuote = false;
+    let hasReferencePrice = false;
+    let referenceFeedStatus = "HEALTHY";
     let isReconnecting = false;
     let feedError = false;
 
@@ -27,6 +29,12 @@ document.addEventListener("DOMContentLoaded", function() {
                 isMarketClosed = Boolean(initData.is_market_closed);
             } else if (initData.market_session) {
                 isMarketClosed = (initData.market_session === "CLOSED");
+            }
+            if (initData.reference_price) {
+                hasReferencePrice = true;
+            }
+            if (initData.reference_feed_status) {
+                referenceFeedStatus = initData.reference_feed_status;
             }
             if (initData.current_bid && initData.current_ask) {
                 hasLiveQuote = true;
@@ -66,15 +74,34 @@ document.addEventListener("DOMContentLoaded", function() {
         }
 
         // Invariant 4: Feed Error during Open Market
-        if (feedError || !hasLiveQuote) {
+        // Only triggered on genuine provider/transport failure, not missing execution bid/ask by design
+        const isProviderFault = (referenceFeedStatus === "UNHEALTHY" || referenceFeedStatus === "DOWN" || referenceFeedStatus === "ERROR" || referenceFeedStatus === "STALE");
+        if (feedError || isProviderFault || (!hasLiveQuote && !hasReferencePrice)) {
             pill.className = "freshness-indicator error";
             text.innerText = "FEED ERROR";
             return;
         }
 
-        // Invariant 5: Live Streaming with verified bid/ask
-        pill.className = "freshness-indicator fresh";
-        text.innerText = "LIVE";
+        // Invariant 5: Live Streaming with verified real execution bid/ask
+        if (hasLiveQuote) {
+            pill.className = "freshness-indicator fresh";
+            text.innerText = "LIVE";
+            return;
+        }
+
+        // Invariant 6: Reference Market Data Live (Execution quote unavailable by design)
+        if (hasReferencePrice && referenceFeedStatus === "HEALTHY") {
+            pill.className = "freshness-indicator ref-live";
+            text.innerText = "REFERENCE LIVE";
+            setElementText("live-bid", "-");
+            setElementText("live-ask", "-");
+            setElementText("live-spread", "-");
+            return;
+        }
+
+        // Fallback connecting
+        pill.className = "freshness-indicator connecting";
+        text.innerText = "CONNECTING";
     }
 
     function connectWebSocket() {
@@ -146,23 +173,50 @@ document.addEventListener("DOMContentLoaded", function() {
             } else if (d.market_session) {
                 isMarketClosed = (d.market_session === "CLOSED");
             }
+            if (d.reference_price) {
+                hasReferencePrice = true;
+                setElementText("ref-price", d.reference_price);
+            }
+            if (d.reference_feed_status) {
+                referenceFeedStatus = d.reference_feed_status;
+                setElementText("ref-feed-status", d.reference_feed_status);
+            }
+            if (d.execution_quote_available !== undefined) {
+                setElementText("execution-quote-status", d.execution_quote_available ? "AVAILABLE" : "NOT AVAILABLE");
+            }
+            if (d.primary_execution_venue_status) {
+                setElementText("primary-venue-status", d.primary_execution_venue_status);
+            }
+            if (d.secondary_execution_venue_status) {
+                setElementText("secondary-venue-status", d.secondary_execution_venue_status);
+            }
             if (d.current_bid && d.current_ask) {
                 hasLiveQuote = true;
                 setElementText("live-bid", d.current_bid);
                 setElementText("live-ask", d.current_ask);
                 setElementText("live-spread", "$" + (d.spread || "0.00"));
+            } else {
+                hasLiveQuote = false;
+                setElementText("live-bid", "-");
+                setElementText("live-ask", "-");
+                setElementText("live-spread", "-");
             }
             if (d.entry_zone_status) setElementText("live-zone-status", d.entry_zone_status);
             if (d.last_closed_candle_ts) setElementText("last-candle-ts", d.last_closed_candle_ts);
             updateConnectionStatus();
         } else if (payload.event_type === "quote_update" && payload.data) {
             const d = payload.data;
+            if (d.reference_price) {
+                hasReferencePrice = true;
+                setElementText("ref-price", d.reference_price);
+            }
             if (d.bid && d.ask) {
                 hasLiveQuote = true;
                 feedError = false;
                 setElementText("live-bid", d.bid);
                 setElementText("live-ask", d.ask);
                 setElementText("live-spread", "$" + d.spread);
+                setElementText("execution-quote-status", "AVAILABLE");
             }
             if (d.entry_zone_status) setElementText("live-zone-status", d.entry_zone_status);
             updateConnectionStatus();

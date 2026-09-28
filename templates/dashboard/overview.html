@@ -10,23 +10,27 @@
                 <span class="symbol-name">XAU/USD</span>
                 <span class="symbol-desc">Spot Gold / US Dollar</span>
             </div>
-            <div class="freshness-indicator {% if projection.is_market_closed %}closed{% elif projection.current_bid and projection.current_ask %}fresh{% else %}connecting{% endif %}" id="freshness-pill">
+            <div class="freshness-indicator {% if projection.is_market_closed %}closed{% elif projection.current_bid and projection.current_ask %}fresh{% elif projection.reference_price and projection.reference_feed_status == 'HEALTHY' %}ref-live{% else %}connecting{% endif %}" id="freshness-pill">
                 <span class="dot"></span>
-                <span id="freshness-text">{% if projection.is_market_closed %}MARKET CLOSED{% elif projection.current_bid and projection.current_ask %}LIVE{% else %}CONNECTING{% endif %}</span>
+                <span id="freshness-text">{% if projection.is_market_closed %}MARKET CLOSED{% elif projection.current_bid and projection.current_ask %}LIVE{% elif projection.reference_price and projection.reference_feed_status == 'HEALTHY' %}REFERENCE LIVE{% else %}CONNECTING{% endif %}</span>
             </div>
         </div>
         <div class="quote-metrics">
             <div class="quote-cell">
-                <span class="metric-label">LIVE BID</span>
-                <span class="metric-value bid-val" id="live-bid">{% if projection.is_market_closed %}-{% else %}{{ projection.current_bid|default:"—" }}{% endif %}</span>
+                <span class="metric-label">REFERENCE PRICE</span>
+                <span class="metric-value mono-val" id="ref-price">{% if projection.reference_price %}{{ projection.reference_price }}{% else %}—{% endif %}</span>
             </div>
             <div class="quote-cell">
-                <span class="metric-label">LIVE ASK</span>
-                <span class="metric-value ask-val" id="live-ask">{% if projection.is_market_closed %}-{% else %}{{ projection.current_ask|default:"—" }}{% endif %}</span>
+                <span class="metric-label">EXECUTION BID</span>
+                <span class="metric-value bid-val" id="live-bid">{% if projection.is_market_closed or not projection.current_bid %}-{% else %}{{ projection.current_bid }}{% endif %}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">EXECUTION ASK</span>
+                <span class="metric-value ask-val" id="live-ask">{% if projection.is_market_closed or not projection.current_ask %}-{% else %}{{ projection.current_ask }}{% endif %}</span>
             </div>
             <div class="quote-cell">
                 <span class="metric-label">SPREAD</span>
-                <span class="metric-value" id="live-spread">{% if projection.is_market_closed %}-{% elif projection.spread %}${{ projection.spread }}{% else %}—{% endif %}</span>
+                <span class="metric-value" id="live-spread">{% if projection.is_market_closed or not projection.spread %}-{% else %}${{ projection.spread }}{% endif %}</span>
             </div>
             <div class="quote-cell">
                 <span class="metric-label">ENTRY ZONE PROXIMITY</span>
@@ -36,6 +40,12 @@
                 <span class="metric-label">LAST CLOSED CANDLE (UTC)</span>
                 <span class="metric-value mono-val" id="last-candle-ts">{{ projection.last_closed_candle_ts|default:"—" }}</span>
             </div>
+        </div>
+        <div class="venue-status-bar" style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 24px; font-size: 0.75rem; color: var(--text-muted);">
+            <div>Execution quote: <strong id="execution-quote-status" style="color: var(--text-secondary);">{% if projection.execution_quote_available %}AVAILABLE{% else %}NOT AVAILABLE{% endif %}</strong></div>
+            <div>Primary venue: <strong id="primary-venue-status" style="color: var(--text-secondary);">{{ projection.primary_execution_venue_status|default:"HALTED" }}</strong></div>
+            <div>Secondary venue: <strong id="secondary-venue-status" style="color: var(--text-secondary);">{{ projection.secondary_execution_venue_status|default:"NOT_CONFIGURED" }}</strong></div>
+            <div>Reference feed: <strong id="ref-feed-status" style="color: var(--emerald-primary);">{{ projection.reference_feed_status|default:"HEALTHY" }}</strong></div>
         </div>
     </section>
 
