@@ -8,6 +8,55 @@
  *   - CONNECTING: Initial WS handshake
  */
 document.addEventListener("DOMContentLoaded", function() {
+    // 0. Sidebar Collapse / Expand Toggle & Local Persistence
+    const sidebar = document.getElementById("sidebar");
+    const sidebarToggle = document.getElementById("sidebar-toggle");
+    if (sidebar && sidebarToggle) {
+        const isInitiallyCollapsed = (
+            localStorage.getItem("aurumiq_sidebar_collapsed") === "true" ||
+            document.documentElement.classList.contains("sidebar-is-collapsed")
+        );
+        if (isInitiallyCollapsed) {
+            sidebar.classList.add("collapsed");
+            document.documentElement.classList.add("sidebar-is-collapsed");
+            sidebarToggle.setAttribute("aria-expanded", "false");
+            sidebarToggle.setAttribute("title", "Expand sidebar");
+            const icon = sidebarToggle.querySelector(".toggle-icon");
+            if (icon) icon.innerText = "▶";
+        } else {
+            sidebar.classList.remove("collapsed");
+            document.documentElement.classList.remove("sidebar-is-collapsed");
+            sidebarToggle.setAttribute("aria-expanded", "true");
+            sidebarToggle.setAttribute("title", "Collapse sidebar");
+            const icon = sidebarToggle.querySelector(".toggle-icon");
+            if (icon) icon.innerText = "◀";
+        }
+
+        sidebarToggle.addEventListener("click", function() {
+            const currentlyCollapsed = sidebar.classList.toggle("collapsed");
+            if (currentlyCollapsed) {
+                document.documentElement.classList.add("sidebar-is-collapsed");
+                sidebarToggle.setAttribute("aria-expanded", "false");
+                sidebarToggle.setAttribute("title", "Expand sidebar");
+                const icon = sidebarToggle.querySelector(".toggle-icon");
+                if (icon) icon.innerText = "▶";
+                try {
+                    localStorage.setItem("aurumiq_sidebar_collapsed", "true");
+                } catch (e) {}
+            } else {
+                document.documentElement.classList.remove("sidebar-is-collapsed");
+                sidebarToggle.setAttribute("aria-expanded", "true");
+                sidebarToggle.setAttribute("title", "Collapse sidebar");
+                const icon = sidebarToggle.querySelector(".toggle-icon");
+                if (icon) icon.innerText = "◀";
+                try {
+                    localStorage.setItem("aurumiq_sidebar_collapsed", "false");
+                } catch (e) {}
+            }
+            window.dispatchEvent(new Event("resize"));
+        });
+    }
+
     let ws = null;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 10;

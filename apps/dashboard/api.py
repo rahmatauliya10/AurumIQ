@@ -348,6 +348,26 @@ class BacktestRunLaunchAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Phase 6 / Backtest Lab Governance Hard Guard:
+        # Validate that requested historical window does not intersect protected partitions
+        from engine.backtest.xauusd_governance import (
+            validate_backtest_window_governance,
+            BacktestGovernanceError,
+            NoApprovedResearchWindowError,
+        )
+        try:
+            validate_backtest_window_governance(start_dt, end_dt)
+        except NoApprovedResearchWindowError as e:
+            return Response(
+                {"error": str(e) or "NO_APPROVED_RESEARCH_WINDOW_CONFIGURED"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except BacktestGovernanceError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         cost_scenario = data.get("cost_scenario")
         if cost_scenario not in ("IDEALIZED", "EMPIRICAL"):
             return Response(

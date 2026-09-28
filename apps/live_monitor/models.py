@@ -243,6 +243,63 @@ class LiveRiskPlanRecord(models.Model):
         side = f" {self.risk_side}" if self.risk_side else ""
         return f"LiveRiskPlanRecord({self.instrument}{side} @ {self.signal_timestamp.isoformat()}: {status} -> {self.effective_action})"
 
+    @property
+    def compact_invalidation_reason(self) -> str:
+        """
+        Produce a concise human-scannable invalidation reason for table presentation
+        (e.g., 'STOP_DISTANCE 1.534 ATR > MAX 1.42 ATR' or 'RR 1.4351R < MIN 3.03R').
+        """
+        if not self.reasons:
+            return "—"
+        first = self.reasons[0] if isinstance(self.reasons, list) else str(self.reasons)
+        first_str = str(first).strip()
+
+        import re
+        # Pattern 1: Stop distance (1.53421 ATR) exceeds maximum allowable threshold (1.42 ATR)
+        m = re.search(r"Stop distance\s*\(?([\d]+(?:\.[\d]+)?)\s*ATR\)?\s*exceeds maximum allowable threshold\s*\(?([\d]+(?:\.[\d]+)?)\s*ATR\)?", first_str, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).rstrip("."))
+                mx = float(m.group(2).rstrip("."))
+                return f"STOP_DISTANCE {val:.3f} ATR > MAX {mx:.2f} ATR"
+            except Exception:
+                return f"STOP_DISTANCE {m.group(1)} ATR > MAX {m.group(2)} ATR"
+
+        # Pattern 2: Nearest confirmed (resistance|support) at ... yields RR 1.435123 below minimum required threshold 3.03
+        m = re.search(r"yields RR\s+([\d]+(?:\.[\d]+)?)\s*(?:R\s*)?below minimum required threshold\s+([\d]+(?:\.[\d]+)?)", first_str, re.IGNORECASE)
+        if m:
+            try:
+                rr = float(m.group(1).rstrip("."))
+                mn = float(m.group(2).rstrip("."))
+                return f"RR {rr:.4f}R < MIN {mn:.2f}R"
+            except Exception:
+                return f"RR {m.group(1)}R < MIN {m.group(2)}R"
+
+        # Pattern 3: RR 1.2640R below minimum required 3.03R
+        m = re.search(r"RR\s+([\d]+(?:\.[\d]+)?)\s*R?\s*below minimum required\s+([\d]+(?:\.[\d]+)?)\s*R?", first_str, re.IGNORECASE)
+        if m:
+            try:
+                rr = float(m.group(1).rstrip("."))
+                mn = float(m.group(2).rstrip("."))
+                return f"RR {rr:.4f}R < MIN {mn:.2f}R"
+            except Exception:
+                return f"RR {m.group(1)}R < MIN {m.group(2)}R"
+
+        if len(first_str) > 42:
+            return first_str[:39] + "..."
+        return first_str
+
+    @property
+    def full_invalidation_reason(self) -> str:
+        """
+        Original complete unmutated persisted reason(s).
+        """
+        if not self.reasons:
+            return "—"
+        if isinstance(self.reasons, list):
+            return "; ".join(str(r) for r in self.reasons)
+        return str(self.reasons)
+
 
 class PaperObservationRecord(models.Model):
     """

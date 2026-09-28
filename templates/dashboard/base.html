@@ -12,56 +12,70 @@
     <!-- Pinned Plotly.js CDN (exact release pinned) -->
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <link rel="stylesheet" href="{% static 'dashboard/css/dashboard.css' %}">
+    <script>
+        (function() {
+            try {
+                if (localStorage.getItem("aurumiq_sidebar_collapsed") === "true") {
+                    document.documentElement.classList.add("sidebar-is-collapsed");
+                }
+            } catch(e) {}
+        })();
+    </script>
 </head>
 <body class="aurum-app">
-    <div class="app-layout">
+    <div class="app-layout" id="app-layout">
         <!-- Sidebar Navigation -->
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
             <div class="brand-header">
-                <div class="brand-logo">
-                    <span class="gold-gem">◆</span>
-                    <span class="brand-name">AURUM<strong>IQ</strong></span>
+                <div class="brand-header-top">
+                    <div class="brand-logo" title="AurumIQ XAU/USD Decision Lab">
+                        <span class="gold-gem">◆</span>
+                        <span class="brand-name">AURUM<strong>IQ</strong></span>
+                    </div>
+                    <button type="button" class="sidebar-toggle-btn" id="sidebar-toggle" aria-label="Toggle navigation sidebar" aria-expanded="true" title="Collapse sidebar">
+                        <span class="toggle-icon">◀</span>
+                    </button>
                 </div>
                 <div class="brand-subtitle">XAU/USD DECISION LAB</div>
             </div>
 
-            <nav class="nav-menu">
-                <a href="{% url 'dashboard:overview' %}" class="nav-item {% if active_tab == 'overview' %}active{% endif %}">
+            <nav class="nav-menu" aria-label="Main Navigation">
+                <a href="{% url 'dashboard:overview' %}" class="nav-item {% if active_tab == 'overview' %}active{% endif %}" title="OVERVIEW">
                     <span class="nav-icon">📊</span>
                     <span class="nav-label">OVERVIEW</span>
                 </a>
-                <a href="{% url 'dashboard:analysis' %}" class="nav-item {% if active_tab == 'live_analysis' %}active{% endif %}">
+                <a href="{% url 'dashboard:analysis' %}" class="nav-item {% if active_tab == 'live_analysis' %}active{% endif %}" title="LIVE ANALYSIS">
                     <span class="nav-icon">📈</span>
                     <span class="nav-label">LIVE ANALYSIS</span>
                 </a>
-                <a href="{% url 'dashboard:cycles' %}" class="nav-item {% if active_tab == 'time_cycle' %}active{% endif %}">
+                <a href="{% url 'dashboard:cycles' %}" class="nav-item {% if active_tab == 'time_cycle' %}active{% endif %}" title="TIME CYCLE LAB">
                     <span class="nav-icon">⏱️</span>
                     <span class="nav-label">TIME CYCLE LAB</span>
                 </a>
-                <a href="{% url 'dashboard:signals' %}" class="nav-item {% if active_tab == 'signals_history' %}active{% endif %}">
+                <a href="{% url 'dashboard:signals' %}" class="nav-item {% if active_tab == 'signals_history' %}active{% endif %}" title="SIGNALS HISTORY">
                     <span class="nav-icon">📡</span>
                     <span class="nav-label">SIGNALS HISTORY</span>
                 </a>
-                <a href="{% url 'dashboard:backtest' %}" class="nav-item {% if active_tab == 'backtest_lab' %}active{% endif %}">
+                <a href="{% url 'dashboard:backtest' %}" class="nav-item {% if active_tab == 'backtest_lab' %}active{% endif %}" title="BACKTEST LAB">
                     <span class="nav-icon">🧪</span>
                     <span class="nav-label">BACKTEST LAB</span>
                 </a>
-                <a href="{% url 'dashboard:data_integrity' %}" class="nav-item {% if active_tab == 'data_integrity' %}active{% endif %}">
+                <a href="{% url 'dashboard:data_integrity' %}" class="nav-item {% if active_tab == 'data_integrity' %}active{% endif %}" title="DATA INTEGRITY">
                     <span class="nav-icon">🛡️</span>
                     <span class="nav-label">DATA INTEGRITY</span>
                 </a>
-                <a href="{% url 'dashboard:system_health' %}" class="nav-item {% if active_tab == 'system_health' %}active{% endif %}">
+                <a href="{% url 'dashboard:system_health' %}" class="nav-item {% if active_tab == 'system_health' %}active{% endif %}" title="SYSTEM HEALTH">
                     <span class="nav-icon">💓</span>
                     <span class="nav-label">SYSTEM HEALTH</span>
                 </a>
-                <a href="{% url 'dashboard:audit' %}" class="nav-item {% if active_tab == 'audit_log' %}active{% endif %}">
+                <a href="{% url 'dashboard:audit' %}" class="nav-item {% if active_tab == 'audit_log' %}active{% endif %}" title="AUDIT LOG">
                     <span class="nav-icon">📜</span>
                     <span class="nav-label">AUDIT LOG</span>
                 </a>
             </nav>
 
             <div class="sidebar-footer">
-                <div class="governance-badge">
+                <div class="governance-badge" title="PAPER / RESEARCH ONLY">
                     <span class="badge-dot pulse-amber"></span>
                     <span class="badge-text">PAPER / RESEARCH ONLY</span>
                 </div>

@@ -65,3 +65,38 @@ class SignalRecord(models.Model):
 
     def __str__(self) -> str:
         return f"SignalRecord({self.instrument.symbol} {self.timeframe} {self.timestamp.isoformat()}: {self.state} -> {self.user_decision})"
+
+    @property
+    def candidate_state(self):
+        """
+        Analytical candidate state (e.g. WATCH_SHORT, BUY_WINDOW) extracted from
+        persisted immutable components_breakdown evidence.
+        Returns None if absent from historical evidence (never fabricated).
+        """
+        if isinstance(self.components_breakdown, dict):
+            return self.components_breakdown.get("candidate_state")
+        return None
+
+    @property
+    def candidate_user_decision(self):
+        """
+        Analytical candidate decision (e.g. BUY, SELL, WAIT) extracted from
+        persisted immutable components_breakdown evidence.
+        Falls back to self.user_decision if not explicitly persisted.
+        """
+        if isinstance(self.components_breakdown, dict):
+            c_dec = self.components_breakdown.get("candidate_user_decision")
+            if c_dec:
+                return str(c_dec)
+        return self.user_decision
+
+    @property
+    def candidate_resolution_reason(self):
+        """
+        Resolution or publication reason from persisted immutable evidence.
+        """
+        if isinstance(self.components_breakdown, dict):
+            reason = self.components_breakdown.get("candidate_resolution_reason")
+            if reason:
+                return str(reason)
+        return self.resolution_reason

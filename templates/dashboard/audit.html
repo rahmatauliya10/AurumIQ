@@ -6,6 +6,7 @@
     <section class="card">
         <div class="card-header">
             <h3>INFORMATIONAL ALERT EVENTS LOG</h3>
+            <span class="count-badge">{{ page_obj_alerts.paginator.count|default:0 }} Total Events</span>
         </div>
         <div class="table-responsive">
             <table class="data-table">
@@ -35,7 +36,7 @@
                             {{ a.stop_final|default:"—" }} / {{ a.tp1|default:"—" }}
                         </td>
                         <td><span class="status-pill status-{{ a.status|lower }}">{{ a.status }}</span></td>
-                        <td class="mono-code">{{ a.event_id|slice:":12" }}...</td>
+                        <td class="mono-code" title="{{ a.event_id }}">{{ a.event_id|slice:":12" }}...</td>
                     </tr>
                     {% empty %}
                     <tr>
@@ -44,6 +45,25 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <!-- Alert Events Pagination -->
+        <div class="pagination-container">
+            <div class="page-size-selector">
+                <span class="size-label">Rows:</span>
+                <a href="?alerts_page=1&alerts_page_size=25&risk_page={{ page_obj_risk.number }}&risk_page_size={{ risk_page_size }}" class="size-btn {% if alerts_page_size == 25 %}active{% endif %}">25</a>
+                <a href="?alerts_page=1&alerts_page_size=50&risk_page={{ page_obj_risk.number }}&risk_page_size={{ risk_page_size }}" class="size-btn {% if alerts_page_size == 50 %}active{% endif %}">50</a>
+                <a href="?alerts_page=1&alerts_page_size=100&risk_page={{ page_obj_risk.number }}&risk_page_size={{ risk_page_size }}" class="size-btn {% if alerts_page_size == 100 %}active{% endif %}">100</a>
+            </div>
+            <div class="pagination-bar">
+                {% if page_obj_alerts.has_previous %}
+                <a href="?alerts_page={{ page_obj_alerts.previous_page_number }}&alerts_page_size={{ alerts_page_size }}&risk_page={{ page_obj_risk.number }}&risk_page_size={{ risk_page_size }}" class="page-btn">Previous</a>
+                {% endif %}
+                <span class="page-info">Page {{ page_obj_alerts.number|default:1 }} of {{ page_obj_alerts.paginator.num_pages|default:1 }}</span>
+                {% if page_obj_alerts.has_next %}
+                <a href="?alerts_page={{ page_obj_alerts.next_page_number }}&alerts_page_size={{ alerts_page_size }}&risk_page={{ page_obj_risk.number }}&risk_page_size={{ risk_page_size }}" class="page-btn">Next</a>
+                {% endif %}
+            </div>
         </div>
     </section>
 
@@ -97,6 +117,7 @@
     <section class="card" style="margin-top: 24px;">
         <div class="card-header">
             <h3>PHASE 5 RISK PLAN HISTORY / AUDIT</h3>
+            <span class="count-badge">{{ page_obj_risk.paginator.count|default:0 }} Total Plans</span>
         </div>
         <div class="table-responsive">
             <table class="data-table">
@@ -131,14 +152,20 @@
                         <td>{% if r.rr_tp1 %}{{ r.rr_tp1 }}R{% else %}—{% endif %}</td>
                         <td class="reason-cell">
                             {% if not r.is_valid_risk_plan and r.reasons %}
-                                {{ r.reasons|join:"; " }}
+                                <details class="reason-details">
+                                    <summary class="reason-summary">
+                                        <span class="reason-compact">{{ r.compact_invalidation_reason }}</span>
+                                        <span class="view-detail-btn">[View detail]</span>
+                                    </summary>
+                                    <div class="reason-full-text">{{ r.full_invalidation_reason }}</div>
+                                </details>
                             {% elif r.is_valid_risk_plan %}
-                                Valid Plan
+                                <span class="status-pill valid">Valid Plan</span>
                             {% else %}
                                 —
                             {% endif %}
                         </td>
-                        <td class="mono-code">{{ r.risk_plan_fingerprint|default:"—"|slice:":12" }}...</td>
+                        <td class="mono-code" title="{{ r.risk_plan_fingerprint|default:'' }}">{{ r.risk_plan_fingerprint|default:"—"|slice:":12" }}...</td>
                     </tr>
                     {% empty %}
                     <tr>
@@ -147,6 +174,25 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <!-- Risk Plan History Pagination -->
+        <div class="pagination-container">
+            <div class="page-size-selector">
+                <span class="size-label">Rows:</span>
+                <a href="?risk_page=1&risk_page_size=25&alerts_page={{ page_obj_alerts.number }}&alerts_page_size={{ alerts_page_size }}" class="size-btn {% if risk_page_size == 25 %}active{% endif %}">25</a>
+                <a href="?risk_page=1&risk_page_size=50&alerts_page={{ page_obj_alerts.number }}&alerts_page_size={{ alerts_page_size }}" class="size-btn {% if risk_page_size == 50 %}active{% endif %}">50</a>
+                <a href="?risk_page=1&risk_page_size=100&alerts_page={{ page_obj_alerts.number }}&alerts_page_size={{ alerts_page_size }}" class="size-btn {% if risk_page_size == 100 %}active{% endif %}">100</a>
+            </div>
+            <div class="pagination-bar">
+                {% if page_obj_risk.has_previous %}
+                <a href="?risk_page={{ page_obj_risk.previous_page_number }}&risk_page_size={{ risk_page_size }}&alerts_page={{ page_obj_alerts.number }}&alerts_page_size={{ alerts_page_size }}" class="page-btn">Previous</a>
+                {% endif %}
+                <span class="page-info">Page {{ page_obj_risk.number|default:1 }} of {{ page_obj_risk.paginator.num_pages|default:1 }}</span>
+                {% if page_obj_risk.has_next %}
+                <a href="?risk_page={{ page_obj_risk.next_page_number }}&risk_page_size={{ risk_page_size }}&alerts_page={{ page_obj_alerts.number }}&alerts_page_size={{ alerts_page_size }}" class="page-btn">Next</a>
+                {% endif %}
+            </div>
         </div>
     </section>
 </div>

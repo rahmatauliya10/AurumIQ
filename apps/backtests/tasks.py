@@ -624,6 +624,11 @@ def run_xauusd_backtest_task(
     if end_dt.tzinfo is None or end_dt.tzinfo.utcoffset(end_dt) is None:
         raise ValueError("end_time_iso must include an explicit timezone offset (naive timestamps forbidden).")
 
+    # Phase 6 / Backtest Lab Governance Hard Guard (Defense in Depth):
+    # Strictly forbid simulation windows intersecting protected partitions before any data access
+    from engine.backtest.xauusd_governance import validate_backtest_window_governance
+    validate_backtest_window_governance(start_dt, end_dt)
+
     # Resolve research profiles server-side
     signal_profile, risk_profile = resolve_xauusd_research_profiles(
         signal_profile_id=signal_profile_id,

@@ -492,8 +492,8 @@ def test_hostile_celery_naive_timestamp_rejection():
 
     with pytest.raises(ValueError, match="must include an explicit timezone offset"):
         run_xauusd_backtest_task(
-            start_time_iso="2026-09-01T10:00:00",  # Naive
-            end_time_iso="2026-09-01T14:00:00+00:00",
+            start_time_iso="2024-01-01T10:00:00",  # Naive
+            end_time_iso="2024-01-01T14:00:00+00:00",
             dataset_hash="hash",
             code_revision="rev",
             cost_scenario="IDEALIZED",
@@ -503,8 +503,8 @@ def test_hostile_celery_naive_timestamp_rejection():
 
     with pytest.raises(ValueError, match="must include an explicit timezone offset"):
         run_xauusd_backtest_task(
-            start_time_iso="2026-09-01T10:00:00+00:00",
-            end_time_iso="2026-09-01T14:00:00",  # Naive
+            start_time_iso="2024-01-01T10:00:00+00:00",
+            end_time_iso="2024-01-01T14:00:00",  # Naive
             dataset_hash="hash",
             code_revision="rev",
             cost_scenario="IDEALIZED",
@@ -518,8 +518,8 @@ def test_hostile_celery_calibration_required_without_profiles():
     from apps.backtests.tasks import run_xauusd_backtest_task
 
     res = run_xauusd_backtest_task(
-        start_time_iso="2026-09-01T10:00:00+00:00",
-        end_time_iso="2026-09-01T14:00:00+00:00",
+        start_time_iso="2024-01-01T10:00:00+00:00",
+        end_time_iso="2024-01-01T14:00:00+00:00",
         dataset_hash="hash",
         code_revision="rev",
         cost_scenario="IDEALIZED",
@@ -859,8 +859,8 @@ def test_hostile_celery_json_serialization_safety():
         provider_symbol="XAUUSD",
     )
 
-    start_dt = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
-    end_dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+    start_dt = datetime(2024, 1, 1, 10, 0, tzinfo=timezone.utc)
+    end_dt = datetime(2024, 1, 1, 14, 0, tzinfo=timezone.utc)
 
     ds = PointInTimeDataset()
     for i in range(15):
@@ -899,8 +899,8 @@ def test_hostile_celery_json_serialization_safety():
     computed_ds_hash = compute_xauusd_dataset_identity_from_dataset(ds, start_dt, end_dt)
 
     payload = {
-        "start_time_iso": "2026-09-01T10:00:00+00:00",
-        "end_time_iso": "2026-09-01T14:00:00+00:00",
+        "start_time_iso": "2024-01-01T10:00:00+00:00",
+        "end_time_iso": "2024-01-01T14:00:00+00:00",
         "dataset_hash": computed_ds_hash,
         "code_revision": "rev_abc",
         "cost_scenario": "IDEALIZED",
@@ -947,8 +947,8 @@ def test_hostile_unknown_risk_profile_id_fails_closed_without_import_error():
     assert risk_prof is None
 
     res = run_xauusd_backtest_task(
-        start_time_iso="2026-09-01T10:00:00+00:00",
-        end_time_iso="2026-09-01T14:00:00+00:00",
+        start_time_iso="2024-01-01T10:00:00+00:00",
+        end_time_iso="2024-01-01T14:00:00+00:00",
         dataset_hash="ds_hash",
         code_revision="rev_test",
         cost_scenario="IDEALIZED",
@@ -1115,8 +1115,8 @@ def test_hostile_backtest_task_fails_closed_without_primary_listing():
     )
 
     # Populate mixed-source candles (secondary and random)
-    start_dt = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
-    end_dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+    start_dt = datetime(2024, 1, 1, 10, 0, tzinfo=timezone.utc)
+    end_dt = datetime(2024, 1, 1, 14, 0, tzinfo=timezone.utc)
 
     for i in range(16):
         ts_open = start_dt + timedelta(minutes=15 * i)
