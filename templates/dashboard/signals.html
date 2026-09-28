@@ -14,9 +14,11 @@
                         <th>Timestamp (UTC)</th>
                         <th>Timeframe</th>
                         <th>Candidate Decision</th>
+                        <th>Candidate State</th>
                         <th>Published Decision</th>
                         <th>Long Scores (Dir / Tim)</th>
                         <th>Short Scores (Dir / Tim)</th>
+                        <th>Resolution Reason</th>
                         <th>Calibration</th>
                         <th>Fingerprint</th>
                     </tr>
@@ -27,18 +29,28 @@
                         <td class="mono-text">{{ s.timestamp|date:"Y-m-d H:i" }}</td>
                         <td><span class="tf-pill">{{ s.timeframe }}</span></td>
                         <td>
-                            <span class="decision-pill decision-{{ s.user_decision|lower }}">
-                                {{ s.user_decision }} ({{ s.state }})
+                            <span class="decision-pill decision-{{ s.candidate_user_decision|lower }}">
+                                {{ s.candidate_user_decision }}
                             </span>
                         </td>
                         <td>
-                            <span class="decision-pill decision-wait">WAIT</span>
+                            {% if s.candidate_state %}
+                            <span class="state-pill state-{{ s.candidate_state|lower }}">{{ s.candidate_state }}</span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="decision-pill decision-wait">{{ s.user_decision|default:"WAIT" }}</span>
                         </td>
                         <td>
                             {% if s.long_direction_score is not None %}{{ s.long_direction_score|floatformat:1 }}{% else %}N/E{% endif %} / {% if s.long_timing_score is not None %}{{ s.long_timing_score|floatformat:1 }}{% else %}N/E{% endif %}
                         </td>
                         <td>
                             {% if s.short_direction_score is not None %}{{ s.short_direction_score|floatformat:1 }}{% else %}N/E{% endif %} / {% if s.short_timing_score is not None %}{{ s.short_timing_score|floatformat:1 }}{% else %}N/E{% endif %}
+                        </td>
+                        <td class="reason-cell">
+                            {{ s.candidate_resolution_reason|default:s.resolution_reason|default:"—" }}
                         </td>
                         <td>
                             {% if s.calibration_status == "PENDING_PHASE6" %}
@@ -47,29 +59,35 @@
                             <span class="cal-pill">{{ s.calibration_status|default:"CALIBRATION_REQUIRED" }}</span>
                             {% endif %}
                         </td>
-                        <td class="mono-code">{{ s.analysis_fingerprint|slice:":12" }}...</td>
+                        <td class="mono-code" title="{{ s.analysis_fingerprint }}">{{ s.analysis_fingerprint|slice:":12" }}...</td>
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="8" class="text-center empty-cell">No immutable signal records found.</td>
+                        <td colspan="10" class="text-center empty-cell">No immutable signal records found.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
 
-        <!-- Pagination -->
-        {% if page_obj.has_other_pages %}
-        <div class="pagination-bar">
-            {% if page_obj.has_previous %}
-            <a href="?page={{ page_obj.previous_page_number }}" class="page-btn">Previous</a>
-            {% endif %}
-            <span class="page-info">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-            {% if page_obj.has_next %}
-            <a href="?page={{ page_obj.next_page_number }}" class="page-btn">Next</a>
-            {% endif %}
+        <!-- Pagination Bar & Rows-Per-Page Selector -->
+        <div class="pagination-container">
+            <div class="page-size-selector">
+                <span class="size-label">Rows:</span>
+                <a href="?page=1&page_size=25" class="size-btn {% if page_size == 25 %}active{% endif %}">25</a>
+                <a href="?page=1&page_size=50" class="size-btn {% if page_size == 50 %}active{% endif %}">50</a>
+                <a href="?page=1&page_size=100" class="size-btn {% if page_size == 100 %}active{% endif %}">100</a>
+            </div>
+            <div class="pagination-bar">
+                {% if page_obj.has_previous %}
+                <a href="?page={{ page_obj.previous_page_number }}&page_size={{ page_size }}" class="page-btn">Previous</a>
+                {% endif %}
+                <span class="page-info">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages|default:1 }}</span>
+                {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}&page_size={{ page_size }}" class="page-btn">Next</a>
+                {% endif %}
+            </div>
         </div>
-        {% endif %}
     </section>
 </div>
 {% endblock %}

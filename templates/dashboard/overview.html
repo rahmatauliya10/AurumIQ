@@ -2,6 +2,7 @@
 
 {% block content %}
 <div class="overview-grid">
+    <script id="initial-projection" type="application/json">{{ projection_json|safe }}</script>
     <!-- Row 1: Real-Time Live Quote Bar -->
     <section class="card quote-banner">
         <div class="quote-header">
@@ -9,23 +10,27 @@
                 <span class="symbol-name">XAU/USD</span>
                 <span class="symbol-desc">Spot Gold / US Dollar</span>
             </div>
-            <div class="freshness-indicator fresh" id="freshness-pill">
+            <div class="freshness-indicator {% if projection.is_market_closed %}closed{% elif projection.current_bid and projection.current_ask %}fresh{% elif projection.reference_price and projection.reference_feed_status == 'HEALTHY' %}ref-live{% else %}connecting{% endif %}" id="freshness-pill">
                 <span class="dot"></span>
-                <span id="freshness-text">CANDLE FEED ACTIVE | LIVE QUOTE: NOT CONFIGURED</span>
+                <span id="freshness-text">{% if projection.is_market_closed %}MARKET CLOSED{% elif projection.current_bid and projection.current_ask %}LIVE{% elif projection.reference_price and projection.reference_feed_status == 'HEALTHY' %}REFERENCE LIVE{% else %}CONNECTING{% endif %}</span>
             </div>
         </div>
         <div class="quote-metrics">
             <div class="quote-cell">
-                <span class="metric-label">LIVE BID</span>
-                <span class="metric-value bid-val" id="live-bid">{{ projection.current_bid|default:"—" }}</span>
+                <span class="metric-label">REFERENCE PRICE</span>
+                <span class="metric-value mono-val" id="ref-price">{% if projection.reference_price %}{{ projection.reference_price }}{% else %}—{% endif %}</span>
             </div>
             <div class="quote-cell">
-                <span class="metric-label">LIVE ASK</span>
-                <span class="metric-value ask-val" id="live-ask">{{ projection.current_ask|default:"—" }}</span>
+                <span class="metric-label">EXECUTION BID</span>
+                <span class="metric-value bid-val" id="live-bid">{% if projection.is_market_closed or not projection.current_bid %}-{% else %}{{ projection.current_bid }}{% endif %}</span>
+            </div>
+            <div class="quote-cell">
+                <span class="metric-label">EXECUTION ASK</span>
+                <span class="metric-value ask-val" id="live-ask">{% if projection.is_market_closed or not projection.current_ask %}-{% else %}{{ projection.current_ask }}{% endif %}</span>
             </div>
             <div class="quote-cell">
                 <span class="metric-label">SPREAD</span>
-                <span class="metric-value" id="live-spread">{% if projection.spread %}${{ projection.spread }}{% else %}—{% endif %}</span>
+                <span class="metric-value" id="live-spread">{% if projection.is_market_closed or not projection.spread %}-{% else %}${{ projection.spread }}{% endif %}</span>
             </div>
             <div class="quote-cell">
                 <span class="metric-label">ENTRY ZONE PROXIMITY</span>
@@ -35,6 +40,12 @@
                 <span class="metric-label">LAST CLOSED CANDLE (UTC)</span>
                 <span class="metric-value mono-val" id="last-candle-ts">{{ projection.last_closed_candle_ts|default:"—" }}</span>
             </div>
+        </div>
+        <div class="venue-status-bar" style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 24px; font-size: 0.75rem; color: var(--text-muted);">
+            <div>Execution quote: <strong id="execution-quote-status" style="color: var(--text-secondary);">{% if projection.execution_quote_available %}AVAILABLE{% else %}NOT AVAILABLE{% endif %}</strong></div>
+            <div>Primary venue: <strong id="primary-venue-status" style="color: var(--text-secondary);">{{ projection.primary_execution_venue_status|default:"HALTED" }}</strong></div>
+            <div>Secondary venue: <strong id="secondary-venue-status" style="color: var(--text-secondary);">{{ projection.secondary_execution_venue_status|default:"NOT_CONFIGURED" }}</strong></div>
+            <div>Reference feed: <strong id="ref-feed-status" style="color: var(--emerald-primary);">{{ projection.reference_feed_status|default:"HEALTHY" }}</strong></div>
         </div>
     </section>
 
@@ -103,22 +114,26 @@
             </div>
             <div class="decision-hero">
                 <div class="decision-badge published-badge decision-wait">
-                    <span class="decision-label">PUBLISHED DECISION</span>
+                    <span class="decision-label">PUBLISHED ACTION</span>
                     <span class="decision-text">WAIT</span>
                 </div>
                 <div class="state-meta">
+                    <div class="meta-row">
+                        <span>Candidate Intelligence:</span>
+                        <strong class="candidate-ref">{{ projection.candidate_user_decision }} ({{ projection.candidate_state }})</strong>
+                    </div>
                     <div class="meta-row">
                         <span>Published State:</span>
                         <strong>{{ projection.published_state }}</strong>
                     </div>
                     <div class="meta-row">
                         <span>Publication Guard:</span>
-                        <span class="reason-text">{{ projection.publication_reason|default:"Held at WAIT pending Phase 6 empirical calibration" }}</span>
+                        <span class="reason-text">{{ projection.publication_reason|default:"PRODUCTION AUTHORITY OFF — GOVERNANCE LOCK" }}</span>
                     </div>
                 </div>
             </div>
             <div class="governance-notice">
-                <p>⚠️ <strong>HUMAN DECISION SUPPORT ONLY</strong> — Automated order execution is strictly forbidden (<code>is_production_authorized = False</code>). Candidate setups are informational notifications.</p>
+                <p>⚠️ <strong>HUMAN DECISION SUPPORT ONLY</strong> — Candidate intelligence ({{ projection.candidate_user_decision }}) is NOT an executable order. Automated trading is strictly disabled (<code>is_production_authorized = False</code>). Published action is locked at <strong>WAIT</strong>.</p>
             </div>
         </section>
     </div>
@@ -128,14 +143,25 @@
         <div class="card-header">
             <h3>PHASE 5 STRUCTURAL RISK ARCHITECTURE</h3>
             <div class="header-badges">
-                <span class="status-pill {% if projection.is_valid_risk_plan %}valid{% else %}invalid{% endif %}">
-                    {% if projection.is_valid_risk_plan %}VALID RISK PLAN{% else %}INVALID / NO CANDIDATE{% endif %}
-                </span>
+                {% if projection.is_valid_risk_plan %}
+                <span class="status-pill valid">VALID RISK PLAN</span>
+                {% elif projection.risk_side %}
+                <span class="status-pill invalid">PLAN INVALIDATED</span>
+                {% else %}
+                <span class="status-pill neutral">NO ACTIVE RISK PLAN</span>
+                {% endif %}
                 {% if projection.risk_side %}
                 <span class="side-pill side-{{ projection.risk_side|lower }}">{{ projection.risk_side }} PLAN</span>
                 {% endif %}
             </div>
         </div>
+        {% if not projection.is_valid_risk_plan and projection.risk_plan_invalidation_reason %}
+        <div class="risk-invalidation-banner" id="risk-invalidation-box">
+            <span class="invalidation-icon">⚠️</span>
+            <span class="invalidation-label">Invalidation Reason:</span>
+            <span class="invalidation-text" id="risk-invalidation-text">{{ projection.risk_plan_invalidation_reason }}</span>
+        </div>
+        {% endif %}
         <div class="geometry-grid">
             <div class="geo-cell">
                 <span class="geo-label">SELECTED ENTRY ZONE</span>
@@ -190,22 +216,32 @@
                 </div>
                 {% endif %}
                 <div class="reasons-block positive">
-                    <h4>OBSERVED MARKET FEATURES</h4>
+                    <h4>CONTRIBUTING FACTORS</h4>
                     <ul>
-                        {% for r in projection.reasons_positive %}
+                        {% for r in projection.contributing_factors %}
                         <li>✓ {{ r }}</li>
                         {% empty %}
-                        <li class="empty-list">No active observed market features.</li>
+                        <li class="empty-list">No active contributing factors.</li>
                         {% endfor %}
                     </ul>
                 </div>
                 <div class="reasons-block negative">
-                    <h4>SOFT NEGATIVE FACTORS</h4>
+                    <h4>WEAK / NEGATIVE FACTORS</h4>
                     <ul>
-                        {% for r in projection.reasons_negative %}
+                        {% for r in projection.weak_negative_factors %}
                         <li>✗ {{ r }}</li>
                         {% empty %}
-                        <li class="empty-list">No soft negative factors active.</li>
+                        <li class="empty-list">No weak/negative factors active.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="reasons-block inactive">
+                    <h4>INACTIVE / ZERO-WEIGHT COMPONENTS</h4>
+                    <ul>
+                        {% for r in projection.inactive_components %}
+                        <li>⚪ {{ r }}</li>
+                        {% empty %}
+                        <li class="empty-list">No inactive components.</li>
                         {% endfor %}
                     </ul>
                 </div>

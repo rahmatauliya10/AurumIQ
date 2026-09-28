@@ -1,10 +1,12 @@
 """Targeted unit tests for Phase 8 Signal-Capable Runtime Readiness."""
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import inspect
 import json
 import pytest
 from unittest.mock import MagicMock, patch
 
+from apps.backtests.tasks import resolve_xauusd_cycle3a_profile
 from apps.instruments.models import Asset, AssetType, Instrument, InstrumentType, ListingRole, ListingStatus, MarketListing, ProviderHealthSnapshot
 from apps.live_monitor.adapter import PublicMarketDataAdapter
 from apps.live_monitor.models import LiveMonitorState, LiveRiskPlanRecord, PaperObservationRecord
@@ -561,3 +563,113 @@ class TestLivePipelineAndAuthorityLockContracts:
         )
         assert state.published_user_decision == "WAIT"
         assert state.publication_effective_action == "WAIT"
+
+
+def test_live_pipeline_wires_cycle3a_profile_end_to_end():
+    """
+    Phase 3A profile must have an explicit path through the live
+    decision service into both the cycle engine and signal engine.
+
+    This test checks plumbing only. It must NOT imply that an
+    empirical XAUUSD frozen profile already exists.
+    """
+    signature = inspect.signature(
+        XauUsdLiveDecisionPipelineService.process_closed_candle
+    )
+
+    assert "cycle_3a_profile" in signature.parameters
+    assert signature.parameters["cycle_3a_profile"].default is None
+
+    source = inspect.getsource(
+        XauUsdLiveDecisionPipelineService.process_closed_candle
+    )
+
+    assert "profile=cycle_3a_profile" in source
+    assert "cycle_3a_profile=cycle_3a_profile" in source
+
+
+def test_current_champion_has_no_authorized_cycle3a_profile():
+    """
+    Existing Phase 4/5 champion must not silently acquire
+    Phase 3A production authority.
+    """
+    prof = resolve_xauusd_cycle3a_profile(
+        calibration_artifact_id=(
+            "xauusd_calibrated_profile_champion"
+        )
+    )
+
+    assert prof is None
+
+
+def test_cycle3a_resolver_rejects_pending_data_profile():
+    prof = resolve_xauusd_cycle3a_profile(
+        cycle_3a_profile_dict={
+            "name": "XAUUSD_PENDING",
+            "target_instrument": "XAUUSD",
+            "timeframe": "15m",
+            "calibration_status": "PENDING_DATA",
+        }
+    )
+
+    assert prof is None
+
+
+def test_cycle3a_resolver_rejects_fake_incomplete_frozen_profile():
+    """
+    A label alone must never create Phase 3A scoring authority.
+    """
+    prof = resolve_xauusd_cycle3a_profile(
+        cycle_3a_profile_dict={
+            "name": "XAUUSD_FAKE_FROZEN",
+            "target_instrument": "XAUUSD",
+            "timeframe": "15m",
+            "calibration_status": "PRODUCTION_FROZEN",
+        }
+    )
+
+    assert prof is None
+
+
+def test_cycle3a_resolver_rejects_path_traversal():
+    prof = resolve_xauusd_cycle3a_profile(
+        calibration_artifact_id="../../secret"
+    )
+
+    assert prof is None
+
+
+def test_xauusd_task_wires_cycle3a_resolver_to_live_service():
+    import inspect
+    from apps.live_monitor.tasks import (
+        process_xauusd_closed_candle_task,
+    )
+
+    source = inspect.getsource(
+        process_xauusd_closed_candle_task
+    )
+
+    assert "resolve_xauusd_cycle3a_profile" in source
+    assert "cycle_3a_profile=cycle_prof" in source
+
+
+def test_live_xauusd_regime_path_is_fail_closed():
+    import inspect
+
+    source = " ".join(
+        inspect.getsource(
+            XauUsdLiveDecisionPipelineService
+            .process_closed_candle
+        ).split()
+    )
+
+    assert (
+        "re = RegimeEngine.for_xauusd()"
+        in source
+    )
+
+    assert (
+        're.classify('
+        'feats_15m, instrument="XAUUSD")'
+        in source
+    )

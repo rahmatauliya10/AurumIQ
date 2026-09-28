@@ -157,6 +157,9 @@ class AnalysisPersistenceService:
                     "is_mature_pullback": cycle_3a.swing_duration.is_mature,
                     "is_blocked_by_event": cycle_3a.is_blocked_by_event,
                     "cycle_score_3a": cycle_3a.cycle_score_3a,
+                    "profile_name": cycle_3a.profile_name,
+                    "calibration_status": cycle_3a.calibration_status,
+                    "calibration_artifact_version": cycle_3a.calibration_artifact_version,
                     "details": details,
                 },
             )
@@ -280,4 +283,17 @@ class AnalysisPersistenceService:
             is_blocked_by_event=record.is_blocked_by_event,
             cycle_score_3a=record.cycle_score_3a,
             cycle_version=record.cycle_version,
+            profile_name=(
+                getattr(record, "profile_name", None)
+                or "UNKNOWN_PROFILE"
+            ),
+            calibration_status=(
+                getattr(record, "calibration_status", None)
+                or "UNKNOWN"
+            ),
+            calibration_artifact_version=getattr(
+                record,
+                "calibration_artifact_version",
+                None,
+            ),
         )

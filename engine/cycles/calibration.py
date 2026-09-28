@@ -9,7 +9,6 @@ Zero Django imports, zero network calls, zero lookahead, zero numerical fallback
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 import math
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -24,9 +23,40 @@ from engine.core.types import (
     SessionType,
     SwingPoint,
 )
+from engine.cycles.calendar import (
+    calendar_bucket_key,
+)
 from engine.cycles.profile import CalibrationStatus, Cycle3AProfile, _deep_freeze
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import timeframe_to_seconds
+
+
+SignificancePolicy = Callable[
+    [
+        float,  # mean_return
+        float,  # std_dev
+        int,    # raw_n
+        float,  # effective_n
+    ],
+    bool,
+]
+
+
+def _invoke_significance_policy(
+    policy: SignificancePolicy,
+    mean_return: float,
+    std_dev: float,
+    raw_n: int,
+    effective_n: float,
+) -> bool:
+    return bool(
+        policy(
+            mean_return,
+            std_dev,
+            raw_n,
+            effective_n,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -66,6 +96,53 @@ class CalibrationProvenance:
 
 
 @dataclass(frozen=True)
+class CalendarCalibrationFold:
+    """
+    Explicit calibration-only chronological partition.
+
+    OOS partitions must never be supplied here.
+    Intervals are strict half-open [start, end).
+    """
+    fold_id: int
+    start: datetime
+    end: datetime
+
+    def __post_init__(self):
+        if self.fold_id < 1:
+            raise ValueError(
+                "Calendar fold_id must be >= 1."
+            )
+
+        if (
+            self.start.tzinfo is None
+            or self.start.tzinfo.utcoffset(
+                self.start
+            ) is None
+        ):
+            raise ValueError(
+                "Calendar fold start must "
+                "be timezone-aware."
+            )
+
+        if (
+            self.end.tzinfo is None
+            or self.end.tzinfo.utcoffset(
+                self.end
+            ) is None
+        ):
+            raise ValueError(
+                "Calendar fold end must "
+                "be timezone-aware."
+            )
+
+        if self.start >= self.end:
+            raise ValueError(
+                "Calendar fold start must "
+                "be before end."
+            )
+
+
+@dataclass(frozen=True)
 class Cycle3ACalibrationArtifact:
     """
     Immutable consolidated empirical calibration artifact for Phase 3A.
@@ -77,6 +154,7 @@ class Cycle3ACalibrationArtifact:
         default_factory=dict
     )
     swing_duration_percentiles: Mapping[str, Any] = field(default_factory=dict)
+    swing_sample_evaluation: Optional[SampleEvaluation] = None
     calendar_effect_table: Mapping[str, CalendarEffectEntry] = field(default_factory=dict)
     macro_timing_config: Mapping[str, Any] = field(default_factory=dict)
     status: CalibrationStatus = CalibrationStatus.CANDIDATE_NOT_FROZEN
@@ -144,24 +222,50 @@ def calculate_distribution_percentiles(durations: Sequence[int]) -> Dict[str, fl
 
 def calibrate_session_expectancy(
     candles: Sequence[CandleData],
-    regimes: Sequence[Tuple[datetime, RegimeType]],
-    sample_evaluations: Optional[Mapping[Tuple[SessionType, RegimeType], SampleEvaluation]] = None,
-    effective_n_mapping: Optional[Mapping[Tuple[SessionType, RegimeType], float]] = None,
-    significance_policy: Optional[Callable[[float, float, int], bool]] = None,
-    min_effective_n: Optional[float] = None,
-) -> Dict[Tuple[SessionType, RegimeType], SessionExpectancyEntry]:
+    regimes: Sequence[
+        Tuple[datetime, RegimeType]
+    ],
+    sample_evaluations: Optional[
+        Mapping[
+            Tuple[SessionType, RegimeType],
+            SampleEvaluation,
+        ]
+    ] = None,
+    effective_n_mapping: Optional[
+        Mapping[
+            Tuple[SessionType, RegimeType],
+            float,
+        ]
+    ] = None,
+    significance_policy: Optional[
+        SignificancePolicy
+    ] = None,
+    min_effective_n: Optional[
+        float
+    ] = None,
+    timeframe: str = "15m",
+) -> Dict[
+    Tuple[SessionType, RegimeType],
+    SessionExpectancyEntry,
+]:
     """
     Calibrate empirical session expectancy table from closed historical candles and point-in-time regimes.
 
     Invariants:
-      - Zero hardcoded sample thresholds (no default min_samples=30).
-      - Zero hardcoded t-statistic thresholds (no default 1.96).
+      - Closed candles only.
+      - T -> T+1 must be physically contiguous for the
+        declared timeframe.
+      - Market gaps are excluded, never interpolated.
+      - Zero hardcoded sample thresholds.
       - Raw N is NEVER assumed equal to effective N.
-      - If sample_evaluations or effective_n_mapping is not supplied, effective_n defaults to 0.0
-        and is_statistically_significant defaults to False.
+      - Missing statistical evidence fails closed.
     """
     if not candles or not regimes:
         return {}
+
+    tf_seconds = timeframe_to_seconds(
+        timeframe
+    )
 
     regime_map = {ts: reg for ts, reg in regimes}
     bucket_returns: Dict[Tuple[SessionType, RegimeType], List[float]] = {}
@@ -170,6 +274,25 @@ def calibrate_session_expectancy(
         c_curr = candles[i]
         c_next = candles[i + 1]
         if not c_curr.is_closed or not c_next.is_closed:
+            continue
+
+        # Physical candle continuity is mandatory.
+        #
+        # A weekend, holiday, provider outage, or missing
+        # interval must never be interpreted as a one-bar
+        # session return.
+        if (
+            c_next.timestamp_open
+            != c_curr.timestamp_close
+        ):
+            continue
+
+        close_delta_seconds = (
+            c_next.timestamp_close
+            - c_curr.timestamp_close
+        ).total_seconds()
+
+        if close_delta_seconds != tf_seconds:
             continue
 
         as_of = c_curr.timestamp_close
@@ -196,9 +319,32 @@ def calibrate_session_expectancy(
         wins = sum(1 for r in rets if r > 0)
         win_rate = float(round(wins / sample_count, 4))
         avg_ret = sum(rets) / sample_count
-        variance = sum((r - avg_ret) ** 2 for r in rets) / (sample_count - 1) if sample_count > 1 else 0.0
-        std_dev = math.sqrt(variance) if variance > 0 else 0.0001
-        expectancy_r = float(round(avg_ret / std_dev, 4)) if std_dev > 0 else 0.0
+        variance = (
+            sum(
+                (r - avg_ret) ** 2
+                for r in rets
+            )
+            / (sample_count - 1)
+            if sample_count > 1
+            else 0.0
+        )
+
+        std_dev = (
+            math.sqrt(variance)
+            if variance > 0.0
+            else 0.0
+        )
+
+        expectancy_r = (
+            float(
+                round(
+                    avg_ret / std_dev,
+                    4,
+                )
+            )
+            if std_dev > 0.0
+            else 0.0
+        )
 
         # Determine effective N from explicit mapping (raw N is NEVER assumed equal to effective N)
         key = (sess, reg)
@@ -211,7 +357,13 @@ def calibrate_session_expectancy(
 
         # Significance policy evaluation (no hardcoded p-values)
         if significance_policy is not None and effective_n > 0.0:
-            is_sig = significance_policy(avg_ret, std_dev, sample_count)
+            is_sig = _invoke_significance_policy(
+                significance_policy,
+                avg_ret,
+                std_dev,
+                sample_count,
+                effective_n,
+            )
             if min_effective_n is not None and effective_n < min_effective_n:
                 is_sig = False
         else:
@@ -280,6 +432,378 @@ def calibrate_swing_durations(
     }
 
 
+def calibrate_calendar_effects(
+    candles: Sequence[CandleData],
+    folds: Sequence[CalendarCalibrationFold],
+    timeframe: str,
+    min_stability_folds: int,
+    min_fold_observations: int,
+    sample_evaluations: Optional[
+        Mapping[str, SampleEvaluation]
+    ] = None,
+    effective_n_mapping: Optional[
+        Mapping[str, float]
+    ] = None,
+    significance_policy: Optional[
+        SignificancePolicy
+    ] = None,
+    min_effective_n: Optional[float] = None,
+) -> Dict[str, CalendarEffectEntry]:
+    """
+    Calibrate PIT-safe empirical calendar effects.
+
+    Strict invariants:
+    - Closed candles only.
+    - Canonical runtime bucket function is shared.
+    - Only exactly contiguous candle pairs are outcomes.
+    - T and T+1 must belong to the SAME supplied
+      calibration fold.
+    - Folds are explicit calibration partitions only;
+      this function has no OOS discovery/access.
+    - Raw N is never assumed equal to effective N.
+    - Statistical significance requires an explicit policy.
+    - Stability requires explicit minimum fold coverage.
+    """
+    if min_stability_folds < 1:
+        raise ValueError(
+            "min_stability_folds must be >= 1."
+        )
+
+    if min_fold_observations < 1:
+        raise ValueError(
+            "min_fold_observations must be >= 1."
+        )
+
+    if not candles or not folds:
+        return {}
+
+    tf_seconds = timeframe_to_seconds(
+        timeframe
+    )
+
+    ordered_folds = sorted(
+        folds,
+        key=lambda fold: fold.start,
+    )
+
+    seen_ids = set()
+
+    for idx, fold in enumerate(
+        ordered_folds
+    ):
+        if fold.fold_id in seen_ids:
+            raise ValueError(
+                "Duplicate calendar fold_id."
+            )
+
+        seen_ids.add(fold.fold_id)
+
+        if idx > 0:
+            previous = ordered_folds[
+                idx - 1
+            ]
+
+            if fold.start < previous.end:
+                raise ValueError(
+                    "Calendar calibration folds "
+                    "must not overlap."
+                )
+
+    ordered_candles = sorted(
+        (
+            candle
+            for candle in candles
+            if candle.is_closed
+        ),
+        key=lambda candle: (
+            candle.timestamp_close
+        ),
+    )
+
+    bucket_returns: Dict[
+        str,
+        List[float],
+    ] = {}
+
+    bucket_fold_returns: Dict[
+        str,
+        Dict[int, List[float]],
+    ] = {}
+
+    def _pair_fold_id(
+        current: CandleData,
+        nxt: CandleData,
+    ) -> Optional[int]:
+        for fold in ordered_folds:
+            if (
+                fold.start
+                <= current.timestamp_close
+                < fold.end
+                and fold.start
+                <= nxt.timestamp_close
+                < fold.end
+            ):
+                return fold.fold_id
+
+        return None
+
+    for idx in range(
+        len(ordered_candles) - 1
+    ):
+        current = ordered_candles[idx]
+        nxt = ordered_candles[idx + 1]
+
+        # Exact physical candle continuity.
+        if (
+            nxt.timestamp_open
+            != current.timestamp_close
+        ):
+            continue
+
+        close_delta = (
+            nxt.timestamp_close
+            - current.timestamp_close
+        ).total_seconds()
+
+        if close_delta != tf_seconds:
+            continue
+
+        fold_id = _pair_fold_id(
+            current,
+            nxt,
+        )
+
+        if fold_id is None:
+            continue
+
+        if current.close <= 0:
+            continue
+
+        realized_return = float(
+            (
+                nxt.close
+                - current.close
+            )
+            / current.close
+        )
+
+        bucket = calendar_bucket_key(
+            current.timestamp_close
+        )
+
+        bucket_returns.setdefault(
+            bucket,
+            [],
+        ).append(
+            realized_return
+        )
+
+        bucket_fold_returns.setdefault(
+            bucket,
+            {},
+        ).setdefault(
+            fold_id,
+            [],
+        ).append(
+            realized_return
+        )
+
+    results: Dict[
+        str,
+        CalendarEffectEntry,
+    ] = {}
+
+    for bucket, returns in (
+        bucket_returns.items()
+    ):
+        sample_count = len(returns)
+
+        if sample_count == 0:
+            continue
+
+        wins = sum(
+            1
+            for value in returns
+            if value > 0.0
+        )
+
+        win_rate = float(
+            round(
+                wins / sample_count,
+                4,
+            )
+        )
+
+        avg_return = (
+            sum(returns)
+            / sample_count
+        )
+
+        if sample_count > 1:
+            variance = sum(
+                (
+                    value
+                    - avg_return
+                ) ** 2
+                for value in returns
+            ) / (
+                sample_count - 1
+            )
+        else:
+            variance = 0.0
+
+        std_dev = (
+            math.sqrt(variance)
+            if variance > 0.0
+            else 0.0
+        )
+
+        # No variance -> no defensible
+        # standardized expectancy.
+        expectancy_r = (
+            float(
+                round(
+                    avg_return
+                    / std_dev,
+                    4,
+                )
+            )
+            if std_dev > 0.0
+            else 0.0
+        )
+
+        # -----------------------------
+        # Effective N — explicit only.
+        # -----------------------------
+        if (
+            sample_evaluations
+            and bucket
+            in sample_evaluations
+        ):
+            effective_n = float(
+                sample_evaluations[
+                    bucket
+                ].effective_n
+            )
+        elif (
+            effective_n_mapping
+            and bucket
+            in effective_n_mapping
+        ):
+            effective_n = float(
+                effective_n_mapping[
+                    bucket
+                ]
+            )
+        else:
+            effective_n = 0.0
+
+        # -----------------------------
+        # Statistical significance.
+        # -----------------------------
+        if (
+            significance_policy
+            is not None
+            and effective_n > 0.0
+        ):
+            is_significant = bool(
+                _invoke_significance_policy(
+                    significance_policy,
+                    avg_return,
+                    std_dev,
+                    sample_count,
+                    effective_n,
+                )
+            )
+
+            if (
+                min_effective_n
+                is not None
+                and effective_n
+                < min_effective_n
+            ):
+                is_significant = False
+        else:
+            is_significant = False
+
+        # -----------------------------
+        # Fold directional stability.
+        # -----------------------------
+        aggregate_direction = (
+            1
+            if avg_return > 0.0
+            else -1
+            if avg_return < 0.0
+            else 0
+        )
+
+        eligible_fold_means = []
+
+        for fold_returns in (
+            bucket_fold_returns
+            .get(bucket, {})
+            .values()
+        ):
+            if (
+                len(fold_returns)
+                < min_fold_observations
+            ):
+                continue
+
+            eligible_fold_means.append(
+                sum(fold_returns)
+                / len(fold_returns)
+            )
+
+        if (
+            aggregate_direction == 0
+            or len(
+                eligible_fold_means
+            ) < min_stability_folds
+        ):
+            stability = 0.0
+        else:
+            agreement_count = sum(
+                1
+                for fold_mean
+                in eligible_fold_means
+                if (
+                    fold_mean > 0.0
+                    and aggregate_direction > 0
+                )
+                or (
+                    fold_mean < 0.0
+                    and aggregate_direction < 0
+                )
+            )
+
+            stability = float(
+                round(
+                    agreement_count
+                    / len(
+                        eligible_fold_means
+                    ),
+                    4,
+                )
+            )
+
+        results[bucket] = (
+            CalendarEffectEntry(
+                bucket=bucket,
+                sample_count=sample_count,
+                effective_n=effective_n,
+                win_rate=win_rate,
+                expectancy_r=expectancy_r,
+                stability=stability,
+                is_statistically_significant=(
+                    is_significant
+                ),
+            )
+        )
+
+    return results
+
+
 def build_profile_from_artifact(
     artifact: Cycle3ACalibrationArtifact,
     name: Optional[str] = None,
@@ -313,6 +837,7 @@ def build_profile_from_artifact(
         session_expectancy_table=artifact.session_expectancy_table or None,
         swing_max_score=None,
         swing_min_effective_n=None,
+        swing_sample_evaluation=artifact.swing_sample_evaluation,
         swing_maturity_bands=None,
         historical_durations=None,
         swing_duration_percentiles=swing_pcts or None,

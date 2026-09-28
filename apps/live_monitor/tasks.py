@@ -331,6 +331,7 @@ def process_xauusd_closed_candle_task(
     risk_version: str = "5.0.0",
     signal_profile_dict: Optional[dict] = None,
     risk_profile_dict: Optional[dict] = None,
+    cycle_3a_profile_dict: Optional[dict] = None,
     provider_status: Optional[str] = None,
     is_provider_transition: Optional[bool] = None,
     is_feed_stale: Optional[bool] = None,
@@ -358,6 +359,42 @@ def process_xauusd_closed_candle_task(
         if timeframe != "15m":
             raise ValueError(f"Active XAUUSD decision pipeline must be triggered by 15m closed candle, got: {timeframe}")
 
+        # Step 0a: Market closure check (suppress fully-closed candle intervals)
+        from apps.market_data.market_hours import is_expected_market_interval_closed
+        if is_expected_market_interval_closed(ts_open, ts_close):
+            logger.info(
+                "xauusd_candle_closed_market_closure_suppressed",
+                ts_open=ts_open.isoformat(),
+                ts_close=ts_close.isoformat(),
+            )
+            return {"status": "MARKET_CLOSED_SUPPRESSED"}
+
+        # Step 0b: Check live idempotency before expensive pipeline execution
+        from apps.instruments.models import Instrument, InstrumentType
+        instrument_obj = Instrument.objects.filter(
+            base_asset__code="XAU",
+            quote_asset__code="USD",
+            instrument_type=InstrumentType.SPOT,
+            is_active=True,
+        ).first()
+        if instrument_obj:
+            from apps.signals.models import SignalRecord
+            existing_sig = SignalRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=timeframe,
+                timestamp=ts_close,
+            ).first()
+            if existing_sig:
+                logger.info(
+                    "xauusd_candle_closed_already_processed",
+                    candle_ts=ts_close.isoformat(),
+                    fingerprint=existing_sig.analysis_fingerprint,
+                )
+                return {
+                    "status": "ALREADY_PROCESSED_PRIMARY_CANDLE",
+                    "fingerprint": existing_sig.analysis_fingerprint,
+                }
+
         event = PublicMarketDataAdapter.create_xauusd_candle_closed_event(
             instrument=instrument,
             timeframe=timeframe,
@@ -372,11 +409,22 @@ def process_xauusd_closed_candle_task(
             is_closed=True,
         )
 
-        from apps.backtests.tasks import resolve_xauusd_research_profiles
+        from apps.backtests.tasks import (
+            resolve_xauusd_research_profiles,
+            resolve_xauusd_cycle3a_profile,
+        )
         sig_prof, risk_prof = resolve_xauusd_research_profiles(
             calibration_artifact_id=getattr(settings, "XAUUSD_CALIBRATION_ARTIFACT_ID", None),
             signal_profile_dict=signal_profile_dict,
             risk_profile_dict=risk_profile_dict,
+        )
+        cycle_prof = resolve_xauusd_cycle3a_profile(
+            calibration_artifact_id=getattr(
+                settings,
+                "XAUUSD_CALIBRATION_ARTIFACT_ID",
+                None,
+            ),
+            cycle_3a_profile_dict=cycle_3a_profile_dict,
         )
 
         from apps.live_monitor.services import XauUsdLiveDecisionPipelineService
@@ -393,6 +441,7 @@ def process_xauusd_closed_candle_task(
             is_feed_stale=is_feed_stale,
             signal_profile=sig_prof,
             risk_profile=risk_prof,
+            cycle_3a_profile=cycle_prof,
         )
 
         if sig_prof is not None and risk_prof is not None:

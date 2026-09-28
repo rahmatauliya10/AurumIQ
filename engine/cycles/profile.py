@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from engine.core.types import (
     CalendarEffectEntry,
     RegimeType,
+    SampleEvaluation,
     SessionExpectancyEntry,
     SessionType,
 )
@@ -60,6 +61,7 @@ class Cycle3AProfile:
     # 2. Swing Duration Parameters (Strictly None by default)
     swing_max_score: Optional[float] = None
     swing_min_effective_n: Optional[float] = None
+    swing_sample_evaluation: Optional[SampleEvaluation] = None
     swing_maturity_bands: Optional[Mapping[str, float]] = None
     historical_durations: Optional[Tuple[int, ...]] = None
     swing_duration_percentiles: Optional[Mapping[str, Any]] = None
@@ -139,6 +141,7 @@ class Cycle3AProfile:
             session_expectancy_table=None,
             swing_max_score=20.0,
             swing_min_effective_n=30.0,
+            swing_sample_evaluation=None,
             swing_maturity_bands={
                 "P75_90": 20.0,
                 "P50_75": 15.0,
@@ -183,6 +186,7 @@ class Cycle3AProfile:
             session_expectancy_table=None,
             swing_max_score=None,
             swing_min_effective_n=None,
+            swing_sample_evaluation=None,
             swing_maturity_bands=None,
             historical_durations=None,
             swing_duration_percentiles=None,

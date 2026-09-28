@@ -480,7 +480,12 @@ def calculate_xauusd_dual_timing(
         )
 
         # 4. Phase 3A Cycle Timing
-        p3a_pts = extract_xauusd_phase3a_score(cycle_3a, cycle_3a_profile, "15m")
+        p3a_pts = extract_xauusd_phase3a_score(
+            cycle_3a=cycle_3a,
+            cycle_3a_profile=cycle_3a_profile,
+            max_points=100.0,
+            decision_timeframe="15m",
+        )
         p3a_score = round(p3a_pts * (w_p3a / 100.0), 2)
         p3a_reason = f"Phase 3A contribution ({round(p3a_score, 2)}/{w_p3a} pts)" if p3a_pts > 0 else "Phase 3A uncalibrated or unavailable"
         p3a_avail = p3a_pts > 0

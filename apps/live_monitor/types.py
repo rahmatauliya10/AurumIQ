@@ -207,8 +207,10 @@ class XauUsdLiveProjectionState:
     """
     instrument: str = "XAUUSD"
     display_symbol: str = "XAU/USD"
+    market_session: str = "OPEN"
+    is_market_closed: bool = False
 
-    # Path A: Quote fields
+    # Path A: Quote fields (Execution Venue)
     current_bid: Optional[Decimal] = None
     current_ask: Optional[Decimal] = None
     spread: Optional[Decimal] = None
@@ -220,6 +222,17 @@ class XauUsdLiveProjectionState:
     quote_sequence: Optional[int] = None
     entry_zone_status: EntryZoneStatus = EntryZoneStatus.NO_ACTIVE_ZONE
     distance_to_entry_zone_pct: Optional[Decimal] = None
+
+    # Reference Market Data (Analytical Provider e.g. Twelve Data)
+    reference_price: Optional[Decimal] = None
+    reference_price_timestamp: Optional[datetime] = None
+    reference_price_source: str = "twelve_data"
+    reference_feed_status: str = "HEALTHY"
+
+    # Execution Venue & Quote Availability
+    execution_quote_available: bool = False
+    primary_execution_venue_status: str = "HALTED"
+    secondary_execution_venue_status: str = "NOT_CONFIGURED"
 
     # Path B: Dual-Layer Phase 4 Decision fields
     last_closed_candle_ts: Optional[datetime] = None
@@ -242,8 +255,9 @@ class XauUsdLiveProjectionState:
     execution_eligible: bool = False
     candidate_effective_action: str = "WAIT"
     publication_effective_action: str = "WAIT"
+    risk_plan_invalidation_reason: Optional[str] = None
 
-    # Geometry (None when invalid)
+    # Geometry (Preserved for valid or audit-evaluated candidate plans)
     entry_min: Optional[Decimal] = None
     entry_mid: Optional[Decimal] = None
     entry_max: Optional[Decimal] = None
@@ -266,6 +280,9 @@ class XauUsdLiveProjectionState:
     reasons_positive: List[str] = field(default_factory=list)
     reasons_negative: List[str] = field(default_factory=list)
     hard_gate_reasons: List[str] = field(default_factory=list)
+    contributing_factors: List[str] = field(default_factory=list)
+    weak_negative_factors: List[str] = field(default_factory=list)
+    inactive_components: List[str] = field(default_factory=list)
     candidate_resolution_reason: Optional[str] = None
     publication_reason: Optional[str] = None
 

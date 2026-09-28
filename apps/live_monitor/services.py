@@ -38,6 +38,7 @@ from engine.core.types import (
     UserDecision,
     VolumeEvidenceType,
 )
+from engine.cycles.profile import Cycle3AProfile
 from engine.risk.planner import RiskPlanner
 from engine.risk.xauusd_planner import XauUsdRiskPlanner
 from engine.risk.xauusd_policy import uncalibrated_xauusd_risk_profile
@@ -382,6 +383,8 @@ class XauUsdLiveDecisionPipelineService:
         macro_context: Optional[MacroEventContext] = None,
         signal_profile: Optional[Any] = None,
         risk_profile: Optional[Any] = None,
+        cycle_3a_profile: Optional[Cycle3AProfile] = None,
+        dry_run: bool = False,
     ) -> Tuple[SignalRecord, Optional[LiveRiskPlanRecord], LiveMonitorState]:
         """
         Execute deterministic closed-candle signal evaluation and risk planning for XAUUSD.
@@ -394,6 +397,14 @@ class XauUsdLiveDecisionPipelineService:
         if event.timeframe != "15m":
             raise ValueError(
                 f"XauUsdLiveDecisionPipelineService strictly requires 15m decision timeframe, got '{event.timeframe}'"
+            )
+
+        # Step 1c: Reject fully closed market interval
+        from apps.market_data.market_hours import is_expected_market_interval_closed
+        if is_expected_market_interval_closed(event.timestamp_open, event.timestamp_close):
+            raise ValueError(
+                f"REJECTED: Candle interval {event.timestamp_open} -> {event.timestamp_close} "
+                "is fully inside governed market closure."
             )
 
         # Step 2: Canonical Instrument Validation
@@ -424,6 +435,31 @@ class XauUsdLiveDecisionPipelineService:
 
         candle_ts = event.timestamp_close.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
+
+        # Step 2b: Live-Path Idempotency Guard (Canonical Invariant)
+        # ONE LEGITIMATE PRIMARY CANDLE = AT MOST ONE LIVE SIGNAL EVALUATION
+        if not dry_run:
+            from apps.signals.models import SignalRecord
+            existing_sig = SignalRecord.objects.filter(
+                instrument=instrument_obj,
+                timeframe=event.timeframe,
+                timestamp=candle_ts,
+            ).first()
+            if existing_sig:
+                logger.info(
+                    "ALREADY_PROCESSED_PRIMARY_CANDLE",
+                    instrument=event.instrument,
+                    timeframe=event.timeframe,
+                    candle_ts=candle_ts.isoformat(),
+                    fingerprint=existing_sig.analysis_fingerprint,
+                )
+                existing_risk = LiveRiskPlanRecord.objects.filter(
+                    source_signal_fingerprint=existing_sig.analysis_fingerprint
+                ).first()
+                state = LiveMonitorState.objects.filter(instrument="XAUUSD").first()
+                if state is None:
+                    state, _ = LiveMonitorState.objects.get_or_create(instrument="XAUUSD")
+                return existing_sig, existing_risk, state
 
         # Step 3: Query closed historical candles <= candle_ts (Deterministic Complete History without mutating DB)
         engine_candles_15m = cls.get_engine_candles(instrument_obj, "15m", candle_ts)
@@ -603,11 +639,15 @@ class XauUsdLiveDecisionPipelineService:
         from engine.structure.engine import CausalStructureEngine
 
         fe = FeatureEngine()
-        re = RegimeEngine()
+        re = RegimeEngine.for_xauusd()
         se = CausalStructureEngine()
 
         feats_15m = fe.extract_features(engine_candles_15m) if len(engine_candles_15m) >= 20 else None
-        regime_15m = re.classify(feats_15m) if feats_15m else None
+        regime_15m = (
+            re.classify(feats_15m, instrument="XAUUSD")
+            if feats_15m
+            else None
+        )
         structure_15m = se.analyze(engine_candles_15m, atr=feats_15m.atr14 if feats_15m else None) if len(engine_candles_15m) >= 5 else None
 
         # Resolve Phase 3A Cycle Snapshot & Macro Context (PIT)
@@ -669,27 +709,35 @@ class XauUsdLiveDecisionPipelineService:
                     )
 
             if is_coverage_healthy and (cycle_3a_snapshot is None or (cycle_rec and cycle_rec.timestamp < candle_ts)) and engine_candles_15m and len(engine_candles_15m) >= 5:
-                try:
-                    cycle_engine = RobustTimeCycleEngine.for_xauusd(timeframe=event.timeframe)
-                    cycle_3a_snapshot = cycle_engine.analyze(
-                        latest_candle=engine_candles_15m[-1],
-                        structure=structure_15m,
-                        timeframe=event.timeframe,
-                        regime=regime_15m.regime if regime_15m else None,
-                        macro_events=macro_events,
-                        instrument="XAUUSD",
-                    )
-                    AnalysisPersistenceService.save_analysis_snapshots(
-                        instrument=instrument_obj,
-                        timeframe=event.timeframe,
-                        features=feats_15m,
-                        regime=regime_15m,
-                        structure=structure_15m,
-                        cycle_3a=cycle_3a_snapshot,
-                        feature_version=feature_version,
-                    )
-                except Exception as cycle_exc:
-                    logger.warning("failed_to_compute_or_persist_cycle_3a", error=str(cycle_exc))
+                from apps.market_data.market_hours import is_expected_market_interval_closed
+                latest_c = engine_candles_15m[-1]
+                if not is_expected_market_interval_closed(latest_c.timestamp_open, latest_c.timestamp_close):
+                    try:
+                        cycle_engine = RobustTimeCycleEngine.for_xauusd(
+                            profile=cycle_3a_profile,
+                            timeframe=event.timeframe,
+                        )
+                        cycle_3a_snapshot = cycle_engine.analyze(
+                            latest_candle=latest_c,
+                            structure=structure_15m,
+                            timeframe=event.timeframe,
+                            regime=regime_15m.regime if regime_15m else None,
+                            macro_events=macro_events,
+                            instrument="XAUUSD",
+                            profile=cycle_3a_profile,
+                        )
+                        if not dry_run:
+                            AnalysisPersistenceService.save_analysis_snapshots(
+                                instrument=instrument_obj,
+                                timeframe=event.timeframe,
+                                features=feats_15m,
+                                regime=regime_15m,
+                                structure=structure_15m,
+                                cycle_3a=cycle_3a_snapshot,
+                                feature_version=feature_version,
+                            )
+                    except Exception as cycle_exc:
+                        logger.warning("failed_to_compute_or_persist_cycle_3a", error=str(cycle_exc))
         else:
             if macro_context is None and cycle_3a_snapshot is not None:
                 macro_context = cycle_3a_snapshot.macro_event
@@ -775,6 +823,7 @@ class XauUsdLiveDecisionPipelineService:
             features_1d=feats_1d,
             structure_15m=structure_15m,
             cycle_3a=cycle_3a_snapshot,
+            cycle_3a_profile=cycle_3a_profile,
             runtime_health=runtime_health,
             profile=prof,
             instrument="XAUUSD",
@@ -786,6 +835,7 @@ class XauUsdLiveDecisionPipelineService:
         signal_record, _ = SignalPersistenceService.save_dual_side_snapshot(
             instrument=instrument_obj,
             snapshot=signal_snapshot,
+            dry_run=dry_run,
         )
 
         # Step 7: Evaluate Phase 5 XauUsdRiskPlanner (Side-aware, No Fake Plans)
@@ -819,47 +869,94 @@ class XauUsdLiveDecisionPipelineService:
         # Step 8: Persist Immutable LiveRiskPlanRecord (Idempotent on risk_plan_fingerprint)
         risk_record: Optional[LiveRiskPlanRecord] = None
         if risk_plan_snapshot is not None:
-            risk_record, _ = LiveRiskPlanRecord.objects.get_or_create(
-                risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
-                defaults={
-                    "source_signal_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
-                    "signal_timestamp": risk_plan_snapshot.signal_generated_at,
-                    "instrument": "XAUUSD",
-                    "risk_side": risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
-                    "risk_candidate_status": risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
-                    "risk_candidate_valid": risk_plan_snapshot.risk_candidate_valid,
-                    "simulation_eligible": risk_plan_snapshot.simulation_eligible,
-                    "candidate_effective_action": risk_plan_snapshot.candidate_effective_action.value,
-                    "publication_effective_action": risk_plan_snapshot.publication_effective_action.value,
-                    "entry_min": risk_plan_snapshot.entry_min,
-                    "entry_mid": risk_plan_snapshot.entry_mid,
-                    "entry_max": risk_plan_snapshot.entry_max,
-                    "stop_structure": risk_plan_snapshot.stop_structure,
-                    "stop_atr": risk_plan_snapshot.stop_atr,
-                    "stop_final": risk_plan_snapshot.stop_final,
-                    "stop_distance_atr": risk_plan_snapshot.stop_distance_atr,
-                    "tp1": risk_plan_snapshot.tp1,
-                    "tp2": risk_plan_snapshot.tp2,
-                    "rr_tp1": risk_plan_snapshot.planned_rr_tp1,
-                    "rr_tp2": risk_plan_snapshot.planned_rr_tp2,
-                    "is_valid_risk_plan": risk_plan_snapshot.is_valid_risk_plan,
-                    "execution_eligible": risk_plan_snapshot.execution_eligible,
-                    "effective_action": risk_plan_snapshot.publication_effective_action.value,
-                    "reasons": list(risk_plan_snapshot.reasons),
-                    "entry_zone_fingerprint": risk_plan_snapshot.entry_zone_fingerprint,
-                    "tp1_zone_fingerprint": risk_plan_snapshot.tp1_zone_fingerprint,
-                    "tp2_zone_fingerprint": risk_plan_snapshot.tp2_zone_fingerprint,
-                    "phase5_policy_fingerprint": risk_plan_snapshot.phase5_policy_fingerprint,
-                    "risk_plan_fingerprint": risk_plan_snapshot.risk_plan_fingerprint,
-                    "source_phase4_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
-                    "source_zone_id": None,
-                    "source_zone_timestamp": None,
-                    "risk_version": risk_plan_snapshot.risk_version,
-                    "execution_model_version": "5.0.0-exec-v1",
-                    "config_version": config_version,
-                    "code_revision": code_revision,
-                },
-            )
+            if not dry_run:
+                risk_record, _ = LiveRiskPlanRecord.objects.get_or_create(
+                    risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
+                    defaults={
+                        "source_signal_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
+                        "signal_timestamp": risk_plan_snapshot.signal_generated_at,
+                        "instrument": "XAUUSD",
+                        "risk_side": risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
+                        "risk_candidate_status": risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
+                        "risk_candidate_valid": risk_plan_snapshot.risk_candidate_valid,
+                        "simulation_eligible": risk_plan_snapshot.simulation_eligible,
+                        "candidate_effective_action": risk_plan_snapshot.candidate_effective_action.value,
+                        "publication_effective_action": risk_plan_snapshot.publication_effective_action.value,
+                        "entry_min": risk_plan_snapshot.entry_min,
+                        "entry_mid": risk_plan_snapshot.entry_mid,
+                        "entry_max": risk_plan_snapshot.entry_max,
+                        "stop_structure": risk_plan_snapshot.stop_structure,
+                        "stop_atr": risk_plan_snapshot.stop_atr,
+                        "stop_final": risk_plan_snapshot.stop_final,
+                        "stop_distance_atr": risk_plan_snapshot.stop_distance_atr,
+                        "tp1": risk_plan_snapshot.tp1,
+                        "tp2": risk_plan_snapshot.tp2,
+                        "rr_tp1": risk_plan_snapshot.planned_rr_tp1,
+                        "rr_tp2": risk_plan_snapshot.planned_rr_tp2,
+                        "is_valid_risk_plan": risk_plan_snapshot.is_valid_risk_plan,
+                        "execution_eligible": risk_plan_snapshot.execution_eligible,
+                        "effective_action": risk_plan_snapshot.publication_effective_action.value,
+                        "reasons": list(risk_plan_snapshot.reasons),
+                        "entry_zone_fingerprint": risk_plan_snapshot.entry_zone_fingerprint,
+                        "tp1_zone_fingerprint": risk_plan_snapshot.tp1_zone_fingerprint,
+                        "tp2_zone_fingerprint": risk_plan_snapshot.tp2_zone_fingerprint,
+                        "phase5_policy_fingerprint": risk_plan_snapshot.phase5_policy_fingerprint,
+                        "risk_plan_fingerprint": risk_plan_snapshot.risk_plan_fingerprint,
+                        "source_phase4_fingerprint": risk_plan_snapshot.source_phase4_fingerprint,
+                        "source_zone_id": None,
+                        "source_zone_timestamp": None,
+                        "risk_version": risk_plan_snapshot.risk_version,
+                        "execution_model_version": "5.0.0-exec-v1",
+                        "config_version": config_version,
+                        "code_revision": code_revision,
+                    },
+                )
+            else:
+                risk_record = LiveRiskPlanRecord(
+                    source_signal_fingerprint=risk_plan_snapshot.source_phase4_fingerprint,
+                    signal_timestamp=risk_plan_snapshot.signal_generated_at,
+                    instrument="XAUUSD",
+                    risk_side=risk_plan_snapshot.side.value if risk_plan_snapshot.side else None,
+                    risk_candidate_status=risk_plan_snapshot.risk_candidate_status.value if risk_plan_snapshot.risk_candidate_status else None,
+                    risk_candidate_valid=risk_plan_snapshot.risk_candidate_valid,
+                    simulation_eligible=risk_plan_snapshot.simulation_eligible,
+                    candidate_effective_action=risk_plan_snapshot.candidate_effective_action.value,
+                    publication_effective_action=risk_plan_snapshot.publication_effective_action.value,
+                    entry_min=risk_plan_snapshot.entry_min,
+                    entry_mid=risk_plan_snapshot.entry_mid,
+                    entry_max=risk_plan_snapshot.entry_max,
+                    stop_structure=risk_plan_snapshot.stop_structure,
+                    stop_atr=risk_plan_snapshot.stop_atr,
+                    stop_final=risk_plan_snapshot.stop_final,
+                    stop_distance_atr=risk_plan_snapshot.stop_distance_atr,
+                    tp1=risk_plan_snapshot.tp1,
+                    tp2=risk_plan_snapshot.tp2,
+                    rr_tp1=risk_plan_snapshot.planned_rr_tp1,
+                    rr_tp2=risk_plan_snapshot.planned_rr_tp2,
+                    is_valid_risk_plan=risk_plan_snapshot.is_valid_risk_plan,
+                    execution_eligible=risk_plan_snapshot.execution_eligible,
+                    effective_action=risk_plan_snapshot.publication_effective_action.value,
+                    reasons=list(risk_plan_snapshot.reasons),
+                    entry_zone_fingerprint=risk_plan_snapshot.entry_zone_fingerprint,
+                    tp1_zone_fingerprint=risk_plan_snapshot.tp1_zone_fingerprint,
+                    tp2_zone_fingerprint=risk_plan_snapshot.tp2_zone_fingerprint,
+                    phase5_policy_fingerprint=risk_plan_snapshot.phase5_policy_fingerprint,
+                    risk_plan_fingerprint=risk_plan_snapshot.risk_plan_fingerprint,
+                    source_phase4_fingerprint=risk_plan_snapshot.source_phase4_fingerprint,
+                    source_zone_id=None,
+                    source_zone_timestamp=None,
+                    risk_version=risk_plan_snapshot.risk_version,
+                    execution_model_version="5.0.0-exec-v1",
+                    config_version=config_version,
+                    code_revision=code_revision,
+                )
+
+        if dry_run:
+            # Audit/Dry-run mode: do NOT mutate LiveMonitorState, do NOT emit alerts, do NOT broadcast
+            state = LiveMonitorState.objects.filter(instrument="XAUUSD").first()
+            if state is None:
+                state = LiveMonitorState(instrument="XAUUSD", effective_action="WAIT")
+            return signal_record, risk_record, state
 
         # Step 9: Assemble Feed Health Status (Fail Closed)
         feed_health = {
@@ -882,10 +979,24 @@ class XauUsdLiveDecisionPipelineService:
                 **existing_feed_data,
                 **feed_health,
             }
+            # Record analytical reference price from validated closed candle and execution venue status
+            merged_feed_health["reference_price"] = str(event.close)
+            merged_feed_health["reference_price_timestamp"] = event.timestamp_close.isoformat()
+            merged_feed_health["reference_price_source"] = getattr(event, "source", "twelve_data") or "twelve_data"
+            merged_feed_health["primary_execution_venue_status"] = "HALTED"
+            merged_feed_health["secondary_execution_venue_status"] = "NOT_CONFIGURED"
             # Specifically preserve incident tracking keys across closed candle decisions
             for inc_key in ("stale_incident_active", "unhealthy_incident_active"):
                 if inc_key in existing_feed_data:
                     merged_feed_health[inc_key] = existing_feed_data[inc_key]
+
+            if risk_plan_snapshot and not risk_plan_snapshot.is_valid_risk_plan and risk_plan_snapshot.reasons:
+                merged_feed_health["risk_plan_invalidation_reason"] = "; ".join(risk_plan_snapshot.reasons)
+            else:
+                merged_feed_health.pop("risk_plan_invalidation_reason", None)
+
+            if signal_record and signal_record.components_breakdown:
+                merged_feed_health["components_breakdown"] = signal_record.components_breakdown
 
             # Re-evaluate side-aware entry zone if quote is present
             entry_status = EntryZoneStatus.NO_ACTIVE_ZONE
@@ -940,17 +1051,17 @@ class XauUsdLiveDecisionPipelineService:
                 effective_action=risk_plan_snapshot.publication_effective_action.value if risk_plan_snapshot else "WAIT",
                 risk_plan_valid=risk_plan_snapshot.is_valid_risk_plan if risk_plan_snapshot else False,
                 execution_eligible=risk_plan_snapshot.execution_eligible if risk_plan_snapshot else False,
-                entry_min=risk_plan_snapshot.entry_min if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                entry_mid=risk_plan_snapshot.entry_mid if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                entry_max=risk_plan_snapshot.entry_max if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_structure=risk_plan_snapshot.stop_structure if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_atr=risk_plan_snapshot.stop_atr if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_final=risk_plan_snapshot.stop_final if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                stop_distance_atr=risk_plan_snapshot.stop_distance_atr if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                tp1=risk_plan_snapshot.tp1 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                tp2=risk_plan_snapshot.tp2 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                rr_tp1=risk_plan_snapshot.planned_rr_tp1 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
-                rr_tp2=risk_plan_snapshot.planned_rr_tp2 if (risk_plan_snapshot and risk_plan_snapshot.is_valid_risk_plan) else None,
+                entry_min=risk_plan_snapshot.entry_min if risk_plan_snapshot else None,
+                entry_mid=risk_plan_snapshot.entry_mid if risk_plan_snapshot else None,
+                entry_max=risk_plan_snapshot.entry_max if risk_plan_snapshot else None,
+                stop_structure=risk_plan_snapshot.stop_structure if risk_plan_snapshot else None,
+                stop_atr=risk_plan_snapshot.stop_atr if risk_plan_snapshot else None,
+                stop_final=risk_plan_snapshot.stop_final if risk_plan_snapshot else None,
+                stop_distance_atr=risk_plan_snapshot.stop_distance_atr if risk_plan_snapshot else None,
+                tp1=risk_plan_snapshot.tp1 if risk_plan_snapshot else None,
+                tp2=risk_plan_snapshot.tp2 if risk_plan_snapshot else None,
+                rr_tp1=risk_plan_snapshot.planned_rr_tp1 if risk_plan_snapshot else None,
+                rr_tp2=risk_plan_snapshot.planned_rr_tp2 if risk_plan_snapshot else None,
                 # Explainability & Fingerprints
                 candidate_resolution_reason=signal_snapshot.candidate_resolution_reason,
                 publication_reason=signal_snapshot.publication_reason,
@@ -1446,15 +1557,205 @@ class XauUsdLiveProjectionService:
     """
 
     @classmethod
+    def categorize_explainability_factors(
+        cls,
+        cb: Optional[Dict[str, Any]] = None,
+        reasons_pos: Optional[List[str]] = None,
+        reasons_neg: Optional[List[str]] = None,
+        candidate_side: Optional[str] = None,
+    ) -> Dict[str, List[str]]:
+        """
+        Separate explainability factors into three strictly distinct categories:
+        1. Contributing factors: active weight/max_score > 0 and positive contribution.
+        2. Weak / Negative factors: active weight/max_score > 0 and weak/negative contribution.
+        3. Inactive / Zero-weight components: weight/max_score == 0.
+        """
+        inactive_components: List[str] = []
+        contributing_factors: List[str] = []
+        weak_negative_factors: List[str] = []
+
+        seen_inactive = set()
+
+        def _clean_inactive_name(name: str) -> str:
+            lower = name.lower()
+            if "regime" in lower:
+                return "Market Regime"
+            if "volume confirmation" in lower or "volume data" in lower:
+                return "Volume Confirmation"
+            if "phase 3a" in lower or "phase3a" in lower:
+                return "Phase 3A"
+            if "volume response" in lower:
+                return "Volume Response"
+            return name
+
+        if cb and isinstance(cb, dict):
+            # Check components across direction and timing
+            all_comps = []
+            for key in ("long_direction", "short_direction", "long_timing", "short_timing"):
+                for c in cb.get(key, []):
+                    all_comps.append((key, c))
+
+            for group_key, c in all_comps:
+                name = c.get("name", "")
+                score = float(c.get("score", 0.0) or 0.0)
+                max_score = float(c.get("max_score", 0.0) or 0.0)
+                reason = c.get("reason", "")
+
+                if max_score <= 0.0:
+                    clean = _clean_inactive_name(name)
+                    lbl = f"{clean} — inactive (weight 0)"
+                    if lbl not in seen_inactive:
+                        seen_inactive.add(lbl)
+                        inactive_components.append(lbl)
+                else:
+                    # Active component
+                    if score >= (max_score * 0.60):
+                        txt = f"+ {name}: {reason} (+{score:.2f}/{max_score:.2f} pts)"
+                        if txt not in contributing_factors:
+                            contributing_factors.append(txt)
+                    else:
+                        txt = f"- {name}: {reason} ({score:.2f}/{max_score:.2f} pts)"
+                        if txt not in weak_negative_factors:
+                            weak_negative_factors.append(txt)
+
+        # Always ensure the 4 canonical zero-weight components are represented in inactive_components
+        canonical_inactive = [
+            "Market Regime — inactive (weight 0)",
+            "Volume Confirmation — inactive (weight 0)",
+            "Phase 3A — inactive (weight 0)",
+            "Volume Response — inactive (weight 0)",
+        ]
+        for ci in canonical_inactive:
+            if ci not in seen_inactive:
+                seen_inactive.add(ci)
+                inactive_components.append(ci)
+
+        # Fallback or supplemental filtering for reasons_pos / reasons_neg
+        if not contributing_factors and reasons_pos:
+            for r in reasons_pos:
+                if "0.0/0.0 pts" in r or "+0.0 / 0.0 pts" in r or "weight 0" in r:
+                    continue
+                if r not in contributing_factors:
+                    contributing_factors.append(r)
+
+        if not weak_negative_factors and reasons_neg:
+            for r in reasons_neg:
+                if "0.0/0.0 pts" in r or "+0.0 / 0.0 pts" in r or "weight 0" in r:
+                    continue
+                if r not in weak_negative_factors:
+                    weak_negative_factors.append(r)
+
+        return {
+            "contributing_factors": contributing_factors,
+            "weak_negative_factors": weak_negative_factors,
+            "inactive_components": inactive_components,
+        }
+
+    @classmethod
     def assemble_projection(cls, state: Optional[LiveMonitorState]) -> XauUsdLiveProjectionState:
         """Assemble canonical typed projection from LiveMonitorState record."""
+        from engine.paper.continuity import is_expected_market_closure
+        now_utc = datetime.now(timezone.utc)
+        market_closed = is_expected_market_closure(now_utc)
+
         if state is None:
-            return XauUsdLiveProjectionState()
+            return XauUsdLiveProjectionState(
+                market_session="CLOSED" if market_closed else "OPEN",
+                is_market_closed=market_closed,
+                reference_feed_status="HEALTHY" if market_closed else "UNHEALTHY",
+                execution_quote_available=False,
+                primary_execution_venue_status="HALTED",
+                secondary_execution_venue_status="NOT_CONFIGURED",
+            )
+
+        # Invalidation reason
+        invalidation_reason = None
+        if state.feed_health_data and "risk_plan_invalidation_reason" in state.feed_health_data:
+            invalidation_reason = state.feed_health_data["risk_plan_invalidation_reason"]
+        elif not state.risk_plan_valid and state.risk_plan_fingerprint:
+            risk_rec = LiveRiskPlanRecord.objects.filter(risk_plan_fingerprint=state.risk_plan_fingerprint).first()
+            if risk_rec and risk_rec.reasons:
+                invalidation_reason = "; ".join(risk_rec.reasons)
+
+        # Explainability categorization
+        cb = None
+        if state.feed_health_data and "components_breakdown" in state.feed_health_data:
+            cb = state.feed_health_data["components_breakdown"]
+        if cb is None:
+            inst_obj = Instrument.get_canonical_xauusd()
+            if inst_obj:
+                sig = SignalRecord.objects.filter(instrument=inst_obj).order_by("-timestamp", "-created_at").first()
+                if sig:
+                    cb = sig.components_breakdown
+
+        factors = cls.categorize_explainability_factors(
+            cb=cb,
+            reasons_pos=state.reasons_positive,
+            reasons_neg=state.reasons_negative,
+            candidate_side=state.risk_side,
+        )
+
+        # Reference Market Data extraction
+        ref_price = None
+        ref_price_ts = None
+        ref_source = "twelve_data"
+        ref_feed_status = "HEALTHY"
+
+        feed_health_data = state.feed_health_data if state.feed_health_data else {}
+
+        if "reference_price" in feed_health_data and feed_health_data["reference_price"]:
+            try:
+                ref_price = Decimal(str(feed_health_data["reference_price"]))
+            except Exception:
+                ref_price = None
+        if "reference_price_timestamp" in feed_health_data and feed_health_data["reference_price_timestamp"]:
+            try:
+                ts_val = feed_health_data["reference_price_timestamp"]
+                if isinstance(ts_val, str):
+                    ref_price_ts = datetime.fromisoformat(ts_val)
+                elif isinstance(ts_val, datetime):
+                    ref_price_ts = ts_val
+            except Exception:
+                ref_price_ts = None
+        if "reference_price_source" in feed_health_data and feed_health_data["reference_price_source"]:
+            ref_source = str(feed_health_data["reference_price_source"])
+
+        # Fallback to latest MarketCandle if reference_price not yet in feed_health_data
+        if ref_price is None:
+            try:
+                from apps.market_data.models import MarketCandle
+                latest_candle = MarketCandle.objects.filter(
+                    instrument__base_asset__code="XAU",
+                    instrument__quote_asset__code="USD",
+                    is_closed=True,
+                ).order_by("-timestamp_close").first()
+                if latest_candle:
+                    ref_price = latest_candle.close
+                    ref_price_ts = latest_candle.timestamp_close
+                    ref_source = getattr(latest_candle, "source", "twelve_data") or "twelve_data"
+            except Exception:
+                pass
+
+        primary_st = feed_health_data.get("xauusd_primary_status") or feed_health_data.get("primary_15m")
+        if primary_st in ("UNHEALTHY", "DOWN", "ERROR", "STALE"):
+            ref_feed_status = primary_st
+        elif ref_price is not None:
+            ref_feed_status = "HEALTHY"
+        elif not market_closed:
+            ref_feed_status = "UNHEALTHY"
+        else:
+            ref_feed_status = "HEALTHY"
+
+        has_execution_quote = bool(state.current_bid is not None and state.current_ask is not None)
+        primary_venue = feed_health_data.get("primary_execution_venue_status", "HALTED")
+        secondary_venue = feed_health_data.get("secondary_execution_venue_status", "NOT_CONFIGURED")
 
         return XauUsdLiveProjectionState(
             instrument="XAUUSD",
             display_symbol="XAU/USD",
-            # Quote
+            market_session="CLOSED" if market_closed else "OPEN",
+            is_market_closed=market_closed,
+            # Quote (Execution Venue)
             current_bid=state.current_bid,
             current_ask=state.current_ask,
             spread=state.spread,
@@ -1466,6 +1767,15 @@ class XauUsdLiveProjectionService:
             quote_sequence=state.quote_sequence,
             entry_zone_status=EntryZoneStatus(state.entry_zone_status) if state.entry_zone_status in EntryZoneStatus._value2member_map_ else EntryZoneStatus.NO_ACTIVE_ZONE,
             distance_to_entry_zone_pct=state.distance_to_entry_zone_pct,
+            # Reference Market Data
+            reference_price=ref_price,
+            reference_price_timestamp=ref_price_ts,
+            reference_price_source=ref_source,
+            reference_feed_status=ref_feed_status,
+            # Execution Venue & Quote Availability
+            execution_quote_available=has_execution_quote,
+            primary_execution_venue_status=primary_venue,
+            secondary_execution_venue_status=secondary_venue,
             # Dual-Layer Decisions
             last_closed_candle_ts=state.last_closed_candle_ts,
             last_analysis_timestamp=state.last_analysis_timestamp,
@@ -1485,26 +1795,30 @@ class XauUsdLiveProjectionService:
             execution_eligible=state.execution_eligible,
             candidate_effective_action=state.candidate_effective_action or state.effective_action,
             publication_effective_action=state.publication_effective_action or "WAIT",
-            # Geometry
-            entry_min=state.entry_min if state.risk_plan_valid else None,
-            entry_mid=state.entry_mid if state.risk_plan_valid else None,
-            entry_max=state.entry_max if state.risk_plan_valid else None,
-            stop_structure=state.stop_structure if state.risk_plan_valid else None,
-            stop_atr=state.stop_atr if state.risk_plan_valid else None,
-            stop_final=state.stop_final if state.risk_plan_valid else None,
-            stop_distance_atr=state.stop_distance_atr if state.risk_plan_valid else None,
-            tp1=state.tp1 if state.risk_plan_valid else None,
-            tp2=state.tp2 if state.risk_plan_valid else None,
-            planned_rr_tp1=state.rr_tp1 if state.risk_plan_valid else None,
-            planned_rr_tp2=state.rr_tp2 if state.risk_plan_valid else None,
+            risk_plan_invalidation_reason=invalidation_reason,
+            # Geometry (preserved for valid or audit-evaluated candidate plans)
+            entry_min=state.entry_min,
+            entry_mid=state.entry_mid,
+            entry_max=state.entry_max,
+            stop_structure=state.stop_structure,
+            stop_atr=state.stop_atr,
+            stop_final=state.stop_final,
+            stop_distance_atr=state.stop_distance_atr,
+            tp1=state.tp1,
+            tp2=state.tp2,
+            planned_rr_tp1=state.rr_tp1,
+            planned_rr_tp2=state.rr_tp2,
             # Diagnostics & Provenance
             calibration_status=state.calibration_status or "CALIBRATION_REQUIRED",
             profile_name=state.profile_name,
             phase3b_status="RESEARCH_ONLY",
             phase3b_production_weight=0.0,
-            reasons_positive=state.reasons_positive or [],
-            reasons_negative=state.reasons_negative or [],
+            reasons_positive=factors["contributing_factors"],
+            reasons_negative=factors["weak_negative_factors"],
             hard_gate_reasons=state.hard_gate_reasons or [],
+            contributing_factors=factors["contributing_factors"],
+            weak_negative_factors=factors["weak_negative_factors"],
+            inactive_components=factors["inactive_components"],
             candidate_resolution_reason=state.candidate_resolution_reason,
             publication_reason=state.publication_reason,
             feed_health=state.feed_health_data or {},
@@ -1528,6 +1842,8 @@ class XauUsdLiveProjectionService:
         return {
             "instrument": proj.instrument,
             "display_symbol": proj.display_symbol,
+            "market_session": proj.market_session,
+            "is_market_closed": proj.is_market_closed,
             "current_bid": str(proj.current_bid) if proj.current_bid is not None else None,
             "current_ask": str(proj.current_ask) if proj.current_ask is not None else None,
             "spread": str(proj.spread) if proj.spread is not None else None,
@@ -1539,6 +1855,14 @@ class XauUsdLiveProjectionService:
             "quote_sequence": proj.quote_sequence,
             "entry_zone_status": proj.entry_zone_status.value,
             "distance_to_entry_zone_pct": str(proj.distance_to_entry_zone_pct) if proj.distance_to_entry_zone_pct is not None else None,
+            # Reference Market Data & Execution Venue
+            "reference_price": str(proj.reference_price) if proj.reference_price is not None else None,
+            "reference_price_timestamp": proj.reference_price_timestamp.isoformat() if proj.reference_price_timestamp else None,
+            "reference_price_source": proj.reference_price_source,
+            "reference_feed_status": proj.reference_feed_status,
+            "execution_quote_available": proj.execution_quote_available,
+            "primary_execution_venue_status": proj.primary_execution_venue_status,
+            "secondary_execution_venue_status": proj.secondary_execution_venue_status,
             "last_closed_candle_ts": proj.last_closed_candle_ts.isoformat() if proj.last_closed_candle_ts else None,
             "last_analysis_timestamp": proj.last_analysis_timestamp.isoformat() if proj.last_analysis_timestamp else None,
             "candidate_state": proj.candidate_state,
@@ -1555,6 +1879,7 @@ class XauUsdLiveProjectionService:
             "execution_eligible": proj.execution_eligible,
             "candidate_effective_action": proj.candidate_effective_action,
             "publication_effective_action": proj.publication_effective_action,
+            "risk_plan_invalidation_reason": proj.risk_plan_invalidation_reason,
             "entry_min": str(proj.entry_min) if proj.entry_min is not None else None,
             "entry_mid": str(proj.entry_mid) if proj.entry_mid is not None else None,
             "entry_max": str(proj.entry_max) if proj.entry_max is not None else None,
@@ -1573,6 +1898,9 @@ class XauUsdLiveProjectionService:
             "reasons_positive": list(proj.reasons_positive),
             "reasons_negative": list(proj.reasons_negative),
             "hard_gate_reasons": list(proj.hard_gate_reasons),
+            "contributing_factors": list(proj.contributing_factors),
+            "weak_negative_factors": list(proj.weak_negative_factors),
+            "inactive_components": list(proj.inactive_components),
             "candidate_resolution_reason": proj.candidate_resolution_reason,
             "publication_reason": proj.publication_reason,
             "feed_health": proj.feed_health,
@@ -1624,6 +1952,17 @@ class XauUsdLiveProjectionService:
                     "provider_sync_status": prov.get("primary_15m", "MISSING"),
                 }
 
+            latest_candle = MarketCandle.objects.filter(
+                instrument=inst_obj,
+                is_closed=True,
+            ).order_by("-timestamp_close").first()
+            if latest_candle:
+                feed_health["reference_price"] = str(latest_candle.close)
+                feed_health["reference_price_timestamp"] = latest_candle.timestamp_close.isoformat()
+                feed_health["reference_price_source"] = getattr(latest_candle, "source", "twelve_data") or "twelve_data"
+            feed_health["primary_execution_venue_status"] = "HALTED"
+            feed_health["secondary_execution_venue_status"] = "NOT_CONFIGURED"
+
             state, _ = LiveMonitorState.objects.select_for_update().get_or_create(
                 instrument="XAUUSD",
                 defaults={"effective_action": "WAIT"},
@@ -1668,20 +2007,22 @@ class XauUsdLiveProjectionService:
                 state.candidate_effective_action = risk_record.candidate_effective_action or risk_record.effective_action
                 state.publication_effective_action = "WAIT"
                 state.effective_action = "WAIT"
-                state.entry_min = risk_record.entry_min if risk_record.is_valid_risk_plan else None
-                state.entry_mid = risk_record.entry_mid if risk_record.is_valid_risk_plan else None
-                state.entry_max = risk_record.entry_max if risk_record.is_valid_risk_plan else None
-                state.stop_structure = risk_record.stop_structure if risk_record.is_valid_risk_plan else None
-                state.stop_atr = risk_record.stop_atr if risk_record.is_valid_risk_plan else None
-                state.stop_final = risk_record.stop_final if risk_record.is_valid_risk_plan else None
-                state.stop_distance_atr = risk_record.stop_distance_atr if risk_record.is_valid_risk_plan else None
-                state.tp1 = risk_record.tp1 if risk_record.is_valid_risk_plan else None
-                state.tp2 = risk_record.tp2 if risk_record.is_valid_risk_plan else None
-                state.rr_tp1 = risk_record.rr_tp1 if risk_record.is_valid_risk_plan else None
-                state.rr_tp2 = risk_record.rr_tp2 if risk_record.is_valid_risk_plan else None
+                state.entry_min = risk_record.entry_min
+                state.entry_mid = risk_record.entry_mid
+                state.entry_max = risk_record.entry_max
+                state.stop_structure = risk_record.stop_structure
+                state.stop_atr = risk_record.stop_atr
+                state.stop_final = risk_record.stop_final
+                state.stop_distance_atr = risk_record.stop_distance_atr
+                state.tp1 = risk_record.tp1
+                state.tp2 = risk_record.tp2
+                state.rr_tp1 = risk_record.rr_tp1
+                state.rr_tp2 = risk_record.rr_tp2
                 state.risk_plan_fingerprint = risk_record.risk_plan_fingerprint
                 state.source_phase4_fingerprint = risk_record.source_phase4_fingerprint
                 state.risk_version = risk_record.risk_version
+                if not risk_record.is_valid_risk_plan and risk_record.reasons:
+                    feed_health["risk_plan_invalidation_reason"] = "; ".join(risk_record.reasons)
             else:
                 state.risk_side = None
                 state.risk_candidate_status = None
@@ -1702,6 +2043,9 @@ class XauUsdLiveProjectionService:
                 state.rr_tp1 = None
                 state.rr_tp2 = None
                 state.risk_plan_fingerprint = None
+
+            if latest_signal:
+                feed_health["components_breakdown"] = cb
 
             existing_feed_data = state.feed_health_data or {}
             merged_feed_health = {

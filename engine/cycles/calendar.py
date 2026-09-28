@@ -10,6 +10,45 @@ from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
+def calendar_bucket_key(
+    as_of: datetime,
+) -> str:
+    """
+    Return the canonical empirical calendar bucket.
+
+    Contract:
+    - UTC based.
+    - Exact month length via calendar.monthrange().
+    - Last 3 calendar days -> MONTH_END.
+    - Otherwise -> DOW_<weekday>_HOUR_<UTC>.
+    """
+    if as_of.tzinfo is None:
+        dt_utc = as_of.replace(
+            tzinfo=timezone.utc
+        )
+    else:
+        dt_utc = as_of.astimezone(
+            timezone.utc
+        )
+
+    _, total_days = calendar.monthrange(
+        dt_utc.year,
+        dt_utc.month,
+    )
+
+    is_month_end = (
+        total_days - dt_utc.day
+    ) < 3
+
+    if is_month_end:
+        return "MONTH_END"
+
+    return (
+        f"DOW_{dt_utc.weekday()}"
+        f"_HOUR_{dt_utc.hour}"
+    )
+
+
 def calculate_calendar_seasonality(
     as_of: datetime,
     historical_fold_stabilities: Optional[Sequence[float]] = None,
@@ -106,7 +145,9 @@ def calculate_calendar_seasonality(
 
     seasonality_score = 0.0
     if effect_table:
-        bucket_key = "MONTH_END" if is_month_end else f"DOW_{dow}_HOUR_{hour}"
+        bucket_key = calendar_bucket_key(
+            dt_utc
+        )
         entry = effect_table.get(bucket_key)
         if entry:
             effective_n = entry.effective_n

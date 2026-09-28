@@ -269,6 +269,9 @@ def test_p3a_rehydrate_01_persistence_roundtrip_lossless():
         is_blocked_by_event=False,
         cycle_score_3a=42.5,
         cycle_version="3.0.0-3A",
+        profile_name="XAUUSD_CYCLE3A_TEST_PROFILE",
+        calibration_status="PRODUCTION_FROZEN",
+        calibration_artifact_version="xauusd-cycle3a-test-v1",
     )
 
     AnalysisPersistenceService.save_analysis_snapshots(
@@ -289,6 +292,15 @@ def test_p3a_rehydrate_01_persistence_roundtrip_lossless():
     # Invariants: 100% field parity
     assert rehydrated.timestamp == original_snap.timestamp
     assert rehydrated.cycle_version == original_snap.cycle_version
+    assert rehydrated.profile_name == original_snap.profile_name
+    assert (
+        rehydrated.calibration_status
+        == original_snap.calibration_status
+    )
+    assert (
+        rehydrated.calibration_artifact_version
+        == original_snap.calibration_artifact_version
+    )
     assert rehydrated.cycle_score_3a == original_snap.cycle_score_3a
     assert rehydrated.is_blocked_by_event == original_snap.is_blocked_by_event
 
@@ -330,4 +342,64 @@ def test_p3a_rehydrate_01_persistence_roundtrip_lossless():
     assert rehydrated.macro_event.active_event_name == original_snap.macro_event.active_event_name
     assert rehydrated.macro_event.point_in_time_value == original_snap.macro_event.point_in_time_value
     assert rehydrated.macro_event.is_feed_healthy == original_snap.macro_event.is_feed_healthy
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_p3a_rehydrate_missing_profile_provenance_fails_closed():
+    """
+    Historical persisted rows without Phase 3A profile provenance
+    must never be interpreted as calibrated/frozen authority.
+    """
+    xau = Asset.objects.create(
+        code="XAU_RH_OLD",
+        name="Gold RH Old",
+    )
+    usd = Asset.objects.create(
+        code="USD_RH_OLD",
+        name="USD RH Old",
+    )
+
+    inst = Instrument.objects.create(
+        base_asset=xau,
+        quote_asset=usd,
+        instrument_type=InstrumentType.SPOT,
+    )
+
+    now = datetime(
+        2026,
+        9,
+        1,
+        12,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    rec = CycleSnapshotRecord.objects.create(
+        instrument=inst,
+        timeframe="15m",
+        timestamp=now,
+        cycle_version="3.0.0-3A",
+        session="LONDON",
+        session_progress_pct=50.0,
+        is_high_liquidity=True,
+        bars_since_last_swing=10,
+        pullback_age_percentile=50.0,
+        is_mature_pullback=False,
+        is_blocked_by_event=False,
+        cycle_score_3a=0.0,
+        profile_name=None,
+        calibration_status=None,
+        calibration_artifact_version=None,
+        details={},
+    )
+
+    snap = (
+        AnalysisPersistenceService
+        .rehydrate_cycle_3a_snapshot(rec)
+    )
+
+    assert snap.profile_name == "UNKNOWN_PROFILE"
+    assert snap.calibration_status == "UNKNOWN"
+    assert snap.calibration_artifact_version is None
 

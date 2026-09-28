@@ -6,15 +6,24 @@
     <section class="card launch-card">
         <div class="card-header">
             <h3>PHASE 6 POINT-IN-TIME BACKTEST & ABLATION LAB</h3>
-            <span class="authority-tag">ZERO EXECUTION RISK</span>
+            <div class="header-badges">
+                <span class="governance-tag">RESEARCH ONLY</span>
+                <span class="governance-tag">ZERO EXECUTION RISK</span>
+                <span class="governance-tag badge-locked">PROTECTED OOS: LOCKED</span>
+            </div>
         </div>
         <p class="section-desc">Launch historical point-in-time replay, walk-forward validation folds, and component ablation trials. Evaluated exclusively in normalized R units without account sizing.</p>
+
+        <div class="governance-notice">
+            <span class="notice-label">APPROVED HISTORICAL WINDOW:</span>
+            <span class="approved-range mono-text">{{ approved_window_display }}</span>
+        </div>
 
         <form id="backtest-form" class="backtest-form">
             <div class="form-row">
                 <div class="form-group">
                     <label for="ablation-select">Ablation / Configuration ID:</label>
-                    <select id="ablation-select" name="ablation_id" class="form-control">
+                    <select id="ablation-select" name="ablation_id" class="form-control" {% if not launch_enabled %}disabled{% endif %}>
                         <option value="BASELINE">BASELINE (Full Dual-Side XAUUSD Pipeline)</option>
                         <option value="NO_REGIME">NO_REGIME (Ablate Market Regime Filter)</option>
                         <option value="NO_MACRO">NO_MACRO (Ablate Macro Blackout Gate)</option>
@@ -24,14 +33,18 @@
                 </div>
                 <div class="form-group">
                     <label for="start-date">Historical Start (UTC):</label>
-                    <input type="datetime-local" id="start-date" name="start_date" class="form-control" value="2026-01-01T00:00">
+                    <input type="datetime-local" id="start-date" name="start_date" class="form-control" value="{{ default_start_str }}" {% if min_date_str %}min="{{ min_date_str }}"{% endif %} {% if max_date_str %}max="{{ max_date_str }}"{% endif %} {% if not launch_enabled %}disabled{% endif %}>
                 </div>
                 <div class="form-group">
                     <label for="end-date">Historical End (UTC):</label>
-                    <input type="datetime-local" id="end-date" name="end_date" class="form-control" value="2026-08-30T00:00">
+                    <input type="datetime-local" id="end-date" name="end_date" class="form-control" value="{{ default_end_str }}" {% if min_date_str %}min="{{ min_date_str }}"{% endif %} {% if max_date_str %}max="{{ max_date_str }}"{% endif %} {% if not launch_enabled %}disabled{% endif %}>
                 </div>
                 <div class="form-group form-action">
+                    {% if launch_enabled %}
                     <button type="submit" class="btn btn-primary" id="launch-btn">Launch Async Simulation</button>
+                    {% else %}
+                    <button type="button" class="btn btn-primary" id="launch-btn" disabled title="No approved research window configured">Launch Async Simulation</button>
+                    {% endif %}
                 </div>
             </div>
             <div id="launch-status-msg" class="launch-msg" style="display: none;"></div>
@@ -96,6 +109,13 @@
             ablation_id: document.getElementById("ablation-select").value,
             start_date: new Date(document.getElementById("start-date").value).toISOString(),
             end_date: new Date(document.getElementById("end-date").value).toISOString(),
+            cost_scenario: "IDEALIZED",
+            code_revision: "web_backtest_lab",
+            dataset_hash: "canonical_research_dataset_v2",
+            holding_horizon_bars_15m: 5,
+            max_fill_wait_bars_15m: 2,
+            execution_policy: "NEXT_BAR_OPEN",
+            intrabar_policy: "WORST_CASE",
         };
 
         fetch("/dashboard/api/backtest/run/", {

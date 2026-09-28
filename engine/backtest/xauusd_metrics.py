@@ -74,10 +74,23 @@ class XauUsdMetricsCalculator:
         # 3. Fill and Execution Stats
         filled_trades = [
             t for t in valid_risk_trades
-            if t.fill_timestamp is not None and t.outcome != XauUsdTradeOutcome.NO_FILL
+            if t.fill_timestamp is not None and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            )
         ]
         fill_count = len(filled_trades)
-        no_fill_count = sum(1 for t in valid_risk_trades if t.outcome == XauUsdTradeOutcome.NO_FILL)
+        invalidated_entry_count = sum(
+            1 for t in valid_risk_trades
+            if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
+        )
+        no_fill_count = sum(
+            1 for t in valid_risk_trades
+            if t.outcome in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            )
+        )
 
         fill_rate = float(fill_count / execution_eligible_count) if execution_eligible_count > 0 else 0.0
         no_fill_rate = float(no_fill_count / execution_eligible_count) if execution_eligible_count > 0 else 0.0
@@ -199,6 +212,7 @@ class XauUsdMetricsCalculator:
             execution_eligible_count=execution_eligible_count,
             fill_count=fill_count,
             no_fill_count=no_fill_count,
+            invalidated_entry_count=invalidated_entry_count,
             fill_rate=fill_rate,
             no_fill_rate=no_fill_rate,
             trade_count=trade_count,

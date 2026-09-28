@@ -1,0 +1,97 @@
+{
+  "candidate_id": "XAUUSD_CANDIDATE_031",
+  "dataset_fingerprint": "547ec898e42ed0eff2992400d784e40c6b53c1d26b7a5e5722e0eb1128080242",
+  "run_execution_code_revision": "b1cd4b04f4c073d7d8c06a9c1728477b52315d98",
+  "cache_semantics_version": "v2_mtf_features",
+  "selection_policy_fingerprint": "bb40ce20dea1ee264635ffca252be38cbea379bb250d1fc8096d476afd10073b",
+  "generator_policy_fingerprint": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f",
+  "run_fingerprint": "d5718005f6fe35aed11787fb50bee075efa7ad0a40eade70742c0415497edbd8",
+  "sell_side_metrics": {
+    "sell_trade_count": 83,
+    "sell_effective_n": 73.0,
+    "sell_mean_r": 0.4639,
+    "sell_std_r": 1.9701,
+    "sell_lcb_95": 0.0786,
+    "sell_max_drawdown_r": 16.341,
+    "sell_temporal_stability": 0.7158,
+    "sell_profit_concentration_pct": 59.79,
+    "sell_positive_folds": 5,
+    "sell_total_folds": 5,
+    "sell_fold_expectancies": [
+      0.1113,
+      0.0632,
+      0.0632,
+      0.8368,
+      0.7229
+    ],
+    "sell_fold_profits": [
+      3.5603,
+      2.0212,
+      2.0212,
+      25.9399,
+      49.8815
+    ]
+  },
+  "per_fold_details": [
+    {
+      "fold_id": 1,
+      "sell_trade_count": 32,
+      "sell_effective_n": 29.0,
+      "sell_mean_R": 0.1113,
+      "sell_profit_R": 3.5603,
+      "sell_MDD_R": 16.341,
+      "positive": true
+    },
+    {
+      "fold_id": 2,
+      "sell_trade_count": 32,
+      "sell_effective_n": 30.0,
+      "sell_mean_R": 0.0632,
+      "sell_profit_R": 2.0212,
+      "sell_MDD_R": 16.341,
+      "positive": true
+    },
+    {
+      "fold_id": 3,
+      "sell_trade_count": 32,
+      "sell_effective_n": 30.0,
+      "sell_mean_R": 0.0632,
+      "sell_profit_R": 2.0212,
+      "sell_MDD_R": 16.341,
+      "positive": true
+    },
+    {
+      "fold_id": 4,
+      "sell_trade_count": 31,
+      "sell_effective_n": 28.0,
+      "sell_mean_R": 0.8368,
+      "sell_profit_R": 25.9399,
+      "sell_MDD_R": 7.0917,
+      "positive": true
+    },
+    {
+      "fold_id": 5,
+      "sell_trade_count": 69,
+      "sell_effective_n": 62.0,
+      "sell_mean_R": 0.7229,
+      "sell_profit_R": 49.8815,
+      "sell_MDD_R": 7.0917,
+      "positive": true
+    }
+  ],
+  "outcome_invariants": {
+    "invalidated_entry_count": 382,
+    "stale_tp_negative_gross_count": 0,
+    "stale_sl_positive_gross_count": 0
+  },
+  "qualification_flags": {
+    "sell_effective_n_pass": true,
+    "sell_lcb95_pass": true,
+    "sell_mdd_pass": true,
+    "sell_temporal_stability_pass": true,
+    "sell_profit_concentration_pass": true,
+    "sell_positive_folds_pass": true,
+    "sell_fully_qualified": true
+  },
+  "rejection_reasons": []
+}

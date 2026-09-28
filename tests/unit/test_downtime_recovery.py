@@ -365,7 +365,7 @@ def test_phase8_signal_pipeline_gated_during_unresolved_gap(setup_xauusd_instrum
     assert state.candidate_state == "FORCE_WAIT"
     assert state.feed_health_data.get("primary_15m") == "UNHEALTHY"
 
-    # 3. Now perform full recovery: insert the missing candles between 03:00 and 15:45
+    # 3. Now perform full recovery: insert the missing candles between 03:00 and 15:45, plus event_16
     t_missing_start = datetime(2026, 9, 14, 3, 0, 0, tzinfo=timezone.utc)
     for c in _generate_mock_candles(t_missing_start, 51, "15m"):
         MarketCandle.objects.create(
@@ -374,10 +374,26 @@ def test_phase8_signal_pipeline_gated_during_unresolved_gap(setup_xauusd_instrum
             open=c.open, high=c.high, low=c.low, close=c.close,
             volume=c.volume, is_closed=True, quote_rate=Decimal("1.0"), data_quality_flag="PASS"
         )
+    MarketCandle.objects.create(
+        instrument=inst, source=listing.provider, timeframe="15m",
+        timestamp_open=t_16_open, timestamp_close=t_16_close,
+        open=event_16.open, high=event_16.high, low=event_16.low, close=event_16.close,
+        volume=event_16.volume, is_closed=True, quote_rate=Decimal("1.0"), data_quality_flag="PASS"
+    )
 
-    # 4. Re-evaluate post-recovery: continuity restored, primary_15m is HEALTHY
+    # 4. Re-evaluate post-recovery: next legitimate candle event_16_15 finds continuity restored
+    t_16_15_open = datetime(2026, 9, 14, 16, 0, 0, tzinfo=timezone.utc)
+    t_16_15_close = datetime(2026, 9, 14, 16, 15, 0, tzinfo=timezone.utc)
+    event_16_15 = PublicMarketDataAdapter.create_xauusd_candle_closed_event(
+        instrument="XAUUSD", timeframe="15m",
+        timestamp_open=t_16_15_open, timestamp_close=t_16_15_close,
+        open_price=Decimal("2512.00"), high_price=Decimal("2516.00"),
+        low_price=Decimal("2510.00"), close_price=Decimal("2514.00"),
+        volume=Decimal("150.0"), source=listing.provider, is_closed=True,
+    )
+
     sig_recovered, risk_recovered, state_recovered = XauUsdLiveDecisionPipelineService.process_closed_candle(
-        event=event_16,
+        event=event_16_15,
         code_revision="4a8a993af55ad433800e0bb8868e94063d62ff89",
         is_feed_stale=False,
     )

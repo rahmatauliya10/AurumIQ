@@ -431,6 +431,151 @@ def resolve_xauusd_research_profiles(
     return sig_prof, risk_prof
 
 
+def resolve_xauusd_cycle3a_profile(
+    calibration_artifact_id: Optional[str] = None,
+    cycle_3a_profile_dict: Optional[Dict[str, Any]] = None,
+):
+    """
+    Resolve an explicitly governed XAUUSD Phase 3A profile.
+
+    Safety contract:
+    - Missing Phase 3A evidence -> None.
+    - Current signal/risk champion artifact without cycle_3a_profile -> None.
+    - PENDING_DATA / CANDIDATE_NOT_FROZEN -> None.
+    - Only explicit XAUUSD 15m PRODUCTION_FROZEN profiles may proceed.
+    - Incomplete production scoring configuration -> None.
+    - No legacy XAUT fallback.
+    """
+    from engine.cycles.profile import (
+        CalibrationStatus as Cycle3ACalibrationStatus,
+        Cycle3AProfile,
+    )
+
+    profile_dict = cycle_3a_profile_dict
+
+    if calibration_artifact_id is not None:
+        if not isinstance(calibration_artifact_id, str):
+            return None
+
+        raw_id = calibration_artifact_id.strip()
+        if not raw_id:
+            return None
+
+        if (
+            os.path.isabs(raw_id)
+            or ".." in raw_id
+            or "/" in raw_id
+            or "\\" in raw_id
+            or ":" in raw_id
+            or "\x00" in raw_id
+        ):
+            return None
+
+        clean_name = (
+            raw_id
+            if raw_id.endswith(".json")
+            else f"{raw_id}.json"
+        )
+
+        base_dir = getattr(settings, "BASE_DIR", Path("."))
+        canonical_dir = (
+            Path(base_dir) / "artifacts" / "calibration"
+        ).resolve()
+
+        target_path = (canonical_dir / clean_name).resolve()
+
+        if (
+            target_path.parent != canonical_dir
+            or not target_path.is_file()
+        ):
+            return None
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                artifact_data = json.load(f)
+        except Exception:
+            return None
+
+        if not isinstance(artifact_data, dict):
+            return None
+
+        schema = artifact_data.get("schema")
+        if (
+            not schema
+            or not isinstance(schema, str)
+            or not schema.startswith("aurumiq.")
+        ):
+            return None
+
+        instrument = (
+            artifact_data.get("instrument")
+            or artifact_data.get("target_instrument")
+        )
+
+        if (
+            not isinstance(instrument, str)
+            or instrument.strip().upper()
+            not in ("XAUUSD", "XAU/USD")
+        ):
+            return None
+
+        declared_fp = (
+            artifact_data.get("artifact_fingerprint")
+            or artifact_data.get("fingerprint")
+        )
+
+        if declared_fp:
+            if not isinstance(declared_fp, str):
+                return None
+
+            computed_fp = compute_calibration_artifact_fingerprint(
+                artifact_data
+            )
+
+            if (
+                declared_fp.strip().lower()
+                != computed_fp.lower()
+            ):
+                return None
+
+        profile_dict = artifact_data.get("cycle_3a_profile")
+
+    from engine.cycles.serialization import (
+        deserialize_cycle3a_profile,
+        is_cycle3a_production_profile_complete,
+    )
+
+    if not isinstance(
+        profile_dict,
+        dict,
+    ):
+        return None
+
+    try:
+        profile = (
+            deserialize_cycle3a_profile(
+                profile_dict,
+                expected_instrument="XAUUSD",
+                expected_timeframe="15m",
+                require_production_frozen=True,
+            )
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    if not (
+        is_cycle3a_production_profile_complete(
+            profile
+        )
+    ):
+        return None
+
+    return profile
+
+
 @shared_task(queue="backtest", bind=True, max_retries=1)
 def run_xauusd_backtest_task(
     self,
@@ -478,6 +623,11 @@ def run_xauusd_backtest_task(
         raise ValueError("start_time_iso must include an explicit timezone offset (naive timestamps forbidden).")
     if end_dt.tzinfo is None or end_dt.tzinfo.utcoffset(end_dt) is None:
         raise ValueError("end_time_iso must include an explicit timezone offset (naive timestamps forbidden).")
+
+    # Phase 6 / Backtest Lab Governance Hard Guard (Defense in Depth):
+    # Strictly forbid simulation windows intersecting protected partitions before any data access
+    from engine.backtest.xauusd_governance import validate_backtest_window_governance
+    validate_backtest_window_governance(start_dt, end_dt)
 
     # Resolve research profiles server-side
     signal_profile, risk_profile = resolve_xauusd_research_profiles(

@@ -64,12 +64,20 @@ body.aurum-app {
     flex-direction: column;
     padding: 20px 16px;
     flex-shrink: 0;
+    transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), padding 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .brand-header {
     margin-bottom: 28px;
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border-subtle);
+}
+
+.brand-header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
 }
 
 .brand-logo {
@@ -79,11 +87,38 @@ body.aurum-app {
     font-size: 1.25rem;
     font-weight: 600;
     letter-spacing: 0.05em;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.sidebar-toggle-btn {
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    width: 26px;
+    height: 26px;
+    font-size: 0.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+
+.sidebar-toggle-btn:hover,
+.sidebar-toggle-btn:focus-visible {
+    background-color: var(--bg-surface-elevated);
+    color: var(--gold-primary);
+    border-color: var(--border-strong);
+    outline: none;
 }
 
 .gold-gem {
     color: var(--gold-primary);
     font-size: 1.4rem;
+    flex-shrink: 0;
 }
 
 .brand-name strong {
@@ -97,6 +132,57 @@ body.aurum-app {
     color: var(--text-muted);
     margin-top: 4px;
     padding-left: 24px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+/* Collapsed Sidebar State (64px - 72px, calibrated to 68px) */
+.sidebar.collapsed,
+html.sidebar-is-collapsed .sidebar {
+    width: 68px;
+    padding: 20px 8px;
+}
+
+.sidebar.collapsed .brand-header,
+html.sidebar-is-collapsed .sidebar .brand-header {
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+}
+
+.sidebar.collapsed .brand-header-top,
+html.sidebar-is-collapsed .sidebar .brand-header-top {
+    flex-direction: column;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+}
+
+.sidebar.collapsed .brand-name,
+.sidebar.collapsed .brand-subtitle,
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .sidebar-footer,
+html.sidebar-is-collapsed .sidebar .brand-name,
+html.sidebar-is-collapsed .sidebar .brand-subtitle,
+html.sidebar-is-collapsed .sidebar .nav-label,
+html.sidebar-is-collapsed .sidebar .sidebar-footer {
+    display: none !important;
+}
+
+.sidebar.collapsed .brand-logo,
+html.sidebar-is-collapsed .sidebar .brand-logo {
+    justify-content: center;
+}
+
+.sidebar.collapsed .nav-item,
+html.sidebar-is-collapsed .sidebar .nav-item {
+    justify-content: center;
+    padding: 10px 0;
+    gap: 0;
+}
+
+.sidebar.collapsed .nav-icon,
+html.sidebar-is-collapsed .sidebar .nav-icon {
+    font-size: 1.15rem;
 }
 
 .nav-menu {
@@ -313,11 +399,24 @@ body.aurum-app {
     border-radius: var(--radius-sm);
 }
 
-.freshness-indicator.fresh {
+.freshness-indicator.fresh,
+.freshness-indicator.ref-live {
     background-color: var(--emerald-subtle);
     color: var(--emerald-primary);
 }
 
+.freshness-indicator.closed {
+    background-color: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.freshness-indicator.reconnecting,
+.freshness-indicator.connecting {
+    background-color: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+}
+
+.freshness-indicator.error,
 .freshness-indicator.stale {
     background-color: var(--rose-subtle);
     color: var(--rose-primary);
@@ -332,7 +431,7 @@ body.aurum-app {
 
 .quote-metrics {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 16px;
 }
 
@@ -562,6 +661,52 @@ body.aurum-app {
 .status-pill.invalid {
     background-color: var(--rose-subtle);
     color: var(--rose-primary);
+}
+
+.status-pill.neutral {
+    background-color: var(--bg-surface-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
+}
+
+/* Risk Invalidation Banner */
+.risk-invalidation-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    background-color: rgba(244, 63, 94, 0.1);
+    border: 1px solid rgba(244, 63, 94, 0.3);
+    border-radius: var(--radius-sm);
+    color: var(--rose-primary);
+    font-size: 0.82rem;
+    font-weight: 500;
+}
+
+.risk-invalidation-banner .invalidation-label {
+    font-weight: 700;
+    color: #fda4af;
+}
+
+.risk-invalidation-banner .invalidation-text {
+    color: #fecdd3;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Candidate Reference in Published Layer */
+.candidate-ref {
+    color: var(--amber-primary);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Inactive Explainability Factors */
+.reasons-block.inactive ul li {
+    color: var(--text-muted);
+}
+
+.reasons-block.inactive h4 {
+    color: var(--text-muted);
 }
 
 .status-pill.stale {
@@ -831,26 +976,249 @@ body.aurum-app {
     to { transform: rotate(360deg); }
 }
 
+/* Pagination & Rows-Per-Page Controls */
+.pagination-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 14px;
+    margin-top: 14px;
+    border-top: 1px solid var(--border-subtle);
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.page-size-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.size-label {
+    margin-right: 2px;
+}
+
+.size-btn {
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-surface-elevated);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.75rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.size-btn:hover {
+    background: var(--border-subtle);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+.size-btn.active {
+    background: var(--gold-subtle);
+    color: var(--gold-primary);
+    border-color: var(--gold-primary);
+    font-weight: 600;
+}
+
 .pagination-bar {
     display: flex;
-    justify-content: flex-end;
     align-items: center;
-    gap: 12px;
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-subtle);
+    gap: 8px;
 }
 
 .page-btn {
-    padding: 6px 12px;
+    padding: 5px 12px;
     background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     text-decoration: none;
     font-size: 0.75rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.page-btn:hover {
+    background-color: var(--border-subtle);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
 }
 
 .page-info {
     font-size: 0.75rem;
     color: var(--text-muted);
+    padding: 0 4px;
+}
+
+/* Compact Reason Expandable Detail (<details>/<summary>) */
+.reason-details {
+    display: inline-block;
+    max-width: 100%;
+}
+
+.reason-summary {
+    cursor: pointer;
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--rose-primary);
+}
+
+.reason-summary::-webkit-details-marker {
+    display: none;
+}
+
+.view-detail-btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.7rem;
+    color: var(--cyan-primary);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.view-detail-btn:hover {
+    color: var(--text-primary);
+}
+
+.reason-full-text {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-width: 480px;
+    font-family: 'Inter', sans-serif;
+}
+
+/* Analytical State Pills */
+.state-pill {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    background: var(--bg-surface-elevated);
+    color: var(--cyan-primary);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+}
+
+.state-pill.state-watch_short,
+.state-pill.state-sell_window {
+    color: var(--rose-primary);
+    border-color: rgba(244, 63, 94, 0.25);
+    background: var(--rose-subtle);
+}
+
+.state-pill.state-watch_long,
+.state-pill.state-buy_window {
+    color: var(--emerald-primary);
+    border-color: rgba(16, 185, 129, 0.25);
+    background: var(--emerald-subtle);
+}
+
+/* Responsive Support */
+@media (max-width: 768px) {
+    .app-layout {
+        flex-direction: column;
+    }
+
+    .sidebar,
+    .sidebar.collapsed,
+    html.sidebar-is-collapsed .sidebar {
+        width: 100%;
+        padding: 12px 16px;
+    }
+
+    .brand-header-top {
+        flex-direction: row !important;
+    }
+
+    .sidebar.collapsed .brand-name,
+    .sidebar.collapsed .brand-subtitle,
+    .sidebar.collapsed .nav-label,
+    html.sidebar-is-collapsed .sidebar .brand-name,
+    html.sidebar-is-collapsed .sidebar .brand-subtitle,
+    html.sidebar-is-collapsed .sidebar .nav-label {
+        display: inline-block !important;
+    }
+
+    .sidebar.collapsed .nav-item,
+    html.sidebar-is-collapsed .sidebar .nav-item {
+        justify-content: flex-start !important;
+        padding: 10px 14px !important;
+        gap: 12px !important;
+    }
+
+    .top-bar {
+        padding: 12px 16px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+}
+
+/* Backtest Governance UI */
+.header-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.governance-tag {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background-color: var(--cyan-subtle);
+    color: var(--cyan-primary);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+}
+
+.governance-tag.badge-locked {
+    background-color: var(--rose-subtle);
+    color: var(--rose-primary);
+    border-color: rgba(244, 63, 94, 0.3);
+}
+
+.governance-notice {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--cyan-primary);
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+}
+
+.governance-notice .notice-label {
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.governance-notice .approved-range {
+    color: var(--emerald-primary);
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
 }

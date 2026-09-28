@@ -232,22 +232,22 @@ def test_hostile_48_hour_market_closure_and_reopen(xauusd_instrument, xauusd_pri
             source="twelve_data",
         )
 
-    sim_start = datetime(2026, 6, 19, 22, 0, 0, tzinfo=timezone.utc)  # Friday 22:00 UTC (spot gold closes)
-    sim_end = datetime(2026, 6, 21, 22, 0, 0, tzinfo=timezone.utc)    # Sunday 22:00 UTC (48 hours = 2,880 mins closed)
+    sim_start = datetime(2026, 6, 19, 21, 0, 0, tzinfo=timezone.utc)  # Friday 21:00 UTC (governed spot gold close)
+    sim_end = datetime(2026, 6, 21, 21, 0, 0, tzinfo=timezone.utc)    # Sunday 21:00 UTC (48 hours = 2,880 mins closed)
 
     call_counter = 0
 
     def mock_ingest_during_weekend(instrument_symbol, timeframes, lookback_bars=2, now_utc=None, **kwargs):
         nonlocal call_counter
         call_counter += len(timeframes)
-        # Closed market before Sunday 22:00 UTC returns NO_DATA
-        if now_utc and now_utc < datetime(2026, 6, 21, 22, 0, 0, tzinfo=timezone.utc):
+        # Closed market before Sunday 21:00 UTC returns NO_DATA
+        if now_utc and now_utc < datetime(2026, 6, 21, 21, 0, 0, tzinfo=timezone.utc):
             return {
                 "status": "hard_fail",
                 "reason": "PRIMARY_XAUUSD_NO_USABLE_CLOSED_DATA_15m",
                 "candles_ingested": 0,
             }
-        # Legitimate reopen at/after Sunday 22:00 UTC: persist closed candle and return success
+        # Legitimate reopen at/after Sunday 21:00 UTC: persist closed candle and return success
         for tf in timeframes:
             exp_close = latest_provider_native_closed_timestamp(tf, scheduler.get_effective_now(now_utc))
             MarketCandle.objects.get_or_create(
@@ -292,8 +292,8 @@ def test_hostile_48_hour_market_closure_and_reopen(xauusd_instrument, xauusd_pri
         assert call_counter <= 8, f"Expected <= 8 calls during 48h closure, got {call_counter}"
         assert test_ledger.get_daily_total_credit_count(sim_start) <= 200
 
-        # 2. Reopen Test: Verify scheduler resumes automatically after weekend reopen window (Sunday 22:15)
-        reopen_time = datetime(2026, 6, 21, 22, 15, 25, tzinfo=timezone.utc)
+        # 2. Reopen Test: Verify scheduler resumes automatically after weekend reopen window (Sunday 21:15)
+        reopen_time = datetime(2026, 6, 21, 21, 15, 25, tzinfo=timezone.utc)
         reopen_res = dispatch_closed_candle_ingestion(
             instrument_symbol="XAU/USD",
             candidate_timeframes=["15m"],

@@ -14,6 +14,7 @@
     <section class="card">
         <div class="card-header">
             <h3>PHASE 3A — ROBUST TIME CYCLE SNAPSHOTS (PIT)</h3>
+            <span class="count-badge">{{ page_obj_3a.paginator.count|default:0 }} Total Snapshots</span>
         </div>
         <div class="table-responsive">
             <table class="data-table">
@@ -70,6 +71,25 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <!-- Phase 3A Pagination -->
+        <div class="pagination-container">
+            <div class="page-size-selector">
+                <span class="size-label">Rows:</span>
+                <a href="?page=1&page_size=25" class="size-btn {% if page_size == 25 %}active{% endif %}">25</a>
+                <a href="?page=1&page_size=50" class="size-btn {% if page_size == 50 %}active{% endif %}">50</a>
+                <a href="?page=1&page_size=100" class="size-btn {% if page_size == 100 %}active{% endif %}">100</a>
+            </div>
+            <div class="pagination-bar">
+                {% if page_obj_3a.has_previous %}
+                <a href="?page={{ page_obj_3a.previous_page_number }}&page_size={{ page_size }}" class="page-btn">Previous</a>
+                {% endif %}
+                <span class="page-info">Page {{ page_obj_3a.number|default:1 }} of {{ page_obj_3a.paginator.num_pages|default:1 }}</span>
+                {% if page_obj_3a.has_next %}
+                <a href="?page={{ page_obj_3a.next_page_number }}&page_size={{ page_size }}" class="page-btn">Next</a>
+                {% endif %}
+            </div>
         </div>
     </section>
 

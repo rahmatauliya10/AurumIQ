@@ -1,0 +1,109 @@
+{
+  "schema": "aurumiq.calibration.release_seal.v1",
+  "seal_id": "XAUUSD_COMPOSITE_RELEASE_SEAL_20260925",
+  "instrument": "XAUUSD",
+  "status": "QUALIFIED_RELEASE_SEAL",
+  "created_at": "2026-09-25T06:56:30Z",
+  "dataset_fingerprint": "547ec898e42ed0eff2992400d784e40c6b53c1d26b7a5e5722e0eb1128080242",
+  "cache_schema": "aurumiq.xauusd_market_cache.v2",
+  "cache_semantics": "v2_mtf_features",
+  "selection_policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
+  "generator_policy_fingerprint": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f",
+  "composite_policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
+  "buy_source": "XAUUSD_CANDIDATE_018",
+  "sell_source": "XAUUSD_CANDIDATE_031",
+  "composite_id": "XAUUSD_COMPOSITE_L018_S031",
+  "revisions": {
+    "policy_base_revision": "2da87311dc1b811f1455cfa57643221f3f9823f0",
+    "data_fold_remediation_revision": "b1cd4b04f4c073d7d8c06a9c1728477b52315d98",
+    "final_100_candidate_ledger_commit": "e72c468c300be1cda26fa82bacc5bcf429313c25",
+    "actual_composite_execution_revision": "14dbd98b84c3e1bfc6cab9d9ec7f0fbe258d1e15"
+  },
+  "composite_run_fingerprint": "7ec187fc43e0e2fdb62d33629846e4754cec81261c5d92a444cc4105acb4cc10",
+  "provisional_artifact_fingerprint": "ac4f2c34327a3408b0823190bb6e3543c97cc175d23ed766c85d48da33a41f9a",
+  "side_metrics": {
+    "buy": {
+      "candidate_id": "XAUUSD_CANDIDATE_018",
+      "trade_count": 115,
+      "effective_n": 110.0,
+      "mean_r": 0.1876,
+      "side_lcb_95": 0.0196,
+      "side_max_drawdown_r": 7.008,
+      "temporal_stability": 0.9239,
+      "profit_concentration_pct": 32.11,
+      "positive_folds": 5,
+      "total_folds": 5,
+      "fold_expectancies": [
+        0.2144,
+        0.1951,
+        0.0046,
+        0.1049,
+        0.1845
+      ]
+    },
+    "sell": {
+      "candidate_id": "XAUUSD_CANDIDATE_031",
+      "trade_count": 95,
+      "effective_n": 82.0,
+      "mean_r": 0.4446,
+      "side_lcb_95": 0.0924,
+      "side_max_drawdown_r": 16.341,
+      "temporal_stability": 0.7392,
+      "profit_concentration_pct": 53.02,
+      "positive_folds": 5,
+      "total_folds": 5,
+      "fold_expectancies": [
+        0.1492,
+        0.1087,
+        0.1087,
+        0.8625,
+        0.6711
+      ]
+    }
+  },
+  "combined_metrics": {
+    "trade_count": 210,
+    "effective_n": 192.0,
+    "mean_r": 0.3038,
+    "std_r": 1.5093,
+    "lcb_95": 0.1244,
+    "max_drawdown_r": 16.7866,
+    "temporal_stability": 0.8702,
+    "profit_concentration_pct": 47.0168,
+    "positive_folds": 5,
+    "total_folds": 5,
+    "fold_expectancies": [
+      0.1894,
+      0.1495,
+      0.0506,
+      0.3664,
+      0.4423
+    ],
+    "fold_profits": [
+      18.7485,
+      10.763,
+      4.3506,
+      41.4034,
+      66.7898
+    ]
+  },
+  "runtime_reachability_counts": {
+    "buy_window_count": 570,
+    "sell_window_count": 6517,
+    "ready_short_count": 11162,
+    "reachability_buy_window": "GREEN",
+    "reachability_sell_window": "GREEN",
+    "reachability_ready_short": "GREEN"
+  },
+  "stale_outcome_invariants": {
+    "invalidated_entry_count": 448,
+    "stale_tp_negative_gross_count": 0,
+    "stale_sl_positive_gross_count": 0
+  },
+  "oos_access_count": 0,
+  "governance_status": {
+    "production_authority": false,
+    "paper_only": true,
+    "real_order_execution": false
+  }
+}

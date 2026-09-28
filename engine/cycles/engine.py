@@ -174,6 +174,16 @@ class RobustTimeCycleEngine:
                 f"Profile timeframe '{eff_profile.timeframe}' does not match analysis timeframe '{timeframe}'."
             )
 
+        # Closed-interval check for XAUUSD Phase 3A (Step 4)
+        norm_inst = (instrument or "").upper().replace("/", "")
+        if norm_inst == "XAUUSD" and latest_candle:
+            from apps.market_data.market_hours import is_expected_market_interval_closed
+            if is_expected_market_interval_closed(latest_candle.timestamp_open, latest_candle.timestamp_close):
+                raise ValueError(
+                    f"XAUUSD Phase 3A rejected: candle interval {latest_candle.timestamp_open} -> {latest_candle.timestamp_close} "
+                    "is fully inside governed market closure."
+                )
+
         # 1. Trading Session Cycle (A02, P3A-06, P3A-14)
         session_ctx = classify_session(
             timestamp=as_of,
@@ -183,13 +193,32 @@ class RobustTimeCycleEngine:
         )
 
         # 2. Swing Duration Maturity (P3A-07, P3A-08, P3A-09, P3A-15)
+        resolved_swing_sample_eval = swing_sample_eval
+        resolved_swing_effective_n = swing_effective_n
+
+        # Frozen profile evidence is only a fallback.
+        #
+        # Precedence:
+        # 1. explicit sample_eval
+        # 2. explicit effective_n
+        # 3. certified profile sample evaluation
+        # 4. None -> fail closed
+        if (
+            resolved_swing_sample_eval is None
+            and resolved_swing_effective_n is None
+            and eff_profile.is_production_scoring_enabled
+        ):
+            resolved_swing_sample_eval = (
+                eff_profile.swing_sample_evaluation
+            )
+
         swing_ctx = calculate_swing_duration(
             latest_candle=latest_candle,
             structure=structure,
             timeframe=timeframe,
             historical_durations=historical_durations,
-            effective_n=swing_effective_n,
-            sample_eval=swing_sample_eval,
+            effective_n=resolved_swing_effective_n,
+            sample_eval=resolved_swing_sample_eval,
             profile=eff_profile,
         )
 

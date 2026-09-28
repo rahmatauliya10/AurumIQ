@@ -1,7 +1,11 @@
 """Point-in-time timeline replay engine for XAUUSD validating Phase 4 and Phase 5 rules without lookahead bias."""
+import bisect
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+import pickle
+from typing import Any, List, Optional, Sequence, Tuple
 
 from engine.backtest.clock import ReplayClock
 from engine.backtest.repository import PointInTimeDataset
@@ -13,14 +17,18 @@ from engine.backtest.xauusd_types import (
 )
 from engine.core.types import (
     CandleData,
+    Cycle3ASnapshot,
     DualSideSignalSnapshot,
     EntryExecutionPolicy,
+    FeatureSnapshot,
     FeedHealthStatus,
     IntrabarPolicy,
     QuoteData,
+    RegimeResult,
     RuntimeFeedHealth,
     SignalSide,
     SignalState,
+    StructureResult,
     UserDecision,
 )
 from engine.features.engine import FeatureEngine
@@ -37,6 +45,263 @@ def _require_utc(dt: datetime, param_name: str = "timestamp") -> datetime:
     if dt is None or dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
         raise ValueError(f"{param_name} must be timezone-aware with non-None utcoffset (naive timestamps forbidden).")
     return dt.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class XauUsdReplayMarketSnapshot:
+    """
+    Immutable market evidence snapshot at a single point-in-time decision timestamp.
+    Precomputed once per timestamp across historical validation/training folds.
+    """
+    timestamp: datetime
+    candle_15m: CandleData
+
+    features_15m: Optional[FeatureSnapshot]
+    features_1h: Optional[FeatureSnapshot]
+    features_4h: Optional[FeatureSnapshot]
+    features_1d: Optional[FeatureSnapshot]
+
+    regime_15m: Optional[RegimeResult]
+    structure_15m: Optional[StructureResult]
+    structure_4h: Optional[StructureResult]
+
+    atr14: Optional[Decimal]
+
+    runtime_health: RuntimeFeedHealth
+    cycle_3a: Optional[Any]
+
+
+def build_market_snapshot_cache(
+    dataset: PointInTimeDataset,
+    start_time: datetime,
+    end_time: datetime,
+) -> Tuple[XauUsdReplayMarketSnapshot, ...]:
+    """
+    Precompute invariant multi-timeframe analytical market evidence once per timestamp.
+    Enforces strict PIT: No data with timestamp > snapshot.timestamp is ever observed.
+    """
+    feature_engine = FeatureEngine()
+    regime_engine = RegimeEngine.for_xauusd()
+    structure_engine = CausalStructureEngine()
+
+    full_candles_15m = dataset.get_closed_candles("15m", as_of=end_time)
+    timestamps = [
+        c.timestamp_close for c in full_candles_15m
+        if start_time <= c.timestamp_close < end_time
+    ]
+
+    all_15m = dataset.get_closed_candles("15m", as_of=end_time)
+    ts_15m = [c.timestamp_close for c in all_15m]
+    all_1h = dataset.get_closed_candles("1h", as_of=end_time)
+    ts_1h = [c.timestamp_close for c in all_1h]
+    all_4h = dataset.get_closed_candles("4h", as_of=end_time)
+    ts_4h = [c.timestamp_close for c in all_4h]
+    all_1d = dataset.get_closed_candles("1d", as_of=end_time)
+    ts_1d = [c.timestamp_close for c in all_1d]
+
+    snapshots: List[XauUsdReplayMarketSnapshot] = []
+
+    prev_idx_1h = -1
+    cached_feats_1h = None
+    prev_idx_4h = -1
+    cached_feats_4h = None
+    cached_structure_4h = None
+    prev_idx_1d = -1
+    cached_feats_1d = None
+
+    raw_15m = getattr(dataset, "_candles", {}).get("15m", [])
+    unclosed_15m_ts = [
+        _require_utc(c.timestamp_close) for c in raw_15m if not c.is_closed
+    ]
+
+    for t_step in timestamps:
+        t_utc = _require_utc(t_step)
+        idx_15m = bisect.bisect_right(ts_15m, t_utc)
+        closed_15m = all_15m[:idx_15m]
+        if not closed_15m:
+            continue
+        c_15m = closed_15m[-1]
+
+        idx_1h = bisect.bisect_right(ts_1h, t_utc)
+        if idx_1h != prev_idx_1h:
+            closed_1h = all_1h[:idx_1h]
+            eval_1h = closed_1h[-500:] if len(closed_1h) > 500 else closed_1h
+            cached_feats_1h = feature_engine.extract_features(eval_1h) if len(eval_1h) >= 20 else None
+            prev_idx_1h = idx_1h
+
+        idx_4h = bisect.bisect_right(ts_4h, t_utc)
+        if idx_4h != prev_idx_4h:
+            closed_4h = all_4h[:idx_4h]
+            eval_4h = closed_4h[-500:] if len(closed_4h) > 500 else closed_4h
+            cached_feats_4h = feature_engine.extract_features(eval_4h) if len(eval_4h) >= 20 else None
+            cached_structure_4h = structure_engine.analyze(eval_4h, atr=cached_feats_4h.atr14 if cached_feats_4h else None) if len(eval_4h) >= 5 else None
+            prev_idx_4h = idx_4h
+
+        idx_1d = bisect.bisect_right(ts_1d, t_utc)
+        if idx_1d != prev_idx_1d:
+            closed_1d = all_1d[:idx_1d]
+            eval_1d = closed_1d[-500:] if len(closed_1d) > 500 else closed_1d
+            cached_feats_1d = feature_engine.extract_features(eval_1d) if len(eval_1d) >= 20 else None
+            prev_idx_1d = idx_1d
+
+        eval_15m = closed_15m[-500:] if len(closed_15m) > 500 else closed_15m
+        feats_15m = feature_engine.extract_features(eval_15m) if len(eval_15m) >= 20 else None
+        regime_15m = regime_engine.classify(feats_15m, instrument="XAUUSD") if feats_15m else None
+        structure_15m = structure_engine.analyze(eval_15m, atr=feats_15m.atr14 if feats_15m else None) if len(eval_15m) >= 5 else None
+
+        atr_14 = feats_15m.atr14 if feats_15m else None
+        has_unclosed_le_t = any(ts <= t_utc for ts in unclosed_15m_ts) if unclosed_15m_ts else False
+        macro_ctx = dataset.get_macro_context(as_of=t_utc)
+        cycle_3a_snap = dataset.get_cycle_3a(as_of=t_utc)
+
+        macro_health = FeedHealthStatus.MISSING
+        is_blackout = False
+        if macro_ctx is not None:
+            macro_health = FeedHealthStatus.HEALTHY if macro_ctx.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+            if macro_ctx.is_in_blackout:
+                is_blackout = True
+        elif cycle_3a_snap is not None and cycle_3a_snap.macro_event is not None:
+            macro_health = FeedHealthStatus.HEALTHY if cycle_3a_snap.macro_event.is_feed_healthy else FeedHealthStatus.UNHEALTHY
+            if cycle_3a_snap.macro_event.is_in_blackout:
+                is_blackout = True
+
+        from engine.core.types import VolumeEvidenceType
+        vol_health = FeedHealthStatus.MISSING
+        if feats_15m and getattr(feats_15m, "volume_evidence", None) != VolumeEvidenceType.UNAVAILABLE:
+            vol_health = FeedHealthStatus.HEALTHY if feats_15m.volume_usable else FeedHealthStatus.UNHEALTHY
+
+        rfh = RuntimeFeedHealth(
+            primary_15m=FeedHealthStatus.HEALTHY if closed_15m else FeedHealthStatus.MISSING,
+            primary_1h=FeedHealthStatus.HEALTHY if idx_1h > 0 else FeedHealthStatus.MISSING,
+            primary_4h=FeedHealthStatus.HEALTHY if idx_4h > 0 else FeedHealthStatus.MISSING,
+            primary_1d=FeedHealthStatus.HEALTHY if idx_1d > 0 else FeedHealthStatus.MISSING,
+            secondary_provider=FeedHealthStatus.MISSING,
+            secondary_provider_disagreement=False,
+            macro_blackout_feed=macro_health,
+            is_macro_blackout=is_blackout,
+            volume=vol_health,
+            phase3a=FeedHealthStatus.HEALTHY if cycle_3a_snap else FeedHealthStatus.MISSING,
+            phase3b=FeedHealthStatus.MISSING,
+            is_unclosed_candle=has_unclosed_le_t,
+        )
+
+        snapshots.append(
+            XauUsdReplayMarketSnapshot(
+                timestamp=t_utc,
+                candle_15m=c_15m,
+                features_15m=feats_15m,
+                features_1h=cached_feats_1h,
+                features_4h=cached_feats_4h,
+                features_1d=cached_feats_1d,
+                regime_15m=regime_15m,
+                structure_15m=structure_15m,
+                structure_4h=cached_structure_4h,
+                atr14=atr_14,
+                runtime_health=rfh,
+                cycle_3a=cycle_3a_snap,
+            )
+        )
+
+    return tuple(snapshots)
+
+
+SNAPSHOT_CACHE_SCHEMA_VERSION = "aurumiq.xauusd_market_cache.v2"
+SNAPSHOT_BUILDER_SEMANTICS_VERSION = "v2_mtf_features"
+REQUIRED_CACHE_TIMEFRAMES = ("15m", "1h", "4h", "1d")
+
+
+def save_market_snapshot_cache(
+    cache_path: Path,
+    snapshots: Sequence[XauUsdReplayMarketSnapshot],
+    dataset_fingerprint: str,
+    val_start: datetime,
+    val_end: datetime,
+    feature_policy_fingerprint: str = "",
+    code_revision: str = "",
+) -> None:
+    """Save market snapshot cache with full provenance metadata."""
+    payload = {
+        "snapshot_cache_schema_version": SNAPSHOT_CACHE_SCHEMA_VERSION,
+        "snapshot_builder_semantics_version": SNAPSHOT_BUILDER_SEMANTICS_VERSION,
+        "required_timeframes": list(REQUIRED_CACHE_TIMEFRAMES),
+        "dataset_fingerprint": dataset_fingerprint,
+        "feature_policy_fingerprint": feature_policy_fingerprint,
+        "code_revision": code_revision,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "val_start": val_start.isoformat(),
+        "val_end": val_end.isoformat(),
+        "snapshot_count": len(snapshots),
+        "snapshots": tuple(snapshots),
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_market_snapshot_cache(
+    cache_path: Path,
+    expected_dataset_fp: Optional[str] = None,
+    val_start: Optional[datetime] = None,
+    val_end: Optional[datetime] = None,
+) -> Tuple[XauUsdReplayMarketSnapshot, ...]:
+    """
+    Load and validate market snapshot cache.
+    Rejects legacy raw tuples without schema metadata or missing MTF features.
+    """
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Cache file does not exist: {cache_path}")
+
+    with open(cache_path, "rb") as f:
+        loaded = pickle.load(f)
+
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            "STALE_CACHE_REJECTED: Cache file is legacy raw tuple without explicit provenance schema. "
+            "Rebuilding required."
+        )
+
+    schema = loaded.get("snapshot_cache_schema_version")
+    if schema != SNAPSHOT_CACHE_SCHEMA_VERSION:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Schema mismatch ({schema} != {SNAPSHOT_CACHE_SCHEMA_VERSION})"
+        )
+
+    builder_sem = loaded.get("snapshot_builder_semantics_version")
+    if builder_sem != SNAPSHOT_BUILDER_SEMANTICS_VERSION:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Builder semantics mismatch ({builder_sem} != {SNAPSHOT_BUILDER_SEMANTICS_VERSION})"
+        )
+
+    req_tfs = tuple(loaded.get("required_timeframes", []))
+    if req_tfs != REQUIRED_CACHE_TIMEFRAMES:
+        raise ValueError(
+            f"STALE_CACHE_REJECTED: Required timeframes mismatch ({req_tfs} != {REQUIRED_CACHE_TIMEFRAMES})"
+        )
+
+    if expected_dataset_fp:
+        ds_fp = loaded.get("dataset_fingerprint", "")
+        if ds_fp != expected_dataset_fp:
+            raise ValueError(
+                f"CACHE_DATASET_MISMATCH: Dataset fingerprint mismatch ({ds_fp} != {expected_dataset_fp})"
+            )
+
+    snapshots = loaded.get("snapshots")
+    if not snapshots:
+        raise ValueError("Cache contains no snapshots")
+
+    if val_start and snapshots[0].timestamp < val_start:
+        raise ValueError(f"First snapshot {snapshots[0].timestamp} precedes val_start {val_start}")
+    if val_end and snapshots[-1].timestamp > val_end:
+        raise ValueError(f"Last snapshot {snapshots[-1].timestamp} exceeds val_end {val_end}")
+
+    # Verify MTF features are populated in the sample
+    has_1h = any(s.features_1h is not None for s in snapshots[:500])
+    has_4h = any(s.features_4h is not None for s in snapshots[:500])
+    has_1d = any(s.features_1d is not None for s in snapshots[:500])
+    if not (has_1h and has_4h and has_1d):
+        raise ValueError("STALE_CACHE_REJECTED: Multi-timeframe feature coverage missing (1h/4h/1d are None)")
+
+    return tuple(snapshots)
 
 
 class XauUsdPointInTimeReplay:
@@ -71,6 +336,7 @@ class XauUsdPointInTimeReplay:
         holding_horizon_seconds: Optional[float] = None,
         max_fill_wait_bars_15m: Optional[int] = None,
         max_fill_wait_seconds: Optional[float] = None,
+        run_start_time: Optional[datetime] = None,
         run_end_time: Optional[datetime] = None,
     ):
         self.dataset = dataset
@@ -95,7 +361,7 @@ class XauUsdPointInTimeReplay:
             )
 
         self.feature_engine = feature_engine or FeatureEngine()
-        self.regime_engine = regime_engine or RegimeEngine()
+        self.regime_engine = regime_engine or RegimeEngine.for_xauusd()
         self.structure_engine = structure_engine or CausalStructureEngine()
         self.execution_policy = execution_policy
         self.intrabar_policy = intrabar_policy
@@ -105,15 +371,27 @@ class XauUsdPointInTimeReplay:
         self.holding_horizon_seconds = holding_horizon_seconds
         self.max_fill_wait_bars_15m = max_fill_wait_bars_15m
         self.max_fill_wait_seconds = max_fill_wait_seconds
+        self.run_start_time = _require_utc(run_start_time, "run_start_time") if run_start_time is not None else None
         self.run_end_time = _require_utc(run_end_time, "run_end_time") if run_end_time is not None else None
 
-    def run(self, clock: ReplayClock) -> Tuple[List[DualSideSignalSnapshot], List[XauUsdSimulatedTrade]]:
+    def run(
+        self,
+        clock: ReplayClock,
+        market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
+    ) -> Tuple[List[DualSideSignalSnapshot], List[XauUsdSimulatedTrade]]:
         """
         Iterate through timeline clock evaluating point-in-time signals and executing outcomes.
+        If market_cache is supplied, runs optimized cached replay directly.
         """
+        if market_cache is not None:
+            return self.run_from_cache(market_cache)
         signals: List[DualSideSignalSnapshot] = []
         trades: List[XauUsdSimulatedTrade] = []
         trade_counter = 0
+        raw_15m = getattr(self.dataset, "_candles", {}).get("15m", [])
+        unclosed_15m_ts = [
+            _require_utc(c.timestamp_close) for c in raw_15m if not c.is_closed
+        ]
 
         for t_step in clock:
             t_utc = _require_utc(t_step, "clock_step")
@@ -129,15 +407,11 @@ class XauUsdPointInTimeReplay:
             closed_1d = self.dataset.get_closed_candles("1d", as_of=t_utc)
 
             # Check unclosed candle safety hold
-            raw_15m = getattr(self.dataset, "_candles", {}).get("15m", [])
-            has_unclosed_le_t = any(
-                _require_utc(c.timestamp_close) <= t_utc and not c.is_closed
-                for c in raw_15m
-            )
+            has_unclosed_le_t = any(ts <= t_utc for ts in unclosed_15m_ts) if unclosed_15m_ts else False
             macro_ctx = self.dataset.get_macro_context(as_of=t_utc)
             cycle_3a_snap = self.dataset.get_cycle_3a(as_of=t_utc)
 
-            # Derive macro feed health and blackout state strictly from PIT evidence
+            # Derive macro feed health and blackout state strictly from PIT evidence (fail closed if missing)
             macro_health = FeedHealthStatus.MISSING
             is_blackout = False
 
@@ -151,13 +425,22 @@ class XauUsdPointInTimeReplay:
                     is_blackout = True
 
             # 2. Compute PIT Features, Regime & Structure
-            feats_15m = self.feature_engine.extract_features(closed_15m) if len(closed_15m) >= 20 else None
-            regime_15m = self.regime_engine.classify(feats_15m) if feats_15m else None
-            structure_15m = self.structure_engine.analyze(closed_15m, atr=feats_15m.atr14 if feats_15m else None) if len(closed_15m) >= 5 else None
+            eval_15m = closed_15m[-500:] if len(closed_15m) > 500 else closed_15m
+            eval_1h = closed_1h[-500:] if len(closed_1h) > 500 else closed_1h
+            eval_4h = closed_4h[-500:] if len(closed_4h) > 500 else closed_4h
+            eval_1d = closed_1d[-500:] if len(closed_1d) > 500 else closed_1d
 
-            feats_1h = self.feature_engine.extract_features(closed_1h) if len(closed_1h) >= 20 else None
-            feats_4h = self.feature_engine.extract_features(closed_4h) if len(closed_4h) >= 20 else None
-            feats_1d = self.feature_engine.extract_features(closed_1d) if len(closed_1d) >= 20 else None
+            feats_15m = self.feature_engine.extract_features(eval_15m) if len(eval_15m) >= 20 else None
+            regime_15m = (
+                self.regime_engine.classify(feats_15m, instrument="XAUUSD")
+                if feats_15m
+                else None
+            )
+            structure_15m = self.structure_engine.analyze(eval_15m, atr=feats_15m.atr14 if feats_15m else None) if len(eval_15m) >= 5 else None
+
+            feats_1h = self.feature_engine.extract_features(eval_1h) if len(eval_1h) >= 20 else None
+            feats_4h = self.feature_engine.extract_features(eval_4h) if len(eval_4h) >= 20 else None
+            feats_1d = self.feature_engine.extract_features(eval_1d) if len(eval_1d) >= 20 else None
 
             from engine.core.types import VolumeEvidenceType
             vol_health = FeedHealthStatus.MISSING
@@ -180,7 +463,7 @@ class XauUsdPointInTimeReplay:
             )
 
             # Causal 4H Structure for Phase 5 Structural Targets
-            structure_4h = self.structure_engine.analyze(closed_4h, atr=feats_4h.atr14 if feats_4h else None) if len(closed_4h) >= 5 else None
+            structure_4h = self.structure_engine.analyze(eval_4h, atr=feats_4h.atr14 if feats_4h else None) if len(eval_4h) >= 5 else None
 
             # PIT Phase 3A Cycle and Macro Context
             cycle_3a_snap = self.dataset.get_cycle_3a(as_of=t_utc)
@@ -375,6 +658,224 @@ class XauUsdPointInTimeReplay:
                     trades.append(sim_trade)
                 else:
                     # Record skipped / invalid risk trade
+                    trades.append(
+                        XauUsdSimulatedTrade(
+                            trade_id=trade_id,
+                            side=SignalSide.SHORT,
+                            candidate_state=cand_state,
+                            candidate_user_decision=cand_decision,
+                            source_signal_fingerprint=signal_snapshot.analysis_fingerprint,
+                            signal_timestamp=t_utc,
+                            risk_plan_fingerprint=getattr(risk_plan, "risk_plan_fingerprint", f"risk-{signal_snapshot.analysis_fingerprint[:16]}"),
+                            planned_risk_amount=Decimal("0.00"),
+                            outcome=XauUsdTradeOutcome.SKIPPED,
+                            run_fingerprint=self.run_fingerprint,
+                            fold_id=self.fold_id,
+                            dependency_window=(t_utc, t_utc),
+                            dependency_end_timestamp=t_utc,
+                        )
+                    )
+
+        return signals, trades
+
+    def run_from_cache(
+        self,
+        market_cache: Sequence[XauUsdReplayMarketSnapshot],
+    ) -> Tuple[List[DualSideSignalSnapshot], List[XauUsdSimulatedTrade]]:
+        """
+        Execute candidate replay using precomputed analytical market evidence cache.
+        Evaluates candidate-specific scoring and gates using existing XauUsdSignalEngine.
+        """
+        signals: List[DualSideSignalSnapshot] = []
+        trades: List[XauUsdSimulatedTrade] = []
+        trade_counter = 0
+
+        raw_15m = getattr(self.dataset, "_candles", {}).get("15m", [])
+        raw_5m = getattr(self.dataset, "_candles", {}).get("5m", [])
+        raw_1m = getattr(self.dataset, "_candles", {}).get("1m", [])
+        raw_quotes = getattr(self.dataset, "_quotes", [])
+
+        for snap in market_cache:
+            t_utc = snap.timestamp
+            if self.run_start_time is not None and t_utc < self.run_start_time:
+                continue
+            if self.run_end_time is not None and t_utc >= self.run_end_time:
+                break
+
+            # 3. Master Dual-Side Signal Evaluation @ T (Phase 4 Engine)
+            signal_snapshot = self.signal_engine.analyze(
+                closed_candles_15m=[snap.candle_15m],
+                closed_candles_1h=None,
+                closed_candles_4h=None,
+                closed_candles_1d=None,
+                regime_15m=snap.regime_15m,
+                features_15m=snap.features_15m,
+                features_1h=snap.features_1h,
+                features_4h=snap.features_4h,
+                features_1d=snap.features_1d,
+                structure_15m=snap.structure_15m,
+                cycle_3a=snap.cycle_3a,
+                runtime_health=snap.runtime_health,
+                profile=self.signal_profile,
+                instrument="XAUUSD",
+                timeframe="15m",
+                as_of=t_utc,
+            )
+
+            if signal_snapshot is None:
+                continue
+
+            signals.append(signal_snapshot)
+
+            cand_state = signal_snapshot.candidate_state
+            cand_decision = signal_snapshot.candidate_user_decision
+
+            # 4. Check if Candidate Signal Triggers LONG Planning
+            if cand_state == SignalState.BUY_WINDOW and cand_decision == UserDecision.BUY:
+                trade_counter += 1
+                trade_id = f"trade-long-{trade_counter}-{t_utc.strftime('%Y%m%d%H%M')}"
+
+                atr_14 = snap.atr14
+                if atr_14 is None:
+                    risk_plan = self.risk_planner._build_invalid_snapshot(
+                        side=SignalSide.LONG,
+                        source_phase4_fingerprint=signal_snapshot.analysis_fingerprint,
+                        source_candidate_state=cand_state,
+                        source_candidate_decision=cand_decision,
+                        authoritative_t=t_utc,
+                        atr_value=Decimal("0"),
+                        reasons=("ATR14 unavailable from closed 15m candles.",),
+                    )
+                else:
+                    risk_plan = self.risk_planner.plan_long(
+                        phase4_snapshot=signal_snapshot,
+                        structure_15m=snap.structure_15m,
+                        atr14=atr_14,
+                        structure_4h=snap.structure_4h,
+                    )
+
+                if risk_plan.is_valid_risk_plan and risk_plan.execution_eligible:
+                    future_15m = [
+                        c for c in raw_15m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_5m = [
+                        c for c in raw_5m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_1m = [
+                        c for c in raw_1m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_quotes = [
+                        q for q in raw_quotes
+                        if _require_utc(q.timestamp) >= t_utc
+                        and (self.run_end_time is None or _require_utc(q.timestamp) < self.run_end_time)
+                    ]
+
+                    sim_trade = self.outcome_engine.resolve_trade(
+                        signal=signal_snapshot,
+                        risk_plan=risk_plan,
+                        future_candles_15m=future_15m,
+                        future_candles_5m=future_5m if future_5m else None,
+                        future_candles_1m=future_1m if future_1m else None,
+                        future_quotes=future_quotes if future_quotes else None,
+                        execution_policy=self.execution_policy,
+                        intrabar_policy=self.intrabar_policy,
+                        trade_id=trade_id,
+                        run_fingerprint=self.run_fingerprint,
+                        fold_id=self.fold_id,
+                        holding_horizon_bars_15m=self.holding_horizon_bars_15m,
+                        holding_horizon_seconds=self.holding_horizon_seconds,
+                        run_end_time=self.run_end_time,
+                    )
+                    trades.append(sim_trade)
+                else:
+                    trades.append(
+                        XauUsdSimulatedTrade(
+                            trade_id=trade_id,
+                            side=SignalSide.LONG,
+                            candidate_state=cand_state,
+                            candidate_user_decision=cand_decision,
+                            source_signal_fingerprint=signal_snapshot.analysis_fingerprint,
+                            signal_timestamp=t_utc,
+                            risk_plan_fingerprint=getattr(risk_plan, "risk_plan_fingerprint", f"risk-{signal_snapshot.analysis_fingerprint[:16]}"),
+                            planned_risk_amount=Decimal("0.00"),
+                            outcome=XauUsdTradeOutcome.SKIPPED,
+                            run_fingerprint=self.run_fingerprint,
+                            fold_id=self.fold_id,
+                            dependency_window=(t_utc, t_utc),
+                            dependency_end_timestamp=t_utc,
+                        )
+                    )
+
+            # 5. Check if Candidate Signal Triggers SHORT Planning
+            elif cand_state == SignalState.SELL_WINDOW and cand_decision == UserDecision.SELL:
+                trade_counter += 1
+                trade_id = f"trade-short-{trade_counter}-{t_utc.strftime('%Y%m%d%H%M')}"
+
+                atr_14 = snap.atr14
+                if atr_14 is None:
+                    risk_plan = self.risk_planner._build_invalid_snapshot(
+                        side=SignalSide.SHORT,
+                        source_phase4_fingerprint=signal_snapshot.analysis_fingerprint,
+                        source_candidate_state=cand_state,
+                        source_candidate_decision=cand_decision,
+                        authoritative_t=t_utc,
+                        atr_value=Decimal("0"),
+                        reasons=("ATR14 unavailable from closed 15m candles.",),
+                    )
+                else:
+                    risk_plan = self.risk_planner.plan_short(
+                        phase4_snapshot=signal_snapshot,
+                        structure_15m=snap.structure_15m,
+                        atr14=atr_14,
+                        structure_4h=snap.structure_4h,
+                    )
+
+                if risk_plan.is_valid_risk_plan and risk_plan.execution_eligible:
+                    future_15m = [
+                        c for c in raw_15m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_5m = [
+                        c for c in raw_5m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_1m = [
+                        c for c in raw_1m
+                        if _require_utc(c.timestamp_close) > t_utc
+                        and (self.run_end_time is None or _require_utc(c.timestamp_close) < self.run_end_time)
+                    ]
+                    future_quotes = [
+                        q for q in raw_quotes
+                        if _require_utc(q.timestamp) >= t_utc
+                        and (self.run_end_time is None or _require_utc(q.timestamp) < self.run_end_time)
+                    ]
+
+                    sim_trade = self.outcome_engine.resolve_trade(
+                        signal=signal_snapshot,
+                        risk_plan=risk_plan,
+                        future_candles_15m=future_15m,
+                        future_candles_5m=future_5m if future_5m else None,
+                        future_candles_1m=future_1m if future_1m else None,
+                        future_quotes=future_quotes if future_quotes else None,
+                        execution_policy=self.execution_policy,
+                        intrabar_policy=self.intrabar_policy,
+                        trade_id=trade_id,
+                        run_fingerprint=self.run_fingerprint,
+                        fold_id=self.fold_id,
+                        holding_horizon_bars_15m=self.holding_horizon_bars_15m,
+                        holding_horizon_seconds=self.holding_horizon_seconds,
+                        run_end_time=self.run_end_time,
+                    )
+                    trades.append(sim_trade)
+                else:
                     trades.append(
                         XauUsdSimulatedTrade(
                             trade_id=trade_id,

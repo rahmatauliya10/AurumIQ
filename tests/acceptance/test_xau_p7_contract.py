@@ -117,7 +117,7 @@ def _make_candle(
 def _seed_candles(instrument_obj: Instrument, count: int = 40):
     """Seed synthetic closed 15m, 1h, 4h, 1d candles for tests."""
     import math
-    base_ts = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 8, 5, 0, 0, tzinfo=timezone.utc)
     # Seed 15m with causal swing waves (support ~2638 and resistance ~2662)
     for i in range(count):
         ts_open = base_ts + timedelta(minutes=15 * i)
@@ -235,7 +235,7 @@ class TestXauP701AcceptanceContract(TestCase):
         ProviderHealthSnapshot.objects.create(
             listing=self.primary_listing,
             status="HEALTHY",
-            checked_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 8, 5, 0, 0, tzinfo=timezone.utc),
         )
 
         # Create authenticated test user
@@ -253,7 +253,7 @@ class TestXauP701AcceptanceContract(TestCase):
         - candidate state preserved
         - valid LONG risk displayed
         """
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_LONG_1",
             instrument="XAUUSD",
@@ -358,7 +358,7 @@ class TestXauP701AcceptanceContract(TestCase):
         - SHORT risk displayed
         - BID used for short entry-zone monitoring
         """
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_SHORT_1",
             instrument="XAUUSD",
@@ -505,7 +505,7 @@ class TestXauP701AcceptanceContract(TestCase):
         - payload contains mandatory disclaimer
         - zero order execution fields
         """
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         sig = SignalRecord.objects.create(
             instrument=self.xauusd,
             timeframe="15m",
@@ -586,10 +586,19 @@ class TestXauP701AcceptanceContract(TestCase):
             calibration_status="CANDIDATE_NOT_FROZEN",
         )
 
-        alerts = AlertGenerationService.evaluate_closed_candle_alerts(
-            signal_snapshot=snapshot,
-            risk_plan=None,
-        )
+        from unittest.mock import patch
+
+        class FixedDatetime:
+            @classmethod
+            def now(cls, tz=None):
+                return now
+            timezone = timezone
+
+        with patch("apps.alerts.services.datetime", FixedDatetime):
+            alerts = AlertGenerationService.evaluate_closed_candle_alerts(
+                signal_snapshot=snapshot,
+                risk_plan=None,
+            )
         self.assertEqual(len(alerts), 1)
         alert = alerts[0]
 
@@ -609,7 +618,7 @@ class TestXauP701AcceptanceContract(TestCase):
         - macro blackout emits safety notification and published WAIT
         - macro missing/unhealthy fails closed
         """
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         state, _ = LiveMonitorState.objects.get_or_create(
             instrument="XAUUSD",
             defaults={
@@ -719,6 +728,8 @@ class TestXauP701AcceptanceContract(TestCase):
         self.assertNotIn(AlertEventType.ENTRY_ZONE_REACHED.value, [a.event_type for a in alerts_mb])
 
         # 4. Macro feed missing / unhealthy -> fail closed to FORCE_WAIT
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         macro_unhealthy_ctx = MacroEventContext(
             is_in_blackout=False,
             is_feed_healthy=False,
@@ -737,6 +748,8 @@ class TestXauP701AcceptanceContract(TestCase):
         self.assertEqual(state_mu.feed_health_data["macro_status"], "UNHEALTHY")
 
         # 5. Missing / None macro context -> strictly fails closed to FORCE_WAIT
+        SignalRecord.objects.all().delete()
+        LiveMonitorState.objects.all().delete()
         _, _, state_missing_macro = XauUsdLiveDecisionPipelineService.process_closed_candle(
             event=event,
             code_revision="34a21541f2a9725c7fde324c1e08245a2363742d",
@@ -756,7 +769,7 @@ class TestXauP701AcceptanceContract(TestCase):
         must agree on candidate/published/risk state with real broadcaster capture.
         """
         from apps.live_monitor.consumers import LiveEventBroadcaster
-        now = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 5, 10, 0, tzinfo=timezone.utc)
         event = CandleClosedEvent(
             event_id="EVT_GATE_F_PARITY",
             instrument="XAUUSD",

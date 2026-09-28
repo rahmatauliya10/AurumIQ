@@ -185,6 +185,8 @@ def explain_signal(
 
     # Direction components explanation
     for comp in direction.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             positive_reasons.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:
@@ -192,6 +194,8 @@ def explain_signal(
 
     # Timing components explanation
     for comp in timing.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             positive_reasons.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:
@@ -330,24 +334,32 @@ def explain_dual_side_signal(
     reasons_short_neg: List[str] = []
 
     for comp in long_direction.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             reasons_long_pos.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:
             reasons_long_neg.append(f"- {comp.name}: {comp.reason} ({comp.score}/{comp.max_score} pts)")
 
     for comp in long_timing.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             reasons_long_pos.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:
             reasons_long_neg.append(f"- {comp.name}: {comp.reason} ({comp.score}/{comp.max_score} pts)")
 
     for comp in short_direction.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             reasons_short_pos.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:
             reasons_short_neg.append(f"- {comp.name}: {comp.reason} ({comp.score}/{comp.max_score} pts)")
 
     for comp in short_timing.components:
+        if comp.max_score <= 0.0:
+            continue
         if comp.score >= (comp.max_score * 0.60):
             reasons_short_pos.append(f"+ {comp.name}: {comp.reason} (+{comp.score}/{comp.max_score} pts)")
         else:

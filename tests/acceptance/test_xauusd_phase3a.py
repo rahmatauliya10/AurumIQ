@@ -44,13 +44,18 @@ from engine.core.types import (
 from engine.cycles.profile import CalibrationStatus, Cycle3AProfile
 from engine.cycles.session import classify_session
 from engine.cycles.swing_duration import calculate_swing_duration
-from engine.cycles.calendar import calculate_calendar_seasonality
+from engine.cycles.calendar import (
+    calculate_calendar_seasonality,
+    calendar_bucket_key,
+)
 from engine.cycles.events import evaluate_macro_event_risk
 from engine.cycles.engine import RobustTimeCycleEngine
 from engine.cycles.calibration import (
     CalibrationProvenance,
+    CalendarCalibrationFold,
     Cycle3ACalibrationArtifact,
     calculate_distribution_percentiles,
+    calibrate_calendar_effects,
     calibrate_session_expectancy,
     calibrate_swing_durations,
     build_profile_from_artifact,
@@ -228,7 +233,7 @@ def test_session_calibration_requires_explicit_statistical_policy():
         candles=candles,
         regimes=regimes,
         sample_evaluations=sample_evals,
-        significance_policy=lambda avg, std, n: True,
+        significance_policy=lambda avg, std, n, eff: True,
         min_effective_n=30.0,
     )
     assert res_qualified[key].effective_n == 45.0
@@ -596,3 +601,709 @@ def test_no_phase4_directional_bias():
     exported = dir(cycles_pkg)
     for kw in banned_keywords:
         assert kw not in exported, f"Found Phase 4 banned symbol '{kw}' in engine.cycles package."
+
+
+def _make_calendar_candle(
+    timestamp_open: datetime,
+    open_price: str,
+    close_price: str,
+) -> CandleData:
+    open_dec = Decimal(open_price)
+    close_dec = Decimal(close_price)
+
+    return CandleData(
+        timestamp_open=timestamp_open,
+        timestamp_close=timestamp_open + timedelta(minutes=15),
+        open=open_dec,
+        high=max(open_dec, close_dec),
+        low=min(open_dec, close_dec),
+        close=close_dec,
+        volume=Decimal("0"),
+        is_closed=True,
+    )
+
+
+@pytest.mark.unit
+def test_calendar_bucket_key_runtime_parity():
+    normal_dt = datetime(
+        2026, 8, 12, 14, 15,
+        tzinfo=timezone.utc,
+    )
+
+    month_end_dt = datetime(
+        2026, 8, 29, 14, 15,
+        tzinfo=timezone.utc,
+    )
+
+    assert (
+        calendar_bucket_key(normal_dt)
+        == "DOW_2_HOUR_14"
+    )
+
+    assert (
+        calendar_bucket_key(month_end_dt)
+        == "MONTH_END"
+    )
+
+
+@pytest.mark.unit
+def test_calendar_calibration_rejects_non_contiguous_pairs():
+    base = datetime(
+        2026, 8, 12, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _make_calendar_candle(
+            base,
+            "100",
+            "101",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=15),
+            "101",
+            "102",
+        ),
+
+        # Gap: 00:30 -> 00:45 has no candle.
+        _make_calendar_candle(
+            base + timedelta(minutes=45),
+            "200",
+            "202",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=60),
+            "202",
+            "204",
+        ),
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=2),
+        )
+    ]
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+    )
+
+    # Valid:
+    # candle0 -> candle1
+    # candle2 -> candle3
+    #
+    # Invalid:
+    # candle1 -> candle2 because there is a gap.
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    assert total_samples == 2
+
+
+@pytest.mark.unit
+def test_calendar_calibration_does_not_cross_fold_boundary():
+    base = datetime(
+        2026, 8, 12, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    candles = [
+        _make_calendar_candle(
+            base,
+            "100",
+            "101",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=15),
+            "101",
+            "102",
+        ),
+        _make_calendar_candle(
+            base + timedelta(minutes=30),
+            "102",
+            "103",
+        ),
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(minutes=30),
+        ),
+        CalendarCalibrationFold(
+            fold_id=2,
+            start=base + timedelta(minutes=30),
+            end=base + timedelta(hours=1),
+        ),
+    ]
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+    )
+
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    # Pair ending exactly at fold-1 end is excluded because
+    # calibration folds use strict half-open [start, end).
+    #
+    # Only 00:30 -> 00:45 belongs fully to fold 2.
+    assert total_samples == 1
+
+
+@pytest.mark.unit
+def test_calendar_calibration_stability_is_fold_based_and_explicit():
+    candles = []
+    folds = []
+
+    # Three Wednesdays, same DOW/hour bucket.
+    starts = [
+        datetime(
+            2026, 8, 5, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+        datetime(
+            2026, 8, 12, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+        datetime(
+            2026, 8, 19, 14, 0,
+            tzinfo=timezone.utc,
+        ),
+    ]
+
+    prices = [
+        ("100", "101", "102"),
+        ("100", "102", "103"),
+        ("100", "103", "104"),
+    ]
+
+    for fold_id, (start, px) in enumerate(
+        zip(starts, prices),
+        start=1,
+    ):
+        candles.extend(
+            [
+                _make_calendar_candle(
+                    start,
+                    px[0],
+                    px[1],
+                ),
+                _make_calendar_candle(
+                    start + timedelta(minutes=15),
+                    px[1],
+                    px[2],
+                ),
+            ]
+        )
+
+        folds.append(
+            CalendarCalibrationFold(
+                fold_id=fold_id,
+                start=start,
+                end=start + timedelta(hours=1),
+            )
+        )
+
+    sample_eval = SampleEvaluation(
+        n_raw=3,
+        independent_after_overlap=3,
+        temporal_clusters=3,
+        hhi_norm=0.0,
+        regime_discount=0.0,
+        clustering_discount=0.0,
+        effective_n=3.0,
+        quality=SampleQuality.INSUFFICIENT,
+        weight_multiplier=0.0,
+        is_blocked=True,
+        message="TEST_ONLY",
+    )
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=3,
+        min_fold_observations=1,
+        sample_evaluations={
+            "DOW_2_HOUR_14": sample_eval,
+        },
+        significance_policy=(
+            lambda avg_ret, std_dev, n, eff: True
+        ),
+        min_effective_n=3.0,
+    )
+
+    entry = result["DOW_2_HOUR_14"]
+
+    assert entry.sample_count == 3
+    assert entry.effective_n == 3.0
+    assert entry.expectancy_r > 0.0
+    assert entry.stability == 1.0
+    assert entry.is_statistically_significant is True
+
+    # Same evidence, but caller requires four valid folds.
+    result_insufficient_folds = (
+        calibrate_calendar_effects(
+            candles=candles,
+            folds=folds,
+            timeframe="15m",
+            min_stability_folds=4,
+            min_fold_observations=1,
+            sample_evaluations={
+                "DOW_2_HOUR_14": sample_eval,
+            },
+            significance_policy=(
+                lambda avg_ret, std_dev, n, eff: True
+            ),
+            min_effective_n=3.0,
+        )
+    )
+
+    assert (
+        result_insufficient_folds[
+            "DOW_2_HOUR_14"
+        ].stability
+        == 0.0
+    )
+
+
+@pytest.mark.unit
+def test_session_calibration_rejects_non_contiguous_candle_pairs():
+    """
+    Session empirical calibration must not treat a market-data
+    gap as one 15m forward-return observation.
+
+    Only physically contiguous T -> T+1 candle pairs are eligible.
+    """
+    base = datetime(
+        2026, 8, 12, 14, 0,
+        tzinfo=timezone.utc,
+    )
+
+    def candle(
+        ts_open: datetime,
+        close_price: str,
+    ) -> CandleData:
+        close = Decimal(close_price)
+
+        return CandleData(
+            timestamp_open=ts_open,
+            timestamp_close=(
+                ts_open
+                + timedelta(minutes=15)
+            ),
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=Decimal("0"),
+            is_closed=True,
+        )
+
+    candles = [
+        candle(
+            base,
+            "101",
+        ),
+        candle(
+            base + timedelta(minutes=15),
+            "102",
+        ),
+
+        # 14:30 -> 14:45 candle is missing.
+        candle(
+            base + timedelta(minutes=45),
+            "201",
+        ),
+        candle(
+            base + timedelta(minutes=60),
+            "202",
+        ),
+    ]
+
+    regimes = [
+        (
+            c.timestamp_close,
+            RegimeType.UNKNOWN,
+        )
+        for c in candles
+    ]
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        timeframe="15m",
+    )
+
+    total_samples = sum(
+        entry.sample_count
+        for entry in result.values()
+    )
+
+    # Eligible:
+    # 14:00 -> 14:15 pair
+    # 14:45 -> 15:00 pair
+    #
+    # Rejected:
+    # 14:15 -> 14:45 because a 15m bar is missing.
+    assert total_samples == 2
+
+
+def test_session_significance_policy_receives_effective_n():
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    regimes = [(c.timestamp_close, RegimeType.UNKNOWN) for c in candles]
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test eval",
+    )
+
+    calls = []
+
+    def policy(
+        mean_return: float,
+        std_dev: float,
+        raw_n: int,
+        effective_n: float,
+    ) -> bool:
+        calls.append((raw_n, effective_n))
+        return True
+
+    sess_type = classify_session(candles[0].timestamp_close).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        sample_evaluations={key: sample_eval},
+        significance_policy=policy,
+        timeframe="15m",
+    )
+
+    assert calls
+    assert any(
+        raw_n != effective_n
+        for raw_n, effective_n in calls
+    )
+    assert any(
+        effective_n == 42.0
+        for _, effective_n in calls
+    )
+
+
+def test_calendar_significance_policy_receives_effective_n():
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=5),
+        ),
+    ]
+
+    bucket = calendar_bucket_key(candles[0].timestamp_close)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=37.5,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test eval",
+    )
+
+    calls = []
+
+    def policy(
+        mean_return: float,
+        std_dev: float,
+        raw_n: int,
+        effective_n: float,
+    ) -> bool:
+        calls.append((raw_n, effective_n))
+        return True
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+        sample_evaluations={bucket: sample_eval},
+        significance_policy=policy,
+    )
+
+    assert calls
+    assert any(
+        raw_n != effective_n
+        for raw_n, effective_n in calls
+    )
+    assert any(
+        effective_n == 37.5
+        for _, effective_n in calls
+    )
+
+
+def test_session_zero_variance_significance_fails_closed():
+    calls = []
+
+    def policy(
+        mean_return,
+        std_dev,
+        raw_n,
+        effective_n,
+    ):
+        calls.append(std_dev)
+        return std_dev > 0.0
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal("2500"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+    regimes = [
+        (c.timestamp_close, RegimeType.UNKNOWN)
+        for c in candles
+    ]
+
+    sess_type = classify_session(
+        candles[0].timestamp_close
+    ).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test zero variance",
+    )
+
+    result = calibrate_session_expectancy(
+        candles=candles,
+        regimes=regimes,
+        sample_evaluations={
+            key: sample_eval,
+        },
+        significance_policy=policy,
+        timeframe="15m",
+    )
+
+    assert calls
+    assert 0.0 in calls
+
+    entry = next(iter(result.values()))
+
+    assert (
+        entry.is_statistically_significant
+        is False
+    )
+
+
+def test_calendar_zero_variance_significance_fails_closed():
+    calls = []
+
+    def policy(
+        mean_return,
+        std_dev,
+        raw_n,
+        effective_n,
+    ):
+        calls.append(std_dev)
+        return std_dev > 0.0
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal("2500"),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+
+    folds = [
+        CalendarCalibrationFold(
+            fold_id=1,
+            start=base,
+            end=base + timedelta(hours=5),
+        ),
+    ]
+
+    bucket = calendar_bucket_key(
+        candles[0].timestamp_close
+    )
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=37.5,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test zero variance calendar",
+    )
+
+    result = calibrate_calendar_effects(
+        candles=candles,
+        folds=folds,
+        timeframe="15m",
+        min_stability_folds=1,
+        min_fold_observations=1,
+        sample_evaluations={
+            bucket: sample_eval,
+        },
+        significance_policy=policy,
+    )
+
+    assert calls
+    assert 0.0 in calls
+
+    entry = next(iter(result.values()))
+
+    assert (
+        entry.is_statistically_significant
+        is False
+    )
+
+
+def test_legacy_three_argument_significance_policy_is_rejected():
+    def legacy_policy(
+        mean_return,
+        std_dev,
+        raw_n,
+    ):
+        return True
+
+    base = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+    candles = [
+        CandleData(
+            timestamp_open=base + timedelta(minutes=15 * i),
+            timestamp_close=base + timedelta(minutes=15 * (i + 1)),
+            open=Decimal("2500"),
+            high=Decimal("2505"),
+            low=Decimal("2495"),
+            close=Decimal(str(2500 + i)),
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+        for i in range(10)
+    ]
+    regimes = [
+        (c.timestamp_close, RegimeType.UNKNOWN)
+        for c in candles
+    ]
+
+    sess_type = classify_session(
+        candles[0].timestamp_close
+    ).session
+    key = (sess_type, RegimeType.UNKNOWN)
+
+    sample_eval = SampleEvaluation(
+        n_raw=100,
+        independent_after_overlap=80,
+        temporal_clusters=70,
+        hhi_norm=0.5,
+        regime_discount=0.1,
+        clustering_discount=0.1,
+        effective_n=42.0,
+        quality=SampleQuality.MEDIUM,
+        weight_multiplier=0.8,
+        is_blocked=False,
+        message="test reject 3-arg",
+    )
+
+    with pytest.raises(TypeError):
+        calibrate_session_expectancy(
+            candles=candles,
+            regimes=regimes,
+            sample_evaluations={
+                key: sample_eval,
+            },
+            significance_policy=legacy_policy,
+            timeframe="15m",
+        )

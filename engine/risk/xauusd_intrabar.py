@@ -127,6 +127,7 @@ class SideAwareIntrabarResolver:
         tp_price: Decimal,
         sl_price: Decimal,
         fill_timestamp: Optional[datetime] = None,
+        fill_price: Optional[Decimal] = None,
         lower_tf_candles_1m: Optional[Sequence[CandleData]] = None,
         lower_tf_candles_5m: Optional[Sequence[CandleData]] = None,
         lower_tf_candles_15m: Optional[Sequence[CandleData]] = None,
@@ -148,6 +149,38 @@ class SideAwareIntrabarResolver:
                 replay_bars_count=0,
                 reasons=("Parent candle failed strict validation (OHLC/timestamps).",),
             )
+
+        if fill_price is not None:
+            if not isinstance(fill_price, Decimal) or not fill_price.is_finite():
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.UNRESOLVED,
+                    exit_price=None,
+                    exit_timestamp=None,
+                    policy_applied=policy,
+                    replay_bars_count=0,
+                    reasons=("fill_price must be a finite Decimal.",),
+                )
+            if side == RiskSide.LONG and (fill_price >= tp_price or fill_price <= sl_price):
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.UNRESOLVED,
+                    exit_price=None,
+                    exit_timestamp=None,
+                    policy_applied=policy,
+                    replay_bars_count=0,
+                    reasons=(f"Invalid LONG barrier ordering relative to fill_price: sl({sl_price}) < fill({fill_price}) < tp({tp_price}) violated.",),
+                )
+            elif side == RiskSide.SHORT and (fill_price <= tp_price or fill_price >= sl_price):
+                return SideIntrabarResolutionResult(
+                    side=side,
+                    barrier_hit=BarrierHitType.UNRESOLVED,
+                    exit_price=None,
+                    exit_timestamp=None,
+                    policy_applied=policy,
+                    replay_bars_count=0,
+                    reasons=(f"Invalid SHORT barrier ordering relative to fill_price: tp({tp_price}) < fill({fill_price}) < sl({sl_price}) violated.",),
+                )
 
         if fill_timestamp is not None:
             if (

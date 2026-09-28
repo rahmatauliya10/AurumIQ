@@ -1,0 +1,198 @@
+{
+  "schema": "aurumiq.calibration.profile.v1",
+  "artifact_id": "xauusd_calibrated_profile_candidate_composite_post_remediation",
+  "instrument": "XAUUSD",
+  "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
+  "production_authority": false,
+  "paper_only": true,
+  "real_order_execution": false,
+  "code_revision": "14dbd98b84c3e1bfc6cab9d9ec7f0fbe258d1e15",
+  "remediation_reference": "Outcome-accounting remediation: post-fill risk plan validation with ENTRY_INVALIDATED_STALE_RISK_PLAN, eliminating stale TP negative gross R manufactured trades.",
+  "created_at": "2026-09-25T06:49:48.210449+00:00",
+  "composite_id": "XAUUSD_COMPOSITE_L018_S031",
+  "composite_fingerprint": "c5a63597d8b652b8a30372c2effe86ca3c4452212e209b0bc013da5fe6684ffc:ed59b898a5e07b87d304e401b51198aa6e2a7f5a3032dfa309d32102e618cd70",
+  "policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
+  "selection_policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b",
+  "generator_policy_fingerprint": "111873cfbd11850613bd2496baa3d5e4fc8f1a52f4930a7f694b9bf334e6b46f",
+  "composite_execution_revision": "14dbd98b84c3e1bfc6cab9d9ec7f0fbe258d1e15",
+  "run_fingerprint": "7ec187fc43e0e2fdb62d33629846e4754cec81261c5d92a444cc4105acb4cc10",
+  "dataset_fingerprint": "547ec898e42ed0eff2992400d784e40c6b53c1d26b7a5e5722e0eb1128080242",
+  "cache_schema": "aurumiq.xauusd_market_cache.v2",
+  "cache_semantics": "v2_mtf_features",
+  "fold_semantics": "ALL_MATCHING_FOLDS",
+  "overall_trade_semantics": "UNIQUE_PHYSICAL_TRADES",
+  "selected_long_id": "XAUUSD_CANDIDATE_018",
+  "selected_long_metrics": {
+    "trade_count": 115,
+    "effective_n": 110.0,
+    "mean_r": 0.1876,
+    "side_lcb_95": 0.0196,
+    "side_max_drawdown_r": 7.008,
+    "temporal_stability": 0.9239,
+    "profit_concentration_pct": 32.11,
+    "positive_folds": 5,
+    "fold_expectancies": [
+      0.2144,
+      0.1951,
+      0.0046,
+      0.1049,
+      0.1845
+    ]
+  },
+  "selected_short_id": "XAUUSD_CANDIDATE_031",
+  "selected_short_metrics": {
+    "trade_count": 95,
+    "effective_n": 82.0,
+    "mean_r": 0.4446,
+    "side_lcb_95": 0.0924,
+    "side_max_drawdown_r": 16.341,
+    "temporal_stability": 0.7392,
+    "profit_concentration_pct": 53.02,
+    "positive_folds": 5,
+    "fold_expectancies": [
+      0.1492,
+      0.1087,
+      0.1087,
+      0.8625,
+      0.6711
+    ]
+  },
+  "composite_val_metrics": {
+    "trade_count": 210,
+    "buy_effective_n": 110.0,
+    "sell_effective_n": 82.0,
+    "combined_effective_n": 192.0,
+    "val_mean_r": 0.3038,
+    "val_std_r": 1.5093,
+    "val_lcb_95": 0.1244,
+    "val_max_drawdown_r": 16.7866,
+    "val_temporal_stability": 0.8702,
+    "val_profit_concentration_pct": 47.0168,
+    "fold_expectancies": [
+      0.1894,
+      0.1495,
+      0.0506,
+      0.3664,
+      0.4423
+    ],
+    "fold_profits": [
+      18.7485,
+      10.763,
+      4.3506,
+      41.4034,
+      66.7898
+    ],
+    "positive_folds": 5,
+    "total_folds": 5,
+    "qualified": true
+  },
+  "reachability_evidence": {
+    "buy_window_count": 570,
+    "sell_window_count": 6517,
+    "ready_short_count": 11162,
+    "reachability_buy_window": "GREEN",
+    "reachability_sell_window": "GREEN",
+    "reachability_ready_short": "GREEN"
+  },
+  "outcome_invariants": {
+    "invalidated_entry_count": 448,
+    "stale_tp_negative_gross_count": 0,
+    "stale_sl_positive_gross_count": 0
+  },
+  "signal_profile": {
+    "name": "XAUUSD_COMPOSITE_L018_S031",
+    "target_instrument": "XAUUSD",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
+    "timeframe": "15m",
+    "long_direction": {
+      "weight_regime": 0.0,
+      "weight_trend_1h": 11.8877,
+      "weight_trend_4h": 3.9745,
+      "weight_trend_1d": 30.9802,
+      "weight_structure_bos": 15.005,
+      "weight_pullback": 15.5289,
+      "weight_momentum": 22.6237,
+      "weight_volume": 0.0
+    },
+    "short_direction": {
+      "weight_regime": 0.0,
+      "weight_trend_1h": 21.6828,
+      "weight_trend_4h": 16.75,
+      "weight_trend_1d": 25.1459,
+      "weight_structure_bos": 10.4533,
+      "weight_pullback": 21.0784,
+      "weight_momentum": 4.8896,
+      "weight_volume": 0.0
+    },
+    "long_timing": {
+      "weight_entry_zone": 14.9569,
+      "weight_reversal_confirmation_15m": 27.1787,
+      "weight_momentum_turn_15m_1h": 57.8644,
+      "weight_phase3a": 0.0,
+      "weight_volume_response": 0.0
+    },
+    "short_timing": {
+      "weight_entry_zone": 42.9806,
+      "weight_reversal_confirmation_15m": 2.8122,
+      "weight_momentum_turn_15m_1h": 54.2072,
+      "weight_phase3a": 0.0,
+      "weight_volume_response": 0.0
+    },
+    "long_gate": {
+      "threshold_watch_direction": 21.01,
+      "threshold_ready_direction": 74.27,
+      "threshold_ready_timing": 44.01,
+      "threshold_window_direction": 92.18,
+      "threshold_window_timing": 61.7
+    },
+    "short_gate": {
+      "threshold_watch_direction": 3.73,
+      "threshold_ready_direction": 27.24,
+      "threshold_ready_timing": 57.26,
+      "threshold_window_direction": 42.84,
+      "threshold_window_timing": 71.49
+    },
+    "feed_policy": {
+      "primary_15m": "CRITICAL",
+      "primary_1h": "OPTIONAL",
+      "primary_4h": "OPTIONAL",
+      "primary_1d": "OPTIONAL",
+      "secondary_provider": "OPTIONAL",
+      "macro_blackout": "CRITICAL",
+      "volume": "OPTIONAL",
+      "phase3a": "OPTIONAL",
+      "phase3b": "INFORMATIONAL",
+      "dxy_yields_futures": "INFORMATIONAL"
+    }
+  },
+  "risk_profile": {
+    "name": "XAUUSD_RISK_COMPOSITE_L018_S031",
+    "target_instrument": "XAUUSD",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
+    "long_risk_policy": {
+      "structure_buffer": "0.94",
+      "atr_multiplier": "0.28",
+      "max_stop_distance_atr": "2.67",
+      "min_rr_tp1": "0.1",
+      "tp2_atr_multiplier": null
+    },
+    "short_risk_policy": {
+      "structure_buffer": "2.61",
+      "atr_multiplier": "0.92",
+      "max_stop_distance_atr": "1.42",
+      "min_rr_tp1": "3.03",
+      "tp2_atr_multiplier": null
+    },
+    "long_execution_policy": {
+      "latency_seconds": 1.0,
+      "synthetic_spread_pct": "0.02",
+      "slippage_pct": "0.01"
+    },
+    "short_execution_policy": {
+      "latency_seconds": 1.0,
+      "synthetic_spread_pct": "0.02",
+      "slippage_pct": "0.01"
+    }
+  },
+  "artifact_fingerprint": "ac4f2c34327a3408b0823190bb6e3543c97cc175d23ed766c85d48da33a41f9a"
+}

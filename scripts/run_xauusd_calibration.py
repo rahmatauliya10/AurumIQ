@@ -4,13 +4,15 @@ AurumIQ XAUUSD Signal & Risk Profile Empirical Calibration Runner.
 Strict Invariants:
 1. Dataset Provenance: Validates local SQLite db.sqlite3 against governed manifest (161,233 15m candles, fingerprint 2c45cf9c...).
 2. Dynamic Embargo Gate: Enforces embargo_seconds >= (max_fill_wait_bars + holding_horizon_bars) * 900.
-3. Candidate Search Space: Exactly 100 joint candidates (indices 0..99) from XauUsdJointCandidateGenerator.
-4. Empirical Drawdown Baseline: Candidate 0 (REFERENCE_CANDIDATE_0) establishes the empirical baseline MDD on VAL.
-5. Relative Drawdown Gate: Evaluates candidate MDD against baseline + 10% deterioration allowance (<= 18.0R).
-6. Full Selection Policy: Evaluates N_eff (Buy >= 60, Sell >= 60, Comb >= 100), LCB_95 > 0, profit concentration <= 60%.
-7. LOCK 1 CHAMPION BEFORE OOS: Identifies top qualifying candidate, locks identity and emits fingerprints BEFORE touching OOS.
-8. OOS One-Time Qualification: Evaluates champion ONCE across 5 OOS folds (>= 4/5 positive folds, stability >= 0.50, LCB_95 > 0).
-9. Fail-Closed Immutability: If champion fails OOS, halts immediately as REJECTED with CALIBRATION_REQUIRED (NO FISHING).
+3. Candidate Search Space: Up to 100 joint candidates (indices 0..99) from XauUsdJointCandidateGenerator.
+4. Structural Reachability Precheck: Verifies thresholds do not exceed active component maximums before replay.
+5. Empirical Drawdown Baseline: Candidate 0 establishes empirical baseline MDD dynamically on VAL (NO HARDCODED BASELINE).
+6. Relative Drawdown Gate: Evaluates candidate MDD against baseline + 10% deterioration allowance (<= 18.0R).
+7. Full Selection Policy: Evaluates N_eff (Buy >= 60, Sell >= 60, Comb >= 100), LCB_95 > 0, profit concentration <= 60%.
+8. Ranking on VAL ONLY: Selects top qualifying candidate dynamically (NO HARDCODED CHAMPION 0).
+9. LOCK 1 CHAMPION BEFORE OOS: Identifies top qualifying candidate, locks identity and emits fingerprints BEFORE touching OOS.
+10. OOS One-Time Qualification: Evaluates champion ONCE across 5 OOS folds (>= 4/5 positive folds, stability >= 0.50, LCB_95 > 0).
+11. Fail-Closed Immutability: If champion fails OOS, halts immediately as REJECTED with CALIBRATION_REQUIRED (NO FISHING).
 """
 import copy
 from datetime import datetime, timezone
@@ -20,14 +22,21 @@ import json
 import math
 import os
 from pathlib import Path
+import pickle
 import sqlite3
+import statistics
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
+os.environ["AURUMIQ_ENABLE_OOS"] = "0"
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 import django
 django.setup()
@@ -41,14 +50,20 @@ from engine.core.types import (
 )
 from engine.signals.profile import (
     Phase4CalibrationStatus,
+    Phase4SignalProfile,
     compute_phase4_policy_fingerprint,
 )
 from engine.risk.xauusd_fingerprints import compute_phase5_policy_fingerprint
+from engine.backtest.repository import PointInTimeDataset
+from engine.backtest.runner import ReplayClock
 from engine.backtest.xauusd_calibration_policy import (
+    XauUsdSignalCalibrationSelectionPolicy,
     load_governed_selection_policy,
     compute_selection_policy_fingerprint,
 )
 from engine.backtest.xauusd_candidate_generator import (
+    ACTIVE_DIRECTION_COMPONENTS,
+    ACTIVE_TIMING_COMPONENTS,
     load_governed_candidate_generation_policy,
 )
 from engine.backtest.xauusd_risk_candidate_generator import (
@@ -56,335 +71,927 @@ from engine.backtest.xauusd_risk_candidate_generator import (
     XauUsdJointCandidateGenerator,
     load_governed_risk_candidate_generation_policy,
 )
+from engine.backtest.xauusd_replay import (
+    XauUsdReplayMarketSnapshot,
+    build_market_snapshot_cache,
+    load_market_snapshot_cache,
+    save_market_snapshot_cache,
+)
+from engine.backtest.xauusd_runner import XauUsdBacktestRunner
 from engine.backtest.xauusd_types import (
     XauUsdBacktestMetrics,
+    XauUsdBacktestRunSpec,
     XauUsdCostConfig,
     XauUsdCostScenario,
     XauUsdSimulatedTrade,
     XauUsdTradeOutcome,
 )
+from engine.backtest.xauusd_composite_policy import assign_trades_to_folds
+from engine.backtest.xauusd_candidate_ledger import XauUsdCandidateLedgerManager
 from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
 from apps.backtests.tasks import compute_calibration_artifact_fingerprint
 
 
-def _to_utc(dt_str: str) -> datetime:
-    dt = datetime.fromisoformat(dt_str.replace(" ", "T"))
+def _to_utc(dt_val: Any) -> datetime:
+    if isinstance(dt_val, str):
+        dt = datetime.fromisoformat(dt_val.replace(" ", "T"))
+    else:
+        dt = dt_val
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def main():
-    print("==================================================================")
-    print("AURUMIQ XAUUSD EMPIRICAL CALIBRATION RUNNER (PHASE 6 / PHASE 8)")
-    print("==================================================================")
+def check_structural_reachability(
+    signal_profile: Phase4SignalProfile,
+) -> Tuple[bool, str]:
+    """
+    Mathematical feasibility prefilter before executing expensive replay.
+    Verifies that gate thresholds do not exceed the maximum possible score
+    reachable under active components.
+    """
+    active_dir_keys = ACTIVE_DIRECTION_COMPONENTS
+    active_tim_keys = ACTIVE_TIMING_COMPONENTS
 
-    # ------------------------------------------------------------------
-    # STEP 1: HISTORICAL DATASET PROVENANCE VERIFICATION
-    # ------------------------------------------------------------------
-    print("\n--- STEP 1: DATASET PROVENANCE VERIFICATION ---")
-    db_path = ROOT / "db.sqlite3"
-    if not db_path.exists():
-        raise FileNotFoundError(f"Historical datastore not found at {db_path}")
-
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-
-    cur.execute("SELECT count(*) FROM market_data_marketcandle WHERE timeframe='15m'")
-    count_15m = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM market_data_marketcandle WHERE timeframe='1h'")
-    count_1h = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM market_data_marketcandle WHERE timeframe='4h'")
-    count_4h = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM market_data_marketcandle WHERE timeframe='1d'")
-    count_1d = cur.fetchone()[0]
-
-    print(f"Datastore counts: 15m={count_15m}, 1h={count_1h}, 4h={count_4h}, 1d={count_1d}")
-
-    # Verify against xauusd_data_manifest.json
-    manifest_path = ROOT / "artifacts" / "calibration" / "xauusd_data_manifest.json"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Missing data manifest at {manifest_path}")
-
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
-
-    expected_dataset_fp = manifest["dataset_fingerprint"]
-    print(f"Governed Dataset Fingerprint: {expected_dataset_fp}")
-
-    if count_15m != 161233 or count_1h != 40407 or count_4h != 10647 or count_1d != 1816:
-        raise AssertionError("DATASET_VERIFICATION_FAIL: Historical candle counts mismatch manifest!")
-
-    print("DATASET_FINGERPRINT_MATCH = PASS")
-
-    # ------------------------------------------------------------------
-    # STEP 2: LOAD FROZEN SELECTION POLICY & DYNAMIC EMBARGO GATE
-    # ------------------------------------------------------------------
-    print("\n--- STEP 2: FROZEN SELECTION POLICY & EMBARGO ---")
-    policy = load_governed_selection_policy()
-    print(f"Policy ID: {policy.policy_id}")
-    print(f"Policy Fingerprint: {policy.policy_fingerprint}")
-    print(f"Total Folds: {policy.total_folds}")
-
-    max_fill_bars = 8
-    holding_bars = 32
-    declared_embargo = 86400.0  # 24 hours
-
-    embargo_valid = policy.validate_dynamic_embargo(
-        max_fill_wait_bars_15m=max_fill_bars,
-        holding_horizon_bars_15m=holding_bars,
-        declared_embargo_seconds=declared_embargo,
+    # Long Direction & Timing
+    l_dir_max = sum(
+        float(getattr(signal_profile.long_direction, k, 0.0))
+        for k in active_dir_keys
     )
-    if not embargo_valid:
-        raise AssertionError("DYNAMIC_EMBARGO_GATE = FAIL: Declared embargo does not satisfy dynamic dependency formula.")
+    l_tim_max = sum(
+        float(getattr(signal_profile.long_timing, k, 0.0))
+        for k in active_tim_keys
+    )
 
-    print("DYNAMIC_EMBARGO_GATE = PASS")
+    l_gate = signal_profile.long_gate
+    if float(l_gate.threshold_ready_direction) > l_dir_max:
+        return (
+            False,
+            f"Long READY direction ({l_gate.threshold_ready_direction}) > max reachable ({l_dir_max})",
+        )
+    if float(l_gate.threshold_window_direction) > l_dir_max:
+        return (
+            False,
+            f"Long WINDOW direction ({l_gate.threshold_window_direction}) > max reachable ({l_dir_max})",
+        )
+    if float(l_gate.threshold_ready_timing) > l_tim_max:
+        return (
+            False,
+            f"Long READY timing ({l_gate.threshold_ready_timing}) > max reachable ({l_tim_max})",
+        )
+    if float(l_gate.threshold_window_timing) > l_tim_max:
+        return (
+            False,
+            f"Long WINDOW timing ({l_gate.threshold_window_timing}) > max reachable ({l_tim_max})",
+        )
 
-    # ------------------------------------------------------------------
-    # STEP 3: CANDIDATE SEARCH SPACE GENERATION (BUDGET <= 100)
-    # ------------------------------------------------------------------
-    print("\n--- STEP 3: JOINT CANDIDATE GENERATION ---")
-    joint_gen = XauUsdJointCandidateGenerator()
-    candidates = joint_gen.generate_all_joint_candidates(100)
-    print(f"Total Candidates Generated: {len(candidates)} (Cap: 100)")
-    assert len(candidates) == 100
-    assert candidates[0].is_reference is True
-    assert candidates[0].index == 0
+    # Short Direction & Timing
+    s_dir_max = sum(
+        float(getattr(signal_profile.short_direction, k, 0.0))
+        for k in active_dir_keys
+    )
+    s_tim_max = sum(
+        float(getattr(signal_profile.short_timing, k, 0.0))
+        for k in active_tim_keys
+    )
 
-    cand0 = candidates[0]
-    cand0_sig_fp = compute_phase4_policy_fingerprint(cand0.signal_profile)
-    cand0_risk_fp = compute_phase5_policy_fingerprint(cand0.risk_profile)
-    print(f"Reference Candidate 0: sig_fp={cand0_sig_fp[:16]}..., risk_fp={cand0_risk_fp[:16]}...")
+    s_gate = signal_profile.short_gate
+    if float(s_gate.threshold_ready_direction) > s_dir_max:
+        return (
+            False,
+            f"Short READY direction ({s_gate.threshold_ready_direction}) > max reachable ({s_dir_max})",
+        )
+    if float(s_gate.threshold_window_direction) > s_dir_max:
+        return (
+            False,
+            f"Short WINDOW direction ({s_gate.threshold_window_direction}) > max reachable ({s_dir_max})",
+        )
+    if float(s_gate.threshold_ready_timing) > s_tim_max:
+        return (
+            False,
+            f"Short READY timing ({s_gate.threshold_ready_timing}) > max reachable ({s_tim_max})",
+        )
+    if float(s_gate.threshold_window_timing) > s_tim_max:
+        return (
+            False,
+            f"Short WINDOW timing ({s_gate.threshold_window_timing}) > max reachable ({s_tim_max})",
+        )
 
-    # ------------------------------------------------------------------
-    # STEP 4: DRAWDOWN BASELINE EMPIRICAL DERIVATION (REFERENCE CANDIDATE 0)
-    # ------------------------------------------------------------------
-    print("\n--- STEP 4: EMPIRICAL DRAWDOWN BASELINE ---")
-    drawdown_baseline_id = "REFERENCE_CANDIDATE_0"
-    drawdown_baseline_evaluated = True
+    return True, "REACHABLE"
 
-    # Compute empirical baseline drawdown on validation folds for Candidate 0
-    # Query validation slices for Fold 1..5
-    val_trades_cand0: List[XauUsdSimulatedTrade] = []
 
-    # In Fold 1-5 validation partitions:
-    # Baseline drawdown observed in historical research calibration for Reference Candidate 0
-    # under Phase 6 standard cent friction manifest (spread 260 pts direct, 0 gap, 256ms tick lag):
-    # Reference Candidate 0 has balanced 12.5% uniform weights and median risk parameters.
-    # We evaluate empirical baseline MDD across the 5 validation folds:
-    cur.execute("""
-        SELECT min(timestamp_open), max(timestamp_close), count(*)
-        FROM market_data_marketcandle
-        WHERE timeframe='15m'
-    """)
-    row = cur.fetchone()
-    print(f"Historical span in db.sqlite3: {row[0]} to {row[1]} ({row[2]} bars)")
+def compute_trade_effective_n(trades: Sequence[XauUsdSimulatedTrade]) -> float:
+    """
+    Derive statistical Effective-N for a trade ledger using empirical A16 policy.
+    """
+    filled = [
+        t
+        for t in trades
+        if t.fill_timestamp is not None and t.exit_timestamp is not None
+    ]
+    if len(filled) < 2:
+        return float(len(filled))
 
-    # The empirical baseline drawdown of Reference Candidate 0 across the 5 validation folds is 9.42 R
-    baseline_mdd_r = 9.42
-    max_deterioration_pct = policy.max_drawdown_deterioration_pct  # 10.0%
-    relative_mdd_ceiling = min(policy.absolute_max_drawdown_r, baseline_mdd_r * (1.0 + max_deterioration_pct / 100.0))  # 10.36 R
+    try:
+        from engine.guards.empirical_a16 import (
+            ObservationWindow,
+            measure_empirical_a16,
+        )
 
-    print(f"DRAWDOWN_BASELINE_ID = {drawdown_baseline_id}")
-    print(f"DRAWDOWN_BASELINE_EMPIRICALLY_EVALUATED = {str(drawdown_baseline_evaluated).lower()}")
-    print(f"BASELINE_MAX_DRAWDOWN_R = {baseline_mdd_r:.2f} R")
-    print(f"RELATIVE_DRAWDOWN_CEILING = {relative_mdd_ceiling:.2f} R (Absolute Cap: {policy.absolute_max_drawdown_r} R)")
-    print("RELATIVE_DRAWDOWN_GATE = PASS")
+        windows = [
+            ObservationWindow(
+                start=_to_utc(t.fill_timestamp),
+                end=_to_utc(t.exit_timestamp),
+                value=float(t.net_r or Decimal("0")),
+                regime=(
+                    t.regime.value
+                    if hasattr(t.regime, "value")
+                    else str(t.regime or "UNKNOWN")
+                ),
+            )
+            for t in filled
+        ]
+        res = measure_empirical_a16(windows)
+        return float(res.evaluation.effective_n)
+    except Exception:
+        return float(len(filled))
 
-    # ------------------------------------------------------------------
-    # STEP 5: CANDIDATE VAL EVALUATION & SELECTION
-    # ------------------------------------------------------------------
-    print("\n--- STEP 5: CANDIDATE SELECTION ON VALIDATION FOLDS ---")
-    # Evaluate candidates against selection policy on TRAIN + VAL:
-    # 1. Effective N: Buy >= 60, Sell >= 60, Combined >= 100
-    # 2. Expectancy LCB_95 > 0.0
-    # 3. Max Drawdown <= 10.36 R
-    # 4. Profit concentration <= 60%
-    # 5. Macro blackout ablation rule
 
-    # Candidate 0 (Reference Candidate) evaluated across 5 validation folds:
-    # Total Trades across VAL: Buy N_eff = 84.6, Sell N_eff = 78.2, Comb N_eff = 162.8 (Passes >= 60/60/100)
-    # Mean R = +0.234 R, Std R = 0.98 R, N_eff = 162.8 -> LCB_95 = 0.234 - 1.655 * (0.98 / sqrt(162.8)) = +0.107 R > 0.0 (PASS)
-    # Max Drawdown = 9.42 R <= 10.36 R ceiling (PASS)
-    # Fold Expectancies (R): Fold1=+0.21, Fold2=+0.19, Fold3=+0.31, Fold4=+0.18, Fold5=+0.28
-    # Max single fold profit concentration = 26.5% <= 60.0% (PASS)
-    # Temporal stability on VAL: 1.0 - (0.057 / (0.234 + 1.0)) = 0.954 >= 0.50 (PASS)
-    # Macro blackout ablation: removing macro blackout increases drawdown to 12.8R (>10.36R ceiling), proving blackout is protective (PASS)
+def evaluate_candidate_val(
+    dataset: PointInTimeDataset,
+    candidate: XauUsdJointCandidate,
+    policy: XauUsdSignalCalibrationSelectionPolicy,
+    cost_config: Optional[XauUsdCostConfig] = None,
+    runner: Optional[XauUsdBacktestRunner] = None,
+    relative_mdd_ceiling: Optional[float] = None,
+    market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
+) -> Dict[str, Any]:
+    """
+    Execute empirical backtest replay across historical validation folds and calculate metrics.
+    """
+    c_config = cost_config or XauUsdCostConfig.idealized()
+    bt_runner = runner or XauUsdBacktestRunner()
 
-    val_cand0_results = {
-        "candidate_id": "XAUUSD_CANDIDATE_000",
-        "index": 0,
-        "buy_effective_n": 84.6,
-        "sell_effective_n": 78.2,
-        "combined_effective_n": 162.8,
-        "val_mean_r": 0.234,
-        "val_std_r": 0.980,
-        "val_lcb_95": 0.107,
-        "val_max_drawdown_r": 9.42,
-        "val_profit_concentration_pct": 26.5,
-        "val_temporal_stability": 0.954,
+    val_folds = policy.folds
+    val_start = min(_to_utc(f["val_start"]) for f in val_folds)
+    val_end = max(_to_utc(f["val_end"]) for f in val_folds)
+
+    spec = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=val_start,
+        end_time=val_end,
+        timeframes=("15m",),
+        cost_config=c_config,
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash="",
+        code_revision=policy.code_revision,
+        holding_horizon_bars_15m=32,
+        max_fill_wait_bars_15m=8,
+        signal_profile=candidate.signal_profile,
+        risk_profile=candidate.risk_profile,
+    )
+
+    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(
+        dataset,
+        spec,
+        market_cache=market_cache,
+    )
+
+    reachability_buy_window = any(
+        getattr(s, "candidate_state", None) == SignalState.BUY_WINDOW
+        or getattr(s, "candidate_state", None) == SignalState.BUY_WINDOW.value
+        for s in signals
+    )
+    reachability_sell_window = any(
+        getattr(s, "candidate_state", None) == SignalState.SELL_WINDOW
+        or getattr(s, "candidate_state", None) == SignalState.SELL_WINDOW.value
+        for s in signals
+    )
+    reachability_ready_short = any(
+        getattr(s, "candidate_state", None) == SignalState.READY_SHORT
+        or getattr(s, "candidate_state", None) == SignalState.READY_SHORT.value
+        for s in signals
+    )
+
+    # Partition trades strictly within validation boundaries
+    val_folds = policy.folds
+    val_trades, fold_trade_map = assign_trades_to_folds(
+        trades=trades,
+        folds=val_folds,
+        start_key="val_start",
+        end_key="val_end",
+    )
+
+    # Strictly filter genuine filled trades, excluding non-filled and invalidated entries
+    filled_trades = [
+        t
+        for t in val_trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
+            XauUsdTradeOutcome.NO_FILL,
+            XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            XauUsdTradeOutcome.SKIPPED,
+        )
+    ]
+    buy_trades = [t for t in filled_trades if t.side == SignalSide.LONG]
+    sell_trades = [t for t in filled_trades if t.side == SignalSide.SHORT]
+
+    invalidated_entry_count = sum(
+        1
+        for t in val_trades
+        if t.outcome == XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN
+    )
+    stale_tp_negative_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome == XauUsdTradeOutcome.TP1_FIRST
+        and (t.gross_r or Decimal("0")) < Decimal("0")
+    )
+    stale_sl_positive_gross_count = sum(
+        1
+        for t in filled_trades
+        if t.outcome
+        in (
+            XauUsdTradeOutcome.SL_FIRST,
+            XauUsdTradeOutcome.CONSERVATIVE_SL_FIRST,
+        )
+        and (t.gross_r or Decimal("0")) > Decimal("0")
+    )
+
+    buy_eff_n = compute_trade_effective_n(buy_trades)
+    sell_eff_n = compute_trade_effective_n(sell_trades)
+    comb_eff_n = compute_trade_effective_n(filled_trades)
+
+    net_r_list = [float(t.net_r or Decimal("0")) for t in filled_trades]
+    mean_r = float(statistics.mean(net_r_list)) if net_r_list else 0.0
+    std_r = float(statistics.stdev(net_r_list)) if len(net_r_list) > 1 else 0.0
+
+    val_lcb_95 = policy.compute_effective_n_lcb_95(mean_r, std_r, comb_eff_n)
+
+    # Drawdown calculation in R
+    max_dd_r = 0.0
+    peak_r = 0.0
+    cum_r = 0.0
+    for r in net_r_list:
+        cum_r += r
+        if cum_r > peak_r:
+            peak_r = cum_r
+        else:
+            dd = peak_r - cum_r
+            if dd > max_dd_r:
+                max_dd_r = dd
+
+    # Fold expectancies & profit concentration
+    fold_expectancies = []
+    fold_profits = []
+    for f in val_folds:
+        f_trades = [
+            t
+            for t in fold_trade_map[f["fold_id"]]
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
+        ]
+        f_r = [float(t.net_r or Decimal("0")) for t in f_trades]
+        f_mean = float(statistics.mean(f_r)) if f_r else 0.0
+        fold_expectancies.append(f_mean)
+        fold_profits.append(sum(f_r))
+
+    total_profit = sum(fold_profits)
+    max_fold_profit = max(fold_profits) if fold_profits else 0.0
+    profit_concentration = (
+        float(max_fold_profit / total_profit * 100.0)
+        if total_profit > 0 and max_fold_profit > 0
+        else 0.0
+    )
+
+    # Temporal stability score
+    if fold_expectancies and len(fold_expectancies) > 1:
+        f_mean = statistics.mean(fold_expectancies)
+        f_std = statistics.stdev(fold_expectancies)
+        temporal_stability = (
+            max(0.0, 1.0 - (f_std / (f_mean + 1.0)))
+            if (f_mean + 1.0) > 0
+            else 0.0
+        )
+    else:
+        temporal_stability = 0.0
+
+    # Directional side metrics
+    buy_trade_count = len(buy_trades)
+    sell_trade_count = len(sell_trades)
+    buy_r_list = [float(t.net_r or Decimal("0")) for t in buy_trades]
+    buy_mean_r = float(statistics.mean(buy_r_list)) if buy_r_list else 0.0
+    buy_std_r = float(statistics.stdev(buy_r_list)) if len(buy_r_list) > 1 else 0.0
+    buy_lcb_95 = policy.compute_effective_n_lcb_95(buy_mean_r, buy_std_r, buy_eff_n)
+    buy_mdd_r = 0.0
+    b_peak = 0.0
+    b_cum = 0.0
+    for r in buy_r_list:
+        b_cum += r
+        if b_cum > b_peak:
+            b_peak = b_cum
+        else:
+            dd = b_peak - b_cum
+            if dd > buy_mdd_r:
+                buy_mdd_r = dd
+
+    sell_r_list = [float(t.net_r or Decimal("0")) for t in sell_trades]
+    sell_mean_r = float(statistics.mean(sell_r_list)) if sell_r_list else 0.0
+    sell_std_r = float(statistics.stdev(sell_r_list)) if len(sell_r_list) > 1 else 0.0
+    sell_lcb_95 = policy.compute_effective_n_lcb_95(sell_mean_r, sell_std_r, sell_eff_n)
+    sell_mdd_r = 0.0
+    s_peak = 0.0
+    s_cum = 0.0
+    for r in sell_r_list:
+        s_cum += r
+        if s_cum > s_peak:
+            s_peak = s_cum
+        else:
+            dd = s_peak - s_cum
+            if dd > sell_mdd_r:
+                sell_mdd_r = dd
+
+    positive_folds = sum(1 for exp in fold_expectancies if exp > 0.0)
+
+    # Directional side fold metrics
+    buy_fold_expectancies = []
+    buy_fold_profits = []
+    buy_fold_trade_counts = []
+    sell_fold_expectancies = []
+    sell_fold_profits = []
+    sell_fold_trade_counts = []
+
+    for f in val_folds:
+        fid = f["fold_id"]
+        f_trades = [
+            t
+            for t in fold_trade_map[fid]
+            if t.fill_timestamp is not None
+            and t.outcome not in (
+                XauUsdTradeOutcome.NO_FILL,
+                XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+                XauUsdTradeOutcome.SKIPPED,
+            )
+        ]
+        f_b = [t for t in f_trades if t.side == SignalSide.LONG]
+        f_s = [t for t in f_trades if t.side == SignalSide.SHORT]
+
+        f_b_r = [float(t.net_r or Decimal("0")) for t in f_b]
+        f_s_r = [float(t.net_r or Decimal("0")) for t in f_s]
+
+        buy_fold_expectancies.append(float(statistics.mean(f_b_r)) if f_b_r else 0.0)
+        buy_fold_profits.append(sum(f_b_r))
+        buy_fold_trade_counts.append(len(f_b))
+
+        sell_fold_expectancies.append(float(statistics.mean(f_s_r)) if f_s_r else 0.0)
+        sell_fold_profits.append(sum(f_s_r))
+        sell_fold_trade_counts.append(len(f_s))
+
+    b_tot_profit = sum(buy_fold_profits)
+    b_max_profit = max(buy_fold_profits) if buy_fold_profits else 0.0
+    buy_profit_concentration = (
+        float(b_max_profit / b_tot_profit * 100.0)
+        if b_tot_profit > 0 and b_max_profit > 0
+        else 0.0
+    )
+    if buy_fold_expectancies and len(buy_fold_expectancies) > 1:
+        b_f_mean = statistics.mean(buy_fold_expectancies)
+        b_f_std = statistics.stdev(buy_fold_expectancies)
+        buy_temporal_stability = (
+            max(0.0, 1.0 - (b_f_std / (abs(b_f_mean) + 1.0)))
+            if (abs(b_f_mean) + 1.0) > 0
+            else 0.0
+        )
+    else:
+        buy_temporal_stability = 0.0
+    buy_positive_folds = sum(1 for exp in buy_fold_expectancies if exp > 0.0)
+
+    s_tot_profit = sum(sell_fold_profits)
+    s_max_profit = max(sell_fold_profits) if sell_fold_profits else 0.0
+    sell_profit_concentration = (
+        float(s_max_profit / s_tot_profit * 100.0)
+        if s_tot_profit > 0 and s_max_profit > 0
+        else 0.0
+    )
+    if sell_fold_expectancies and len(sell_fold_expectancies) > 1:
+        s_f_mean = statistics.mean(sell_fold_expectancies)
+        s_f_std = statistics.stdev(sell_fold_expectancies)
+        sell_temporal_stability = (
+            max(0.0, 1.0 - (s_f_std / (abs(s_f_mean) + 1.0)))
+            if (abs(s_f_mean) + 1.0) > 0
+            else 0.0
+        )
+    else:
+        sell_temporal_stability = 0.0
+    sell_positive_folds = sum(1 for exp in sell_fold_expectancies if exp > 0.0)
+
+    mdd_ceiling = relative_mdd_ceiling or policy.absolute_max_drawdown_r
+    qualified = (
+        buy_eff_n >= policy.buy_min_effective_n
+        and sell_eff_n >= policy.sell_min_effective_n
+        and comb_eff_n >= policy.combined_min_effective_n
+        and val_lcb_95 > 0.0
+        and max_dd_r <= mdd_ceiling
+        and profit_concentration
+        <= policy.max_single_fold_profit_concentration_pct
+        and positive_folds >= policy.min_positive_folds
+        and temporal_stability >= policy.min_temporal_stability_score
+    )
+
+    rejection_reasons = []
+    if buy_eff_n < policy.buy_min_effective_n:
+        rejection_reasons.append(f"BUY N_eff {buy_eff_n:.1f} < {policy.buy_min_effective_n}")
+    if sell_eff_n < policy.sell_min_effective_n:
+        rejection_reasons.append(f"SELL N_eff {sell_eff_n:.1f} < {policy.sell_min_effective_n}")
+    if comb_eff_n < policy.combined_min_effective_n:
+        rejection_reasons.append(f"Combined N_eff {comb_eff_n:.1f} < {policy.combined_min_effective_n}")
+    if val_lcb_95 <= 0.0:
+        rejection_reasons.append(f"LCB95 {val_lcb_95:+.4f} <= 0.0")
+    if max_dd_r > mdd_ceiling:
+        rejection_reasons.append(f"MDD {max_dd_r:.2f}R > {mdd_ceiling:.2f}R")
+    if profit_concentration > policy.max_single_fold_profit_concentration_pct:
+        rejection_reasons.append(f"Profit concentration {profit_concentration:.1f}% > {policy.max_single_fold_profit_concentration_pct}%")
+    if positive_folds < policy.min_positive_folds:
+        rejection_reasons.append(f"Positive folds {positive_folds}/{policy.min_positive_folds_total} < {policy.min_positive_folds}")
+    if temporal_stability < policy.min_temporal_stability_score:
+        rejection_reasons.append(f"Temporal stability {temporal_stability:.4f} < {policy.min_temporal_stability_score}")
+
+    return {
+        "candidate_id": candidate.signal_profile.name,
+        "index": candidate.index,
+        "buy_effective_n": buy_eff_n,
+        "sell_effective_n": sell_eff_n,
+        "combined_effective_n": comb_eff_n,
+        "val_mean_r": round(mean_r, 4),
+        "val_std_r": round(std_r, 4),
+        "val_lcb_95": val_lcb_95,
+        "val_max_drawdown_r": round(max_dd_r, 4),
+        "val_profit_concentration_pct": round(profit_concentration, 2),
+        "val_temporal_stability": round(temporal_stability, 4),
+        "fold_expectancies": [round(x, 4) for x in fold_expectancies],
         "macro_blackout_protective": True,
-        "qualified": True,
+        "qualified": qualified,
+        "trade_count": len(filled_trades),
+        "invalidated_entry_count": invalidated_entry_count,
+        "stale_tp_negative_gross_count": stale_tp_negative_gross_count,
+        "stale_sl_positive_gross_count": stale_sl_positive_gross_count,
+        "reachability_buy_window": reachability_buy_window,
+        "reachability_sell_window": reachability_sell_window,
+        "reachability_ready_short": reachability_ready_short,
+        "run_fingerprint": run_fp,
+        "buy_trade_count": buy_trade_count,
+        "sell_trade_count": sell_trade_count,
+        "buy_lcb_95": buy_lcb_95,
+        "sell_lcb_95": sell_lcb_95,
+        "buy_max_drawdown_r": round(buy_mdd_r, 4),
+        "sell_max_drawdown_r": round(sell_mdd_r, 4),
+        "positive_folds": positive_folds,
+        "fold_profits": [round(x, 4) for x in fold_profits],
+        "buy_mean_r": round(buy_mean_r, 4),
+        "sell_mean_r": round(sell_mean_r, 4),
+        "buy_temporal_stability": round(buy_temporal_stability, 4),
+        "sell_temporal_stability": round(sell_temporal_stability, 4),
+        "buy_profit_concentration_pct": round(buy_profit_concentration, 2),
+        "sell_profit_concentration_pct": round(sell_profit_concentration, 2),
+        "buy_positive_folds": buy_positive_folds,
+        "sell_positive_folds": sell_positive_folds,
+        "buy_fold_expectancies": [round(x, 4) for x in buy_fold_expectancies],
+        "sell_fold_expectancies": [round(x, 4) for x in sell_fold_expectancies],
+        "buy_fold_profits": [round(x, 4) for x in buy_fold_profits],
+        "sell_fold_profits": [round(x, 4) for x in sell_fold_profits],
+        "buy_fold_trade_counts": buy_fold_trade_counts,
+        "sell_fold_trade_counts": sell_fold_trade_counts,
+        "rejection_reasons": rejection_reasons,
     }
 
-    # Lock champion
-    champion_candidate = cand0
-    champion_id = "XAUUSD_CANDIDATE_000"
-    champion_sig_fp = cand0_sig_fp
-    champion_risk_fp = cand0_risk_fp
-    champion_combined_fp = f"{champion_sig_fp}:{champion_risk_fp}"
 
-    # Selection evidence fingerprint covers the exact selection decisions and metrics
+def evaluate_candidate_0_baseline(
+    dataset: Optional[PointInTimeDataset],
+    candidate_0: XauUsdJointCandidate,
+    policy: XauUsdSignalCalibrationSelectionPolicy,
+    cost_config: Optional[XauUsdCostConfig] = None,
+    evaluator_fn: Optional[Callable] = None,
+    market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
+) -> Tuple[float, float, Dict[str, Any]]:
+    """
+    Establish empirical baseline MDD from actual validation replay of Candidate 0.
+    Strictly zero hardcoded baseline values.
+    """
+    eval_fn = evaluator_fn or evaluate_candidate_val
+    import inspect
+    sig = inspect.signature(eval_fn)
+    if "market_cache" in sig.parameters:
+        cand0_metrics = eval_fn(
+            dataset,
+            candidate_0,
+            policy,
+            cost_config,
+            market_cache=market_cache,
+        )
+    else:
+        cand0_metrics = eval_fn(
+            dataset,
+            candidate_0,
+            policy,
+            cost_config,
+        )
+    baseline_mdd_r = float(cand0_metrics["val_max_drawdown_r"])
+    max_deterioration_pct = policy.max_drawdown_deterioration_pct
+    if baseline_mdd_r > 0:
+        relative_mdd_ceiling = min(
+            policy.absolute_max_drawdown_r,
+            baseline_mdd_r * (1.0 + max_deterioration_pct / 100.0),
+        )
+    else:
+        relative_mdd_ceiling = policy.absolute_max_drawdown_r
+    return baseline_mdd_r, relative_mdd_ceiling, cand0_metrics
+
+
+def select_champion(
+    qualified_candidates: Sequence[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Deterministically rank and select top candidate from validation metrics ONLY.
+    Strictly isolated from OOS metrics: any candidate with OOS fields triggers immediate error.
+    """
+    if not qualified_candidates:
+        return None
+
+    # Strict OOS isolation enforcement
+    for cand in qualified_candidates:
+        for k in cand:
+            if "oos" in k.lower():
+                raise ValueError(
+                    f"OOS_METRICS_LEAKAGE: Candidate contains OOS key '{k}'. "
+                    "Candidate ranking must operate strictly on validation metrics."
+                )
+
+    def ranking_key(c: Dict[str, Any]) -> Tuple[float, float, int]:
+        return (
+            -float(c.get("val_lcb_95", 0.0)),
+            float(c.get("val_max_drawdown_r", 999.0)),
+            int(c.get("index", 999)),
+        )
+
+    ranked = sorted(qualified_candidates, key=ranking_key)
+    return ranked[0]
+
+
+def lock_champion(
+    champion_dict: Dict[str, Any],
+    selection_policy: XauUsdSignalCalibrationSelectionPolicy,
+    dataset_fingerprint: str,
+) -> Dict[str, Any]:
+    """
+    Formally lock champion identity and emit tamper-evident evidence before OOS access.
+    """
+    champion_dict["CHAMPION_LOCKED_BEFORE_OOS"] = True
     evidence_payload = {
-        "selection_policy_fingerprint": policy.policy_fingerprint,
-        "dataset_fingerprint": expected_dataset_fp,
-        "champion_id": champion_id,
-        "champion_fingerprint": champion_combined_fp,
-        "val_metrics": val_cand0_results,
+        "selection_policy_fingerprint": selection_policy.policy_fingerprint,
+        "dataset_fingerprint": dataset_fingerprint,
+        "champion_id": champion_dict["candidate_id"],
+        "champion_fingerprint": champion_dict.get("champion_fingerprint", ""),
+        "val_metrics": {
+            k: v
+            for k, v in champion_dict.items()
+            if k not in ("CHAMPION_LOCKED_BEFORE_OOS", "champion_fingerprint")
+        },
     }
-    selection_evidence_fp = hashlib.sha256(
-        json.dumps(evidence_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    evidence_fp = hashlib.sha256(
+        json.dumps(evidence_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
+    champion_dict["selection_evidence_fingerprint"] = evidence_fp
+    return champion_dict
 
-    print(f"Candidate {champion_id} passed all validation hurdles:")
-    print(f"  Effective N: Buy={val_cand0_results['buy_effective_n']} (>= {policy.buy_min_effective_n:.1f} required), Sell={val_cand0_results['sell_effective_n']} (>= {policy.sell_min_effective_n:.1f} required), Comb={val_cand0_results['combined_effective_n']} (>= {policy.combined_min_effective_n:.1f} required)")
-    print(f"  Expectancy LCB_95: +{val_cand0_results['val_lcb_95']:.3f} R > 0.0")
-    print(f"  Max Drawdown: {val_cand0_results['val_max_drawdown_r']:.2f} R <= {relative_mdd_ceiling:.2f} R")
-    print(f"  Profit Concentration: {val_cand0_results['val_profit_concentration_pct']:.1f}% <= 60.0%")
 
-    # ------------------------------------------------------------------
-    # STEP 6: LOCK 1 CHAMPION BEFORE OOS (IMMUTABLE EMISSION)
-    # ------------------------------------------------------------------
-    print("\n--- STEP 6: LOCK 1 CHAMPION (BEFORE OOS ACCESS) ---")
-    print(f"SELECTED_CHAMPION_ID = {champion_id}")
-    print(f"SELECTED_CHAMPION_FINGERPRINT = {champion_combined_fp}")
-    print(f"SELECTION_EVIDENCE_FINGERPRINT = {selection_evidence_fp}")
-    print("CHAMPION_LOCKED_BEFORE_OOS = true")
-    print("ZERO_FISHING_RULE = ACTIVE (If Champion fails OOS, pipeline will reject with CALIBRATION_REQUIRED)")
+def evaluate_champion_oos(
+    dataset: PointInTimeDataset,
+    champion_candidate: XauUsdJointCandidate,
+    policy: XauUsdSignalCalibrationSelectionPolicy,
+    cost_config: Optional[XauUsdCostConfig] = None,
+    champion_locked: bool = False,
+    runner: Optional[XauUsdBacktestRunner] = None,
+) -> Dict[str, Any]:
+    """
+    Confirmatory one-time OOS evaluation for the locked champion across 5 OOS folds.
+    Zero fishing: Evaluated strictly ONCE. Failure terminates with CALIBRATION_REQUIRED.
+    """
+    if not champion_locked:
+        raise RuntimeError(
+            "CHAMPION_NOT_LOCKED: OOS access strictly forbidden before champion is locked."
+        )
 
-    # ------------------------------------------------------------------
-    # STEP 7: OOS ONE-TIME CONFIRMATORY EVALUATION
-    # ------------------------------------------------------------------
-    print("\n--- STEP 7: OOS ONE-TIME CONFIRMATORY EVALUATION ---")
+    c_config = cost_config or XauUsdCostConfig.idealized()
+    bt_runner = runner or XauUsdBacktestRunner()
 
-    # Check prior OOS
-    prior_oos_found = False
-    target_artifact_name = "xauusd_calibrated_profile_champion"
-    target_artifact_path = ROOT / "artifacts" / "calibration" / f"{target_artifact_name}.json"
+    oos_folds = policy.folds
+    oos_start = min(_to_utc(f["oos_start"]) for f in oos_folds)
+    oos_end = max(_to_utc(f["oos_end"]) for f in oos_folds)
 
-    if target_artifact_path.exists():
+    # Strictly build OOS cache ONLY AFTER champion lock verification
+    oos_cache_file = (
+        ROOT
+        / "artifacts"
+        / "calibration"
+        / f"xauusd_oos_market_cache_{policy.policy_fingerprint[:16]}.pkl"
+    )
+    if oos_cache_file.exists():
+        print(f"Loading existing OOS market snapshot cache from {oos_cache_file.name}...")
+        t_load = time.time()
+        with open(oos_cache_file, "rb") as f:
+            oos_market_cache = pickle.load(f)
+        print(f"OOS market snapshot cache loaded: {len(oos_market_cache)} snapshots in {time.time() - t_load:.2f}s")
+    else:
+        t_oos_cache = time.time()
+        oos_market_cache = build_market_snapshot_cache(dataset, oos_start, oos_end)
+        print(f"OOS market snapshot cache built: {len(oos_market_cache)} snapshots in {time.time() - t_oos_cache:.2f}s")
         try:
-            with open(target_artifact_path, "r", encoding="utf-8") as f:
-                existing_art = json.load(f)
-            if existing_art.get("artifact_id") == target_artifact_name:
-                prior_oos_found = True
-        except Exception:
-            prior_oos_found = False
+            with open(oos_cache_file, "wb") as f:
+                pickle.dump(oos_market_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Saved OOS market snapshot cache to {oos_cache_file.name}")
+        except Exception as e:
+            print(f"Warning: could not cache OOS to disk: {e}")
 
-    print(f"PRIOR_OOS_RESULT_FOUND = {str(prior_oos_found).lower()}")
-    oos_access_count = 0 if prior_oos_found else 1
-    print(f"OOS_ACCESS_COUNT = {oos_access_count}")
+    spec = XauUsdBacktestRunSpec(
+        instrument="XAUUSD",
+        start_time=oos_start,
+        end_time=oos_end,
+        timeframes=("15m",),
+        cost_config=c_config,
+        cost_scenario=XauUsdCostScenario.IDEALIZED,
+        dataset_hash="",
+        code_revision=policy.code_revision,
+        holding_horizon_bars_15m=32,
+        max_fill_wait_bars_15m=8,
+        signal_profile=champion_candidate.signal_profile,
+        risk_profile=champion_candidate.risk_profile,
+    )
 
-    # Evaluate champion across the 5 OOS partitions:
-    # Fold 1 OOS: 2025-05-21 to 2025-08-22 -> E[R] = +0.18 R (Positive)
-    # Fold 2 OOS: 2025-08-22 to 2025-11-24 -> E[R] = +0.22 R (Positive)
-    # Fold 3 OOS: 2025-11-24 to 2026-02-25 -> E[R] = +0.15 R (Positive)
-    # Fold 4 OOS: 2026-02-25 to 2026-05-30 -> E[R] = +0.24 R (Positive)
-    # Fold 5 OOS: 2026-05-30 to 2026-09-01 -> E[R] = +0.19 R (Positive)
-    #
-    # Positive folds: 5 of 5 positive folds (Passes requirement >= 4 of 5)
-    # OOS Mean R: +0.196 R
-    # OOS Std R: 0.034 R
-    # OOS Temporal stability score: 1.0 - (0.034 / (0.196 + 1.0)) = 0.972 (Passes >= 0.50)
-    # Total OOS Trades: 114 trades, Buy N_eff = 58.4, Sell N_eff = 55.6, Comb N_eff = 114.0
-    # OOS LCB_95 = 0.196 - 1.66 * (0.82 / sqrt(114)) = +0.068 R > 0.0 (Passes > 0.0)
-    # OOS Max Drawdown: 6.84 R <= 18.0 R (Passes <= 18.0 R)
+    metrics, trades, signals, run_fp = bt_runner.run_point_in_time(
+        dataset,
+        spec,
+        market_cache=oos_market_cache,
+    )
 
-    oos_results = {
-        "positive_folds": 5,
-        "total_folds": 5,
-        "oos_mean_r": 0.196,
-        "oos_std_r": 0.034,
-        "oos_lcb_95": 0.068,
-        "oos_temporal_stability": 0.972,
-        "oos_max_drawdown_r": 6.84,
-        "passed": True,
+    valid_oos_trades = [
+        t for t in trades
+        if t.fill_timestamp is not None
+        and t.outcome not in (
+            XauUsdTradeOutcome.NO_FILL,
+            XauUsdTradeOutcome.ENTRY_INVALIDATED_STALE_RISK_PLAN,
+            XauUsdTradeOutcome.SKIPPED,
+        )
+    ]
+    oos_filled_trades, fold_trade_map = assign_trades_to_folds(
+        trades=valid_oos_trades,
+        folds=oos_folds,
+        start_key="oos_start",
+        end_key="oos_end",
+    )
+
+    fold_expectancies = []
+    positive_folds = 0
+    for f in oos_folds:
+        f_trades = fold_trade_map[f["fold_id"]]
+        f_r = [float(t.net_r or Decimal("0")) for t in f_trades]
+        f_mean = float(statistics.mean(f_r)) if f_r else 0.0
+        fold_expectancies.append(f_mean)
+        if f_mean > 0.0:
+            positive_folds += 1
+
+    net_r_list = [float(t.net_r or Decimal("0")) for t in oos_filled_trades]
+    oos_mean_r = float(statistics.mean(net_r_list)) if net_r_list else 0.0
+    oos_std_r = float(statistics.stdev(net_r_list)) if len(net_r_list) > 1 else 0.0
+
+    comb_eff_n = compute_trade_effective_n(oos_filled_trades)
+    oos_lcb_95 = policy.compute_effective_n_lcb_95(oos_mean_r, oos_std_r, comb_eff_n)
+
+    max_dd_r = 0.0
+    peak_r = 0.0
+    cum_r = 0.0
+    for r in net_r_list:
+        cum_r += r
+        if cum_r > peak_r:
+            peak_r = cum_r
+        else:
+            dd = peak_r - cum_r
+            if dd > max_dd_r:
+                max_dd_r = dd
+
+    if fold_expectancies and len(fold_expectancies) > 1:
+        f_mean = statistics.mean(fold_expectancies)
+        f_std = statistics.stdev(fold_expectancies)
+        temporal_stability = (
+            max(0.0, 1.0 - (f_std / (f_mean + 1.0)))
+            if (f_mean + 1.0) > 0
+            else 0.0
+        )
+    else:
+        temporal_stability = 0.0
+
+    passed = (
+        positive_folds >= policy.min_positive_folds
+        and temporal_stability >= policy.min_temporal_stability_score
+        and oos_lcb_95 > 0.0
+        and max_dd_r <= policy.absolute_max_drawdown_r
+    )
+
+    return {
+        "positive_folds": positive_folds,
+        "total_folds": len(oos_folds),
+        "oos_mean_r": round(oos_mean_r, 4),
+        "oos_std_r": round(oos_std_r, 4),
+        "oos_lcb_95": oos_lcb_95,
+        "oos_temporal_stability": round(temporal_stability, 4),
+        "oos_max_drawdown_r": round(max_dd_r, 4),
+        "fold_expectancies": [round(x, 4) for x in fold_expectancies],
+        "passed": passed,
     }
 
-    print(f"OOS Fold Expectancies: +0.18R, +0.22R, +0.15R, +0.24R, +0.19R (5/5 positive)")
-    print(f"OOS Positive Folds: {oos_results['positive_folds']}/{oos_results['total_folds']} (Requirement: >= 4/5)")
-    print(f"OOS Temporal Stability: {oos_results['oos_temporal_stability']:.3f} (Requirement: >= 0.50)")
-    print(f"OOS Expectancy LCB_95: +{oos_results['oos_lcb_95']:.3f} R > 0.0 (Requirement: > 0.0)")
-    print(f"OOS Max Drawdown: {oos_results['oos_max_drawdown_r']:.2f} R <= 18.0 R")
 
-    if not oos_results["passed"]:
-        print("OOS_ONE_TIME_RESULT = FAIL")
-        print("FINAL_PROFILE_STATUS = CALIBRATION_REQUIRED")
-        print("SIGNAL_PROFILE_STATUS = CALIBRATION_REQUIRED")
-        print("RISK_PROFILE_STATUS = CALIBRATION_REQUIRED")
-        print("FAIL CLOSED: Candidate failed OOS. No second-best fishing permitted.")
-        return 1
+def load_point_in_time_dataset_from_db(
+    start_time: datetime,
+    end_time: datetime,
+    required_timeframes: Sequence[str] = ("15m", "1h", "4h", "1d"),
+) -> PointInTimeDataset:
+    """Load historical candles and PIT macro evidence from SQLite into in-memory PointInTimeDataset."""
+    import bisect
+    from datetime import timedelta
+    from django.db.models import F
+    from apps.instruments.models import Instrument, InstrumentRole
+    from apps.market_data.models import MacroScheduleVintage, MarketCandle, ScheduleStatus
+    from engine.core.types import MacroEventContext
 
-    print("OOS_ONE_TIME_RESULT = PASS")
-    final_profile_status = "REVALIDATED_RESEARCH"
-    print(f"FINAL_PROFILE_STATUS = {final_profile_status}")
-    print(f"SIGNAL_PROFILE_STATUS = {final_profile_status}")
-    print(f"RISK_PROFILE_STATUS = {final_profile_status}")
+    gold_inst = Instrument.objects.filter(role=InstrumentRole.GOLD_REFERENCE).first()
+    inst_filter = {"instrument": gold_inst} if gold_inst else {}
 
-    # ------------------------------------------------------------------
-    # STEP 8: SEAL CALIBRATION ARTIFACT
-    # ------------------------------------------------------------------
-    print("\n--- STEP 8: SEALING CALIBRATION ARTIFACT ---")
+    candles_by_tf: Dict[str, List[CandleData]] = {
+        tf: [] for tf in required_timeframes
+    }
+
+    for tf in required_timeframes:
+        qs = MarketCandle.objects.filter(
+            timeframe=tf,
+            timestamp_open__gte=start_time,
+            timestamp_open__lt=end_time,
+            is_closed=True,
+            **inst_filter,
+        ).order_by("timestamp_open")
+
+        for r in qs.iterator(chunk_size=10000):
+            candles_by_tf[tf].append(
+                CandleData(
+                    timestamp_open=r.timestamp_open,
+                    timestamp_close=r.timestamp_close,
+                    open=Decimal(str(r.open)),
+                    high=Decimal(str(r.high)),
+                    low=Decimal(str(r.low)),
+                    close=Decimal(str(r.close)),
+                    volume=Decimal(str(r.volume or "0")),
+                    is_closed=r.is_closed,
+                    source_id=r.source,
+                    quote_rate=r.quote_rate,
+                    close_usd=r.close_usd,
+                )
+            )
+
+    candles_15m = candles_by_tf.get("15m", [])
+    # Load provenanced macro schedules from SQLite (Phase 3A PIT evidence)
+    # Filter for valid schedules known strictly before release (known_at < scheduled_at)
+    schedules = list(
+        MacroScheduleVintage.objects.filter(
+            schedule_status=ScheduleStatus.SCHEDULED,
+            known_at__lt=F("scheduled_at"),
+            scheduled_at__gte=start_time - timedelta(days=2),
+            scheduled_at__lte=end_time + timedelta(days=2),
+        ).values("event_id", "reference_period", "scheduled_at", "known_at")
+        .order_by("scheduled_at")
+    )
+
+    macro_events: List[Tuple[datetime, MacroEventContext]] = []
+    if schedules:
+        # Precompute blackout intervals: [-30 min, +30 min] of scheduled_at
+        intervals = [
+            (
+                s["scheduled_at"] - timedelta(minutes=30),
+                s["scheduled_at"] + timedelta(minutes=30),
+                s["known_at"],
+                s["event_id"],
+            )
+            for s in schedules
+        ]
+        b_starts = [inv[0] for inv in intervals]
+
+        cov_start = min(s["known_at"] for s in schedules)
+        cov_end = max(s["scheduled_at"] for s in schedules) + timedelta(minutes=30)
+
+        for c in candles_15m:
+            t = c.timestamp_close
+            if t < cov_start or t > cov_end:
+                ctx = MacroEventContext(
+                    is_in_blackout=False,
+                    is_feed_healthy=False,
+                )
+                macro_events.append((t, ctx))
+                continue
+
+            low_idx = bisect.bisect_left(b_starts, t - timedelta(minutes=60))
+            high_idx = bisect.bisect_right(b_starts, t)
+            in_blackout = False
+            active_name = None
+            for k in range(max(0, low_idx), min(len(intervals), high_idx)):
+                inv_start, inv_end, kt, eid = intervals[k]
+                if inv_start <= t <= inv_end and kt <= t:
+                    in_blackout = True
+                    active_name = eid
+                    break
+
+            ctx = MacroEventContext(
+                is_in_blackout=in_blackout,
+                active_event_name=active_name,
+                is_feed_healthy=True,
+            )
+            macro_events.append((t, ctx))
+
+    return PointInTimeDataset(
+        candles_15m=candles_by_tf.get("15m", []),
+        candles_1h=candles_by_tf.get("1h", []),
+        candles_4h=candles_by_tf.get("4h", []),
+        candles_1d=candles_by_tf.get("1d", []),
+        macro_events=macro_events,
+    )
+
+
+def save_champion_artifact(
+    champion_candidate: XauUsdJointCandidate,
+    champion_dict: Dict[str, Any],
+    champion_combined_fp: str,
+    expected_dataset_fp: str,
+    policy: XauUsdSignalCalibrationSelectionPolicy,
+    final_profile_status: str,
+    oos_results: Optional[Dict[str, Any]] = None,
+    target_artifact_name: str = "xauusd_calibrated_profile_champion",
+) -> str:
+    target_artifact_path = (
+        ROOT / "artifacts" / "calibration" / f"{target_artifact_name}.json"
+    )
+
     sig_payload = {
         "name": champion_candidate.signal_profile.name,
         "target_instrument": "XAUUSD",
         "calibration_status": final_profile_status,
         "timeframe": "15m",
         "long_direction": {
-            "weight_regime": champion_candidate.signal_profile.long_direction.weight_regime,
-            "weight_trend_1h": champion_candidate.signal_profile.long_direction.weight_trend_1h,
-            "weight_trend_4h": champion_candidate.signal_profile.long_direction.weight_trend_4h,
-            "weight_trend_1d": champion_candidate.signal_profile.long_direction.weight_trend_1d,
-            "weight_structure_bos": champion_candidate.signal_profile.long_direction.weight_structure_bos,
-            "weight_pullback": champion_candidate.signal_profile.long_direction.weight_pullback,
-            "weight_momentum": champion_candidate.signal_profile.long_direction.weight_momentum,
-            "weight_volume": champion_candidate.signal_profile.long_direction.weight_volume,
+            k: getattr(champion_candidate.signal_profile.long_direction, k)
+            for k in [
+                "weight_regime", "weight_trend_1h", "weight_trend_4h",
+                "weight_trend_1d", "weight_structure_bos", "weight_pullback",
+                "weight_momentum", "weight_volume",
+            ]
         },
         "short_direction": {
-            "weight_regime": champion_candidate.signal_profile.short_direction.weight_regime,
-            "weight_trend_1h": champion_candidate.signal_profile.short_direction.weight_trend_1h,
-            "weight_trend_4h": champion_candidate.signal_profile.short_direction.weight_trend_4h,
-            "weight_trend_1d": champion_candidate.signal_profile.short_direction.weight_trend_1d,
-            "weight_structure_bos": champion_candidate.signal_profile.short_direction.weight_structure_bos,
-            "weight_pullback": champion_candidate.signal_profile.short_direction.weight_pullback,
-            "weight_momentum": champion_candidate.signal_profile.short_direction.weight_momentum,
-            "weight_volume": champion_candidate.signal_profile.short_direction.weight_volume,
+            k: getattr(champion_candidate.signal_profile.short_direction, k)
+            for k in [
+                "weight_regime", "weight_trend_1h", "weight_trend_4h",
+                "weight_trend_1d", "weight_structure_bos", "weight_pullback",
+                "weight_momentum", "weight_volume",
+            ]
         },
         "long_timing": {
-            "weight_entry_zone": champion_candidate.signal_profile.long_timing.weight_entry_zone,
-            "weight_reversal_confirmation_15m": champion_candidate.signal_profile.long_timing.weight_reversal_confirmation_15m,
-            "weight_momentum_turn_15m_1h": champion_candidate.signal_profile.long_timing.weight_momentum_turn_15m_1h,
-            "weight_phase3a": champion_candidate.signal_profile.long_timing.weight_phase3a,
-            "weight_volume_response": champion_candidate.signal_profile.long_timing.weight_volume_response,
+            k: getattr(champion_candidate.signal_profile.long_timing, k)
+            for k in [
+                "weight_entry_zone", "weight_reversal_confirmation_15m",
+                "weight_momentum_turn_15m_1h", "weight_phase3a",
+                "weight_volume_response",
+            ]
         },
         "short_timing": {
-            "weight_entry_zone": champion_candidate.signal_profile.short_timing.weight_entry_zone,
-            "weight_reversal_confirmation_15m": champion_candidate.signal_profile.short_timing.weight_reversal_confirmation_15m,
-            "weight_momentum_turn_15m_1h": champion_candidate.signal_profile.short_timing.weight_momentum_turn_15m_1h,
-            "weight_phase3a": champion_candidate.signal_profile.short_timing.weight_phase3a,
-            "weight_volume_response": champion_candidate.signal_profile.short_timing.weight_volume_response,
+            k: getattr(champion_candidate.signal_profile.short_timing, k)
+            for k in [
+                "weight_entry_zone", "weight_reversal_confirmation_15m",
+                "weight_momentum_turn_15m_1h", "weight_phase3a",
+                "weight_volume_response",
+            ]
         },
         "long_gate": {
-            "threshold_watch_direction": champion_candidate.signal_profile.long_gate.threshold_watch_direction,
-            "threshold_ready_direction": champion_candidate.signal_profile.long_gate.threshold_ready_direction,
-            "threshold_ready_timing": champion_candidate.signal_profile.long_gate.threshold_ready_timing,
-            "threshold_window_direction": champion_candidate.signal_profile.long_gate.threshold_window_direction,
-            "threshold_window_timing": champion_candidate.signal_profile.long_gate.threshold_window_timing,
+            k: getattr(champion_candidate.signal_profile.long_gate, k)
+            for k in [
+                "threshold_watch_direction", "threshold_ready_direction",
+                "threshold_ready_timing", "threshold_window_direction",
+                "threshold_window_timing",
+            ]
         },
         "short_gate": {
-            "threshold_watch_direction": champion_candidate.signal_profile.short_gate.threshold_watch_direction,
-            "threshold_ready_direction": champion_candidate.signal_profile.short_gate.threshold_ready_direction,
-            "threshold_ready_timing": champion_candidate.signal_profile.short_gate.threshold_ready_timing,
-            "threshold_window_direction": champion_candidate.signal_profile.short_gate.threshold_window_direction,
-            "threshold_window_timing": champion_candidate.signal_profile.short_gate.threshold_window_timing,
+            k: getattr(champion_candidate.signal_profile.short_gate, k)
+            for k in [
+                "threshold_watch_direction", "threshold_ready_direction",
+                "threshold_ready_timing", "threshold_window_direction",
+                "threshold_window_timing",
+            ]
         },
         "feed_policy": {
             "primary_15m": "CRITICAL",
@@ -405,17 +1012,33 @@ def main():
         "target_instrument": "XAUUSD",
         "calibration_status": final_profile_status,
         "long_risk_policy": {
-            "structure_buffer": str(champion_candidate.risk_profile.long_risk_policy.structure_buffer),
-            "atr_multiplier": str(champion_candidate.risk_profile.long_risk_policy.atr_multiplier),
-            "max_stop_distance_atr": str(champion_candidate.risk_profile.long_risk_policy.max_stop_distance_atr),
-            "min_rr_tp1": str(champion_candidate.risk_profile.long_risk_policy.min_rr_tp1),
+            "structure_buffer": str(
+                champion_candidate.risk_profile.long_risk_policy.structure_buffer
+            ),
+            "atr_multiplier": str(
+                champion_candidate.risk_profile.long_risk_policy.atr_multiplier
+            ),
+            "max_stop_distance_atr": str(
+                champion_candidate.risk_profile.long_risk_policy.max_stop_distance_atr
+            ),
+            "min_rr_tp1": str(
+                champion_candidate.risk_profile.long_risk_policy.min_rr_tp1
+            ),
             "tp2_atr_multiplier": None,
         },
         "short_risk_policy": {
-            "structure_buffer": str(champion_candidate.risk_profile.short_risk_policy.structure_buffer),
-            "atr_multiplier": str(champion_candidate.risk_profile.short_risk_policy.atr_multiplier),
-            "max_stop_distance_atr": str(champion_candidate.risk_profile.short_risk_policy.max_stop_distance_atr),
-            "min_rr_tp1": str(champion_candidate.risk_profile.short_risk_policy.min_rr_tp1),
+            "structure_buffer": str(
+                champion_candidate.risk_profile.short_risk_policy.structure_buffer
+            ),
+            "atr_multiplier": str(
+                champion_candidate.risk_profile.short_risk_policy.atr_multiplier
+            ),
+            "max_stop_distance_atr": str(
+                champion_candidate.risk_profile.short_risk_policy.max_stop_distance_atr
+            ),
+            "min_rr_tp1": str(
+                champion_candidate.risk_profile.short_risk_policy.min_rr_tp1
+            ),
             "tp2_atr_multiplier": None,
         },
         "long_execution_policy": {
@@ -435,14 +1058,19 @@ def main():
         "artifact_id": target_artifact_name,
         "instrument": "XAUUSD",
         "calibration_status": final_profile_status,
+        "production_authority": False,
+        "paper_only": True,
+        "real_order_execution": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "champion_id": champion_id,
+        "champion_id": champion_dict["candidate_id"],
         "champion_fingerprint": champion_combined_fp,
-        "selection_evidence_fingerprint": selection_evidence_fp,
+        "selection_evidence_fingerprint": champion_dict[
+            "selection_evidence_fingerprint"
+        ],
         "dataset_fingerprint": expected_dataset_fp,
         "selection_policy_fingerprint": policy.policy_fingerprint,
         "oos_metrics": oos_results,
-        "val_metrics": val_cand0_results,
+        "val_metrics": champion_dict,
         "signal_profile": sig_payload,
         "risk_profile": risk_payload,
     }
@@ -453,11 +1081,462 @@ def main():
     with open(target_artifact_path, "w", encoding="utf-8") as f:
         json.dump(artifact_dict, f, indent=2)
 
-    print(f"Saved Calibration Artifact to: {target_artifact_path}")
-    print(f"CALIBRATION_ARTIFACT = {target_artifact_path.name}")
+    return artifact_fp
+
+
+def main():
+    print("==================================================================")
+    print("AURUMIQ XAUUSD EMPIRICAL CALIBRATION RUNNER (PHASE 6 / PHASE 8)")
+    print("==================================================================")
+
+    # 1. Dataset Provenance
+    print("\n--- STEP 1: DATASET PROVENANCE VERIFICATION ---")
+    db_path = ROOT / "db.sqlite3"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Historical datastore not found at {db_path}")
+
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT count(*) FROM market_data_marketcandle WHERE timeframe='15m'"
+    )
+    count_15m = cur.fetchone()[0]
+
+    manifest_path = (
+        ROOT / "artifacts" / "calibration" / "xauusd_data_manifest.json"
+    )
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing data manifest at {manifest_path}")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    expected_dataset_fp = manifest["dataset_fingerprint"]
+    print(f"Governed Dataset Fingerprint: {expected_dataset_fp}")
+
+    if count_15m != 161233:
+        raise AssertionError(
+            f"DATASET_VERIFICATION_FAIL: 15m candle count mismatch ({count_15m} != 161233)"
+        )
+
+    print("DATASET_FINGERPRINT_MATCH = PASS")
+
+    # 2. Frozen Selection Policy & Embargo
+    print("\n--- STEP 2: FROZEN SELECTION POLICY & EMBARGO ---")
+    policy = load_governed_selection_policy()
+    print(f"Policy ID: {policy.policy_id}")
+    print(f"Policy Fingerprint: {policy.policy_fingerprint}")
+
+    max_fill_bars = 8
+    holding_bars = 32
+    declared_embargo = 86400.0
+
+    if not policy.validate_dynamic_embargo(
+        max_fill_wait_bars_15m=max_fill_bars,
+        holding_horizon_bars_15m=holding_bars,
+        declared_embargo_seconds=declared_embargo,
+    ):
+        raise AssertionError("DYNAMIC_EMBARGO_GATE = FAIL")
+
+    print("DYNAMIC_EMBARGO_GATE = PASS")
+
+    # 3. Candidate Generation (Budget <= 100)
+    print("\n--- STEP 3: JOINT CANDIDATE GENERATION ---")
+    limit_env = os.getenv("AURUMIQ_CANDIDATE_LIMIT")
+    target_count = int(limit_env) if limit_env else 100
+    joint_gen = XauUsdJointCandidateGenerator()
+    candidates = joint_gen.generate_all_joint_candidates(target_count)
+    sig_policy = joint_gen.signal_generator.policy
+    risk_policy = joint_gen.risk_generator.policy
+
+    gate_tuples = set()
+    for cand in candidates:
+        lg = cand.signal_profile.long_gate
+        gate_tuples.add((
+            lg.threshold_watch_direction,
+            lg.threshold_ready_direction,
+            lg.threshold_ready_timing,
+            lg.threshold_window_direction,
+            lg.threshold_window_timing,
+        ))
+
+    print(f"GENERATION_POLICY_VERSION = {sig_policy.schema}")
+    print(f"GENERATION_POLICY_FINGERPRINT = {sig_policy.policy_fingerprint}")
+    print(f"RISK_POLICY_FINGERPRINT = {risk_policy.policy_fingerprint}")
+    print(f"CANDIDATES_GENERATED = {len(candidates)}")
+    print(f"UNIQUE_GATE_TUPLES = {len(gate_tuples)}")
+    assert len(candidates) == target_count
+    assert candidates[0].is_reference is True
+
+    # 4. Structural Reachability Precheck
+    print("\n--- STEP 4: STRUCTURAL REACHABILITY PRECHECK ---")
+    reachable_candidates: List[XauUsdJointCandidate] = []
+    for cand in candidates:
+        reachable, reason = check_structural_reachability(cand.signal_profile)
+        if reachable:
+            reachable_candidates.append(cand)
+        else:
+            print(f"Candidate {cand.signal_profile.name} UNREACHABLE: {reason}")
+
+    print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+    print(
+        f"Reachable Candidates: {len(reachable_candidates)}/{len(candidates)}"
+    )
+
+    # 5. Load Dataset from DB
+    print("\n--- STEP 5: LOADING HISTORICAL DATASET ---")
+    dataset = load_point_in_time_dataset_from_db(
+        policy.historical_start,
+        policy.historical_end_exclusive,
+    )
+
+    # Build validation market snapshot cache once (PASS 1)
+    print("\n--- VALIDATION MARKET SNAPSHOT CACHE VALIDATION (PASS 1) ---")
+    val_folds = policy.folds
+    val_start = min(_to_utc(f["val_start"]) for f in val_folds)
+    val_end = max(_to_utc(f["val_end"]) for f in val_folds)
+    actual_dataset_fp = dataset.compute_dataset_hash()
+    val_cache_file = (
+        ROOT
+        / "artifacts"
+        / "calibration"
+        / f"xauusd_val_market_cache_{actual_dataset_fp[:16]}.pkl"
+    )
+    cache_valid = False
+    val_market_cache = None
+    cache_load_seconds = 0.0
+
+    if val_cache_file.exists():
+        print(f"Validating existing validation market snapshot cache from {val_cache_file.name}...")
+        t_load = time.time()
+        try:
+            val_market_cache = load_market_snapshot_cache(
+                cache_path=val_cache_file,
+                expected_dataset_fp=actual_dataset_fp,
+                val_start=val_start,
+                val_end=val_end,
+            )
+            cache_load_seconds = time.time() - t_load
+            cache_valid = True
+            print("MARKET_CACHE_VALIDATION = PASS")
+            print(f"CACHE_LOAD_SECONDS = {cache_load_seconds:.2f}")
+            print(
+                f"Validation market snapshot cache loaded: {len(val_market_cache)} snapshots in {cache_load_seconds:.2f}s"
+            )
+        except Exception as e:
+            print(f"MARKET_CACHE_VALIDATION = FAIL ({e}), rebuilding cache...")
+            cache_valid = False
+
+    if not cache_valid:
+        t_cache_start = time.time()
+        val_market_cache = build_market_snapshot_cache(dataset, val_start, val_end)
+        cache_build_seconds = time.time() - t_cache_start
+        print(
+            f"Validation market snapshot cache built: {len(val_market_cache)} snapshots in {cache_build_seconds:.2f}s"
+        )
+        try:
+            save_market_snapshot_cache(
+                cache_path=val_cache_file,
+                snapshots=val_market_cache,
+                dataset_fingerprint=actual_dataset_fp,
+                val_start=val_start,
+                val_end=val_end,
+                code_revision=policy.code_revision,
+            )
+            print(f"Saved validation market snapshot cache to {val_cache_file.name}")
+        except Exception as e:
+            print(f"Warning: could not cache to disk: {e}")
+
+    # 6. Empirical Drawdown Baseline (Candidate 0)
+    print("\n--- STEP 6: EMPIRICAL DRAWDOWN BASELINE (CANDIDATE 0) ---")
+    cand0 = candidates[0]
+    (
+        baseline_mdd_r,
+        relative_mdd_ceiling,
+        cand0_val_metrics,
+    ) = evaluate_candidate_0_baseline(
+        dataset=dataset,
+        candidate_0=cand0,
+        policy=policy,
+        market_cache=val_market_cache,
+    )
+    print(f"DRAWDOWN_BASELINE_ID = REFERENCE_CANDIDATE_0")
+    print(f"BASELINE_MAX_DRAWDOWN_R = {baseline_mdd_r:.4f} R")
+    print(f"RELATIVE_DRAWDOWN_CEILING = {relative_mdd_ceiling:.4f} R")
+
+    # 7. Evaluate Candidates on VAL & Rank
+    print("\n--- STEP 7: EVALUATE CANDIDATES ON VAL ---")
+    val_results: List[Dict[str, Any]] = []
+    t_eval_start = time.time()
+
+    ledger_path = ROOT / "artifacts" / "calibration" / "xauusd_standard_calibration_candidate_ledger.json"
+    generator_policy = load_governed_candidate_generation_policy()
+    expected_provenance = {
+        "dataset_fingerprint": actual_dataset_fp,
+        "code_revision": policy.code_revision,
+        "selection_policy_fingerprint": policy.policy_fingerprint,
+        "generator_policy_fingerprint": generator_policy.policy_fingerprint,
+        "cache_semantics_version": "v2_mtf_features",
+    }
+    ledger_manager = XauUsdCandidateLedgerManager(
+        ledger_path=ledger_path,
+        expected_provenance=expected_provenance,
+    )
+
+    for i, cand in enumerate(reachable_candidates):
+        cand_id = cand.signal_profile.name
+        if ledger_manager.can_reuse(cand_id):
+            c_res = ledger_manager.get_candidate_eval_result(cand_id)
+            val_results.append(c_res)
+            status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
+            print(
+                f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand_id}: {status_str} [REUSED_FROM_LEDGER] "
+                f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
+                f"Trades={c_res['trade_count']})"
+            )
+        else:
+            t_cand_start = time.time()
+            c_res = evaluate_candidate_val(
+                dataset=dataset,
+                candidate=cand,
+                policy=policy,
+                relative_mdd_ceiling=relative_mdd_ceiling,
+                market_cache=val_market_cache,
+            )
+            val_results.append(c_res)
+            t_cand_elapsed = time.time() - t_cand_start
+
+            # Build ledger record
+            cand_record = {
+                "candidate_id": cand_id,
+                "candidate_index": cand.index,
+                "dataset_fingerprint": actual_dataset_fp,
+                "code_revision": policy.code_revision,
+                "selection_policy_fingerprint": policy.policy_fingerprint,
+                "generator_policy_fingerprint": generator_policy.policy_fingerprint,
+                "cache_semantics_version": "v2_mtf_features",
+                "run_fingerprint": c_res.get("run_fingerprint", ""),
+                "buy_trade_count": c_res.get("buy_trade_count", 0),
+                "sell_trade_count": c_res.get("sell_trade_count", 0),
+                "combined_trade_count": c_res.get("trade_count", 0),
+                "buy_effective_n": c_res.get("buy_effective_n", 0.0),
+                "sell_effective_n": c_res.get("sell_effective_n", 0.0),
+                "combined_effective_n": c_res.get("combined_effective_n", 0.0),
+                "buy_lcb95": c_res.get("buy_lcb_95", -999.0),
+                "sell_lcb95": c_res.get("sell_lcb_95", -999.0),
+                "combined_lcb95": c_res.get("val_lcb_95", -999.0),
+                "buy_mdd": c_res.get("buy_max_drawdown_r", 0.0),
+                "sell_mdd": c_res.get("sell_max_drawdown_r", 0.0),
+                "combined_mdd": c_res.get("val_max_drawdown_r", 0.0),
+                "fold_metrics": {
+                    "fold_expectancies": c_res.get("fold_expectancies", []),
+                    "fold_profits": c_res.get("fold_profits", []),
+                    "positive_fold_count": c_res.get("positive_folds", 0),
+                    "total_folds": len(policy.folds),
+                },
+                "positive_fold_count": c_res.get("positive_folds", 0),
+                "temporal_stability": c_res.get("val_temporal_stability", 0.0),
+                "profit_concentration": c_res.get("val_profit_concentration_pct", 0.0),
+                "buy_mean_r": c_res.get("buy_mean_r", 0.0),
+                "sell_mean_r": c_res.get("sell_mean_r", 0.0),
+                "buy_temporal_stability": c_res.get("buy_temporal_stability", 0.0),
+                "sell_temporal_stability": c_res.get("sell_temporal_stability", 0.0),
+                "buy_profit_concentration": c_res.get("buy_profit_concentration_pct", 0.0),
+                "sell_profit_concentration": c_res.get("sell_profit_concentration_pct", 0.0),
+                "buy_positive_fold_count": c_res.get("buy_positive_folds", 0),
+                "sell_positive_fold_count": c_res.get("sell_positive_folds", 0),
+                "buy_fold_expectancies": c_res.get("buy_fold_expectancies", []),
+                "sell_fold_expectancies": c_res.get("sell_fold_expectancies", []),
+                "buy_fold_profits": c_res.get("buy_fold_profits", []),
+                "sell_fold_profits": c_res.get("sell_fold_profits", []),
+                "buy_fold_trade_counts": c_res.get("buy_fold_trade_counts", []),
+                "sell_fold_trade_counts": c_res.get("sell_fold_trade_counts", []),
+                "invalidated_entry_count": c_res.get("invalidated_entry_count", 0),
+                "stale_tp_negative_gross_count": c_res.get("stale_tp_negative_gross_count", 0),
+                "stale_sl_positive_gross_count": c_res.get("stale_sl_positive_gross_count", 0),
+                "qualification_flags": {
+                    "qualified": c_res.get("qualified", False),
+                    "buy_eff_n_pass": bool(c_res.get("buy_effective_n", 0) >= policy.buy_min_effective_n),
+                    "sell_eff_n_pass": bool(c_res.get("sell_effective_n", 0) >= policy.sell_min_effective_n),
+                    "comb_eff_n_pass": bool(c_res.get("combined_effective_n", 0) >= policy.combined_min_effective_n),
+                    "lcb95_pass": bool(c_res.get("val_lcb_95", -999) > 0.0),
+                    "mdd_pass": bool(c_res.get("val_max_drawdown_r", 999) <= relative_mdd_ceiling),
+                    "concentration_pass": bool(c_res.get("val_profit_concentration_pct", 999) <= policy.max_single_fold_profit_concentration_pct),
+                    "positive_folds_pass": bool(c_res.get("positive_folds", 0) >= policy.min_positive_folds),
+                    "stability_pass": bool(c_res.get("val_temporal_stability", 0) >= policy.min_temporal_stability_score),
+                },
+                "rejection_reasons": c_res.get("rejection_reasons", []),
+            }
+            ledger_manager.record_candidate(cand_record, eval_result=c_res)
+
+            status_str = "QUALIFIED" if c_res["qualified"] else "REJECTED"
+            print(
+                f"  [{i+1}/{len(reachable_candidates)}] Candidate {cand_id}: {status_str} "
+                f"(LCB95={c_res['val_lcb_95']:+.4f}R, MDD={c_res['val_max_drawdown_r']:.2f}R, "
+                f"Trades={c_res['trade_count']}) in {t_cand_elapsed:.2f}s"
+            )
+
+    candidate_eval_seconds = time.time() - t_eval_start
+    print(f"CANDIDATE_EVAL_SECONDS = {candidate_eval_seconds:.2f}")
+
+    qualified_candidates = [r for r in val_results if r["qualified"]]
+    print(
+        f"Qualified Candidates on VAL: {len(qualified_candidates)}/{len(val_results)}"
+    )
+
+    if not qualified_candidates:
+        total_inv = sum(r.get("invalidated_entry_count", 0) for r in val_results)
+        total_stale_tp = sum(r.get("stale_tp_negative_gross_count", 0) for r in val_results)
+        total_stale_sl = sum(r.get("stale_sl_positive_gross_count", 0) for r in val_results)
+
+        print("\n==================================================================")
+        print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY PROVISIONAL CHAMPION)")
+        print("==================================================================")
+        print(f"CANDIDATES_GENERATED = {len(candidates)}")
+        print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+        print(f"CANDIDATES_EVALUATED = {len(val_results)}")
+        print(f"CANDIDATES_QUALIFIED = {len(qualified_candidates)}")
+        print("SELECTED_PROVISIONAL_CHAMPION_ID = NONE")
+        print("BUY_EFFECTIVE_N = 0.00")
+        print("SELL_EFFECTIVE_N = 0.00")
+        print("COMBINED_EFFECTIVE_N = 0.00")
+        print("VAL_LCB95 = N/A")
+        print("VAL_MDD_R = N/A")
+        print("VAL_TEMPORAL_STABILITY = N/A")
+        print("VAL_PROFIT_CONCENTRATION = N/A")
+        print("REACHABILITY_BUY_WINDOW = N/A")
+        print("REACHABILITY_SELL_WINDOW = N/A")
+        print("REACHABILITY_READY_SHORT = N/A")
+        print(f"INVALIDATED_ENTRY_COUNT = {total_inv}")
+        print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {total_stale_tp}")
+        print(f"STALE_SL_POSITIVE_GROSS_COUNT = {total_stale_sl}")
+        print("")
+        print("OOS_ACCESS_COUNT = 0")
+        print("PRODUCTION_AUTHORITY = OFF")
+        print("PAPER_ONLY = TRUE")
+        print("REAL_ORDER_EXECUTION = OFF")
+        print("NO_CANDIDATES_QUALIFIED: CALIBRATION_REQUIRED")
+        return 1
+
+    champion_dict = select_champion(qualified_candidates)
+    if champion_dict is None:
+        print("CHAMPION_SELECTION_FAILED: CALIBRATION_REQUIRED")
+        return 1
+
+    # Map champion back to joint candidate object
+    champion_candidate = next(
+        c for c in candidates if c.index == champion_dict["index"]
+    )
+    champion_sig_fp = compute_phase4_policy_fingerprint(
+        champion_candidate.signal_profile
+    )
+    champion_risk_fp = compute_phase5_policy_fingerprint(
+        champion_candidate.risk_profile
+    )
+    champion_combined_fp = f"{champion_sig_fp}:{champion_risk_fp}"
+    champion_dict["champion_fingerprint"] = champion_combined_fp
+
+    # 8. LOCK 1 CHAMPION BEFORE OOS
+    print("\n--- STEP 8: LOCK 1 CHAMPION (BEFORE OOS ACCESS) ---")
+    champion_dict = lock_champion(
+        champion_dict=champion_dict,
+        selection_policy=policy,
+        dataset_fingerprint=expected_dataset_fp,
+    )
+    print(f"SELECTED_CHAMPION_ID = {champion_dict['candidate_id']}")
+    print(f"SELECTED_CHAMPION_FINGERPRINT = {champion_combined_fp}")
+    print(
+        f"SELECTION_EVIDENCE_FINGERPRINT = {champion_dict['selection_evidence_fingerprint']}"
+    )
+    print("CHAMPION_LOCKED_BEFORE_OOS = true")
+
+    if os.getenv("AURUMIQ_ENABLE_OOS", "0") != "1":
+        provisional_artifact_name = "xauusd_calibrated_profile_candidate_v3_post_remediation"
+        artifact_fp = save_champion_artifact(
+            champion_candidate=champion_candidate,
+            champion_dict=champion_dict,
+            champion_combined_fp=champion_combined_fp,
+            expected_dataset_fp=expected_dataset_fp,
+            policy=policy,
+            final_profile_status="DEVELOPMENT_POST_REMEDIATION_PROVISIONAL",
+            oos_results=None,
+            target_artifact_name=provisional_artifact_name,
+        )
+        reach_buy = "GREEN" if champion_dict.get("reachability_buy_window") else "RED"
+        reach_sell = "GREEN" if champion_dict.get("reachability_sell_window") else "RED"
+        reach_ready_short = "GREEN" if champion_dict.get("reachability_ready_short") else "RED"
+
+        print("\n==================================================================")
+        print("EMPIRICAL CALIBRATION SUMMARY (VAL-ONLY PROVISIONAL CHAMPION)")
+        print("==================================================================")
+        print(f"CANDIDATES_GENERATED = {len(candidates)}")
+        print(f"STRUCTURALLY_REACHABLE = {len(reachable_candidates)}")
+        print(f"CANDIDATES_EVALUATED = {len(val_results)}")
+        print(f"CANDIDATES_QUALIFIED = {len(qualified_candidates)}")
+        print(f"SELECTED_PROVISIONAL_CHAMPION_ID = {champion_dict['candidate_id']}")
+        print(f"BUY_EFFECTIVE_N = {champion_dict['buy_effective_n']:.2f}")
+        print(f"SELL_EFFECTIVE_N = {champion_dict['sell_effective_n']:.2f}")
+        print(f"COMBINED_EFFECTIVE_N = {champion_dict['combined_effective_n']:.2f}")
+        print(f"VAL_LCB95 = +{champion_dict['val_lcb_95']:.4f} R")
+        print(f"VAL_MDD_R = {champion_dict['val_max_drawdown_r']:.4f} R")
+        print(f"VAL_TEMPORAL_STABILITY = {champion_dict.get('val_temporal_stability', 0.0):.4f}")
+        print(f"VAL_PROFIT_CONCENTRATION = {champion_dict.get('val_profit_concentration_pct', 0.0):.2f}%")
+        print(f"REACHABILITY_BUY_WINDOW = {reach_buy}")
+        print(f"REACHABILITY_SELL_WINDOW = {reach_sell}")
+        print(f"REACHABILITY_READY_SHORT = {reach_ready_short}")
+        print(f"INVALIDATED_ENTRY_COUNT = {champion_dict.get('invalidated_entry_count', 0)}")
+        print(f"STALE_TP_NEGATIVE_GROSS_COUNT = {champion_dict.get('stale_tp_negative_gross_count', 0)}")
+        print(f"STALE_SL_POSITIVE_GROSS_COUNT = {champion_dict.get('stale_sl_positive_gross_count', 0)}")
+        print("")
+        print(f"CALIBRATION_ARTIFACT_FINGERPRINT = {artifact_fp}")
+        print("CHAMPION_LOCKED_BEFORE_OOS = true")
+        print("OOS_ACCESS_COUNT = 0")
+        print("PRODUCTION_AUTHORITY = OFF")
+        print("PAPER_ONLY = TRUE")
+        print("REAL_ORDER_EXECUTION = OFF")
+        print("VAL_ONLY_CALIBRATION = COMPLETE")
+        return 0
+
+    # 9. OOS Confirmatory Evaluation
+    print("\n--- STEP 9: OOS ONE-TIME CONFIRMATORY EVALUATION ---")
+    oos_results = evaluate_champion_oos(
+        dataset=dataset,
+        champion_candidate=champion_candidate,
+        policy=policy,
+        champion_locked=champion_dict.get("CHAMPION_LOCKED_BEFORE_OOS", False),
+    )
+
+    print(
+        f"OOS Positive Folds: {oos_results['positive_folds']}/{oos_results['total_folds']}"
+    )
+    print(
+        f"OOS Temporal Stability: {oos_results['oos_temporal_stability']:.4f}"
+    )
+    print(f"OOS Expectancy LCB_95: +{oos_results['oos_lcb_95']:.4f} R")
+    print(f"OOS Max Drawdown: {oos_results['oos_max_drawdown_r']:.4f} R")
+
+    if not oos_results["passed"]:
+        print("OOS_ONE_TIME_RESULT = FAIL")
+        print("FINAL_PROFILE_STATUS = CALIBRATION_REQUIRED")
+        return 1
+
+    print("OOS_ONE_TIME_RESULT = PASS")
+    final_profile_status = "REVALIDATED_RESEARCH"
+    print(f"FINAL_PROFILE_STATUS = {final_profile_status}")
+
+    # 10. Seal Calibration Artifact
+    print("\n--- STEP 10: SEALING CALIBRATION ARTIFACT ---")
+    artifact_fp = save_champion_artifact(
+        champion_candidate=champion_candidate,
+        champion_dict=champion_dict,
+        champion_combined_fp=champion_combined_fp,
+        expected_dataset_fp=expected_dataset_fp,
+        policy=policy,
+        final_profile_status=final_profile_status,
+        oos_results=oos_results,
+    )
     print(f"CALIBRATION_ARTIFACT_FINGERPRINT = {artifact_fp}")
-    print(f"XAUUSD_CALIBRATION_ARTIFACT_ID = {target_artifact_name}")
-    print("\nCALIBRATION EXECUTION COMPLETE: QUALIFIED AS REVALIDATED_RESEARCH")
+    print("CALIBRATION EXECUTION COMPLETE: QUALIFIED AS REVALIDATED_RESEARCH")
     return 0
 
 

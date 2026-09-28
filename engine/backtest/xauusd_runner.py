@@ -9,7 +9,10 @@ from engine.backtest.xauusd_ablation import XauUsdAblationEngine
 from engine.backtest.xauusd_fingerprint import compute_xauusd_backtest_fingerprint
 from engine.backtest.xauusd_metrics import XauUsdMetricsCalculator
 from engine.backtest.xauusd_outcomes import XauUsdOutcomeEngine
-from engine.backtest.xauusd_replay import XauUsdPointInTimeReplay
+from engine.backtest.xauusd_replay import (
+    XauUsdPointInTimeReplay,
+    XauUsdReplayMarketSnapshot,
+)
 from engine.backtest.xauusd_types import (
     XauUsdAblationReport,
     XauUsdAblationType,
@@ -54,6 +57,7 @@ class XauUsdBacktestRunner:
         self,
         dataset: PointInTimeDataset,
         spec: XauUsdBacktestRunSpec,
+        market_cache: Optional[Sequence[XauUsdReplayMarketSnapshot]] = None,
     ) -> Tuple[XauUsdBacktestMetrics, List[XauUsdSimulatedTrade], List[DualSideSignalSnapshot], str]:
         # 1. Enforce strict dataset identity verification
         from engine.backtest.xauusd_fingerprint import compute_xauusd_dataset_identity_from_dataset
@@ -101,11 +105,17 @@ class XauUsdBacktestRunner:
             max_fill_wait_seconds=spec.max_fill_wait_seconds,
         )
 
-        full_candles_15m = dataset.get_closed_candles("15m", as_of=spec.end_time)
-        timestamps = [
-            c.timestamp_close for c in full_candles_15m
-            if spec.start_time <= c.timestamp_close < spec.end_time
-        ]
+        if market_cache is not None:
+            timestamps = [
+                s.timestamp for s in market_cache
+                if spec.start_time <= s.timestamp < spec.end_time
+            ]
+        else:
+            full_candles_15m = dataset.get_closed_candles("15m", as_of=spec.end_time)
+            timestamps = [
+                c.timestamp_close for c in full_candles_15m
+                if spec.start_time <= c.timestamp_close < spec.end_time
+            ]
 
         if not timestamps:
             raise ValueError(f"No 15m closed candle timestamps found in window [{spec.start_time}, {spec.end_time}).")
@@ -125,10 +135,11 @@ class XauUsdBacktestRunner:
             max_fill_wait_bars_15m=spec.max_fill_wait_bars_15m,
             max_fill_wait_seconds=spec.max_fill_wait_seconds,
             cost_config=spec.cost_config,
+            run_start_time=spec.start_time,
             run_end_time=spec.end_time,
         )
 
-        signals, trades = replay.run(clock)
+        signals, trades = replay.run(clock, market_cache=market_cache)
         metrics = XauUsdMetricsCalculator.calculate(signals=signals, trades=trades)
 
         return metrics, trades, signals, run_fp

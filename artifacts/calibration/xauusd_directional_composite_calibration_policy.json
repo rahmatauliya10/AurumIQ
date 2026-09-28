@@ -1,0 +1,163 @@
+{
+  "schema": "aurumiq.calibration.composite_calibration_policy.v2",
+  "policy_id": "XAUUSD-DIRECTIONAL-COMPOSITE-CALIBRATION-POLICY-v2",
+  "instrument": "XAUUSD",
+  "target_instrument_normalized": "XAUUSD",
+  "timeframe": "15m",
+  "base_code_revision": "2da87311dc1b811f1455cfa57643221f3f9823f0",
+  "code_revision": "2da87311dc1b811f1455cfa57643221f3f9823f0",
+  "decision_at": "2026-09-24T08:00:00Z",
+  "created_at": "2026-09-24T08:00:00Z",
+  "historical_bounds": {
+    "start_time": "2020-04-07T00:00:00+00:00",
+    "end_time_exclusive": "2026-09-01T00:00:00+00:00",
+    "total_duration_days": 2338.0
+  },
+  "actual_phase8_boundary_reference": {
+    "observation_window_start": "2026-09-11T11:06:24.508828+00:00",
+    "quarantine_gap_days": 10.46278,
+    "status": "QUARANTINED_EXCLUDED"
+  },
+  "walk_forward_policy": {
+    "total_folds": 5,
+    "rolling_window": false,
+    "train_ratio": 0.6,
+    "val_ratio": 0.2,
+    "oos_ratio": 0.2,
+    "oos_duration_per_fold_days": 93.52,
+    "val_duration_per_fold_days": 467.6,
+    "folds": [
+      {
+        "fold_id": 1,
+        "train_start": "2020-04-07T00:00:00+00:00",
+        "train_end": "2024-02-08T19:12:00+00:00",
+        "val_start": "2024-02-08T19:12:00+00:00",
+        "val_end": "2025-05-21T09:36:00+00:00",
+        "oos_start": "2025-05-21T09:36:00+00:00",
+        "oos_end": "2025-08-22T22:04:48+00:00",
+        "oos_duration_days": 93.52
+      },
+      {
+        "fold_id": 2,
+        "train_start": "2020-04-07T00:00:00+00:00",
+        "train_end": "2024-05-12T07:40:48+00:00",
+        "val_start": "2024-05-12T07:40:48+00:00",
+        "val_end": "2025-08-22T22:04:48+00:00",
+        "oos_start": "2025-08-22T22:04:48+00:00",
+        "oos_end": "2025-11-24T10:33:36+00:00",
+        "oos_duration_days": 93.52
+      },
+      {
+        "fold_id": 3,
+        "train_start": "2020-04-07T00:00:00+00:00",
+        "train_end": "2024-08-13T20:09:36+00:00",
+        "val_start": "2024-08-13T20:09:36+00:00",
+        "val_end": "2025-11-24T10:33:36+00:00",
+        "oos_start": "2025-11-24T10:33:36+00:00",
+        "oos_end": "2026-02-25T23:02:24+00:00",
+        "oos_duration_days": 93.52
+      },
+      {
+        "fold_id": 4,
+        "train_start": "2020-04-07T00:00:00+00:00",
+        "train_end": "2024-11-15T08:38:24+00:00",
+        "val_start": "2024-11-15T08:38:24+00:00",
+        "val_end": "2026-02-25T23:02:24+00:00",
+        "oos_start": "2026-02-25T23:02:24+00:00",
+        "oos_end": "2026-05-30T11:31:12+00:00",
+        "oos_duration_days": 93.52
+      },
+      {
+        "fold_id": 5,
+        "train_start": "2020-04-07T00:00:00+00:00",
+        "train_end": "2025-02-16T21:07:12+00:00",
+        "val_start": "2025-02-16T21:07:12+00:00",
+        "val_end": "2026-05-30T11:31:12+00:00",
+        "oos_start": "2026-05-30T11:31:12+00:00",
+        "oos_end": "2026-09-01T00:00:00+00:00",
+        "oos_duration_days": 93.52
+      }
+    ]
+  },
+  "dynamic_embargo_rule": {
+    "formula": "embargo_seconds >= (max_fill_wait_bars_15m + holding_horizon_bars_15m) * 900",
+    "fail_closed_if_unresolved": true
+  },
+  "reference_candidate_0_baseline": {
+    "policy": "IMMUTABLE_FROZEN_REFERENCE",
+    "max_deterioration_pct": 10.0,
+    "absolute_max_drawdown_r": 18.0
+  },
+  "long_subprofile_qualification": {
+    "buy_min_effective_n": 60.0,
+    "side_lcb_95_min": 0.0,
+    "side_max_drawdown_r": 18.0,
+    "min_temporal_stability_score": 0.5,
+    "max_single_fold_profit_concentration_pct": 60.0,
+    "min_positive_folds": 4,
+    "min_positive_folds_total": 5
+  },
+  "short_subprofile_qualification": {
+    "sell_min_effective_n": 60.0,
+    "side_lcb_95_min": 0.0,
+    "side_max_drawdown_r": 18.0,
+    "min_temporal_stability_score": 0.5,
+    "max_single_fold_profit_concentration_pct": 60.0,
+    "min_positive_folds": 4,
+    "min_positive_folds_total": 5
+  },
+  "side_ranking_hierarchy": [
+    "highest_side_lcb_95",
+    "lowest_side_max_drawdown_r",
+    "lowest_candidate_index"
+  ],
+  "composite_qualification": {
+    "buy_min_effective_n": 60.0,
+    "sell_min_effective_n": 60.0,
+    "combined_min_effective_n": 100.0,
+    "combined_lcb_95_min": 0.0,
+    "combined_max_drawdown_r": 18.0,
+    "min_temporal_stability_score": 0.5,
+    "max_single_fold_profit_concentration_pct": 60.0,
+    "min_positive_folds": 4,
+    "min_positive_folds_total": 5,
+    "reachability_requirements": [
+      "BUY_WINDOW",
+      "SELL_WINDOW",
+      "READY_SHORT"
+    ]
+  },
+  "shared_profile_specification": {
+    "target_instrument": "XAUUSD",
+    "timeframe": "15m",
+    "calibration_status": "DEVELOPMENT_POST_REMEDIATION_COMPOSITE_PROVISIONAL",
+    "production_authority": false,
+    "paper_only": true,
+    "real_order_execution": false,
+    "feed_policy": {
+      "primary_15m": "CRITICAL",
+      "primary_1h": "OPTIONAL",
+      "primary_4h": "OPTIONAL",
+      "primary_1d": "OPTIONAL",
+      "secondary_provider": "OPTIONAL",
+      "macro_blackout": "CRITICAL",
+      "volume": "OPTIONAL",
+      "phase3a": "OPTIONAL",
+      "phase3b": "INFORMATIONAL",
+      "dxy_yields_futures": "INFORMATIONAL"
+    }
+  },
+  "candidate_pool_governance": {
+    "total_candidates": 100,
+    "generator_class": "engine.backtest.xauusd_risk_candidate_generator.XauUsdJointCandidateGenerator",
+    "signal_generation_policy_reference": "XAUUSD-CANDIDATE-GENERATION-POLICY-20260923-V3"
+  },
+  "provisional_artifact_path": "artifacts/calibration/xauusd_calibrated_profile_candidate_composite_post_remediation.json",
+  "production_authority_status": {
+    "is_production_authorized": false,
+    "paper_only": true,
+    "real_order_execution": "disabled"
+  },
+  "remediation_reference": "Outcome-accounting remediation: post-fill risk plan validation with ENTRY_INVALIDATED_STALE_RISK_PLAN, eliminating stale TP negative gross R manufactured trades.",
+  "policy_fingerprint": "c6242443bf58ea3932f2d3627ec452f5271fb5ef62fc08543d27974bd5f3724b"
+}

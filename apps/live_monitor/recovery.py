@@ -44,12 +44,14 @@ def catch_up_unprocessed_xauusd_candles(
         ).values_list("timestamp", flat=True)
     )
 
+    from apps.market_data.market_hours import is_expected_market_interval_closed
     unprocessed_candles: List[MarketCandle] = []
     for candle in candles_qs:
         if candle.timestamp_close not in existing_signal_timestamps:
-            unprocessed_candles.append(candle)
-            if len(unprocessed_candles) >= limit:
-                break
+            if not is_expected_market_interval_closed(candle.timestamp_open, candle.timestamp_close):
+                unprocessed_candles.append(candle)
+                if len(unprocessed_candles) >= limit:
+                    break
 
     if not unprocessed_candles:
         return {

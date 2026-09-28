@@ -1,0 +1,238 @@
+{
+  "a16_policy_fingerprint": "93b60275b51ed007a3023c3d7270a2af4bc6594deffee3b046d5cfd164cde4bd",
+  "artifact_fingerprint": "028166907b265072342369a15857f5777db64521e7cda68ce131d11330bfe425",
+  "artifact_id": "xauusd_phase3a_candidate",
+  "calibration_status": "CANDIDATE_NOT_FROZEN",
+  "candidate_fingerprint": "028166907b265072342369a15857f5777db64521e7cda68ce131d11330bfe425",
+  "candidate_profile": {
+    "calendar_effect_table": [
+      {
+        "bucket": "DOW_0_HOUR_23",
+        "effective_n": 530.5,
+        "expectancy_r": 0.0722,
+        "is_statistically_significant": true,
+        "sample_count": 1114,
+        "stability": 0.9577057087424113,
+        "win_rate": 0.544
+      },
+      {
+        "bucket": "DOW_2_HOUR_1",
+        "effective_n": 592.0,
+        "expectancy_r": 0.0711,
+        "is_statistically_significant": true,
+        "sample_count": 1194,
+        "stability": 0.9712420129970627,
+        "win_rate": 0.5243
+      },
+      {
+        "bucket": "DOW_4_HOUR_20",
+        "effective_n": 458.5,
+        "expectancy_r": 0.09,
+        "is_statistically_significant": true,
+        "sample_count": 946,
+        "stability": 0.9235866316606821,
+        "win_rate": 0.556
+      }
+    ],
+    "calendar_expectancy_multiplier": null,
+    "calendar_max_score": null,
+    "calendar_min_effective_n": null,
+    "calendar_stability_threshold": null,
+    "calibration_status": "CANDIDATE_NOT_FROZEN",
+    "details": {
+      "a16_policy_fingerprint": "93b60275b51ed007a3023c3d7270a2af4bc6594deffee3b046d5cfd164cde4bd",
+      "code_revision": "ad511e359af46c251f0171a80ff2e0dda0407cc2",
+      "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+      "fold_stability_policy_fingerprint": "997a087804f59b9c82cf4e90ad9f4e9241bfc054d170269533cdd46a41c04339",
+      "production_authority": false,
+      "qualification_rule": "is_statistically_significant and temporal_stability_passed",
+      "qualified_calendar_count": 3,
+      "qualified_session_count": 0,
+      "scoring_authority": false,
+      "significance_policy_fingerprint": "12ea84d8016e745c206ee8019c2b86daed6c228d8d1d7f10fc7e5c517a4b652f",
+      "source_artifact": "xauusd_phase3a_descriptive_evidence",
+      "source_artifact_fingerprint": "9257ad5654b8a24e527722256dc497bb5f537f1ac9ec43eac5ca4d7dcfb84771",
+      "source_evidence_fingerprint": "4a585c98cdf8258978da00811cd496d359e525aa6548f6ea9631101a13a7292a"
+    },
+    "historical_durations": null,
+    "macro_blackout_post_minutes": null,
+    "macro_blackout_pre_minutes": null,
+    "macro_clear_bonus_far": null,
+    "macro_clear_bonus_near": null,
+    "macro_clear_window_far_minutes": null,
+    "macro_clear_window_near_minutes": null,
+    "name": "XAUUSD_CYCLE3A_CANDIDATE",
+    "session_expectancy_multiplier": null,
+    "session_expectancy_table": [],
+    "session_max_score": null,
+    "session_min_effective_n": null,
+    "swing_duration_percentiles": {
+      "P10": 2.0,
+      "P25": 3.0,
+      "P50": 4.0,
+      "P75": 6.0,
+      "P90": 9.0,
+      "P95": 11.0
+    },
+    "swing_maturity_bands": null,
+    "swing_max_score": null,
+    "swing_min_effective_n": null,
+    "swing_sample_evaluation": {
+      "clustering_discount": 0.0242,
+      "effective_n": 13953.5,
+      "hhi_norm": 1.0,
+      "independent_after_overlap": 28599,
+      "is_blocked": false,
+      "message": "HIGH SAMPLE QUALITY: Effective sample 13953.5 >= 100. Full weight multiplier = 1.0.",
+      "n_raw": 29150,
+      "quality": "HIGH",
+      "regime_discount": 0.5,
+      "temporal_clusters": 27907,
+      "weight_multiplier": 1.0
+    },
+    "target_instrument": "XAUUSD",
+    "timeframe": "15m"
+  },
+  "candidate_profile_authority": false,
+  "code_revision": "ad511e359af46c251f0171a80ff2e0dda0407cc2",
+  "created_at": "2026-09-22T10:06:53.743950+00:00",
+  "cycle_3a_profile": {
+    "profile": {
+      "calendar_effect_table": [
+        {
+          "bucket": "DOW_0_HOUR_23",
+          "effective_n": 530.5,
+          "expectancy_r": 0.0722,
+          "is_statistically_significant": true,
+          "sample_count": 1114,
+          "stability": 0.9577057087424113,
+          "win_rate": 0.544
+        },
+        {
+          "bucket": "DOW_2_HOUR_1",
+          "effective_n": 592.0,
+          "expectancy_r": 0.0711,
+          "is_statistically_significant": true,
+          "sample_count": 1194,
+          "stability": 0.9712420129970627,
+          "win_rate": 0.5243
+        },
+        {
+          "bucket": "DOW_4_HOUR_20",
+          "effective_n": 458.5,
+          "expectancy_r": 0.09,
+          "is_statistically_significant": true,
+          "sample_count": 946,
+          "stability": 0.9235866316606821,
+          "win_rate": 0.556
+        }
+      ],
+      "calendar_expectancy_multiplier": null,
+      "calendar_max_score": null,
+      "calendar_min_effective_n": null,
+      "calendar_stability_threshold": null,
+      "calibration_status": "CANDIDATE_NOT_FROZEN",
+      "details": {
+        "a16_policy_fingerprint": "93b60275b51ed007a3023c3d7270a2af4bc6594deffee3b046d5cfd164cde4bd",
+        "code_revision": "ad511e359af46c251f0171a80ff2e0dda0407cc2",
+        "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+        "fold_stability_policy_fingerprint": "997a087804f59b9c82cf4e90ad9f4e9241bfc054d170269533cdd46a41c04339",
+        "production_authority": false,
+        "qualification_rule": "is_statistically_significant and temporal_stability_passed",
+        "qualified_calendar_count": 3,
+        "qualified_session_count": 0,
+        "scoring_authority": false,
+        "significance_policy_fingerprint": "12ea84d8016e745c206ee8019c2b86daed6c228d8d1d7f10fc7e5c517a4b652f",
+        "source_artifact": "xauusd_phase3a_descriptive_evidence",
+        "source_artifact_fingerprint": "9257ad5654b8a24e527722256dc497bb5f537f1ac9ec43eac5ca4d7dcfb84771",
+        "source_evidence_fingerprint": "4a585c98cdf8258978da00811cd496d359e525aa6548f6ea9631101a13a7292a"
+      },
+      "historical_durations": null,
+      "macro_blackout_post_minutes": null,
+      "macro_blackout_pre_minutes": null,
+      "macro_clear_bonus_far": null,
+      "macro_clear_bonus_near": null,
+      "macro_clear_window_far_minutes": null,
+      "macro_clear_window_near_minutes": null,
+      "name": "XAUUSD_CYCLE3A_CANDIDATE",
+      "session_expectancy_multiplier": null,
+      "session_expectancy_table": [],
+      "session_max_score": null,
+      "session_min_effective_n": null,
+      "swing_duration_percentiles": {
+        "P10": 2.0,
+        "P25": 3.0,
+        "P50": 4.0,
+        "P75": 6.0,
+        "P90": 9.0,
+        "P95": 11.0
+      },
+      "swing_maturity_bands": null,
+      "swing_max_score": null,
+      "swing_min_effective_n": null,
+      "swing_sample_evaluation": {
+        "clustering_discount": 0.0242,
+        "effective_n": 13953.5,
+        "hhi_norm": 1.0,
+        "independent_after_overlap": 28599,
+        "is_blocked": false,
+        "message": "HIGH SAMPLE QUALITY: Effective sample 13953.5 >= 100. Full weight multiplier = 1.0.",
+        "n_raw": 29150,
+        "quality": "HIGH",
+        "regime_discount": 0.5,
+        "temporal_clusters": 27907,
+        "weight_multiplier": 1.0
+      },
+      "target_instrument": "XAUUSD",
+      "timeframe": "15m"
+    },
+    "profile_fingerprint": "405c8f6494861150e488eb8d1e4e9f743521106edd82140b4e02b82b62ee62e2",
+    "schema": "aurumiq.cycle3a.profile.v1"
+  },
+  "dataset_fingerprint": "2c45cf9cef0777118652bdc7b2fac1450a4c01f8d26974faa968195114df92b9",
+  "fold_stability_policy_fingerprint": "997a087804f59b9c82cf4e90ad9f4e9241bfc054d170269533cdd46a41c04339",
+  "instrument": "XAUUSD",
+  "production_authority": false,
+  "qualification": {
+    "calendar": {
+      "evaluated_count": 169,
+      "qualified_buckets": [
+        "DOW_0_HOUR_23",
+        "DOW_2_HOUR_1",
+        "DOW_4_HOUR_20"
+      ],
+      "qualified_count": 3
+    },
+    "rule": "is_statistically_significant and temporal_stability_passed",
+    "session": {
+      "evaluated_count": 6,
+      "qualified_buckets": [],
+      "qualified_count": 0
+    },
+    "swing": {
+      "a16_certified": true,
+      "cross_gap_duration_pairs": 0,
+      "effective_n": 13953.5,
+      "known_duration_percentiles": {
+        "P10": 2.0,
+        "P25": 3.0,
+        "P50": 4.0,
+        "P75": 6.0,
+        "P90": 9.0,
+        "P95": 11.0
+      },
+      "raw_count": 29150
+    }
+  },
+  "qualification_rule": "is_statistically_significant and temporal_stability_passed",
+  "qualified_calendar_count": 3,
+  "qualified_session_count": 0,
+  "schema": "aurumiq.phase3a.candidate_artifact.v1",
+  "scoring_authority": false,
+  "significance_policy_fingerprint": "12ea84d8016e745c206ee8019c2b86daed6c228d8d1d7f10fc7e5c517a4b652f",
+  "source_artifact_fingerprint": "9257ad5654b8a24e527722256dc497bb5f537f1ac9ec43eac5ca4d7dcfb84771",
+  "source_evidence_fingerprint": "4a585c98cdf8258978da00811cd496d359e525aa6548f6ea9631101a13a7292a",
+  "status": "CANDIDATE_NOT_FROZEN",
+  "target_instrument": "XAUUSD",
+  "timeframe": "15m"
+}
